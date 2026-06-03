@@ -93,6 +93,7 @@ from ibkr_api.orders.notifications import sync_order_callback_ledger_notificatio
 from ibkr_api.orders.webhooks import build_order_cancel_webhook_response, build_order_close_webhook_response
 from ibkr_api.orders.upsert import build_order_upsert_response
 from ibkr_api.orders.reconcile import build_orders_reconcile_response
+from ibkr_api.orders.realized_pnl_stats import build_realized_pnl_stats
 from ibkr_api.reverse.actions import build_reverse_ack_response, build_reverse_dispatch_response
 from ibkr_api.reverse.calculate import build_reverse_calculate_response
 from ibkr_api.reverse.queries import build_reverse_list_response, build_reverse_pending_response
@@ -450,6 +451,71 @@ def _load_linked_entry_rows_for_stats(order_rows: list[dict[str, Any]], environm
     return entries
 
 
+def _order_match_ids_for_stats(row: dict[str, Any]) -> list[str]:
+    ids: list[str] = []
+    seen: set[str] = set()
+    for field in ("order_id", "broker_order_id", "ib_order_id", "orderId"):
+        value = _order_field(row, field)
+        if value and value not in seen:
+            seen.add(value)
+            ids.append(value)
+    return ids
+
+
+def _load_execution_fills_for_stats(order_rows: list[dict[str, Any]], environment: str) -> list[dict[str, Any]]:
+    order_ids: list[str] = []
+    seen: set[str] = set()
+    for row in order_rows or []:
+        if not isinstance(row, dict):
+            continue
+        for order_id in _order_match_ids_for_stats(row):
+            if order_id and order_id not in seen:
+                seen.add(order_id)
+                order_ids.append(order_id)
+    if not order_ids:
+        return []
+
+    fills: list[dict[str, Any]] = []
+    env = _escape_filter_string(environment)
+    for chunk in _chunk_values(order_ids, 24):
+        clause = _equals_any_clause("order_id", chunk)
+        if not clause:
+            continue
+        fills.extend(
+            _pb_load_records_for_count(
+                "ibkr_execution_fills",
+                f'environment = "{env}" && ({clause})',
+                max_pages=10,
+            )
+        )
+    return fills
+
+
+def _apply_actual_realized_pnl_stats(order_stats: dict[str, Any], actual_stats: dict[str, Any]) -> dict[str, Any]:
+    updated = dict(order_stats)
+    updated.update(
+        {
+            "realized_gross_pnl": actual_stats.get("realized_gross_pnl", 0.0),
+            "realized_net_pnl": actual_stats.get("realized_net_pnl", 0.0),
+            "commission": actual_stats.get("commission", 0.0),
+            "winning_trades": int(actual_stats.get("win_count") or 0),
+            "losing_trades": int(actual_stats.get("loss_count") or 0),
+            "flat_trades": int(actual_stats.get("flat_count") or 0),
+            "profit_amount": actual_stats.get("profit_amount", 0.0),
+            "loss_amount": actual_stats.get("loss_amount", 0.0),
+            "pnl_missing_count": int(actual_stats.get("missing_count") or 0),
+            "actual_exit_count": int(actual_stats.get("exit_count") or 0),
+            "commission_missing_count": int(actual_stats.get("commission_missing_count") or 0),
+            "entry_missing_count": int(actual_stats.get("entry_missing_count") or 0),
+            "fill_missing_count": int(actual_stats.get("fill_missing_count") or 0),
+            "currency_mismatch_count": int(actual_stats.get("currency_mismatch_count") or 0),
+            "unsupported_asset_count": int(actual_stats.get("unsupported_asset_count") or 0),
+            "ibkr_realized_pnl_mismatch_count": int(actual_stats.get("ibkr_realized_pnl_mismatch_count") or 0),
+        }
+    )
+    return updated
+
+
 def _load_today_counts(environment: str, market_date: str) -> dict[str, Any]:
     runtime_environment = _normalize_environment(environment, "live")
     data_environment = resolve_data_environment(runtime_environment)
@@ -515,7 +581,15 @@ def _load_today_counts(environment: str, market_date: str) -> dict[str, Any]:
             stats_rows.extend(_load_linked_entry_rows_for_stats(order_rows, runtime_environment))
         except Exception as exc:
             errors["order_entry_links"] = str(exc)
-        counts.update(build_daily_order_stats(stats_rows))
+        order_stats = build_daily_order_stats(stats_rows)
+        try:
+            execution_fills = _load_execution_fills_for_stats(stats_rows, runtime_environment)
+            actual_stats = build_realized_pnl_stats(stats_rows, execution_fills, start_ms=start_ms, end_ms=end_ms)
+            if int(actual_stats.get("exit_count") or 0) > 0 or int(actual_stats.get("missing_count") or 0) > 0:
+                order_stats = _apply_actual_realized_pnl_stats(order_stats, actual_stats)
+        except Exception as exc:
+            errors["execution_fills_stats"] = str(exc)
+        counts.update(order_stats)
     except Exception as exc:
         fallback_orders = int(counts.get("orders") or 0)
         counts["main_orders"] = fallback_orders

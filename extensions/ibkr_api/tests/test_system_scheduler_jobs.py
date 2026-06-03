@@ -2179,6 +2179,7 @@ class SystemSchedulerJobsTest(unittest.TestCase):
                     "realized_net_pnl": 123.45,
                     "profit_amount": 200,
                     "loss_amount": -76.55,
+                    "commission": 7.0,
                     "pnl_missing_count": 1,
                 },
                 daily=True,
@@ -2189,7 +2190,7 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertTrue(payload["ok"])
         card_text = "\n".join(element.get("content", "") for element in sent[0]["card"]["elements"] if element.get("tag") == "markdown")
         self.assertIn("**今日止盈/止损**: 止盈成交 2（保护 1 + 平仓 1） | 止损成交 1（保护 1 + 平仓 0） | 平本 1 | 未判定 1", card_text)
-        self.assertIn("**今日盈亏**: 净 +$123.45 | 盈利 2/+$200.00 | 亏损 1/-$76.55 | PnL缺失 1", card_text)
+        self.assertIn("**今日盈亏**: 净 +$123.45 | 盈利 2/+$200.00 | 亏损 1/-$76.55 | 手续费 $7.00 | PnL缺失 1", card_text)
 
     def test_daily_report_labels_paper_broker_with_shared_live_data(self):
         pb = _ReminderPB()

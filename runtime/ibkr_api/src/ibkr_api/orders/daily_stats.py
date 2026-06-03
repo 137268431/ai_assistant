@@ -38,6 +38,13 @@ def empty_daily_order_stats() -> dict[str, Any]:
         "profit_amount": 0.0,
         "loss_amount": 0.0,
         "commission": 0.0,
+        "actual_exit_count": 0,
+        "commission_missing_count": 0,
+        "entry_missing_count": 0,
+        "fill_missing_count": 0,
+        "currency_mismatch_count": 0,
+        "unsupported_asset_count": 0,
+        "ibkr_realized_pnl_mismatch_count": 0,
     }
 
 

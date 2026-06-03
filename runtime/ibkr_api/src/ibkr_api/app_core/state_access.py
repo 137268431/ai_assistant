@@ -61,6 +61,8 @@ def _row_is_effective_daily_scan_active(row: dict[str, Any] | None) -> bool:
     if str((row or {}).get("status") or "").strip().lower() != "active":
         return False
     extra = _as_json_object((row or {}).get("extra"))
+    if _truthy(extra.get("deactivated_after_close")):
+        return False
     source = str(extra.get("source") or "").strip().lower()
     if source == "daily_scan":
         return _truthy(extra.get("active_gate_passed"))

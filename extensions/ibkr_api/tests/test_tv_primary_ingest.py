@@ -302,6 +302,34 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertEqual(duplicate["route_status"], "routed")
         self.assertEqual(len(pb.records[TV_EVENT_COLLECTION]), 1)
 
+    def test_pre_alert_creates_missing_trade_watchlist_for_current_market_date(self):
+        pb = _FakePB()
+        payload = {
+            "source": "tv",
+            "event_type": "pre_alert",
+            "event_id": "tv-pre-watchlist",
+            "symbol": "amd",
+            "direction_bias": "long",
+            "activity_score": 88,
+            "quality_score": 82,
+            "market_date": "2026-05-29",
+            "environment": "live",
+            "us_time": "2026-05-29 09:36:00",
+            "bar_time_ms": _et_ms("2026-05-29 09:36:00"),
+            **_mtf_payload(),
+        }
+
+        with mock.patch("ibkr_api.tradingview.tv_primary._current_et_date", return_value="2026-05-29"):
+            response, status = _process(pb, payload)
+
+        self.assertEqual(status, 200)
+        self.assertTrue(response["ok"])
+        self.assertEqual("created", response["watchlist_sync"]["action"])
+        self.assertEqual(1, len(pb.records["watchlist"]))
+        self.assertEqual("AMD", pb.records["watchlist"][0]["symbol"])
+        self.assertEqual("trade", pb.records["watchlist"][0]["symbol_role"])
+        self.assertFalse(pb.records["watchlist"][0]["manual_member"])
+
     def test_pre_alert_without_direction_leaves_target_direction_bias_empty(self):
         pb = _FakePB()
         payload = {
@@ -460,6 +488,48 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertEqual(rejected_status, 200)
         self.assertTrue(rejected["rejected"])
         self.assertEqual(rejected["reason"], "symbol_not_authorized_for_tv_entry")
+
+    def test_entry_backfill_creates_missing_trade_watchlist_for_current_market_date(self):
+        pb = _FakePB()
+
+        def config_value(key, default, environment):
+            values = {
+                "tv_entry_requires_active_target": "FALSE",
+                "tv_entry_requires_authorized_symbol": "FALSE",
+                "tv_entry_window_enforce_enabled": "TRUE",
+            }
+            return values.get(key, _config_value(key, default, environment))
+
+        with mock.patch("ibkr_api.tradingview.tv_primary._current_et_date", return_value="2026-05-29"):
+            response, status = _process(
+                pb,
+                {
+                    "source": "tv",
+                    "event_type": "entry",
+                    "event_id": "tv-entry-watchlist-sync",
+                    "signal_id": "tv-entry-watchlist-sync",
+                    "symbol": "AMD",
+                    "direction": "long",
+                    "entry_price": 122.50,
+                    "quantity": 8,
+                    "stop_loss": 120.40,
+                    "take_profit": 127.90,
+                    "market_date": "2026-05-29",
+                    "environment": "paper",
+                    "us_time": "2026-05-29 09:45:00",
+                    "activity_score": 88,
+                    "quality_score": 90,
+                    **_mtf_payload(status="pass", score=100.0),
+                },
+                config_value=config_value,
+            )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(response["ok"])
+        self.assertEqual("created", response["target_backfill"]["watchlist_sync"]["action"])
+        self.assertEqual("active", pb.records["ibkr_targets"][0]["status"])
+        self.assertEqual("AMD", pb.records["watchlist"][0]["symbol"])
+        self.assertEqual("trade", pb.records["watchlist"][0]["symbol_role"])
 
     def test_async_route_persists_received_event_before_routing(self):
         pb = _FakePB()

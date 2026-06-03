@@ -232,6 +232,65 @@ class OrderTrackerIdentityTest(unittest.TestCase):
         self.assertEqual("2026-06-01 23:11:02", upsert["fill_cn_time"])
         self.assertEqual("20260601  11:11:02", upsert["extra"]["last_execution_time"])
 
+    def test_existing_self_linked_close_relinks_to_matching_entry(self):
+        pb_client = FakePBClient(
+            rows=[
+                {
+                    "id": "order-close",
+                    "unique_id": "close_DELL_20260602_155536",
+                    "symbol": "DELL",
+                    "environment": "paper",
+                    "role": "close",
+                    "status": "Submitted",
+                    "broker_order_id": "166",
+                    "trade_group_id": "close_DELL_20260602_155536",
+                    "entry_order_unique_id": "close_DELL_20260602_155536",
+                    "parent_order_unique_id": "",
+                    "signal_id": "",
+                },
+                {
+                    "id": "order-entry",
+                    "unique_id": "entry_DELL_short_20260602_101500",
+                    "symbol": "DELL",
+                    "environment": "paper",
+                    "role": "entry",
+                    "status": "Filled",
+                    "broker_order_id": "165",
+                    "trade_group_id": "DELL_short_20260602_101500",
+                    "entry_order_unique_id": "entry_DELL_short_20260602_101500",
+                    "signal_id": "DELL_20260602_1000_mr_U",
+                    "direction": "short",
+                    "quantity": 11,
+                    "filled_qty": 11,
+                },
+            ]
+        )
+        tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="paper")
+
+        tracker._sync_to_pb(
+            {
+                "orderId": "166",
+                "ticker": "DELL",
+                "side": "BUY",
+                "orderType": "MKT",
+                "totalSize": 11,
+                "filledQuantity": 11,
+                "avgPrice": 435.66,
+                "price": 435.66,
+                "status": "Filled",
+                "cOID": "close_DELL_20260602_155536",
+            }
+        )
+
+        self.assertEqual(1, len(pb_client.upserts))
+        upsert = pb_client.upserts[0]
+        self.assertEqual("close", upsert["role"])
+        self.assertEqual("DELL_short_20260602_101500", upsert["trade_group_id"])
+        self.assertEqual("entry_DELL_short_20260602_101500", upsert["entry_order_unique_id"])
+        self.assertEqual("entry_DELL_short_20260602_101500", upsert["parent_order_unique_id"])
+        self.assertEqual("DELL_20260602_1000_mr_U", upsert["signal_id"])
+        self.assertEqual("DELL_short_20260602_101500", upsert["extra"]["linked_trade_group_id"])
+
     def test_sync_exit_order_keeps_position_side_from_chain_identity(self):
         pb_client = FakePBClient()
         tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="live")

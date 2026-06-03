@@ -12,6 +12,7 @@ from typing import Any, Callable
 from ibkr_api.modes import request_broker_mode, request_market_data_mode
 from ibkr_api.orders.values import parse_boolean
 from ibkr_api.reverse.repository import upsert_reverse_record
+from ibkr_api.universe.maintenance import ensure_target_watchlist_record
 
 try:
     from ibkr_compute.core.time_utils import ET
@@ -61,6 +62,10 @@ def _int(value: Any, default: int = 0) -> int:
 
 def _epoch_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _current_et_date() -> str:
+    return _now_et().strftime("%Y-%m-%d")
 
 
 def _timestamp_ms(value: Any) -> int:
@@ -331,6 +336,45 @@ def _market_date(payload: dict[str, Any]) -> str:
     if len(us_time) >= 10 and us_time[4:5] == "-" and us_time[7:8] == "-":
         return us_time[:10]
     return _now_et().strftime("%Y-%m-%d")
+
+
+def _target_watchlist_time_strings(payload: dict[str, Any], target: dict[str, Any] | None = None) -> dict[str, str]:
+    target = target or {}
+    return {
+        "us": _text(payload.get("us_time") or target.get("us_time")),
+        "cn": _text(payload.get("cn_time") or target.get("cn_time")),
+        "date": _market_date(payload),
+    }
+
+
+def _sync_target_watchlist(
+    pb: Any,
+    payload: dict[str, Any],
+    *,
+    target: dict[str, Any] | None,
+    environment: str,
+    escape_filter: Callable[[Any], str],
+) -> dict[str, Any]:
+    target = dict(target or {})
+    symbol = _symbol(payload) or _text(target.get("symbol")).upper()
+    status = _text(target.get("status")).lower()
+    if not symbol or status not in {"candidate", "active"}:
+        return {"action": "skipped", "reason": "target_not_candidate_or_active"}
+    market_date = _market_date(payload)
+    if market_date != _current_et_date():
+        return {"action": "skipped", "reason": "not_current_market_date", "date": market_date}
+    try:
+        return ensure_target_watchlist_record(
+            pb,
+            symbol=symbol,
+            environment=environment,
+            exchange=_text(payload.get("exchange") or target.get("exchange") or "SMART"),
+            industry=_text(payload.get("industry") or payload.get("asset_class") or payload.get("description")),
+            escape_filter_string=escape_filter,
+            time_strings=lambda: _target_watchlist_time_strings(payload, target),
+        )
+    except Exception as exc:
+        return {"action": "error", "error": str(exc)}
 
 
 def _event_time_hhmm(payload: dict[str, Any]) -> tuple[int, int]:
@@ -969,7 +1013,15 @@ def _upsert_target(
         saved = pb.create_record("ibkr_targets", record)
     _rerank_targets(pb, date=date, environment=environment, config_value=config_value, escape_filter=escape_filter)
     refreshed = _load_target(pb, symbol=symbol, date=date, environment=environment, escape_filter=escape_filter)
-    return dict(refreshed or saved or record)
+    target = dict(refreshed or saved or record)
+    target["watchlist_sync"] = _sync_target_watchlist(
+        pb,
+        payload,
+        target=target,
+        environment=environment,
+        escape_filter=escape_filter,
+    )
+    return target
 
 
 def _ensure_entry_backfill_target(
@@ -991,6 +1043,13 @@ def _ensure_entry_backfill_target(
     existing_extra = _as_object(existing.get("extra"))
     existing_entry_active = existing_status == "active" and _target_extra_has_entry_activation(existing_extra)
     if existing_id and existing_entry_active:
+        watchlist_sync = _sync_target_watchlist(
+            pb,
+            payload,
+            target=existing,
+            environment=environment,
+            escape_filter=escape_filter,
+        )
         return {
             "ok": True,
             "action": "unchanged",
@@ -998,6 +1057,7 @@ def _ensure_entry_backfill_target(
             "target_id": existing_id,
             "status": existing_status,
             "previous_status": existing_status,
+            "watchlist_sync": watchlist_sync,
             "target": existing,
         }
     if existing_id and existing_status not in {"", "candidate", "active"}:
@@ -1067,6 +1127,13 @@ def _ensure_entry_backfill_target(
         action = "created"
     refreshed = _load_target(pb, symbol=symbol, date=date, environment=environment, escape_filter=escape_filter)
     target = dict(refreshed or saved or record)
+    watchlist_sync = _sync_target_watchlist(
+        pb,
+        payload,
+        target=target,
+        environment=environment,
+        escape_filter=escape_filter,
+    )
     return {
         "ok": True,
         "action": action,
@@ -1074,6 +1141,7 @@ def _ensure_entry_backfill_target(
         "target_id": _text(target.get("id")),
         "status": _text(target.get("status")),
         "previous_status": existing_status,
+        "watchlist_sync": watchlist_sync,
         "target": target,
     }
 
@@ -1260,7 +1328,7 @@ def _route_entry(
         "reason": _text(payload.get("reason") or payload.get("setup")),
         "extra": extra,
     }
-    return build_signal_ingest_response(
+    response_payload, response_status = build_signal_ingest_response(
         pb,
         payload=signal_payload,
         normalize_environment=normalize_environment,
@@ -1272,6 +1340,9 @@ def _route_entry(
         console_base_url=console_base_url,
         strategy_capacity_getter=strategy_capacity_getter,
     )
+    if isinstance(response_payload, dict):
+        response_payload = {**response_payload, "target_backfill": target_backfill_meta}
+    return response_payload, response_status
 
 
 def _active_order_id(row: dict[str, Any]) -> str:
@@ -1491,6 +1562,7 @@ def _route_persisted_tv_event(
                 "target": "ibkr_targets",
                 "id": _text(target.get("id")),
                 "status": _text(target.get("status")),
+                "watchlist_sync": target.get("watchlist_sync") if isinstance(target.get("watchlist_sync"), dict) else {},
                 "event_type": event_type,
                 "event_id": event_id,
             }, 200

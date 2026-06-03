@@ -113,6 +113,7 @@ class _IBGatewayApp(EWrapper, EClient):
         self._order_errors: Dict[str, dict] = {}
         self._positions: Dict[str, dict] = {}
         self._executions: Dict[str, dict] = {}
+        self._commission_reports: Dict[str, dict] = {}
         self._account_summary: Dict[str, dict] = {}
         self._account_updates_capture: Optional[_AccountUpdatesCapture] = None
         self._contract_cache_by_symbol: Dict[str, dict] = {}
@@ -843,21 +844,48 @@ class _IBGatewayApp(EWrapper, EClient):
         order_id = str(getattr(execution, "orderId", "") or "")
         shares = _safe_float(getattr(execution, "shares", 0), 0.0)
         price = _safe_float(getattr(execution, "price", 0), 0.0)
-        self._executions[exec_id] = {
+        pending_commission = dict(self._commission_reports.get(exec_id) or {})
+        execution_payload = {
             "execId": exec_id,
+            "exec_id": exec_id,
             "orderId": order_id,
+            "order_id": order_id,
+            "perm_id": str(getattr(execution, "permId", "") or ""),
+            "client_id": _safe_int(getattr(execution, "clientId", 0), 0),
+            "order_ref": str(getattr(execution, "orderRef", "") or ""),
             "conid": int(getattr(contract, "conId", 0) or 0),
             "ticker": str(getattr(contract, "symbol", "") or "").upper(),
+            "symbol": str(getattr(contract, "symbol", "") or "").upper(),
             "side": str(getattr(execution, "side", "") or "").upper(),
             "shares": shares,
             "price": price,
             "time": str(getattr(execution, "time", "") or ""),
             "account": str(getattr(execution, "acctNumber", "") or ""),
+            "exchange": str(getattr(execution, "exchange", "") or getattr(contract, "exchange", "") or ""),
+            "asset_category": str(getattr(contract, "secType", "") or ""),
+            "contract_multiplier": _safe_float(getattr(contract, "multiplier", 0), 0.0),
             "commission": 0.0,
+            "commission_known": False,
+            "commission_currency": "",
+            "realized_pnl": 0.0,
+            "realized_pnl_known": False,
+            **pending_commission,
         }
+        self._executions[exec_id] = execution_payload
         ctx = self._pending_requests.get(int(reqId))
         if ctx:
-            ctx.items = [dict(item) for item in self._executions.values()]
+            existing_index = next(
+                (
+                    index
+                    for index, item in enumerate(ctx.items)
+                    if str((item or {}).get("execId") or (item or {}).get("exec_id") or "") == exec_id
+                ),
+                -1,
+            )
+            if existing_index >= 0:
+                ctx.items[existing_index] = dict(execution_payload)
+            else:
+                ctx.items.append(dict(execution_payload))
         if ctx and ctx.kind == "executions":
             return
         if not order_id:
@@ -874,6 +902,8 @@ class _IBGatewayApp(EWrapper, EClient):
                 _safe_float(item.get("shares"), 0.0) * _safe_float(item.get("price"), 0.0)
                 for item in order_execs
             )
+            commission = sum(abs(_safe_float(item.get("commission"), 0.0)) for item in order_execs)
+            commission_known = bool(order_execs) and all(bool(item.get("commission_known")) for item in order_execs)
             average_price = (fill_value / cumulative_shares) if cumulative_shares > 0 else price
             remaining_quantity = _safe_float(current.get("remainingQuantity"), 0.0)
             status = str(current.get("status") or "")
@@ -895,6 +925,9 @@ class _IBGatewayApp(EWrapper, EClient):
                 "ib_exec_id": exec_id,
                 "execution_shares": shares,
                 "execution_price": price,
+                "commission": commission,
+                "commission_known": commission_known,
+                "commission_currency": str(pending_commission.get("commission_currency") or current.get("commissionCurrency") or current.get("commission_currency") or ""),
                 "updated_at": _iso_now(),
                 **self._order_callback_metadata("execDetails", requested_snapshot=False),
             }
@@ -908,11 +941,54 @@ class _IBGatewayApp(EWrapper, EClient):
 
     def commissionReport(self, commissionReport: CommissionReport):  # noqa: N802
         exec_id = str(getattr(commissionReport, "execId", "") or "")
-        if exec_id and exec_id in self._executions:
-            self._executions[exec_id]["commission"] = _safe_float(
-                getattr(commissionReport, "commission", 0),
-                0.0,
-            )
+        if not exec_id:
+            return
+        realized_pnl = _safe_float(getattr(commissionReport, "realizedPNL", 0), 0.0)
+        realized_known = math.isfinite(realized_pnl) and abs(realized_pnl) < 1e100
+        payload = {
+            "commission": abs(_safe_float(getattr(commissionReport, "commission", 0), 0.0)),
+            "commission_currency": str(getattr(commissionReport, "currency", "") or ""),
+            "commission_known": True,
+            "realized_pnl": realized_pnl if realized_known else 0.0,
+            "realized_pnl_known": realized_known,
+            "commission_report_received_at": _iso_now(),
+        }
+        order_update: dict[str, Any] | None = None
+        with self._state_lock:
+            self._commission_reports[exec_id] = payload
+            if exec_id in self._executions:
+                self._executions[exec_id].update(payload)
+                order_id = str(self._executions[exec_id].get("orderId") or self._executions[exec_id].get("order_id") or "")
+                if order_id:
+                    current = dict(self._open_orders.get(order_id) or {})
+                    order_execs = [
+                        item
+                        for item in self._executions.values()
+                        if str(item.get("orderId") or item.get("order_id") or "") == order_id
+                    ]
+                    commission = sum(abs(_safe_float(item.get("commission"), 0.0)) for item in order_execs)
+                    commission_known = bool(order_execs) and all(bool(item.get("commission_known")) for item in order_execs)
+                    current.update(
+                        {
+                            "commission": commission,
+                            "commission_known": commission_known,
+                            "commission_currency": payload["commission_currency"] or current.get("commission_currency") or current.get("commissionCurrency") or "",
+                            "updated_at": _iso_now(),
+                            **self._order_callback_metadata("commissionReport", requested_snapshot=False),
+                        }
+                    )
+                    self._open_orders[order_id] = current
+                    order_update = current
+            for ctx in self._pending_requests.values():
+                if ctx.kind != "executions":
+                    continue
+                for index, item in enumerate(ctx.items):
+                    if str((item or {}).get("execId") or (item or {}).get("exec_id") or "") == exec_id:
+                        refreshed = dict(item)
+                        refreshed.update(payload)
+                        ctx.items[index] = refreshed
+        if order_update:
+            self._emit_order_update(order_update)
 
     def _emit_order_update(self, payload: dict):
         with self._listener_lock:
@@ -1269,7 +1345,7 @@ class _IBGatewayApp(EWrapper, EClient):
         if exec_ids:
             deadline = time.time() + min(2.0, max(0.0, float(timeout or 0)) * 0.25)
             while time.time() < deadline:
-                if all(abs(_safe_float(self._executions.get(exec_id, {}).get("commission"), 0.0)) > 0 for exec_id in exec_ids):
+                if all(bool(self._executions.get(exec_id, {}).get("commission_known")) for exec_id in exec_ids):
                     break
                 time.sleep(0.1)
             return [dict(self._executions.get(exec_id) or item) for exec_id, item in zip(exec_ids, items)]

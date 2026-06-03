@@ -71,6 +71,26 @@ def _get_any(payload: dict | None, *keys: str, default: Any = None) -> Any:
     return default
 
 
+def _has_any_key(payload: dict | None, *keys: str) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    normalized_keys = {_normalized_key(key) for key in payload.keys()}
+    return any(_normalized_key(key) in normalized_keys for key in keys)
+
+
+def _safe_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value in (None, ""):
+        return bool(default)
+    text = str(value or "").strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return bool(default)
+
+
 def _normalize_environment(value: Any, default: str = "live") -> str:
     normalized = str(value or default).strip().lower() or default
     return normalized if normalized in {"live", "paper", "backtest"} else default
@@ -189,7 +209,16 @@ def normalize_execution_fill(
     side = _normalize_side(_get_any(raw, "side", "buySell", "buy_sell", "action"), quantity)
     shares = abs(quantity)
     price = abs(_safe_float(_get_any(raw, "price", "tradePrice", "avgPrice", "avg_price", "fill_price"), 0.0))
-    commission = abs(_safe_float(_get_any(raw, "commission", "ibCommission", "ib_commission"), 0.0))
+    commission = abs(_safe_float(_get_any(raw, "commission", "ibCommission", "ib_commission", "commission_amount", "commissionAmount"), 0.0))
+    commission_known = _safe_bool(
+        _get_any(raw, "commission_known", "commissionKnown", default=None),
+        default=_has_any_key(raw, "commission", "ibCommission", "ib_commission", "commission_amount", "commissionAmount", "commissionReport", "commissionAndFeesReport"),
+    )
+    realized_pnl = _safe_float(_get_any(raw, "realized_pnl", "realizedPNL", "realizedPnl"), 0.0)
+    realized_pnl_known = _safe_bool(
+        _get_any(raw, "realized_pnl_known", "realizedPnlKnown", default=None),
+        default=_has_any_key(raw, "realized_pnl", "realizedPNL", "realizedPnl"),
+    )
     symbol = str(_get_any(raw, "symbol", "ticker", "underlyingSymbol", "contractDesc") or "").strip().upper()
     if not symbol or shares <= 0 or price <= 0:
         return None
@@ -246,7 +275,10 @@ def normalize_execution_fill(
         "price": round(price, 8),
         "trade_value": round(trade_value, 8),
         "commission": round(commission, 8),
-        "commission_currency": str(_get_any(raw, "commissionCurrency", "ibCommissionCurrency", default="") or "").strip().upper(),
+        "commission_known": bool(commission_known),
+        "commission_currency": str(_get_any(raw, "commissionCurrency", "commission_currency", "ibCommissionCurrency", default="") or "").strip().upper(),
+        "realized_pnl": round(realized_pnl, 8),
+        "realized_pnl_known": bool(realized_pnl_known),
         "currency": str(_get_any(raw, "currency", default="USD") or "USD").strip().upper(),
         "trade_time": str(_get_any(raw, "trade_time", "dateTime", "datetime", "time", default="") or "").strip()
         or _format_trade_time(trade_time_ms),
@@ -257,6 +289,10 @@ def normalize_execution_fill(
         "asset_category": str(_get_any(raw, "assetCategory", "asset_category", "secType", default="") or "").strip().upper(),
         "exchange": str(_get_any(raw, "exchange", "listingExchange", default="") or "").strip().upper(),
         "order_type": str(_get_any(raw, "orderType", "order_type", default="") or "").strip().upper(),
+        "perm_id": str(_get_any(raw, "perm_id", "permId", default="") or "").strip(),
+        "client_id": _safe_int(_get_any(raw, "client_id", "clientId"), 0),
+        "order_ref": str(_get_any(raw, "order_ref", "orderRef", "cOID", "coid", default="") or "").strip(),
+        "contract_multiplier": abs(_safe_float(_get_any(raw, "contract_multiplier", "multiplier"), 0.0)),
         "reference_price": round(reference_price, 8) if reference_price > 0 else 0.0,
         "slippage_bps": round(slippage_bps, 8) if slippage_bps > 0 else 0.0,
         "raw": raw,
@@ -331,6 +367,9 @@ def summarize_execution_fills(fills: Sequence[dict]) -> dict:
     total_shares = sum(abs(_safe_float(item.get("shares"), 0.0)) for item in normalized)
     total_value = sum(abs(_safe_float(item.get("trade_value"), 0.0)) for item in normalized)
     total_commission = sum(abs(_safe_float(item.get("commission"), 0.0)) for item in normalized)
+    commission_known_count = len([item for item in normalized if _safe_bool(item.get("commission_known"), False)])
+    realized_pnl_count = len([item for item in normalized if _safe_bool(item.get("realized_pnl_known"), False)])
+    total_realized_pnl = sum(_safe_float(item.get("realized_pnl"), 0.0) for item in normalized if _safe_bool(item.get("realized_pnl_known"), False))
     symbols = sorted({str(item.get("symbol") or "").strip().upper() for item in normalized if item.get("symbol")})
     accounts = sorted({str(item.get("account") or "").strip() for item in normalized if item.get("account")})
     sources = sorted({str(item.get("source") or "").strip().lower() for item in normalized if item.get("source")})
@@ -343,6 +382,10 @@ def summarize_execution_fills(fills: Sequence[dict]) -> dict:
         "total_shares": round(total_shares, 4),
         "total_trade_value": round(total_value, 4),
         "total_commission": round(total_commission, 4),
+        "commission_known_count": commission_known_count,
+        "commission_missing_count": max(0, len(normalized) - commission_known_count),
+        "realized_pnl_count": realized_pnl_count,
+        "total_realized_pnl": round(total_realized_pnl, 4),
         "avg_commission_per_share": round(total_commission / total_shares, 8) if total_shares > 0 else 0.0,
         "avg_commission_bps": round(total_commission / total_value * 10000.0, 4) if total_value > 0 else 0.0,
         "first_trade_time_ms": min(times) if times else 0,
@@ -483,6 +526,13 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     return bool(row)
 
 
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    try:
+        return {str(row["name"] if isinstance(row, sqlite3.Row) else row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    except Exception:
+        return set()
+
+
 def _row_to_fill(row: sqlite3.Row) -> dict:
     item = {key: row[key] for key in row.keys()}
     raw = item.get("raw")
@@ -538,10 +588,20 @@ def fetch_execution_fills(
         if int(end_ms or 0) > 0:
             where_parts.append("trade_time_ms <= ?")
             params.append(int(end_ms or 0))
+        columns = _table_columns(conn, FILL_COLLECTION)
+        optional_selects = [
+            "commission_known" if "commission_known" in columns else "0 AS commission_known",
+            "realized_pnl" if "realized_pnl" in columns else "0 AS realized_pnl",
+            "realized_pnl_known" if "realized_pnl_known" in columns else "0 AS realized_pnl_known",
+            "perm_id" if "perm_id" in columns else "'' AS perm_id",
+            "client_id" if "client_id" in columns else "0 AS client_id",
+            "order_ref" if "order_ref" in columns else "'' AS order_ref",
+            "contract_multiplier" if "contract_multiplier" in columns else "0 AS contract_multiplier",
+        ]
         rows = conn.execute(
             f"""
             SELECT id, exec_id, order_id, symbol, side, shares, price, trade_value,
-                   commission, commission_currency, currency, trade_time,
+                   commission, {', '.join(optional_selects)}, commission_currency, currency, trade_time,
                    trade_time_ms, account, source, environment, asset_category,
                    exchange, order_type, reference_price, slippage_bps, raw,
                    created, updated

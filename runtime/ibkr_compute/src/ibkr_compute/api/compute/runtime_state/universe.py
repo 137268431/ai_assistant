@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import json
 import traceback
+from datetime import datetime, timedelta
 
 from ibkr_compute.api.compute.runtime_state.runtime import _api_app
 from ibkr_compute.api.market.screener import load_effective_watchlist
 from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_compute.core.indicator_engine import DEFAULT_PARAMS, params_for_interval
-from ibkr_compute.universe.target_execution import target_row_execution_eligible
+from ibkr_compute.market.timeframe_utils import ET
+from ibkr_compute.universe.target_execution import (
+    signal_status_is_open,
+    signal_status_is_terminal,
+    target_row_execution_eligible,
+)
 
 
 MANUAL_TARGET_SOURCES = {
@@ -91,6 +97,76 @@ def _target_row_is_execution_source(row: dict | None) -> bool:
     return _target_row_is_daily_scan_active(row) or _target_row_is_manual(row) or _target_row_is_tradingview_active(row)
 
 
+def _date_bounds_ms(market_date: str) -> tuple[int, int]:
+    try:
+        start = datetime.strptime(str(market_date or "").strip(), "%Y-%m-%d").replace(tzinfo=ET)
+        end = start + timedelta(days=1)
+        return int(start.timestamp() * 1000), int(end.timestamp() * 1000)
+    except Exception:
+        return 0, 0
+
+
+def _row_sort_ms(row: dict) -> int:
+    try:
+        return int(row.get("bar_time_ms") or 0)
+    except Exception:
+        return 0
+
+
+def _signal_effective_status(row: dict, broker_mode: str) -> str:
+    extra = _safe_extra(row)
+    execution_by_mode = extra.get("execution_by_mode") if isinstance(extra.get("execution_by_mode"), dict) else {}
+    mode_execution = execution_by_mode.get(broker_mode) if isinstance(execution_by_mode, dict) else {}
+    if not isinstance(mode_execution, dict):
+        mode_execution = {}
+    return str(mode_execution.get("status") or row.get("status") or extra.get("status") or "").strip().lower()
+
+
+def _escape_filter_value(value: str) -> str:
+    return str(value or "").replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _today_signal_summary_by_symbol(environment: str, market_date: str) -> dict[str, dict]:
+    api_app = _api_app()
+    target_environment = _target_data_environment(environment)
+    start_ms, end_ms = _date_bounds_ms(market_date)
+    filter_parts = [f'environment = "{_escape_filter_value(target_environment)}"']
+    if start_ms > 0 and end_ms > 0:
+        filter_parts.extend([f"bar_time_ms >= {start_ms}", f"bar_time_ms < {end_ms}"])
+    try:
+        rows = api_app.pb.get_all_records("ibkr_signals", filter=" && ".join(filter_parts), sort="-bar_time_ms,-updated", max_pages=20)
+    except Exception:
+        return {}
+    broker_mode = _normalize_environment(environment)
+    summary: dict[str, dict] = {}
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+        status = _signal_effective_status(row, broker_mode)
+        bucket = summary.setdefault(symbol, {"latest": {}, "has_open": False})
+        if signal_status_is_open(status):
+            bucket["has_open"] = True
+        sort_ms = _row_sort_ms(row)
+        latest = bucket.get("latest") if isinstance(bucket.get("latest"), dict) else {}
+        if not latest or sort_ms >= int(latest.get("sort_ms") or 0):
+            bucket["latest"] = {"status": status, "sort_ms": sort_ms}
+    return summary
+
+
+def _target_blocked_by_terminal_signal(row: dict, signal_summary: dict[str, dict]) -> bool:
+    if _target_row_is_manual(row):
+        return False
+    symbol = str((row or {}).get("symbol") or "").strip().upper()
+    summary = signal_summary.get(symbol) if symbol else None
+    if not isinstance(summary, dict) or summary.get("has_open"):
+        return False
+    latest = summary.get("latest") if isinstance(summary.get("latest"), dict) else {}
+    return signal_status_is_terminal(latest.get("status"))
+
+
 def _get_trade_subscription_budget(api_app, environment: str) -> int | None:
     runtime_environment = _normalize_environment(environment)
     target_limit = max(
@@ -129,12 +205,15 @@ def _load_selected_active_trade_target_rows(environment: str, market_date: str |
         traceback.print_exc()
         return []
     trade_budget = _get_trade_subscription_budget(api_app, runtime_environment)
+    signal_summary = _today_signal_summary_by_symbol(runtime_environment, target_date)
     active_rows = [
         row
         for row in rows
         if str(row.get("symbol", "")).strip().upper() not in market_monitor_symbols
         and str(row.get("symbol", "")).strip().upper() not in FIXED_TRADE_BLOCKED_SYMBOLS
         and _target_row_is_execution_source(row)
+        and target_row_execution_eligible(row)
+        and not _target_blocked_by_terminal_signal(row, signal_summary)
     ]
     prioritized_rows = list(active_rows)
 

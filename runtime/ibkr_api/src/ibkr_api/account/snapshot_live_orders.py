@@ -146,7 +146,12 @@ def _fetch_execution_commissions(pb: Any, environment: str, order_ids: list[str]
             },
         )
         bucket["commission"] += abs(to_float(item.get("commission")) or 0.0)
-        if item.get("commission") not in (None, ""):
+        raw = ensure_object(item.get("raw"))
+        raw_has_commission = any(
+            key in raw and raw.get(key) not in (None, "")
+            for key in ("commission", "ibCommission", "ib_commission", "commissionReport", "commissionAndFeesReport")
+        )
+        if bool(item.get("commission_known")) or raw_has_commission or abs(to_float(item.get("commission")) or 0.0) > 0:
             bucket["commission_known"] = True
         currency = to_text(item.get("commission_currency") or item.get("currency")).upper()
         if currency:

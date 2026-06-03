@@ -342,6 +342,28 @@ def ensure_target_watchlist_record(
     except Exception:
         existing = None
     existing_row = dict(existing or {})
+    if not existing_row:
+        effective_record = find_effective_watchlist_record(
+            pb,
+            normalized_symbol,
+            normalized_environment,
+            escape_filter_string=escape_filter_string,
+        )
+        effective_role = normalize_watchlist_role((effective_record or {}).get("symbol_role"))
+        if effective_record and effective_role == WATCHLIST_ROLE_MARKET_MONITOR:
+            return {
+                "action": "skipped",
+                "reason": "market_monitor_watchlist_retained",
+                "id": to_text(effective_record.get("id")),
+                "manual_member": parse_boolean(effective_record.get("manual_member"), True),
+            }
+        if effective_record and effective_role == WATCHLIST_ROLE_TRADE:
+            return {
+                "action": "skipped",
+                "reason": "effective_trade_watchlist_exists",
+                "id": to_text(effective_record.get("id")),
+                "manual_member": parse_boolean(effective_record.get("manual_member"), False),
+            }
     preserved_manual_member = parse_boolean(existing_row.get("manual_member"), False)
     payload = {
         "symbol": normalized_symbol,

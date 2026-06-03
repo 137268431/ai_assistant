@@ -356,6 +356,7 @@ def build_screener_targets_upsert_response(
     payload: dict[str, Any],
     normalize_environment: NormalizeEnvironment,
     escape_filter_string: EscapeFilterString,
+    time_strings: TimeStrings | None = None,
 ) -> tuple[dict[str, Any], int]:
     items = payload.get("items") if isinstance(payload.get("items"), list) else []
     environment = request_broker_mode(payload)
@@ -371,6 +372,9 @@ def build_screener_targets_upsert_response(
     skipped = 0
     errors = 0
     symbols: list[str] = []
+    watchlist_sync: list[dict[str, Any]] = []
+    times = time_strings() if callable(time_strings) else {}
+    current_market_date = to_text(times.get("date"))
 
     for raw_item in items:
         item = dict(raw_item or {})
@@ -450,6 +454,21 @@ def build_screener_targets_upsert_response(
                 updated += 1
             else:
                 skipped += 1
+            if current_market_date and row_payload["status"] in {"candidate", "active"} and market_date == current_market_date:
+                sync = ensure_target_watchlist_record(
+                    pb,
+                    symbol=symbol,
+                    environment=data_environment,
+                    exchange=row_payload["exchange"] or "SMART",
+                    industry=to_text(item.get("industry") or existing_extra.get("industry") or item_extra.get("industry")),
+                    escape_filter_string=escape_filter_string,
+                    time_strings=lambda row=row_payload: {
+                        "us": to_text(row.get("us_time") or times.get("us")),
+                        "cn": to_text(row.get("cn_time") or times.get("cn")),
+                        "date": market_date,
+                    },
+                )
+                watchlist_sync.append({"symbol": symbol, **sync})
         except Exception:
             errors += 1
 
@@ -465,6 +484,7 @@ def build_screener_targets_upsert_response(
             "skipped": skipped,
             "errors": errors,
             "symbols": symbols,
+            "watchlist_sync": watchlist_sync,
             "source": "ibkr-api",
         },
         200,

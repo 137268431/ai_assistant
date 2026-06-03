@@ -99,7 +99,7 @@ def _has_other_open_signal(pb: Any, *, symbol: str, environment: str, closed_sig
 
 def _target_matches_closed_signal(extra: dict[str, Any], signal_id: str) -> bool:
     if not target_extra_has_entry_activation(extra):
-        return False
+        return True
     entry_signal_id = _text(extra.get("entry_signal_id"))
     if entry_signal_id and signal_id:
         return entry_signal_id == signal_id

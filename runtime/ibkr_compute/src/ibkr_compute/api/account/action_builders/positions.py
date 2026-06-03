@@ -295,6 +295,35 @@ def _resolve_conid(service: Any, symbol: str, conid: int) -> int:
     return conid
 
 
+def _position_snapshot_from_payload(payload: dict[str, Any], *, symbol: str, conid: int, quantity: float, position: float | None, direction: str) -> dict[str, Any]:
+    snapshot: dict[str, Any] = {
+        "symbol": symbol,
+        "conid": conid,
+        "quantity": quantity,
+        "position": position if position is not None else (-quantity if direction == "short" else quantity),
+        "direction": direction,
+    }
+    numeric_aliases = {
+        "avg_cost": ("avg_cost", "avgCost"),
+        "avg_price": ("avg_price", "avgPrice"),
+        "market_price": ("market_price", "mktPrice", "marketPrice"),
+        "market_value": ("market_value", "mktValue", "marketValue"),
+        "unrealized_pnl": ("unrealized_pnl", "unrealizedPnl"),
+        "realized_pnl": ("realized_pnl", "realizedPnl"),
+    }
+    for target_key, source_keys in numeric_aliases.items():
+        for source_key in source_keys:
+            value = _app_coerce_float(payload.get(source_key))
+            if value is not None:
+                snapshot[target_key] = float(value)
+                break
+    for target_key in ("account", "currency", "asset_class"):
+        value = _text(payload.get(target_key))
+        if value:
+            snapshot[target_key] = value
+    return snapshot
+
+
 def _build_ibkr_close_position_response(service, payload: dict) -> tuple[dict, int]:
     payload = payload or {}
     api_app = _api_app()
@@ -325,6 +354,14 @@ def _build_ibkr_close_position_response(service, payload: dict) -> tuple[dict, i
         if cancel_after_close
         else []
     )
+    position_snapshot = _position_snapshot_from_payload(
+        payload,
+        symbol=symbol,
+        conid=conid,
+        quantity=float(quantity or 0),
+        position=position_value,
+        direction=direction,
+    )
     result = service.order_placer.place_market_close(
         conid=conid,
         symbol=symbol,
@@ -335,6 +372,7 @@ def _build_ibkr_close_position_response(service, payload: dict) -> tuple[dict, i
         entry_order_unique_id=_text(payload.get("entry_order_unique_id")),
         signal_id=_text(payload.get("signal_id")),
         source=_text(payload.get("source")) or "positions_close",
+        position_snapshot=position_snapshot,
     )
     if result.get("ok") and cancel_after_close:
         protection_cancel = _cancel_protection_orders(service, protection_order_ids)
@@ -366,6 +404,7 @@ def _build_ibkr_close_position_response(service, payload: dict) -> tuple[dict, i
             "conid": conid,
             "quantity": quantity,
             "direction": direction,
+            "position_snapshot": position_snapshot,
         },
     )
 

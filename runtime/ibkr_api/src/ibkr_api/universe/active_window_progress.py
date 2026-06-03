@@ -74,6 +74,7 @@ def build_active_window_items_for_symbols(
 
     latest_indicator_by_symbol = _pick_latest_by_symbol(indicator_records)
     latest_signal_by_symbol = _latest_signal_by_symbol(signal_records)
+    open_signal_symbols = _open_signal_symbols(signal_records)
 
     items: list[dict[str, Any]] = []
     summary = dict(empty_summary)
@@ -128,7 +129,11 @@ def build_active_window_items_for_symbols(
         latest_bar_time_ms = to_int(first_defined(latest_row.get("bar_time_ms"), latest_bar.get("bar_time_ms")), 0)
         price = to_float(first_defined(latest_row.get("close"), latest_bar.get("close"))) or 0.0
         freshness_min = max(0, int((computed_ms - latest_bar_time_ms) // 60000)) if latest_bar_time_ms > 0 else None
-        target_status = effective_target_status(target)
+        target_status = effective_target_status(
+            target,
+            latest_signal.get("status"),
+            has_open_signal=symbol in open_signal_symbols,
+        )
         direction_bias = to_text(first_defined(target.get("direction_bias"), "neutral")).lower() or "neutral"
         blocked_reason = to_text(signal_state.get("filter_reason"))
         filter_reasons: list[str] = []
@@ -431,6 +436,7 @@ def build_active_window_progress_response(
 
     latest_indicator_by_symbol = _pick_latest_by_symbol(indicator_records)
     latest_signal_by_symbol = _latest_signal_by_symbol(signal_records)
+    open_signal_symbols = _open_signal_symbols(signal_records)
 
     items: list[dict[str, Any]] = []
     summary = dict(empty_summary)
@@ -485,7 +491,11 @@ def build_active_window_progress_response(
         latest_bar_time_ms = to_int(first_defined(latest_row.get("bar_time_ms"), latest_bar.get("bar_time_ms")), 0)
         price = to_float(first_defined(latest_row.get("close"), latest_bar.get("close"))) or 0.0
         freshness_min = max(0, int((computed_at_ms - latest_bar_time_ms) // 60000)) if latest_bar_time_ms > 0 else None
-        target_status = effective_target_status(target)
+        target_status = effective_target_status(
+            target,
+            latest_signal.get("status"),
+            has_open_signal=symbol in open_signal_symbols,
+        )
         direction_bias = to_text(first_defined(target.get("direction_bias"), "neutral")).lower() or "neutral"
         blocked_reason = to_text(signal_state.get("filter_reason"))
         filter_reasons: list[str] = []

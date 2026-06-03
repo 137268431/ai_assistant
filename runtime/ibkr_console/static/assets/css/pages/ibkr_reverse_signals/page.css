@@ -48,6 +48,18 @@
             padding: 8px 0;
             background: var(--bg);
             position: sticky;
+            top: 100px;
+            z-index: 8;
+        }
+
+        .action-tabs {
+            display: flex;
+            gap: 6px;
+            margin-bottom: 12px;
+            overflow-x: auto;
+            padding: 8px 0;
+            background: var(--bg);
+            position: sticky;
             top: 50px;
             z-index: 9;
         }

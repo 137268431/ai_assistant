@@ -436,6 +436,7 @@ class OrderPlacer:
         source: str = "",
         order_type: str = "MKT",
         limit_price: float = 0.0,
+        position_snapshot: Dict[str, Any] | None = None,
         wait_for_fill: bool = False,
         fill_timeout: float = 5.0,
     ) -> Dict[str, Any]:
@@ -503,6 +504,7 @@ class OrderPlacer:
                 account=acct_id,
                 order_type=str(result.get("order_type") or order_type or "MKT").upper(),
                 limit_price=float(result.get("limit_price") or limit_price or 0.0),
+                position_snapshot=position_snapshot,
                 status="Filled" if bool(result.get("filled")) else "Submitted",
                 result=result,
                 submission_unconfirmed=submission_unconfirmed,
@@ -527,6 +529,36 @@ class OrderPlacer:
             if not entry_order_unique_id:
                 entry_order_unique_id = trade_group_id or close_coid
             submission_unconfirmed = bool(kwargs.get("submission_unconfirmed"))
+            position_snapshot = dict(kwargs.get("position_snapshot") or {})
+            position_avg_cost = 0.0
+            for key in ("avg_cost", "avgCost", "avg_price", "avgPrice", "average_cost", "averageCost"):
+                try:
+                    parsed = float(position_snapshot.get(key) or 0)
+                except (TypeError, ValueError):
+                    parsed = 0.0
+                if parsed:
+                    position_avg_cost = abs(parsed)
+                    break
+            extra = {
+                "source": str(kwargs.get("source") or "order_placer_market_close"),
+                "account": kwargs.get("account") or "",
+                "close_order": True,
+                "close_order_unique_id": close_coid or broker_order_id,
+                "linked_trade_group_id": trade_group_id,
+                "linked_entry_order_unique_id": entry_order_unique_id,
+                "submitted_via": "market_close",
+                "harvest_managed": True,
+                "harvest_lot": "close",
+                "submission_unconfirmed": submission_unconfirmed,
+                "order_submission_unconfirmed": submission_unconfirmed,
+                "submission_error": str(kwargs.get("submission_error") or ""),
+                "market_close_result": dict(kwargs.get("result") or {}),
+            }
+            if position_snapshot:
+                extra["position_snapshot"] = position_snapshot
+            if position_avg_cost > 0:
+                extra["position_avg_cost"] = position_avg_cost
+                extra["entry_price_for_pnl"] = position_avg_cost
             payload = {
                 "symbol": symbol,
                 "environment": self.environment,
@@ -554,21 +586,7 @@ class OrderPlacer:
                 "bar_time_ms": int(et_now.timestamp() * 1000),
                 "us_time": us_time,
                 "cn_time": "",
-                "extra": {
-                    "source": str(kwargs.get("source") or "order_placer_market_close"),
-                    "account": kwargs.get("account") or "",
-                    "close_order": True,
-                    "close_order_unique_id": close_coid or broker_order_id,
-                    "linked_trade_group_id": trade_group_id,
-                    "linked_entry_order_unique_id": entry_order_unique_id,
-                    "submitted_via": "market_close",
-                    "harvest_managed": True,
-                    "harvest_lot": "close",
-                    "submission_unconfirmed": submission_unconfirmed,
-                    "order_submission_unconfirmed": submission_unconfirmed,
-                    "submission_error": str(kwargs.get("submission_error") or ""),
-                    "market_close_result": dict(kwargs.get("result") or {}),
-                },
+                "extra": extra,
             }
             self.pb_client.upsert_order(payload)
         except Exception as exc:

@@ -1971,7 +1971,7 @@
                         <div class="record-actions">
                             ${position?.relation?.signal_id ? `<button class="action-btn view" type="button" onclick="viewSignal(${escapeHtml(toJsStringLiteral(position.relation.signal_id))})">信号页</button>` : ''}
                             ${position?.relation?.trade_group_id ? `<button class="action-btn view" type="button" onclick="viewTradeGroup(${escapeHtml(toJsStringLiteral(position.relation.trade_group_id))}, ${escapeHtml(toJsStringLiteral(position?.relation?.signal_id || ''))})">订单页</button>` : ''}
-                            <button class="action-btn close" type="button" onclick='closePosition(${JSON.stringify({ symbol: position.symbol, conid: position.conid, quantity: position.quantity, direction: position.direction, relation: position.relation || {} }).replace(/'/g, "&#39;")})'>市价平仓</button>
+                            <button class="action-btn close" type="button" onclick='closePosition(${JSON.stringify({ symbol: position.symbol, conid: position.conid, quantity: position.quantity, direction: position.direction, avg_cost: position.avg_cost, avg_price: position.avg_price, market_price: position.market_price, market_value: position.market_value, unrealized_pnl: position.unrealized_pnl, realized_pnl: position.realized_pnl, account: position.account, currency: position.currency, asset_class: position.asset_class, relation: position.relation || {} }).replace(/'/g, "&#39;")})'>市价平仓</button>
                         </div>
                     </div>
                 `).join('')}</div>`
@@ -2809,6 +2809,15 @@
                     quantity: Math.abs(qty),
                     position: qty,
                     direction: position.direction,
+                    avg_cost: position.avg_cost,
+                    avg_price: position.avg_price,
+                    market_price: position.market_price,
+                    market_value: position.market_value,
+                    unrealized_pnl: position.unrealized_pnl,
+                    realized_pnl: position.realized_pnl,
+                    account: position.account,
+                    currency: position.currency,
+                    asset_class: position.asset_class,
                     trade_group_id: relation.trade_group_id || '',
                     entry_order_unique_id: relation.entry_order_unique_id || '',
                     cancel_order_ids: protectionOrderIds,

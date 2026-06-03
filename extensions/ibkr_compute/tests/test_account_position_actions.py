@@ -124,6 +124,9 @@ class ClosePositionActionTest(unittest.TestCase):
                 "conid": 0,
                 "quantity": 43,
                 "direction": "long",
+                "avg_cost": 500.25,
+                "market_price": 505.0,
+                "unrealized_pnl": 204.25,
                 "trade_group_id": "NVDA_long_20260514_094637",
                 "entry_order_unique_id": "entry_NVDA_long_20260514_094637",
             },
@@ -132,6 +135,9 @@ class ClosePositionActionTest(unittest.TestCase):
         self.assertEqual(200, status_code)
         self.assertTrue(payload["ok"])
         self.assertEqual(123, service.order_placer.calls[0]["conid"])
+        self.assertEqual(500.25, service.order_placer.calls[0]["position_snapshot"]["avg_cost"])
+        self.assertEqual(505.0, service.order_placer.calls[0]["position_snapshot"]["market_price"])
+        self.assertEqual(204.25, service.order_placer.calls[0]["position_snapshot"]["unrealized_pnl"])
         self.assertEqual(["102", "103"], service.order_modifier.cancelled)
         self.assertEqual(
             ["102", "103"],

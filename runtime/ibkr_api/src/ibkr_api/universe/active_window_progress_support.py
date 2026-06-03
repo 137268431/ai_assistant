@@ -22,6 +22,7 @@ from ibkr_api.universe.today_targets_shared import (
     normalize_symbols,
     pick_latest_signal,
     effective_target_status,
+    signal_status_is_open,
 )
 from ibkr_compute.api.market.screener.payload import parse_market_date_bounds_ms
 from ibkr_compute.core.active_window_admission import (
@@ -419,6 +420,17 @@ def _latest_signal_by_symbol(rows: list[dict[str, Any]]) -> dict[str, dict[str, 
             continue
         latest[symbol] = pick_latest_signal(latest.get(symbol), normalized_signal) or latest.get(symbol) or {}
     return latest
+
+
+def _open_signal_symbols(rows: list[dict[str, Any]]) -> set[str]:
+    symbols: set[str] = set()
+    for row in rows or []:
+        normalized_signal = normalize_signal_record(dict(row))
+        if signal_status_is_open(normalized_signal.get("status")):
+            symbol = to_text(normalized_signal.get("symbol")).upper()
+            if symbol:
+                symbols.add(symbol)
+    return symbols
 
 
 def _component_groups(component_flags: dict[str, Any], window_flags: dict[str, Any]) -> dict[str, Any]:

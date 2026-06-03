@@ -549,6 +549,28 @@ class WatchlistIdleTopupCandidateSelectionTest(unittest.TestCase):
         self.assertNotIn("NVDA", self._candidate_symbols(result))
         self.assertEqual(self._candidate_symbols(result), ["TSLA", "MSFT"])
 
+    def test_deactivated_target_is_excluded_from_watchlist_idle_topup_candidates(self):
+        class PB:
+            def get_all_records(self, collection, **_kwargs):
+                if collection != "ibkr_targets":
+                    return []
+                return [
+                    {
+                        "symbol": "NVDA",
+                        "date": "2026-04-30",
+                        "environment": "live",
+                        "status": "candidate",
+                        "extra": {"deactivated_after_close": True},
+                    }
+                ]
+
+        self.service.pb = PB()
+
+        result = self.service._watchlist_idle_topup_candidates(scan_all=True)
+
+        self.assertNotIn("NVDA", self._candidate_symbols(result))
+        self.assertEqual(self._candidate_symbols(result), ["TSLA", "MSFT"])
+
 
 class WatchlistIdleTopupSchedulerTest(unittest.TestCase):
     def setUp(self):

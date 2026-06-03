@@ -33,6 +33,7 @@
             <button class="status-tab" data-status="cancelled" onclick="selectStatus('cancelled', this)">已取消<span class="tab-count" data-status="cancelled">(<span class="count-value">0</span>)</span></button>
         </div>
 
+        <div id="actionTabs"></div>
         <div id="directionTabs"></div>
 
         <div id="signalsContainer">
@@ -158,8 +159,48 @@
                 close: '平仓',
                 cancel: '取消',
                 adjust: '调整',
+                other: '其他',
             };
             return map[action] || action || '全部动作';
+        }
+
+        function normalizeActionGroup(actionType) {
+            const action = String(actionType || '').trim().toLowerCase();
+            if (action === 'close') return 'close';
+            if (action === 'cancel') return 'cancel';
+            if (action === 'adjust' || action.startsWith('adjust_')) return 'adjust';
+            if (!action) return 'other';
+            if (action === 'all') return 'all';
+            return 'other';
+        }
+
+        function normalizeActionFilter(value) {
+            const group = normalizeActionGroup(value);
+            return ['all', 'close', 'cancel', 'adjust', 'other'].includes(group) ? group : 'all';
+        }
+
+        function normalizeStatusFilter(value) {
+            const status = String(value || '').trim().toLowerCase();
+            return ['all', 'pending', 'confirmed', 'cancelled'].includes(status) ? status : 'all';
+        }
+
+        function renderActionTabs() {
+            const tabs = [
+                ['all', '全部动作'],
+                ['close', '平仓'],
+                ['cancel', '取消'],
+                ['adjust', '调整'],
+                ['other', '其他'],
+            ];
+            return `
+                <div class="status-tabs action-tabs">
+                    ${tabs.map(([action, label]) => `
+                        <button class="status-tab${action === currentAction ? ' active' : ''}" data-action="${action}" onclick="selectAction('${action}', this)">
+                            ${label}<span class="tab-count" data-action="${action}">(<span class="count-value">0</span>)</span>
+                        </button>
+                    `).join('')}
+                </div>
+            `;
         }
 
         function parseExactSearchFilter(value = currentSearch) {
@@ -189,6 +230,8 @@
 
         function buildReverseExecutionParams() {
             const params = { date: currentDate };
+            if (currentStatus !== 'all') params.status = currentStatus;
+            if (currentAction !== 'all') params.action = currentAction;
             const exact = parseExactSearchFilter();
             if (!exact) return params;
             if (exact.field === 'action_id' || exact.field === 'reverse_id') params.action_id = exact.value;
@@ -231,7 +274,12 @@
         }
 
         function renderFilterNote() {
-            const notes = [`broker=${getEnvironmentLabel(currentBrokerMode)}`, `data=${getEnvironmentLabel(currentEnvironment)}`];
+            const notes = [
+                `broker=${getEnvironmentLabel(currentBrokerMode)}`,
+                `data=${getEnvironmentLabel(currentEnvironment)}`,
+                `status=${getReverseStatusLabel()}`,
+                `action=${getReverseActionLabel()}`,
+            ];
             if (currentSearch) notes.push(`search=${currentSearch}`);
             document.getElementById('filterNote').innerHTML = `<div class="filter-note">当前过滤: ${escapeHtml(notes.join(' · '))}</div>`;
         }
@@ -304,6 +352,7 @@
                 reverse_kind: raw.reverse_kind || extra.reverse_kind || (raw.source === 'signal' ? 'signal_conflict' : 'indicator_conflict'),
                 target_state: raw.target_state || extra.target_state || '',
                 target_order_status: raw.target_order_status || extra.target_order_status || extra.order_status || '',
+                action_type: raw.action_type || extra.action_type || '',
                 signal_id: raw.signal_id || extra.signal_id || '',
                 origin_signal_id: raw.origin_signal_id || extra.origin_signal_id || extra.signal_id_orig || '',
                 trade_group_id: raw.trade_group_id || extra.trade_group_id || '',
@@ -348,6 +397,7 @@
                 resetPagination();
                 updateStats();
                 updateDirectionCounts();
+                updateActionCounts();
                 renderReversePageChrome();
                 renderSignals();
                 updateLoadMoreButton();
@@ -394,7 +444,7 @@
         function filterSignalsAll(options = {}) {
             return allSignals.filter((signal) => {
                 if (!options.ignoreStatus && currentStatus !== 'all' && signal.status !== currentStatus) return false;
-                if (!options.ignoreAction && currentAction !== 'all' && signal.action_type !== currentAction) return false;
+                if (!options.ignoreAction && currentAction !== 'all' && normalizeActionGroup(signal.action_type) !== currentAction) return false;
                 if (!options.ignoreDirection && currentDirection !== 'all' && signal.direction !== currentDirection) return false;
                 if (!matchesSearch(signal, currentSearch)) return false;
                 return true;
@@ -425,6 +475,32 @@
                 const node = document.querySelector(`.dir-tab .tab-count[data-dir="${dir}"] .count-value`);
                 if (node) node.textContent = counts[dir] || 0;
             });
+        }
+
+        function updateActionCounts() {
+            const base = filterSignalsAll({ ignoreAction: true });
+            const counts = { all: base.length, close: 0, cancel: 0, adjust: 0, other: 0 };
+            base.forEach((signal) => {
+                const group = normalizeActionGroup(signal.action_type);
+                counts[group === 'all' ? 'other' : group] += 1;
+            });
+            Object.entries(counts).forEach(([action, count]) => {
+                const node = document.querySelector(`.status-tab .tab-count[data-action="${action}"] .count-value`);
+                if (node) node.textContent = count || 0;
+            });
+        }
+
+        function syncFilterTabs() {
+            const sync = (selector, attr, value) => {
+                const buttons = Array.from(document.querySelectorAll(selector));
+                if (!buttons.length) return;
+                buttons.forEach((node) => node.classList.remove('active'));
+                const active = buttons.find((node) => node.getAttribute(attr) === value) || buttons[0];
+                active.classList.add('active');
+            };
+            sync('.status-tab[data-status]', 'data-status', currentStatus);
+            sync('.status-tab[data-action]', 'data-action', currentAction);
+            sync('.dir-tab[data-dir]', 'data-dir', currentDirection);
         }
 
         function getFilteredSignals() {
@@ -463,6 +539,7 @@
             resetPagination();
             updateStats();
             updateDirectionCounts();
+            updateActionCounts();
             renderReversePageChrome();
             renderSignals();
             updateLoadMoreButton();
@@ -475,7 +552,9 @@
             resetPagination();
             updateStats();
             updateDirectionCounts();
+            updateActionCounts();
             renderReverseTopSection();
+            renderFilterNote();
             renderSignals();
             updateLoadMoreButton();
         };
@@ -487,7 +566,9 @@
             resetPagination();
             updateStats();
             updateDirectionCounts();
+            updateActionCounts();
             renderReverseTopSection();
+            renderFilterNote();
             renderSignals();
             updateLoadMoreButton();
         };
@@ -546,6 +627,7 @@
                 cancel: '撤旧挂单',
                 adjust_sl: '调止损',
                 adjust_tp: '调止盈',
+                adjust_bracket: '调保护单',
             }[actionType] || formatExecutionActionText(actionType) || 'N/A';
             const cls = actionType === 'close' ? 'action-close'
                 : actionType === 'cancel' ? 'action-cancel'
@@ -863,7 +945,9 @@
             resetPagination();
             updateStats();
             updateDirectionCounts();
+            updateActionCounts();
             renderReverseTopSection();
+            renderFilterNote();
             renderSignals();
             updateLoadMoreButton();
         };
@@ -896,10 +980,13 @@
                 subtitle: '平仓 / 取消 / 调整 / 订单回查',
             });
             document.getElementById('nav').innerHTML = renderNav('/ibkr_execution_actions.html');
+            document.getElementById('actionTabs').innerHTML = renderActionTabs();
             document.getElementById('directionTabs').innerHTML = renderDirectionTabs();
 
             const urlParams = new URLSearchParams(window.location.search);
             const urlDate = normalizeDateParam(urlParams.get('date'));
+            const urlStatus = normalizeStatusFilter(urlParams.get('status'));
+            const urlAction = normalizeActionFilter(urlParams.get('action'));
             const actionId = urlParams.get('action_id');
             const reverseId = urlParams.get('reverse_id');
             const signalId = urlParams.get('signal_id');
@@ -909,6 +996,10 @@
             if (urlDate) {
                 currentDate = urlDate;
             }
+            currentStatus = urlStatus;
+            currentAction = urlAction;
+            document.getElementById('actionTabs').innerHTML = renderActionTabs();
+            syncFilterTabs();
             document.getElementById('datePicker').innerHTML = renderDatePicker();
             if (urlDate) {
                 const dateInput = document.getElementById('customDate');

@@ -272,6 +272,7 @@ def register_universe_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             payload=request.get_json(silent=True) or {},
             normalize_environment=normalize_environment,
             escape_filter_string=escape_filter_string,
+            time_strings=time_strings,
         )
         if status_code < 400:
             _clear_universe_route_cache()

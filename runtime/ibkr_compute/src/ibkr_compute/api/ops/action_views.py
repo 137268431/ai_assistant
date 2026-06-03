@@ -507,7 +507,11 @@ def _extract_uploaded_xml(payload: dict) -> str:
 
 def _extract_recent_fill_items(payload: dict) -> list[dict]:
     raw = payload.get("raw") if isinstance(payload.get("raw"), dict) else {}
-    candidates = raw.get("orders") if isinstance(raw.get("orders"), list) else None
+    candidates = raw.get("executions") if isinstance(raw.get("executions"), list) else None
+    if candidates is None:
+        candidates = payload.get("executions") if isinstance(payload.get("executions"), list) else None
+    if candidates is None:
+        candidates = raw.get("orders") if isinstance(raw.get("orders"), list) else None
     if candidates is None:
         candidates = payload.get("orders") if isinstance(payload.get("orders"), list) else None
     if candidates is None:
@@ -610,6 +614,7 @@ def build_backtest_execution_cost_import_recent_fills_response():
     payload = get_json_payload()
     environment = _execution_payload_environment(payload)
     account = str(payload.get("account") or get_query_arg_text("account") or "").strip()
+    source = str(payload.get("source") or get_query_arg_text("source") or "").strip().lower()
     days = coerce_request_int(payload.get("days"), get_query_arg_int("days", 1, minimum=1), minimum=1, maximum=30)
     dry_run = coerce_request_bool(payload.get("dry_run"), get_query_arg_bool("dry_run", False))
     broker_payload = {}
@@ -637,7 +642,7 @@ def build_backtest_execution_cost_import_recent_fills_response():
             raw_items,
             environment=environment,
             account=account,
-            source="recent_fills",
+            source=source or "recent_fills",
         )
         result = _upsert_execution_fills(app_mod, fills, dry_run=dry_run)
         return jsonify(

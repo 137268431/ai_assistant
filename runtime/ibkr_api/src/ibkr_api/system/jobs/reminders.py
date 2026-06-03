@@ -211,6 +211,9 @@ def _close_pnl_line(today: dict[str, Any]) -> str:
         f"盈利 {_to_int(today.get('winning_trades'), 0)}/{_format_signed_money(today.get('profit_amount'))} | "
         f"亏损 {_to_int(today.get('losing_trades'), 0)}/{_format_signed_money(today.get('loss_amount'))}"
     )
+    commission = _to_float(today.get("commission"), 0.0)
+    if commission > 0:
+        line += f" | 手续费 ${abs(commission):,.2f}"
     missing_count = _to_int(today.get("pnl_missing_count"), 0)
     if missing_count > 0:
         line += f" | PnL缺失 {missing_count}"

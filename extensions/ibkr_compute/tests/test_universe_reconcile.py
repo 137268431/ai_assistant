@@ -152,12 +152,17 @@ class DummySignalRouter:
 
 
 class DummyTargetPlanPB:
-    def __init__(self, rows):
+    def __init__(self, rows, signals=None):
         self.rows = [dict(row) for row in rows]
+        self.signals = [dict(row) for row in (signals or [])]
         self.updated = []
 
     def get_all_records(self, collection, **_kwargs):
-        return [dict(row) for row in self.rows] if collection == "ibkr_targets" else []
+        if collection == "ibkr_targets":
+            return [dict(row) for row in self.rows]
+        if collection == "ibkr_signals":
+            return [dict(row) for row in self.signals]
+        return []
 
     def update_record(self, collection, record_id, data):
         self.updated.append((collection, record_id, dict(data)))
@@ -169,7 +174,7 @@ class DummyTargetPlanPB:
 
 
 class DummyTargetPlanUniverse(TradingServiceMarketUniverseMixin):
-    def __init__(self, rows):
+    def __init__(self, rows, signals=None):
         self.config = DummyConfig(
             {
                 "ibkr_target_subscription_limit": 10,
@@ -177,7 +182,7 @@ class DummyTargetPlanUniverse(TradingServiceMarketUniverseMixin):
                 "entry_pre_submit_temp_subscription_limit": 0,
             }
         )
-        self.pb = DummyTargetPlanPB(rows)
+        self.pb = DummyTargetPlanPB(rows, signals=signals)
         self._watchlist_records = {
             "AAPL": {"symbol": "AAPL", "exchange": "NASDAQ", "industry": "Technology", "symbol_role": "trade"},
             "SPY": {"symbol": "SPY", "exchange": "ARCA", "industry": "ETF", "symbol_role": "market_monitor"},
@@ -493,6 +498,42 @@ class UniverseTargetSubscriptionPlanTest(unittest.TestCase):
         self.assertEqual("active", rows_by_id["target-msft"]["status"])
         self.assertFalse(rows_by_id["target-msft"]["extra"]["within_subscription_budget"])
         self.assertEqual(0, rows_by_id["target-msft"]["extra"]["subscription_rank"])
+
+    def test_terminal_latest_signal_demotes_target_and_excludes_subscription(self):
+        universe = DummyTargetPlanUniverse(
+            [
+                {
+                    "id": "target-aapl",
+                    "symbol": "AAPL",
+                    "status": "active",
+                    "direction_bias": "long",
+                    "score": 90,
+                    "extra": {"source": "daily_scan", "context_active": True},
+                },
+            ],
+            signals=[
+                {
+                    "id": "sig-row",
+                    "signal_id": "SIG_CLOSED",
+                    "symbol": "AAPL",
+                    "environment": "live",
+                    "status": "closed",
+                    "bar_time_ms": 1000,
+                },
+            ],
+        )
+
+        target_date, symbols, _meta, selected_rows = universe._build_target_subscription_plan()
+        universe._mark_target_statuses(target_date, selected_rows)
+
+        self.assertNotIn("AAPL", symbols)
+        self.assertEqual([], selected_rows)
+        row = universe.pb.rows[0]
+        self.assertEqual("candidate", row["status"])
+        self.assertTrue(row["extra"]["deactivated_after_close"])
+        self.assertFalse(row["extra"]["subscription_selected"])
+        self.assertFalse(row["extra"]["within_subscription_budget"])
+        self.assertIn("deactivated_after_close", row["extra"]["execution_blockers"])
 
     def test_non_context_active_candidate_is_not_selected_as_trade_row(self):
         universe = DummyTargetPlanUniverse(

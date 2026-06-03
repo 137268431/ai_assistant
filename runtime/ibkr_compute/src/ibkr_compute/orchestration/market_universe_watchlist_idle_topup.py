@@ -19,6 +19,7 @@ from .market_universe_support import (
 )
 
 from ibkr_compute.market.bar_freshness import DEFAULT_CLOSE_DELAY_SECONDS, latest_expected_extended_5m_ms
+from ibkr_compute.universe.target_execution import target_extra_deactivated_after_close
 
 from . import market_universe_support as _market_universe_support
 from .market_universe_targets import _bar_pipeline_skip_reason
@@ -1211,6 +1212,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             for symbol in (exclude_symbols or set())
             if str(symbol or "").strip()
         }
+        excluded.update(self._watchlist_idle_topup_deactivated_target_symbols())
 
         pool = [
             symbol for symbol in self._watchlist_symbols
@@ -1278,6 +1280,38 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
 
         candidates.sort(key=lambda item: (0 if item.get("missing") else 1, _safe_int(item.get("latest_ms"), 0)))
         return candidates
+
+    def _watchlist_idle_topup_deactivated_target_symbols(self) -> set[str]:
+        service_mod = _service_mod()
+        pb = getattr(self, "pb", None)
+        getter = getattr(pb, "get_all_records", None)
+        if not callable(getter):
+            return set()
+        safe_date = self._watchlist_idle_topup_target_date().replace('"', '\\"')
+        safe_env = str(
+            getattr(service_mod, "DATA_ENVIRONMENT", None)
+            or getattr(service_mod, "ENVIRONMENT", None)
+            or "live"
+        ).strip().lower().replace('"', '\\"')
+        try:
+            rows = getter(
+                "ibkr_targets",
+                filter=(
+                    f'date = "{safe_date}" && '
+                    f'environment = "{safe_env}" && '
+                    '(status = "candidate" || status = "active")'
+                ),
+                max_pages=20,
+            )
+        except Exception:
+            return set()
+        return {
+            str(row.get("symbol") or "").strip().upper()
+            for row in rows or []
+            if isinstance(row, dict)
+            and str(row.get("symbol") or "").strip()
+            and target_extra_deactivated_after_close(_safe_extra(row))
+        }
 
     def _watchlist_idle_topup_estimated_missing_bars(
         self,

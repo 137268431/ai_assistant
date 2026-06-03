@@ -130,6 +130,13 @@ listStaticFiles('assets/css', '.css').forEach((relativePath) => {
 const indexHtml = readStatic('index.html');
 assert(indexHtml.includes('id="actionConfigLink"'), 'home_missing_config_entry');
 assert(indexHtml.includes('/ibkr_config.html'), 'home_config_entry_missing_href');
+assert(includesAll(indexHtml, ['id="reverseSignalsBreakdown"', 'pending_by_action', "status: 'pending'"]), 'home_actions_missing_pending_breakdown');
+
+const executionActionsHtml = readStatic('ibkr_execution_actions.html');
+const executionActionsCss = readStatic('assets/css/pages/ibkr_reverse_signals/page.css');
+assert(includesAll(executionActionsHtml, ['id="actionTabs"', 'function renderActionTabs', 'normalizeActionGroup', "urlParams.get('action')", 'updateActionCounts']), 'execution_actions_missing_action_filter_ui');
+assert(includesAll(executionActionsHtml, ['adjust_bracket', "data-action=\"${action}\"", "currentAction !== 'all'"]), 'execution_actions_missing_action_grouping_logic');
+assert(includesAll(executionActionsCss, ['.action-tabs', 'top: 100px']), 'execution_actions_missing_action_tab_styles');
 
 const chartCss = readStatic('assets/css/pages/ibkr_chart/page.css');
 const chartJs = readPageScriptBundle(

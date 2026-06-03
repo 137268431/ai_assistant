@@ -12,6 +12,7 @@ from ibkr_api.orders.notifications import (
     sync_order_status_notification,
 )
 from ibkr_api.orders.reconcile import build_orders_reconcile_response
+from ibkr_api.orders.realized_pnl_stats import build_realized_pnl_stats, empty_realized_pnl_stats
 from ibkr_api.orders.values import *
 from ibkr_api.orders.webhooks import build_order_cancel_webhook_response, build_order_close_webhook_response
 

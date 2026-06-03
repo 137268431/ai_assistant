@@ -26,6 +26,9 @@ from ibkr_api.universe.today_targets_shared import (
     pick_latest_signal,
     pick_reason_list,
     effective_target_status,
+    signal_status_is_open,
+    signal_status_is_terminal,
+    target_extra_deactivated_after_close,
 )
 from ibkr_api.universe.today_targets_workflow import (
     build_aligned_technical_flags,
@@ -266,6 +269,8 @@ def build_today_targets_response(
             continue
         bucket = signal_agg_by_symbol.setdefault(symbol, {"count": 0, "latest": None})
         bucket["count"] += 1
+        if signal_status_is_open(normalized_signal.get("status")):
+            bucket["has_open"] = True
         bucket["latest"] = pick_latest_signal(bucket.get("latest"), normalized_signal)
 
     items: list[dict[str, Any]] = []
@@ -298,6 +303,7 @@ def build_today_targets_response(
         indicator_extra = indicator_snapshot(indicator_record)
         signal_agg = signal_agg_by_symbol.get(symbol, {"count": 0, "latest": None})
         latest_signal = signal_agg.get("latest")
+        has_open_signal = bool(signal_agg.get("has_open"))
         history = [row for row in daily_history_by_symbol.get(symbol, []) if row.get("date") < market_date]
         last_10 = history[-10:]
         avg_10d_volume = round(sum(to_float(row.get("volume")) or 0.0 for row in last_10) / len(last_10), 2) if last_10 else 0.0
@@ -311,7 +317,17 @@ def build_today_targets_response(
             "prev_close_change_pct": 0.0,
             "change_7d": 0.0,
         }
-        target_status = effective_target_status(target)
+        latest_signal_status = to_text((latest_signal or {}).get("status"))
+        stored_target_status = to_text(target.get("status")).lower()
+        target_status = effective_target_status(target, latest_signal_status, has_open_signal=has_open_signal)
+        target_status_reason = ""
+        if stored_target_status == "active" and target_status == "candidate":
+            if signal_status_is_terminal(latest_signal_status) and not has_open_signal:
+                target_status_reason = "latest_signal_terminal"
+            elif target_extra_deactivated_after_close(target_extra):
+                target_status_reason = "deactivated_after_close"
+            else:
+                target_status_reason = "active_gate_not_effective"
         direction_bias = to_text(first_defined(target.get("direction_bias"), "neutral")).lower() or "neutral"
         execution_meta = build_target_execution_metadata(
             target_extra,
@@ -330,6 +346,8 @@ def build_today_targets_response(
             "record_id": to_text(target.get("id")),
             "status": target_status,
             "target_status": target_status,
+            "stored_target_status": stored_target_status,
+            "target_status_reason": target_status_reason,
             "direction_bias": direction_bias,
             "score": score,
             "target_score": score,
@@ -359,6 +377,8 @@ def build_today_targets_response(
             "target_layer": to_text(execution_meta.get("target_layer")),
             "execution_allowed_sides": list(execution_meta.get("execution_allowed_sides") or []),
             "context_allowed_sides": list(execution_meta.get("context_allowed_sides") or []),
+            "subscription_selected": bool(target_extra.get("subscription_selected")),
+            "within_subscription_budget": bool(target_extra.get("within_subscription_budget")),
         }
         tradability_score, assessment_notes = build_tradability_assessment(row)
         row["tradability_score"] = tradability_score
@@ -376,9 +396,10 @@ def build_today_targets_response(
         row["technical_state"] = resolve_technical_state(row, row["technical_aligned_flags"])
         row["ready_explanation"] = build_ready_explanation(row)
         row["has_signal_today"] = bool(signal_agg.get("count"))
+        row["has_open_signal_today"] = has_open_signal
         row["signal_count_today"] = int(signal_agg.get("count") or 0)
         row["latest_signal_id"] = to_text((latest_signal or {}).get("signal_id"))
-        row["latest_signal_status"] = to_text((latest_signal or {}).get("status"))
+        row["latest_signal_status"] = latest_signal_status
         row["latest_signal_status_reason"] = to_text((latest_signal or {}).get("status_reason"))
         row["latest_signal_status_reason_human"] = to_text((latest_signal or {}).get("status_reason_human"))
         row["latest_signal_effective_broker_mode"] = to_text((latest_signal or {}).get("effective_broker_mode")) or broker_mode

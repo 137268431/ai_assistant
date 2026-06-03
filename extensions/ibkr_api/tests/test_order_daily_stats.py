@@ -5,6 +5,7 @@ from pathlib import Path
 
 SERVICE_SRC_ROOTS = [
     Path(__file__).resolve().parents[3] / "runtime" / "ibkr_api" / "src",
+    Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "src",
 ]
 for src_root in SERVICE_SRC_ROOTS:
     if str(src_root) not in sys.path:
@@ -12,9 +13,49 @@ for src_root in SERVICE_SRC_ROOTS:
 
 
 from ibkr_api.orders.daily_stats import build_daily_order_stats
+from ibkr_api.orders.realized_pnl_stats import build_realized_pnl_stats
 
 
 class OrderDailyStatsTest(unittest.TestCase):
+    def test_actual_realized_pnl_uses_gateway_fills_and_fees(self):
+        rows = [
+            {"id": "entry-1", "order_id": "1001", "trade_group_id": "tg-1", "role": "entry", "status": "Filled", "position_side": "long"},
+            {"id": "entry-2", "order_id": "1002", "trade_group_id": "tg-1", "role": "entry", "status": "Filled", "position_side": "long"},
+            {"id": "tp-1", "order_id": "2001", "trade_group_id": "tg-1", "role": "take_profit", "status": "Filled", "bar_time_ms": 1000},
+        ]
+        fills = [
+            {"exec_id": "e1", "order_id": "1001", "symbol": "AAPL", "side": "buy", "shares": 10, "price": 100, "commission": 1, "commission_known": True, "currency": "USD"},
+            {"exec_id": "e2", "order_id": "1002", "symbol": "AAPL", "side": "buy", "shares": 5, "price": 100, "commission": 1, "commission_known": True, "currency": "USD"},
+            {"exec_id": "e3", "order_id": "2001", "symbol": "AAPL", "side": "sell", "shares": 10, "price": 110, "commission": 1, "commission_known": True, "currency": "USD"},
+        ]
+
+        stats = build_realized_pnl_stats(rows, fills, start_ms=0, end_ms=2000)
+
+        self.assertEqual(stats["source"], "gateway_execution_fills")
+        self.assertEqual(stats["exit_count"], 1)
+        self.assertEqual(stats["win_count"], 1)
+        self.assertEqual(stats["realized_gross_pnl"], 100.0)
+        self.assertEqual(stats["commission"], 2.33)
+        self.assertEqual(stats["realized_net_pnl"], 97.67)
+        self.assertEqual(stats["total"], 97.67)
+
+    def test_actual_realized_pnl_skips_when_commission_missing(self):
+        rows = [
+            {"id": "entry-1", "order_id": "1001", "trade_group_id": "tg-1", "role": "entry", "status": "Filled", "position_side": "short"},
+            {"id": "sl-1", "order_id": "2001", "trade_group_id": "tg-1", "role": "stop_loss", "status": "Filled", "bar_time_ms": 1000},
+        ]
+        fills = [
+            {"exec_id": "e1", "order_id": "1001", "symbol": "MSFT", "side": "sell", "shares": 2, "price": 50, "commission": 0.5, "commission_known": True, "currency": "USD"},
+            {"exec_id": "e2", "order_id": "2001", "symbol": "MSFT", "side": "buy", "shares": 2, "price": 55, "commission": 0, "commission_known": False, "currency": "USD"},
+        ]
+
+        stats = build_realized_pnl_stats(rows, fills, start_ms=0, end_ms=2000)
+
+        self.assertEqual(stats["exit_count"], 0)
+        self.assertEqual(stats["commission_missing_count"], 1)
+        self.assertEqual(stats["missing_count"], 1)
+        self.assertEqual(stats["realized_net_pnl"], 0.0)
+
     def test_counts_filled_take_profit_and_uses_stored_pnl_minus_commission(self):
         rows = [
             {

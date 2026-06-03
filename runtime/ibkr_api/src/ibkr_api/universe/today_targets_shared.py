@@ -7,7 +7,12 @@ from ibkr_api.orders.values import ensure_object, first_defined, parse_boolean, 
 from ibkr_api.universe.maintenance import parse_json_object
 from ibkr_compute.core.broker_mode import normalize_broker_mode, resolve_data_environment
 from ibkr_compute.market.timeframe_utils import ET, classify_session, format_cn_time, format_us_time, interval_to_chart_tf, ms_to_et
-from ibkr_compute.universe.target_execution import target_extra_has_entry_activation
+from ibkr_compute.universe.target_execution import (
+    signal_status_is_open,
+    signal_status_is_terminal,
+    target_extra_deactivated_after_close,
+    target_extra_has_entry_activation,
+)
 
 
 LIVE_ENVIRONMENT = "live"
@@ -67,8 +72,18 @@ def target_row_is_tradingview_active(row: dict[str, Any] | None) -> bool:
     return source in TRADINGVIEW_TARGET_SOURCES and target_extra_has_entry_activation(extra)
 
 
-def effective_target_status(row: dict[str, Any] | None) -> str:
+def effective_target_status(
+    row: dict[str, Any] | None,
+    latest_signal_status: Any = None,
+    *,
+    has_open_signal: bool = False,
+) -> str:
     status = to_text((row or {}).get("status")).lower()
+    extra = parse_json_object((row or {}).get("extra"))
+    if status == "active" and target_extra_deactivated_after_close(extra):
+        return "candidate"
+    if status == "active" and signal_status_is_terminal(latest_signal_status) and not has_open_signal:
+        return "candidate"
     if status == "active" and not (
         target_row_is_daily_scan_active(row)
         or target_row_is_manual_active(row)
@@ -415,5 +430,8 @@ __all__ = [
     "pick_latest_signal",
     "pick_reason_list",
     "push_unique_text",
+    "signal_status_is_open",
+    "signal_status_is_terminal",
+    "target_extra_deactivated_after_close",
     "target_row_is_tradingview_active",
 ]

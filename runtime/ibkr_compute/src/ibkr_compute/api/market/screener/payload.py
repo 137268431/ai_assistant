@@ -77,6 +77,9 @@ def _target_row_is_tradingview_active(row: dict | None) -> bool:
 
 def _effective_target_status(row: dict | None) -> str:
     status = str((row or {}).get("status") or "").strip().lower()
+    extra = parse_json_object((row or {}).get("extra"))
+    if status == "active" and _truthy_target_value(extra.get("deactivated_after_close")):
+        return "candidate"
     if status == "active" and not (
         _target_row_is_daily_scan_active(row)
         or _target_row_is_manual_active(row)

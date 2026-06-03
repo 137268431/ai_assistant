@@ -219,6 +219,50 @@ class ActiveWindowProgressApiTest(unittest.TestCase):
         self.assertEqual(sources["AAA"], "trace")
         self.assertEqual(sources["BBB"], "stored_signal")
 
+    def test_terminal_latest_signal_demotes_active_target_summary(self):
+        class TerminalSignalPocketBase:
+            def get_runtime_config(self, **kwargs):
+                return []
+
+            def get_records(self, collection, **kwargs):
+                if collection == "ibkr_targets":
+                    return [
+                        {
+                            "symbol": "AAPL",
+                            "status": "active",
+                            "score": 1,
+                            "direction_bias": "long",
+                            "extra": {"source": "daily_scan", "active_gate_passed": True},
+                        }
+                    ]
+                return []
+
+            def get_all_records(self, collection, **kwargs):
+                if collection == "ibkr_signals":
+                    return [
+                        {
+                            "symbol": "AAPL",
+                            "signal_id": "sig-closed",
+                            "status": "closed",
+                            "bar_time_ms": 1777386600000,
+                            "updated": "2026-04-28 10:30:00",
+                        }
+                    ]
+                return []
+
+        with patch.object(progress, "_load_timeline_bars_by_symbol", return_value={"AAPL": []}):
+            payload, status_code = build_active_window_progress_response(
+                TerminalSignalPocketBase(),
+                payload={"environment": "live", "status": "active", "date": "2026-04-28"},
+                normalize_environment=lambda value, default="live": str(value or default).strip().lower(),
+                time_strings=lambda: {"date": "2026-04-28"},
+            )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(0, payload["summary"]["target_active_count"])
+        self.assertEqual(1, payload["summary"]["target_candidate_count"])
+        self.assertEqual("candidate", payload["items"][0]["target_status"])
+
 
 if __name__ == "__main__":
     unittest.main()

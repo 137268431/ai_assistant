@@ -1054,6 +1054,7 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
             trade_group_id="NFLX_short_harvest",
             entry_order_unique_id="entry_NFLX_short_harvest",
             source="order_flow_full_exit",
+            position_snapshot={"avg_cost": 103.0, "market_price": 101.5, "unrealized_pnl": 10.5},
         )
 
         self.assertTrue(result["ok"])
@@ -1065,6 +1066,9 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
         self.assertEqual("Submitted", close_row["status"])
         self.assertEqual("active", close_row["relation_status"])
         self.assertEqual("LMT", close_row["extra"]["market_close_result"]["order_type"])
+        self.assertEqual(103.0, close_row["extra"]["position_avg_cost"])
+        self.assertEqual(103.0, close_row["extra"]["entry_price_for_pnl"])
+        self.assertEqual(10.5, close_row["extra"]["position_snapshot"]["unrealized_pnl"])
 
     def test_unconfirmed_market_close_prewrites_pending_close_mapping(self):
         pb_client = FakeOrderAndSignalPBClient(

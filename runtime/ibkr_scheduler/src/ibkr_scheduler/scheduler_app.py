@@ -469,6 +469,13 @@ class SchedulerService:
                 "force_repair_now": False,
                 "source": "ibkr_scheduler",
             }
+        if job_id == "ibkr_execution_fills_sync":
+            return {
+                "days": 1,
+                "dry_run": False,
+                "source": "gateway_executions",
+                "trigger_source": "ibkr_scheduler",
+            }
         if job_id in BAR_TRUTH_AUDIT_JOB_IDS:
             now_et = datetime.now(US_TZ)
             payload_mode = str((schedule or {}).get("payload_mode") or "").strip().lower()

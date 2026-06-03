@@ -524,6 +524,32 @@ def _positive_number(record_or_data: Any, *fields: str) -> float | None:
     return None
 
 
+def _position_entry_price_hint(record_or_data: Any) -> float | None:
+    explicit_fields = (
+        "entry_price_for_pnl",
+        "position_entry_price",
+        "position_avg_cost",
+        "position_avg_price",
+        "avg_cost_for_pnl",
+        "average_cost_for_pnl",
+        "avg_cost",
+        "avgCost",
+    )
+    for field in explicit_fields:
+        parsed = to_float(_record_or_extra_value(record_or_data, field))
+        if parsed is not None and abs(parsed) > PNL_EPSILON:
+            return abs(parsed)
+
+    extra = _extra(record_or_data)
+    snapshot = extra.get("position_snapshot")
+    if isinstance(snapshot, dict):
+        for field in ("avg_cost", "avgCost", "avg_price", "avgPrice", "average_cost", "averageCost"):
+            parsed = to_float(snapshot.get(field))
+            if parsed is not None and abs(parsed) > PNL_EPSILON:
+                return abs(parsed)
+    return None
+
+
 def _number_with_presence(record_or_data: Any, *fields: str) -> tuple[float | None, str]:
     extra = _extra(record_or_data)
     for field in fields:
@@ -762,12 +788,31 @@ def _realized_pnl_line(model: dict[str, Any] | None) -> str:
 def _single_order_pnl_model(order_record: Any) -> dict[str, Any] | None:
     net_pnl, net_field = _stored_net_pnl(order_record)
     commission, commission_known = _sum_known_commissions([order_record])
+    exit_price = _positive_number(
+        order_record,
+        "fill_price",
+        "avg_price",
+        "avg_fill_price",
+        "actual_fill_price",
+        "last_fill_price",
+        "lastFillPrice",
+        "execution_price",
+        "price",
+        "limit_price",
+    )
+    quantity = _positive_number(order_record, "filled_qty", "quantity")
     if net_pnl is not None:
         value = net_pnl
         value_is_net = True
         value_source = net_field
     else:
         gross_pnl, gross_field = _stored_gross_pnl(order_record)
+        role = normalize_order_row(order_record).get("role") or to_text(_record_or_extra_value(order_record, "role"))
+        if gross_pnl is None and role in EXIT_ORDER_ROLES:
+            entry_price = _position_entry_price_hint(order_record)
+            side = _trade_side({}, order_record)
+            gross_pnl = _directional_pnl(side, entry_price, exit_price, quantity)
+            gross_field = "computed_gross_pnl_from_position_avg_cost" if gross_pnl is not None else ""
         if gross_pnl is None:
             return None
         value = gross_pnl - commission if commission_known else gross_pnl
@@ -779,16 +824,9 @@ def _single_order_pnl_model(order_record: Any) -> dict[str, Any] | None:
         "source": value_source,
         "commission": commission,
         "commission_known": commission_known,
-        "exit_price": _positive_number(
-            order_record,
-            "fill_price",
-            "avg_price",
-            "avg_fill_price",
-            "actual_fill_price",
-            "price",
-            "limit_price",
-        ),
-        "quantity": _positive_number(order_record, "filled_qty", "quantity"),
+        "entry_price": _position_entry_price_hint(order_record),
+        "exit_price": exit_price,
+        "quantity": quantity,
         "exit_role": normalize_order_row(order_record).get("role") or to_text(_record_or_extra_value(order_record, "role")),
     }
 
@@ -1398,13 +1436,16 @@ def _trade_ledger_event_model(order_record: dict[str, Any], previous_order: dict
         "fill_price": round(_trade_ledger_fill_price(order_record), 8),
     }
     digest = hashlib.sha1(json.dumps(digest_payload, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()[:16]
+    display_status = current_status
+    if event_type == "fill" and is_full_fill and current_status not in {"Filled", "Closed", "Executed"}:
+        display_status = "Filled"
     return {
         "skipped": False,
         "reason": reason,
         "event_type": event_type,
         "event_label": event_label,
         "environment": environment,
-        "status": current_status,
+        "status": display_status,
         "previous_status": previous_status,
         "filled_qty": current_filled,
         "previous_filled_qty": previous_filled,

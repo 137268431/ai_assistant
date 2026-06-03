@@ -588,6 +588,29 @@ class UniverseRoutesTest(unittest.TestCase):
         self.assertEqual("live", payload["data_environment"])
         self.assertEqual("live", pb.created[0][1]["environment"])
 
+    def test_screener_targets_upsert_creates_missing_trade_watchlist_record(self):
+        pb = _MinimalPB()
+        payload, status_code = build_screener_targets_upsert_response(
+            pb,
+            payload={
+                "environment": "live",
+                "market_date": "2026-05-18",
+                "items": [{"symbol": "amd", "score": 33, "direction_bias": "long", "exchange": "nasdaq"}],
+            },
+            normalize_environment=lambda value, default="live": str(value or default).strip().lower() or default,
+            escape_filter_string=lambda value: str(value or "").replace('"', '\\"'),
+            time_strings=lambda: {"us": "2026-05-18 09:30:00", "cn": "2026-05-18 21:30:00", "date": "2026-05-18"},
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(["AMD"], payload["symbols"])
+        self.assertEqual("created", payload["watchlist_sync"][0]["action"])
+        created_by_collection = {collection: data for collection, data in pb.created}
+        self.assertEqual("candidate", created_by_collection["ibkr_targets"]["status"])
+        self.assertEqual("trade", created_by_collection["watchlist"]["symbol_role"])
+        self.assertFalse(created_by_collection["watchlist"]["manual_member"])
+
     def test_today_targets_builds_signal_workflow_payload(self):
         pb = _MinimalPB()
         pb._records["ibkr_targets"] = [
@@ -687,6 +710,147 @@ class UniverseRoutesTest(unittest.TestCase):
         self.assertTrue(ready_explanation["ready"])
         self.assertIn("方向一致技术条件 5/2", ready_explanation["passed"])
         self.assertEqual([], ready_explanation["missing"])
+
+    def test_today_targets_demotes_active_after_terminal_latest_signal(self):
+        pb = _MinimalPB()
+
+        def et_ms(text: str) -> int:
+            return int(datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=ET).timestamp() * 1000)
+
+        pb._records["ibkr_targets"] = [
+            {
+                "id": "target-closed",
+                "symbol": "AAPL",
+                "environment": "live",
+                "date": "2026-04-23",
+                "status": "active",
+                "direction_bias": "long",
+                "score": 90,
+                "extra": {"source": "daily_scan", "active_gate_passed": True},
+            }
+        ]
+        pb._all_records["ibkr_signals"] = [
+            {
+                "symbol": "AAPL",
+                "environment": "live",
+                "signal_id": "sig-closed",
+                "status": "closed",
+                "bar_time_ms": et_ms("2026-04-23 10:30:00"),
+                "us_time": "2026-04-23 10:30:00",
+                "updated": "2026-04-23 10:31:00",
+            }
+        ]
+
+        payload, status_code = build_today_targets_response(
+            pb,
+            payload={"environment": "live", "market_date": "2026-04-23"},
+            normalize_environment=lambda value, default="live": str(value or default).strip().lower() or default,
+            time_strings=lambda: {"us": "2026-04-23 11:00:00", "cn": "2026-04-23 23:00:00", "date": "2026-04-23"},
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertEqual(0, payload["summary"]["active_count"])
+        self.assertEqual(1, payload["summary"]["candidate_count"])
+        row = payload["items"][0]
+        self.assertEqual("active", row["stored_target_status"])
+        self.assertEqual("candidate", row["target_status"])
+        self.assertEqual("latest_signal_terminal", row["target_status_reason"])
+        self.assertEqual("closed", row["latest_signal_status"])
+        self.assertFalse(row["execution_eligible"])
+
+    def test_today_targets_keeps_active_when_latest_signal_is_open(self):
+        pb = _MinimalPB()
+
+        def et_ms(text: str) -> int:
+            return int(datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=ET).timestamp() * 1000)
+
+        pb._records["ibkr_targets"] = [
+            {
+                "id": "target-open",
+                "symbol": "NVDA",
+                "environment": "live",
+                "date": "2026-04-23",
+                "status": "active",
+                "direction_bias": "long",
+                "score": 90,
+                "extra": {"source": "daily_scan", "active_gate_passed": True},
+            }
+        ]
+        pb._all_records["ibkr_signals"] = [
+            {
+                "symbol": "NVDA",
+                "environment": "live",
+                "signal_id": "sig-open",
+                "status": "protected_active",
+                "bar_time_ms": et_ms("2026-04-23 10:30:00"),
+                "us_time": "2026-04-23 10:30:00",
+                "updated": "2026-04-23 10:31:00",
+            }
+        ]
+
+        payload, status_code = build_today_targets_response(
+            pb,
+            payload={"environment": "live", "market_date": "2026-04-23"},
+            normalize_environment=lambda value, default="live": str(value or default).strip().lower() or default,
+            time_strings=lambda: {"us": "2026-04-23 11:00:00", "cn": "2026-04-23 23:00:00", "date": "2026-04-23"},
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertEqual(1, payload["summary"]["active_count"])
+        self.assertEqual(0, payload["summary"]["candidate_count"])
+        self.assertEqual("active", payload["items"][0]["target_status"])
+
+    def test_today_targets_keeps_active_when_another_signal_is_open(self):
+        pb = _MinimalPB()
+
+        def et_ms(text: str) -> int:
+            return int(datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=ET).timestamp() * 1000)
+
+        pb._records["ibkr_targets"] = [
+            {
+                "id": "target-open",
+                "symbol": "NVDA",
+                "environment": "live",
+                "date": "2026-04-23",
+                "status": "active",
+                "direction_bias": "long",
+                "score": 90,
+                "extra": {"source": "daily_scan", "active_gate_passed": True},
+            }
+        ]
+        pb._all_records["ibkr_signals"] = [
+            {
+                "symbol": "NVDA",
+                "environment": "live",
+                "signal_id": "sig-open",
+                "status": "submitted",
+                "bar_time_ms": et_ms("2026-04-23 10:30:00"),
+                "us_time": "2026-04-23 10:30:00",
+                "updated": "2026-04-23 10:31:00",
+            },
+            {
+                "symbol": "NVDA",
+                "environment": "live",
+                "signal_id": "sig-closed",
+                "status": "closed",
+                "bar_time_ms": et_ms("2026-04-23 10:35:00"),
+                "us_time": "2026-04-23 10:35:00",
+                "updated": "2026-04-23 10:36:00",
+            },
+        ]
+
+        payload, status_code = build_today_targets_response(
+            pb,
+            payload={"environment": "live", "market_date": "2026-04-23"},
+            normalize_environment=lambda value, default="live": str(value or default).strip().lower() or default,
+            time_strings=lambda: {"us": "2026-04-23 11:00:00", "cn": "2026-04-23 23:00:00", "date": "2026-04-23"},
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertEqual(1, payload["summary"]["active_count"])
+        self.assertEqual(0, payload["summary"]["candidate_count"])
+        self.assertEqual("active", payload["items"][0]["target_status"])
+        self.assertTrue(payload["items"][0]["has_open_signal_today"])
 
     def test_today_targets_treats_tradingview_active_as_execution_layer(self):
         pb = _MinimalPB()

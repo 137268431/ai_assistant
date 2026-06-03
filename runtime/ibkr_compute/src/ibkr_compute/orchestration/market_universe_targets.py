@@ -3,7 +3,11 @@ from __future__ import annotations
 import requests
 
 from ibkr_compute.market.pocketbase_sqlite import normalize_exchange_value
-from ibkr_compute.universe.target_execution import target_row_execution_eligible
+from ibkr_compute.universe.target_execution import (
+    signal_status_is_open,
+    signal_status_is_terminal,
+    target_row_execution_eligible,
+)
 
 from .market_universe_support import *
 from .market_universe_support import (
@@ -285,11 +289,99 @@ class TradingServiceMarketUniverseTargetsMixin:
         )
         return today, rows
 
+    def _target_date_bounds_ms(self, target_date: str) -> tuple[int, int]:
+        service_mod = _service_mod()
+        try:
+            start = datetime.strptime(str(target_date or "").strip(), "%Y-%m-%d").replace(tzinfo=service_mod.ET)
+            end = start + timedelta(days=1)
+            return int(start.timestamp() * 1000), int(end.timestamp() * 1000)
+        except Exception:
+            return 0, 0
+
+    def _signal_row_sort_ms(self, row: dict) -> int:
+        bar_time_ms = _safe_int((row or {}).get("bar_time_ms"), 0)
+        if bar_time_ms > 0:
+            return bar_time_ms
+        for field in ("updated", "created"):
+            parsed = _parse_iso_datetime((row or {}).get(field))
+            if parsed is not None:
+                try:
+                    return int(parsed.timestamp() * 1000)
+                except Exception:
+                    continue
+        return 0
+
+    def _signal_effective_status_for_runtime(self, row: dict) -> str:
+        service_mod = _service_mod()
+        extra = _safe_extra(row)
+        broker_mode = str(getattr(service_mod, "ENVIRONMENT", "") or "").strip().lower()
+        execution_by_mode = extra.get("execution_by_mode") if isinstance(extra.get("execution_by_mode"), dict) else {}
+        mode_execution = execution_by_mode.get(broker_mode) if broker_mode and isinstance(execution_by_mode, dict) else {}
+        if not isinstance(mode_execution, dict):
+            mode_execution = {}
+        return str(
+            mode_execution.get("status")
+            or row.get("status")
+            or extra.get("status")
+            or ""
+        ).strip().lower()
+
+    def _today_signal_summary_by_symbol(self, target_date: str) -> dict[str, dict]:
+        safe_env = self._escaped_market_universe_data_environment()
+        start_ms, end_ms = self._target_date_bounds_ms(target_date)
+        filter_parts = [f'environment = "{safe_env}"']
+        if start_ms > 0 and end_ms > 0:
+            filter_parts.extend([f"bar_time_ms >= {start_ms}", f"bar_time_ms < {end_ms}"])
+        try:
+            rows = self.pb.get_all_records(
+                "ibkr_signals",
+                filter=" && ".join(filter_parts),
+                sort="-bar_time_ms,-updated",
+                max_pages=20,
+            )
+        except Exception:
+            return {}
+
+        summary: dict[str, dict] = {}
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            symbol = str(row.get("symbol", "") or "").strip().upper()
+            if not symbol:
+                continue
+            status = self._signal_effective_status_for_runtime(row)
+            bucket = summary.setdefault(symbol, {"latest": {}, "has_open": False})
+            if signal_status_is_open(status):
+                bucket["has_open"] = True
+            sort_ms = self._signal_row_sort_ms(row)
+            current_latest = bucket.get("latest") if isinstance(bucket.get("latest"), dict) else {}
+            if not current_latest or sort_ms >= _safe_int(current_latest.get("sort_ms"), 0):
+                bucket["latest"] = {
+                    "status": status,
+                    "signal_id": str(row.get("signal_id") or "").strip(),
+                    "sort_ms": sort_ms,
+                }
+        return summary
+
+    def _target_blocked_by_terminal_signal(self, row: dict, signal_summary: dict[str, dict]) -> tuple[bool, str]:
+        if _target_row_is_manual(row):
+            return False, ""
+        symbol = str((row or {}).get("symbol", "") or "").strip().upper()
+        summary = signal_summary.get(symbol) if symbol else None
+        if not isinstance(summary, dict) or bool(summary.get("has_open")):
+            return False, ""
+        latest = summary.get("latest") if isinstance(summary.get("latest"), dict) else {}
+        status = str((latest or {}).get("status") or "").strip().lower()
+        if signal_status_is_terminal(status):
+            return True, status
+        return False, ""
+
     def _build_target_subscription_plan(self):
         service_mod = _service_mod()
         target_date, rows = self._today_target_rows()
         trade_budget = self._get_trade_subscription_budget()
         monitor_symbols = set(self._market_ws_symbols())
+        signal_summary = self._today_signal_summary_by_symbol(target_date)
         selected_symbols = []
         selected_meta = {}
         selected_rows = []
@@ -305,6 +397,7 @@ class TradingServiceMarketUniverseTargetsMixin:
                 or _target_row_is_tradingview_active(row)
             )
             and target_row_execution_eligible(row)
+            and not self._target_blocked_by_terminal_signal(row, signal_summary)[0]
         ]
         prioritized_rows = list(active_rows)
 
@@ -359,6 +452,7 @@ class TradingServiceMarketUniverseTargetsMixin:
         service_mod = _service_mod()
         safe_env = self._escaped_market_universe_data_environment()
         monitor_symbols = set(self._market_ws_symbols())
+        signal_summary = self._today_signal_summary_by_symbol(target_date)
         try:
             existing = self.pb.get_all_records(
                 "ibkr_targets",
@@ -405,6 +499,7 @@ class TradingServiceMarketUniverseTargetsMixin:
                 continue
             subscription_rank = selected_rank_by_id.get(record_id, 0)
             subscription_selected = subscription_rank > 0
+            terminal_blocked, terminal_status = self._target_blocked_by_terminal_signal(row, signal_summary)
             extra = _safe_extra(row)
             if str(extra.get("block_reason") or "").strip().lower() == "market_context_symbol":
                 extra.pop("blocked_from_trading", None)
@@ -416,7 +511,30 @@ class TradingServiceMarketUniverseTargetsMixin:
                     "subscription_selected": subscription_selected,
                 }
             )
-            desired = "active" if target_row_execution_eligible(row) else "candidate"
+            if terminal_blocked:
+                extra.update(
+                    {
+                        "deactivated_after_close": True,
+                        "deactivated_reason": f"latest_signal_{terminal_status or 'terminal'}",
+                        "active_gate_passed": False,
+                        "context_active": False,
+                        "context_gate_passed": False,
+                        "execution_eligible": False,
+                        "target_layer": "observe",
+                        "within_subscription_budget": False,
+                        "subscription_rank": 0,
+                        "subscription_selected": False,
+                    }
+                )
+                blockers = ["target_not_active", "deactivated_after_close"]
+                for blocker in extra.get("execution_blockers") or []:
+                    blocker_text = str(blocker or "").strip()
+                    if blocker_text and blocker_text not in blockers:
+                        blockers.append(blocker_text)
+                extra["execution_blockers"] = blockers
+                desired = "candidate"
+            else:
+                desired = "active" if target_row_execution_eligible(row) else "candidate"
             current = str(row.get("status", "") or "").strip().lower()
             if current == desired and extra == _safe_extra(row):
                 continue

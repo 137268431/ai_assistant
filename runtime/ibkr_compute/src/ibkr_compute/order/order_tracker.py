@@ -337,13 +337,14 @@ class OrderTracker:
             time.sleep(max(0.0, float(retry_delay or 0.0)))
         return []
 
-    def _build_fill_history_index(self) -> Dict[str, Dict[str, Any]]:
+    def _build_fill_history_index(self, fills: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Dict[str, Any]]:
         index: Dict[str, Dict[str, Any]] = {}
-        try:
-            fills = list(self.broker.list_recent_fills() or [])
-        except Exception as exc:
-            logger.debug("Recent fills fetch failed: %s", exc)
-            return index
+        if fills is None:
+            try:
+                fills = list(self.broker.list_recent_fills() or [])
+            except Exception as exc:
+                logger.debug("Recent fills fetch failed: %s", exc)
+                return index
 
         for fill in fills:
             order_id = self._normalize_text(fill.get("orderId"))
@@ -638,7 +639,8 @@ class OrderTracker:
             logger.warning("Failed to get live orders for history: %s", exc)
 
         try:
-            fill_index = self._build_fill_history_index()
+            raw_executions = list(self.broker.list_recent_fills() or [])
+            fill_index = self._build_fill_history_index(raw_executions)
             for order_id, payload in fill_index.items():
                 merged = dict(payload)
                 merged.update(orders_by_id.get(order_id) or {})
@@ -648,6 +650,7 @@ class OrderTracker:
                 orders_by_id[order_id] = merged
         except Exception as exc:
             logger.warning("Failed to get recent fills for history: %s", exc)
+            raw_executions = []
 
         return {
             "ok": True,
@@ -655,7 +658,8 @@ class OrderTracker:
             "effective_days": 1,
             "current_day_only": False,
             "orders": list(orders_by_id.values()),
-            "raw": {"orders": list(orders_by_id.values())},
+            "executions": raw_executions,
+            "raw": {"orders": list(orders_by_id.values()), "executions": raw_executions},
             "limitations": [
                 "IB Gateway socket API 当前返回 open orders 与最近 executions 的组合视图。",
                 "如果需要完整跨日订单历史，请补充 Flex / Statement 链路。",
@@ -1350,6 +1354,38 @@ class OrderTracker:
                     entry_order_unique_id = str(existing_order.get("entry_order_unique_id") or entry_order_unique_id or canonical_unique_id).strip()
                     parent_order_unique_id = str(existing_order.get("parent_order_unique_id") or "").strip()
                     role = str(existing_order.get("role") or role).strip() or role
+                    self_linked_close = (
+                        role == "close"
+                        and not parent_order_unique_id
+                        and not signal_id
+                        and (
+                            not trade_group_id
+                            or trade_group_id == entry_order_unique_id
+                            or trade_group_id == canonical_unique_id
+                            or trade_group_id.lower().startswith("close_")
+                        )
+                    )
+                    if self_linked_close and not parent_id:
+                        linked_close_entry = self._find_pb_entry_for_close_order(
+                            symbol=symbol,
+                            side=normalized_side,
+                            quantity=quantity,
+                            runtime_environment=runtime_environment,
+                        )
+                        if linked_close_entry:
+                            parent_order_unique_id = str(linked_close_entry.get("unique_id") or "").strip()
+                            trade_group_id = str(
+                                linked_close_entry.get("trade_group_id")
+                                or linked_close_entry.get("entry_order_unique_id")
+                                or parent_order_unique_id
+                                or trade_group_id
+                            ).strip()
+                            entry_order_unique_id = str(
+                                linked_close_entry.get("entry_order_unique_id")
+                                or parent_order_unique_id
+                                or entry_order_unique_id
+                            ).strip()
+                            signal_id = str(linked_close_entry.get("signal_id") or signal_id or "").strip()
                 elif parent_id:
                     parent_record = self._find_pb_order_by_broker_id(
                         str(parent_id),
