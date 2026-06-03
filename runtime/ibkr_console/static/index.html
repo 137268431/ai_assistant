@@ -13,7 +13,6 @@
 <body data-home-layout="desktop">
     <div class="home-shell">
         <div id="contextBar"></div>
-        <div id="pageBridge"></div>
 
         <main class="home-main">
             <section id="homeOverview" class="home-panel" data-ready="loading">
@@ -1482,7 +1481,6 @@
                 subtitle: '执行 / 分析 / 筛选 / 系统一体视图',
                 actionsHtml: '<button type="button" class="page-context-action page-context-action-danger" onclick="handleLogout(event)">退出</button>'
             });
-            document.getElementById('pageBridge').innerHTML = renderHomeBridge();
             syncQuickLinksMeta();
             bindEnvironmentLinks();
             document.getElementById('nav').innerHTML = renderNav('/index.html');

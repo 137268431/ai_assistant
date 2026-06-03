@@ -99,6 +99,7 @@
         let brokerLiveLoading = false;
         let brokerLiveError = '';
         let brokerLiveFetchedAt = '';
+        const groupCollapseOverrides = new Map();
         const CONFIG_CACHE_TTL_MS = 5 * 60 * 1000;
         const ORDERS_FETCH_PAGE_SIZE = 200;
         const ORDERS_FETCH_MAX_PAGES = 40;
@@ -1827,6 +1828,98 @@
             return `<button class="action-btn btn-view" onclick="viewTradeGroup('${encodeURIComponent(group.trade_group_id)}', '')">📜 交易组明细</button>`;
         }
 
+        function groupCollapseKey(group) {
+            return firstDefined(
+                group?.group_id,
+                group?.signal_id,
+                group?.trade_group_id,
+                group?.primaryOrder?.entry_order_unique_id,
+                group?.primaryOrder?.unique_id,
+                group?.symbol
+            );
+        }
+
+        function isGroupDefaultCollapsed(group) {
+            return ['Canceled', 'Closed'].includes(String(group?.status || '').trim());
+        }
+
+        function isGroupCollapsed(group) {
+            const key = groupCollapseKey(group);
+            if (key && groupCollapseOverrides.has(key)) {
+                return Boolean(groupCollapseOverrides.get(key));
+            }
+            return isGroupDefaultCollapsed(group);
+        }
+
+        function decodeGroupCollapseKey(encodedKey) {
+            try {
+                return decodeURIComponent(encodedKey || '');
+            } catch (_) {
+                return encodedKey || '';
+            }
+        }
+
+        function toggleGroupCollapse(encodedKey) {
+            const key = decodeGroupCollapseKey(encodedKey);
+            if (!key) return;
+            const group = displayedGroups.find((item) => groupCollapseKey(item) === key)
+                || allGroups.find((item) => groupCollapseKey(item) === key);
+            const currentlyCollapsed = group ? isGroupCollapsed(group) : Boolean(groupCollapseOverrides.get(key));
+            groupCollapseOverrides.set(key, !currentlyCollapsed);
+            renderGroups();
+        }
+
+        function pruneGroupCollapseOverrides(groups) {
+            const activeKeys = new Set((groups || []).map(groupCollapseKey).filter(Boolean));
+            Array.from(groupCollapseOverrides.keys()).forEach((key) => {
+                if (!activeKeys.has(key)) groupCollapseOverrides.delete(key);
+            });
+        }
+
+        function renderCollapsedMetric(label, value, subvalue = '') {
+            return `
+                <div class="collapsed-metric-card">
+                    <div class="collapsed-metric-label">${escapeHtml(label)}</div>
+                    <div class="collapsed-metric-value">${value}</div>
+                    ${subvalue ? `<div class="collapsed-metric-subvalue">${escapeHtml(subvalue)}</div>` : ''}
+                </div>
+            `;
+        }
+
+        function renderCollapsedGroupActions(group) {
+            const actions = [
+                group.signal_id ? `<button class="action-btn btn-secondary" onclick="viewSignal('${encodeURIComponent(group.signal_id)}')">📡 信号</button>` : '',
+                renderSignalOrderDetailsButton(group)
+            ].filter(Boolean);
+            if (!actions.length) return '';
+            return `<div class="collapsed-summary-actions">${actions.join('')}</div>`;
+        }
+
+        function renderGroupCollapsedSummary(group, summary) {
+            const planText = `${formatMoney(summary.primary?.limit_price)} / ${formatMoney(summary.tpPrice)} / ${formatMoney(summary.slPrice)}`;
+            const ids = [
+                `signal_id=${group.signal_id || '-'}`,
+                `trade_groups=${summary.tradeGroupText}`,
+                `protection_legs=${group.protectionLegCount || 0}`
+            ];
+            return `
+                <div class="group-collapsed-summary">
+                    <div class="collapsed-metric-grid">
+                        ${renderCollapsedMetric('Entry', escapeHtml(String(group.entryOrderCount || 0)), `TG ${(group.tradeGroupIds || []).length || 0}`)}
+                        ${renderCollapsedMetric('Qty / Fill', `${escapeHtml(formatQty(summary.entryQuantity))} / ${escapeHtml(formatQty(summary.filledQuantity))}`, '计划 / 真实')}
+                        ${renderCollapsedMetric('Actual Avg', buildActualEntryFillMetric(group))}
+                        ${renderCollapsedMetric('Plan E / TP / SL', escapeHtml(planText))}
+                        ${renderCollapsedMetric('P/L', buildSignalPnlMetric(group))}
+                    </div>
+                    <div class="collapsed-summary-copy">${escapeHtml(summary.exitText)}</div>
+                    <div class="collapsed-id-row">
+                        ${ids.map((item) => `<span class="chip">${escapeHtml(item)}</span>`).join('')}
+                    </div>
+                    ${renderCollapsedGroupActions(group)}
+                </div>
+            `;
+        }
+
         function renderGroupCard(group) {
             const primary = group.primaryOrder;
             const isReadOnlySnapshot = currentOrdersSource === 'ibkr_order_details';
@@ -1846,9 +1939,12 @@
                         : '等待后续状态';
             const tradeGroupText = summarizeTradeGroupIds(group);
             const protectionAndExitOrders = [...(group.protectionOrders || []), ...(group.closeOrders || [])].sort(sortOrdersInGroup);
+            const collapseKey = groupCollapseKey(group);
+            const collapsed = isGroupCollapsed(group);
+            const collapseButtonText = collapsed ? '展开明细' : '收起明细';
 
             return `
-                <div class="group-card signal-group-card">
+                <div class="group-card signal-group-card ${collapsed ? 'is-collapsed' : ''}" data-group-key="${escapeHtml(collapseKey)}">
                     <div class="group-header">
                         <div>
                             <div class="group-symbol-row">
@@ -1867,42 +1963,50 @@
                             <div class="group-subtitle">${escapeHtml(formatTimePair(group.latestEvent || primary || {}))}</div>
                             ${renderCountdown(primary)}
                             ${lifecycleFlowUrl ? `<a class="action-btn btn-secondary lifecycle-header-link" href="${lifecycleFlowUrl}">🧭 生命周期</a>` : ''}
+                            <button class="collapse-toggle" type="button" aria-expanded="${collapsed ? 'false' : 'true'}" onclick="toggleGroupCollapse('${encodeURIComponent(collapseKey)}')">
+                                <span class="collapse-toggle-icon" aria-hidden="true">${collapsed ? '+' : '-'}</span>
+                                ${collapseButtonText}
+                            </button>
                         </div>
                     </div>
 
-                    <div class="chip-row">
-                        <span class="chip">signal_id=${escapeHtml(group.signal_id || '-')}</span>
-                        <span class="chip">trade_groups=${escapeHtml(tradeGroupText)}</span>
-                        <span class="chip">protection_legs=${escapeHtml(String(group.protectionLegCount || 0))}</span>
-                    </div>
+                    ${collapsed ? renderGroupCollapsedSummary(group, { primary, tpPrice, slPrice, entryQuantity, filledQuantity, exitText, tradeGroupText }) : ''}
 
-                    <div class="group-grid">
-                        ${renderMetric('Entry Orders', `${escapeHtml(String(group.entryOrderCount || 0))}<br><span class="metric-subvalue">只统计开仓 entry</span>`)}
-                        ${renderMetric('Qty / Actual Filled', `${escapeHtml(formatQty(entryQuantity))} / ${escapeHtml(formatQty(filledQuantity))}`)}
-                        ${renderMetric('Entry Actual Avg', buildActualEntryFillMetric(group))}
-                        ${renderMetric('Plan Entry / TP / SL', `${escapeHtml(formatMoney(primary?.limit_price))} / ${escapeHtml(formatMoney(tpPrice))} / ${escapeHtml(formatMoney(slPrice))}`)}
-                        ${renderMetric('P/L', buildSignalPnlMetric(group))}
-                    </div>
+                    <div class="group-detail-body" ${collapsed ? 'hidden' : ''}>
+                        <div class="chip-row">
+                            <span class="chip">signal_id=${escapeHtml(group.signal_id || '-')}</span>
+                            <span class="chip">trade_groups=${escapeHtml(tradeGroupText)}</span>
+                            <span class="chip">protection_legs=${escapeHtml(String(group.protectionLegCount || 0))}</span>
+                        </div>
 
-                    ${renderRelationshipStrip(group)}
+                        <div class="group-grid">
+                            ${renderMetric('Entry Orders', `${escapeHtml(String(group.entryOrderCount || 0))}<br><span class="metric-subvalue">只统计开仓 entry</span>`)}
+                            ${renderMetric('Qty / Actual Filled', `${escapeHtml(formatQty(entryQuantity))} / ${escapeHtml(formatQty(filledQuantity))}`)}
+                            ${renderMetric('Entry Actual Avg', buildActualEntryFillMetric(group))}
+                            ${renderMetric('Plan Entry / TP / SL', `${escapeHtml(formatMoney(primary?.limit_price))} / ${escapeHtml(formatMoney(tpPrice))} / ${escapeHtml(formatMoney(slPrice))}`)}
+                            ${renderMetric('P/L', buildSignalPnlMetric(group))}
+                        </div>
 
-                    <div class="section-title">开仓 Entry (${escapeHtml(String((group.entryOrders || []).length))})</div>
-                    <div class="order-list">
-                        ${(group.entryOrders || []).map((order) => renderEntryOrderCard(order, group, isReadOnlySnapshot)).join('')}
-                    </div>
+                        ${renderRelationshipStrip(group)}
 
-                    ${protectionAndExitOrders.length ? `
-                        <div class="section-title">保护 / 退出 (${escapeHtml(String(protectionAndExitOrders.length))})</div>
+                        <div class="section-title">开仓 Entry (${escapeHtml(String((group.entryOrders || []).length))})</div>
                         <div class="order-list">
-                            ${protectionAndExitOrders.map((order) => renderOrderCard(order, false)).join('')}
+                            ${(group.entryOrders || []).map((order) => renderEntryOrderCard(order, group, isReadOnlySnapshot)).join('')}
                         </div>
-                    ` : ''}
 
-                    <div class="action-panel">
-                        <div class="action-row">
-                            ${group.signal_id ? `<button class="action-btn btn-secondary" onclick="viewSignal('${encodeURIComponent(group.signal_id)}')">📡 信号</button>` : ''}
-                            ${lifecycleFlowUrl ? `<a class="action-btn btn-secondary lifecycle-action" href="${lifecycleFlowUrl}">🧭 生命周期</a>` : ''}
-                            ${renderSignalOrderDetailsButton(group)}
+                        ${protectionAndExitOrders.length ? `
+                            <div class="section-title">保护 / 退出 (${escapeHtml(String(protectionAndExitOrders.length))})</div>
+                            <div class="order-list">
+                                ${protectionAndExitOrders.map((order) => renderOrderCard(order, false)).join('')}
+                            </div>
+                        ` : ''}
+
+                        <div class="action-panel">
+                            <div class="action-row">
+                                ${group.signal_id ? `<button class="action-btn btn-secondary" onclick="viewSignal('${encodeURIComponent(group.signal_id)}')">📡 信号</button>` : ''}
+                                ${lifecycleFlowUrl ? `<a class="action-btn btn-secondary lifecycle-action" href="${lifecycleFlowUrl}">🧭 生命周期</a>` : ''}
+                                ${renderSignalOrderDetailsButton(group)}
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1931,6 +2035,7 @@
             allOrders = Array.isArray(records) ? records : [];
             allTradeGroups = buildTradeGroups(allOrders);
             allGroups = buildSignalGroups(allTradeGroups);
+            pruneGroupCollapseOverrides(allGroups);
             isOrdersDatasetPartial = partial;
 
             if (!partial && pendingLegacySearchResolution) {

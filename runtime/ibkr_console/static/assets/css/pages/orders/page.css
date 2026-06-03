@@ -280,6 +280,15 @@
                 linear-gradient(180deg, rgba(14,20,32,0.98), rgba(20,28,46,0.96));
         }
 
+        .signal-group-card.is-collapsed {
+            padding-bottom: 14px;
+            border-color: rgba(79,209,197,0.28);
+        }
+
+        .group-detail-body[hidden] {
+            display: none;
+        }
+
         .group-header {
             display: flex;
             justify-content: space-between;
@@ -368,6 +377,43 @@
             white-space: nowrap;
         }
 
+        .collapse-toggle {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 7px;
+            min-height: 30px;
+            padding: 6px 11px;
+            border: 1px solid rgba(79,209,197,0.24);
+            border-radius: 10px;
+            background: rgba(79,209,197,0.10);
+            color: var(--accent);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
+        }
+
+        .collapse-toggle:hover {
+            background: rgba(79,209,197,0.16);
+            border-color: rgba(79,209,197,0.36);
+            transform: translateY(-1px);
+        }
+
+        .collapse-toggle-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 16px;
+            height: 16px;
+            border-radius: 999px;
+            background: rgba(79,209,197,0.16);
+            color: var(--accent);
+            line-height: 1;
+        }
+
         .countdown-display {
             display: inline-flex;
             align-items: center;
@@ -437,6 +483,82 @@
             background: rgba(252,129,129,0.10);
             border-color: rgba(252,129,129,0.18);
             color: var(--short);
+        }
+
+        .group-collapsed-summary {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-top: 10px;
+            padding: 12px;
+            border: 1px solid rgba(79,209,197,0.16);
+            border-radius: 16px;
+            background:
+                radial-gradient(circle at 100% 0%, rgba(99,179,237,0.10), transparent 34%),
+                rgba(20,28,46,0.74);
+        }
+
+        .collapsed-metric-grid {
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            gap: 8px;
+        }
+
+        .collapsed-metric-card {
+            min-height: 66px;
+            padding: 9px 10px;
+            border: 1px solid rgba(99,179,237,0.12);
+            border-radius: 13px;
+            background: rgba(14,20,32,0.70);
+        }
+
+        .collapsed-metric-label {
+            color: var(--muted);
+            font-size: 9px;
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+
+        .collapsed-metric-value {
+            margin-top: 5px;
+            color: var(--text);
+            font-size: 13px;
+            font-weight: 800;
+            line-height: 1.15;
+            word-break: break-word;
+        }
+
+        .collapsed-metric-subvalue {
+            margin-top: 5px;
+            color: var(--muted);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            line-height: 1.25;
+        }
+
+        .collapsed-summary-copy {
+            color: var(--muted);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            line-height: 1.45;
+        }
+
+        .collapsed-id-row,
+        .collapsed-summary-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .collapsed-summary-actions {
+            padding-top: 2px;
+        }
+
+        .collapsed-summary-actions .action-btn {
+            flex: 0 1 auto;
+            min-width: 128px;
+            padding: 8px 10px;
         }
 
         .group-grid {
@@ -697,7 +819,8 @@
         @media (max-width: 720px) {
             .summary-bar,
             .group-grid,
-            .detail-grid {
+            .detail-grid,
+            .collapsed-metric-grid {
                 grid-template-columns: 1fr;
             }
 
@@ -714,8 +837,13 @@
             }
 
             .broker-live-metrics,
-            .mini-chip-row {
+            .mini-chip-row,
+            .collapsed-summary-actions {
                 justify-content: flex-start;
+            }
+
+            .collapsed-summary-actions .action-btn {
+                flex: 1 1 140px;
             }
         }
 
