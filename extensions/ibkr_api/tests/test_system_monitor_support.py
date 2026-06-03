@@ -1337,6 +1337,45 @@ class SystemMonitorSupportTest(unittest.TestCase):
         self.assertEqual(summary["actions"]["tv_failed_raw_count"], 1)
         self.assertEqual(summary["actions"]["tv_failed_suppressed_cross_day_count"], 1)
 
+    def test_tv_flow_previous_market_date_failure_cleanup_update_is_suppressed(self):
+        pb = _FakePocketBase(
+            {
+                "tv_webhook_events": [],
+                "ibkr_signals": [],
+                "ibkr_reverse_signals": [
+                    {
+                        "id": "rev_cleanup_updated_today",
+                        "symbol": "ET",
+                        "status": "cancelled",
+                        "source": "tradingview",
+                        "environment": "paper",
+                        "action_type": "adjust_bracket",
+                        "reason": "reverse blocked: risk_update_child_order_id_unresolved",
+                        "created": "2026-06-02 13:48:00Z",
+                        "updated": "2026-06-03 04:06:00Z",
+                        "extra": {
+                            "result_status": "blocked",
+                            "reverse_runtime_detail": {"blocked_reason": "risk_update_child_order_id_unresolved"},
+                        },
+                    }
+                ],
+            }
+        )
+
+        summary = build_tv_flow_monitor_summary(
+            pb,
+            data_environment="live",
+            runtime_environment="paper",
+            config_map={"tv_flow_failed_lookback_min": "1440", "eod_close_time": "15:55"},
+            now_ms=_utc_ms(2026, 6, 3, 13, 1),
+        )
+
+        self.assertEqual(summary["status"], "ok")
+        self.assertTrue(summary["action_monitor"]["active"])
+        self.assertEqual(summary["actions"]["tv_failed_count"], 0)
+        self.assertEqual(summary["actions"]["tv_failed_raw_count"], 1)
+        self.assertEqual(summary["actions"]["tv_failed_suppressed_cross_day_count"], 1)
+
     def test_tv_flow_pending_actions_are_suppressed_after_eod(self):
         pb = _FakePocketBase(
             {

@@ -62,7 +62,12 @@ def _build_account_snapshot_probe(globals_dict: dict[str, Any], probe_environmen
         try:
             payload, status_code = build_account_snapshot_response(
                 globals_dict["pb"],
-                payload={"broker_mode": probe_environment, "environment": probe_environment, "include_pnl": "0"},
+                payload={
+                    "broker_mode": probe_environment,
+                    "environment": probe_environment,
+                    "include_pnl": "0",
+                    "monitor_probe": "1",
+                },
                 normalize_environment=globals_dict["_normalize_environment"],
                 request_json_request=globals_dict["_request_json_request"],
                 runtime_base_url=str(globals_dict.get("RUNTIME_BASE_URL") or "http://127.0.0.1:5101").rstrip("/"),

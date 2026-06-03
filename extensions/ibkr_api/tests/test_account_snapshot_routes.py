@@ -555,6 +555,47 @@ class AccountSnapshotRoutesTest(unittest.TestCase):
         self.assertIn("enrichment_elapsed_ms", diagnostics)
         self.assertIn("total_elapsed_ms", diagnostics)
 
+    def test_account_snapshot_monitor_probe_uses_lightweight_runtime_status(self):
+        pb = _FakePB()
+        calls = []
+
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            calls.append({"method": method, "base_url": base_url, "path": path, "params": list(params or []), "timeout": timeout})
+            return {
+                "status_code": 200,
+                "payload": {
+                    "ok": True,
+                    "status": "running",
+                    "environment": "paper",
+                    "gateway": {"running": True},
+                    "session": {"authenticated": True},
+                    "websocket": {"ready": True},
+                },
+                "target_url": f"{base_url.rstrip('/')}{path}",
+                "elapsed_ms": 25.0,
+                "timeout_s": timeout,
+            }
+
+        payload, status_code = build_account_snapshot_response(
+            pb,
+            payload={"environment": "paper", "monitor_probe": "1", "include_pnl": "0"},
+            normalize_environment=lambda value, default="live": str(value or default).strip().lower() or default,
+            request_json_request=request_json_request,
+            runtime_base_url="http://127.0.0.1:5101",
+            upstream_timeout=4.0,
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["monitor_probe"])
+        self.assertTrue(payload["gateway_running"])
+        self.assertTrue(payload["session_authenticated"])
+        self.assertEqual("/ibkr/status", calls[0]["path"])
+        self.assertEqual([("broker_mode", "paper"), ("environment", "paper")], calls[0]["params"])
+        self.assertEqual(4.0, calls[0]["timeout"])
+        self.assertEqual("http://127.0.0.1:5101/ibkr/status", payload["proxy_upstream"])
+        self.assertTrue(payload["diagnostics"]["account_snapshot"]["monitor_probe"])
+
     def test_enrich_account_snapshot_skips_execution_fill_scan_without_order_ids(self):
         pb = _FakePB({"orders": [], "ibkr_execution_fills": [{"order_id": "old", "commission": 9.99}], "ibkr_signals": []})
         payload = {

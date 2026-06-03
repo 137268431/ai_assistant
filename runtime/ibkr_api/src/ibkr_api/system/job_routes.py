@@ -45,6 +45,7 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
     build_system_summary_payload = deps["build_system_summary_payload"]
     request_json_request = deps["request_json_request"]
     compute_base_url = deps["compute_base_url"]
+    runtime_base_url = deps.get("runtime_base_url", "")
     time_strings = deps["time_strings"]
     get_state_payload = deps["get_state_payload"]
     normalize_two_factor_state_with_runtime = deps["normalize_two_factor_state_with_runtime"]
@@ -57,6 +58,30 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
     build_active_window_progress_response = deps["build_active_window_progress_response"]
     write_system_event_record = deps["write_system_event_record"]
     startup_chat_id = deps["startup_chat_id"]
+
+    def _list_live_broker_order_ids(environment: str) -> list[str] | None:
+        if not runtime_base_url:
+            return None
+        result = request_json_request(
+            "GET",
+            runtime_base_url,
+            "/ibkr/orders/live",
+            params=[("environment", environment), ("broker_mode", environment)],
+            timeout=8.0,
+        )
+        result_payload = result if isinstance(result, dict) else {}
+        payload = result_payload.get("payload") if isinstance(result_payload.get("payload"), dict) else {}
+        if not payload or payload.get("ok") is False or int(result_payload.get("status_code") or 0) >= 400:
+            return None
+        order_ids: list[str] = []
+        for order in payload.get("orders") if isinstance(payload.get("orders"), list) else []:
+            if not isinstance(order, dict):
+                continue
+            for key in ("order_id", "broker_order_id", "perm_id", "client_order_id"):
+                value = str(order.get(key) or "").strip()
+                if value and value not in order_ids:
+                    order_ids.append(value)
+        return order_ids
 
     @app.route("/api/custom/system/jobs/signal_expiry", methods=["POST"])
     def custom_system_job_signal_expiry() -> Response:
@@ -98,6 +123,7 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
             escape_filter_string=escape_filter_string,
             config_value=config_value,
             cancel_broker_order=cancel_broker_order,
+            list_live_broker_order_ids=_list_live_broker_order_ids,
             send_interactive=feishu_send_interactive,
             update_interactive=feishu_update_interactive,
             signal_chat_id_fn=signal_chat_id,

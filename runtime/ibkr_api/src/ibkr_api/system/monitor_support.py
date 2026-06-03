@@ -691,7 +691,7 @@ def build_tv_flow_monitor_summary(
     processed_reverse_rows = [
         row
         for row in processed_reverse_rows
-        if _is_within_lookback(row, observed_ms, failed_lookback_ms, updated=True)
+        if _is_within_lookback(row, observed_ms, failed_lookback_ms)
     ]
     tv_signal_pending_raw = [row for row in pending_signal_rows if _is_tv_action(row)]
     tv_reverse_pending_raw = [row for row in pending_reverse_rows if _is_tv_action(row)]
@@ -699,7 +699,6 @@ def build_tv_flow_monitor_summary(
     non_tv_reverse_pending = [row for row in pending_reverse_rows if not _is_tv_action(row)]
     tv_reverse_failed_raw = _latest_rows(
         [row for row in processed_reverse_rows if _is_tv_action(row) and _is_failed_processed_tv_action(row)],
-        updated=True,
     )
     tv_pending_all_raw = _latest_rows(tv_signal_pending_raw + tv_reverse_pending_raw)
     tv_pending_all, tv_pending_window_stats = _filter_tv_action_window_rows(
@@ -709,7 +708,6 @@ def build_tv_flow_monitor_summary(
     tv_reverse_failed, tv_failed_window_stats = _filter_tv_action_window_rows(
         tv_reverse_failed_raw,
         window=action_window,
-        updated=True,
     )
     tv_signal_pending = [row for row in tv_signal_pending_raw if row in tv_pending_all]
     tv_reverse_pending = [row for row in tv_reverse_pending_raw if row in tv_pending_all]

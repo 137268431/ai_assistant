@@ -34,6 +34,7 @@ def register_platform_routes(app, deps: dict[str, Any]) -> dict[str, Any]:
                 "build_system_monitor_payload": deps["build_system_monitor_payload"],
                 "collect_storage_health": deps["collect_storage_health"],
                 "compute_base_url": deps["compute_base_url"],
+                "runtime_base_url": deps["runtime_base_url"],
                 "request_two_factor_approval": deps["request_two_factor_approval"],
                 "emit_system_event": deps["emit_system_event"],
                 "label_title_with_environment": deps["label_title_with_environment"],

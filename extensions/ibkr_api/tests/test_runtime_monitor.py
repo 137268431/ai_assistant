@@ -52,7 +52,11 @@ def _normalize_environment(value, default="live"):
 def _successful_upstream_payload(environment="paper"):
     return {
         "ok": True,
+        "status": "running",
         "environment": environment,
+        "gateway": {"running": True},
+        "session": {"authenticated": True},
+        "websocket": {"ready": True, "connected": True},
         "summary": {},
         "positions": [],
         "orders": [],
@@ -149,6 +153,8 @@ class RuntimeMonitorAccountSnapshotProbeTest(unittest.TestCase):
         self.assertEqual(200, payload["status_code"])
         self.assertEqual("", payload["error"])
         self.assertEqual(2, len(calls))
+        self.assertEqual(["/ibkr/status", "/ibkr/status"], [call["path"] for call in calls])
+        self.assertEqual([("broker_mode", "paper"), ("environment", "paper")], calls[0]["params"])
         self.assertEqual([4.0, 4.0], [call["timeout"] for call in calls])
         sleep_mock.assert_called_once_with(2.0)
         self.assertEqual(2, len(payload["attempts"]))

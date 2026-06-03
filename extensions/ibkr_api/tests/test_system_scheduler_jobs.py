@@ -635,6 +635,87 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(len(created_details), 2)
         self.assertTrue(all(row["extra"]["source"] == "order_reconcile_stale_pb" for row in created_details))
 
+    def test_order_expiry_repairs_stale_children_when_broker_has_no_live_orders(self):
+        pb = _OrderExpiryPB()
+        for row in pb.records["orders"]:
+            if row["role"] == "entry":
+                row["status"] = "Filled"
+                row["relation_status"] = "closed"
+                row["filled_qty"] = 10
+            else:
+                row["status"] = "Submitted"
+                row["relation_status"] = "active"
+        cancel_calls = []
+
+        def cancel_broker_order(environment, order_id, payload):
+            cancel_calls.append((environment, order_id, payload["trade_group_id"]))
+            return {"ok": True}
+
+        payload, status_code = build_order_expiry_response(
+            pb,
+            payload={"environment": "live"},
+            normalize_environment=lambda value, default: str(value or default).strip().lower() or default,
+            escape_filter_string=lambda value: str(value or "").replace('"', '\\"'),
+            config_value=lambda key, default, environment: "30",
+            cancel_broker_order=cancel_broker_order,
+            list_live_broker_order_ids=lambda environment: [],
+            send_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "unused"},
+            update_interactive=lambda *_args, **_kwargs: {"success": True},
+            signal_chat_id_fn=lambda environment: f"signal-chat-{environment}",
+            console_base_url="https://console.example.com",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["processed_count"], 2)
+        self.assertEqual(payload["expired_group_count"], 1)
+        self.assertEqual(payload["cancelled_order_ids"], [])
+        self.assertEqual(cancel_calls, [])
+        statuses = {row["id"]: row["status"] for row in pb.records["orders"]}
+        self.assertEqual(statuses["entry-1"], "Filled")
+        self.assertEqual(statuses["tp-1"], "Canceled")
+        self.assertEqual(statuses["sl-1"], "Canceled")
+        self.assertEqual(pb.records["ibkr_signals"][0]["status"], "submitted")
+        created_details = [row for row in pb.records["ibkr_order_details"] if row.get("extra", {}).get("stale_pb_repair")]
+        self.assertEqual(len(created_details), 2)
+        self.assertTrue(all(row["extra"]["live_order_checked"] for row in created_details))
+        self.assertTrue(all(row["extra"]["cancel_skip_reason"] == "child_orders_not_live_at_broker" for row in created_details))
+
+    def test_order_expiry_does_not_repair_filled_entry_children_still_live_at_broker(self):
+        pb = _OrderExpiryPB()
+        for row in pb.records["orders"]:
+            if row["role"] == "entry":
+                row["status"] = "Filled"
+                row["relation_status"] = "closed"
+                row["filled_qty"] = 10
+            else:
+                row["status"] = "Submitted"
+                row["relation_status"] = "active"
+        cancel_calls = []
+
+        payload, status_code = build_order_expiry_response(
+            pb,
+            payload={"environment": "live"},
+            normalize_environment=lambda value, default: str(value or default).strip().lower() or default,
+            escape_filter_string=lambda value: str(value or "").replace('"', '\\"'),
+            config_value=lambda key, default, environment: "30",
+            cancel_broker_order=lambda environment, order_id, payload: cancel_calls.append(order_id) or {"ok": True},
+            list_live_broker_order_ids=lambda environment: ["12346"],
+            send_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "unused"},
+            update_interactive=lambda *_args, **_kwargs: {"success": True},
+            signal_chat_id_fn=lambda environment: f"signal-chat-{environment}",
+            console_base_url="https://console.example.com",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["processed_count"], 0)
+        self.assertEqual(payload["expired_group_count"], 0)
+        self.assertEqual(cancel_calls, [])
+        statuses = {row["id"]: row["status"] for row in pb.records["orders"]}
+        self.assertEqual(statuses["tp-1"], "Submitted")
+        self.assertEqual(statuses["sl-1"], "Submitted")
+
     def test_auth_issue_treats_stale_broker_as_operational_recovery(self):
         issue = build_auth_immediate_issue(
             {

@@ -30,6 +30,7 @@ ConfigValue = Callable[[str, str, str], str]
 EscapeFilterString = Callable[[Any], str]
 NormalizeEnvironment = Callable[[Any, str], str]
 CancelBrokerOrder = Callable[[str, str, dict[str, Any]], dict[str, Any]]
+ListLiveBrokerOrderIds = Callable[[str], list[str] | set[str] | tuple[str, ...] | None]
 SignalChatId = Callable[[str], str]
 
 ORDER_QUERY_SORT = "-created,-updated,-bar_time_ms"
@@ -283,6 +284,33 @@ def _has_canceled_unfilled_entry(related_rows: list[dict[str, Any]] | None) -> b
     return True
 
 
+def _child_broker_order_ids(related_rows: list[dict[str, Any]] | None) -> list[str]:
+    order_ids: list[str] = []
+    for row in related_rows or []:
+        snapshot = normalize_order_row(row)
+        role = to_text(snapshot.get("role")).lower()
+        if role not in {"take_profit", "stop_loss", "tp", "sl"}:
+            continue
+        if is_closed_status(snapshot.get("status")):
+            continue
+        order_id = resolve_cancelable_broker_order_id(row)
+        if order_id and order_id not in order_ids:
+            order_ids.append(order_id)
+    return order_ids
+
+
+def _child_orders_absent_from_live_broker(
+    related_rows: list[dict[str, Any]] | None,
+    live_broker_order_ids: set[str] | None,
+) -> bool:
+    if live_broker_order_ids is None:
+        return False
+    child_ids = _child_broker_order_ids(related_rows)
+    if not child_ids:
+        return False
+    return not any(order_id in live_broker_order_ids for order_id in child_ids)
+
+
 def _load_related_trade_group_rows(
     pb: Any,
     *,
@@ -361,6 +389,7 @@ def build_order_expiry_response(
     escape_filter_string: EscapeFilterString,
     config_value: ConfigValue | None,
     cancel_broker_order: CancelBrokerOrder,
+    list_live_broker_order_ids: ListLiveBrokerOrderIds | None = None,
     send_interactive: SendInteractive | None = None,
     update_interactive: UpdateInteractive | None = None,
     signal_chat_id_fn: SignalChatId | None = None,
@@ -383,6 +412,16 @@ def build_order_expiry_response(
         environment=environment,
         escape_filter_string=escape_filter_string,
     )
+    live_broker_order_ids: set[str] | None = None
+    if stale_child_rows and callable(list_live_broker_order_ids):
+        try:
+            live_broker_order_ids = {
+                to_text(item)
+                for item in (list_live_broker_order_ids(environment) or [])
+                if to_text(item)
+            }
+        except Exception:
+            live_broker_order_ids = None
     candidate_rows = dedupe_order_rows([*expired_rows, *stale_child_rows])
     if not candidate_rows:
         return (
@@ -440,16 +479,32 @@ def build_order_expiry_response(
         related_aliases = build_related_group_aliases(related_rows, trade_group_id)
         if any(alias in processed_groups for alias in related_aliases):
             continue
-        if is_stale_child_repair and not _has_canceled_unfilled_entry(related_rows):
-            continue
+        skip_broker_cancel = False
+        has_canceled_unfilled_entry = False
+        if is_stale_child_repair:
+            has_canceled_unfilled_entry = _has_canceled_unfilled_entry(related_rows)
+            child_orders_confirmed_absent = _child_orders_absent_from_live_broker(related_rows, live_broker_order_ids)
+            if child_orders_confirmed_absent:
+                skip_broker_cancel = True
+            elif not has_canceled_unfilled_entry:
+                continue
         processed_groups.update(related_aliases or [trade_group_id])
         processed_group_count += 1
-        cancel_result = _cancel_group_broker_orders(
-            related_rows,
-            environment=environment,
-            cancel_broker_order=cancel_broker_order,
-            trade_group_id=trade_group_id,
-        )
+        if skip_broker_cancel:
+            cancel_result = {
+                "ok": True,
+                "skipped": True,
+                "reason": "child_orders_not_live_at_broker",
+                "cancelled_order_ids": [],
+                "live_order_checked": True,
+            }
+        else:
+            cancel_result = _cancel_group_broker_orders(
+                related_rows,
+                environment=environment,
+                cancel_broker_order=cancel_broker_order,
+                trade_group_id=trade_group_id,
+            )
         for cancelled_order_id in cancel_result.get("cancelled_order_ids") or []:
             if cancelled_order_id and cancelled_order_id not in cancelled_order_ids:
                 cancelled_order_ids.append(str(cancelled_order_id))
@@ -503,12 +558,15 @@ def build_order_expiry_response(
                     "treated_as_closed": bool(cancel_result.get("treated_as_closed")),
                     "treated_as_closed_ids": list(cancel_result.get("treated_as_closed_ids") or []),
                     "stale_pb_repair": bool(is_stale_child_repair),
+                    "live_order_checked": bool(cancel_result.get("live_order_checked")),
+                    "cancel_skip_reason": to_text(cancel_result.get("reason")),
                 },
             )
             detail_record_ids.append(to_text((detail_row or {}).get("id")))
             group_updated += 1
         processed_count += group_updated
-        if group_updated > 0:
+        should_expire_signal = not is_stale_child_repair or has_canceled_unfilled_entry
+        if group_updated > 0 and should_expire_signal:
             signal_row = _load_signal_for_order_group(
                 pb,
                 related_rows,

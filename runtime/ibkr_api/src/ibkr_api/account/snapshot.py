@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from typing import Any, Callable
 
+from ibkr_api.app_core.value_utils import parse_boolean
 from ibkr_api.modes import request_broker_mode
 from ibkr_api.orders.values import ensure_object, to_float, to_int, to_text
 from ibkr_api.account.snapshot_live_orders import build_managed_order_context, normalize_live_order
@@ -31,6 +32,85 @@ def _include_pnl_param(payload: dict[str, Any]) -> str | None:
     if text in {"0", "false", "no", "off"}:
         return "0"
     return None
+
+
+def _monitor_probe_param(payload: dict[str, Any]) -> bool:
+    return parse_boolean(payload.get("monitor_probe"), False) or parse_boolean(payload.get("lite"), False)
+
+
+def _build_account_monitor_probe_response(
+    *,
+    environment: str,
+    request_json_request: RequestJsonRequest,
+    runtime_base_url: str,
+    upstream_timeout: float,
+) -> tuple[dict[str, Any], int]:
+    started = time.monotonic()
+    result = request_json_request(
+        "GET",
+        runtime_base_url,
+        "/ibkr/status",
+        params=[("broker_mode", environment), ("environment", environment)],
+        timeout=upstream_timeout,
+    )
+    upstream_elapsed_ms = float(result.get("elapsed_ms") or 0.0)
+    status_code = int(result.get("status_code") or 200)
+    upstream_payload = ensure_object(result.get("payload"))
+    selected_upstream = to_text(result.get("target_url")) or f"{runtime_base_url.rstrip('/')}/ibkr/status"
+    diagnostics = {
+        "account_snapshot": {
+            "upstream_elapsed_ms": round(upstream_elapsed_ms, 1),
+            "upstream_timeout_s": float(result.get("timeout_s") or upstream_timeout or 0.0),
+            "enrichment_elapsed_ms": 0.0,
+            "total_elapsed_ms": round((time.monotonic() - started) * 1000.0, 1),
+            "degraded": status_code >= 400 or upstream_payload.get("ok") is False,
+            "upstream_status_code": status_code,
+            "monitor_probe": True,
+        }
+    }
+    if not upstream_payload or (status_code >= 400 and not upstream_payload.get("ok")):
+        return {
+            "ok": False,
+            "status": "offline",
+            "environment": environment,
+            "error": result.get("error") or upstream_payload.get("error") or "account_monitor_probe_unavailable",
+            "proxy_source": "ibkr-api",
+            "proxy_route": "/api/custom/ibkr/account_snapshot",
+            "proxy_upstream": selected_upstream,
+            "source": "ibkr-api",
+            "monitor_probe": True,
+            "diagnostics": diagnostics,
+        }, 502 if status_code < 400 else status_code
+
+    gateway = ensure_object(upstream_payload.get("gateway"))
+    session = ensure_object(upstream_payload.get("session"))
+    websocket = ensure_object(upstream_payload.get("websocket"))
+    service_running = to_text(upstream_payload.get("status")).lower() not in {"offline", "stopped", "error"}
+    gateway_running = bool(gateway.get("running"))
+    session_authenticated = bool(session.get("authenticated"))
+    websocket_ready = bool(websocket.get("ready") or websocket.get("connected"))
+    ok = bool(upstream_payload.get("ok", True)) and status_code < 400 and service_running and gateway_running and session_authenticated
+    error = "" if ok else "account_runtime_unavailable"
+    return {
+        "ok": ok,
+        "status": "running" if service_running else "offline",
+        "environment": environment,
+        "broker_mode": environment,
+        "service_running": service_running,
+        "gateway_running": gateway_running,
+        "session_authenticated": session_authenticated,
+        "websocket_ready": websocket_ready,
+        "gateway": gateway,
+        "session": session,
+        "websocket": websocket,
+        "error": error,
+        "monitor_probe": True,
+        "proxy_source": "ibkr-api",
+        "proxy_route": "/api/custom/ibkr/account_snapshot",
+        "proxy_upstream": selected_upstream,
+        "source": "ibkr-api",
+        "diagnostics": diagnostics,
+    }, status_code if status_code >= 400 else 200
 
 
 def _enrich_buying_power_summary(payload: dict[str, Any]) -> None:
@@ -233,6 +313,13 @@ def build_account_snapshot_response(
 ) -> tuple[dict[str, Any], int]:
     started = time.monotonic()
     environment = request_broker_mode(payload)
+    if _monitor_probe_param(payload):
+        return _build_account_monitor_probe_response(
+            environment=environment,
+            request_json_request=request_json_request,
+            runtime_base_url=runtime_base_url,
+            upstream_timeout=upstream_timeout,
+        )
     params = [("broker_mode", environment), ("environment", environment)]
     include_pnl = _include_pnl_param(payload)
     if include_pnl is not None:
