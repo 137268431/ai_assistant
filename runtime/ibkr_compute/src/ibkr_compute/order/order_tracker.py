@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from ibkr_compute.core.time_utils import CN, ET
 
 from ibkr_compute.broker import BrokerAdapter
+from ibkr_compute.backtest.execution_fills import normalize_execution_fill, normalize_execution_fills
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ ORDER_UPDATES_MODE = str(os.environ.get("IBKR_ORDER_UPDATES_MODE", "hybrid") or 
 POLL_INTERVAL_ACTIVE = max(5, int(os.environ.get("IBKR_ORDER_POLL_INTERVAL_ACTIVE_SEC", "5")))
 POLL_INTERVAL_IDLE = max(POLL_INTERVAL_ACTIVE, int(os.environ.get("IBKR_ORDER_POLL_INTERVAL_IDLE_SEC", "15")))
 ORDER_FAST_TRACK_WINDOW = max(POLL_INTERVAL_ACTIVE, int(os.environ.get("IBKR_ORDER_FAST_TRACK_SEC", "30")))
+EXECUTION_FILL_SYNC_INTERVAL = max(0, int(os.environ.get("IBKR_EXECUTION_FILL_SYNC_INTERVAL_SEC", "900")))
 
 
 class OrderTracker:
@@ -53,6 +55,14 @@ class OrderTracker:
         self._live_update_count = 0
         self._poll_wakeup = threading.Event()
         self._initial_snapshot_pending = True
+        self._last_execution_fill_sync_at = 0.0
+
+        add_fill_listener = getattr(self.broker, "add_execution_fill_listener", None)
+        if callable(add_fill_listener):
+            try:
+                add_fill_listener(self.on_execution_fill_update)
+            except Exception as exc:
+                logger.debug("Failed to register execution fill listener: %s", exc)
 
     def _get_int_setting(self, key: str, fallback: int) -> int:
         if not self.config:
@@ -81,6 +91,9 @@ class OrderTracker:
 
     def _fast_track_window(self) -> int:
         return max(self._active_poll_interval(), self._get_int_setting("ibkr_order_fast_track_sec", ORDER_FAST_TRACK_WINDOW))
+
+    def _execution_fill_sync_interval(self) -> int:
+        return max(0, self._get_int_setting("ibkr_execution_fill_sync_interval_sec", EXECUTION_FILL_SYNC_INTERVAL))
 
     def _mark_order_activity(self):
         self._last_order_activity = time.time()
@@ -1034,6 +1047,12 @@ class OrderTracker:
             self._last_live_update = time.time()
             self._mark_order_activity()
 
+    def on_execution_fill_update(self, fill: Dict):
+        if not isinstance(fill, dict):
+            return
+        if self._persist_execution_fill(fill, source="ib_socket_callback"):
+            self._mark_order_activity()
+
     def _finalize_disappeared_orders(self, current_order_ids: set[str]):
         closed_statuses = {"FILLED", "EXECUTED", "CANCELLED", "CANCELED", "INACTIVE", "REJECTED"}
         missing_ids = [order_id for order_id in list(self._known_orders.keys()) if order_id not in current_order_ids]
@@ -1085,6 +1104,7 @@ class OrderTracker:
         while self._running:
             try:
                 self._poll_orders(force=self._initial_snapshot_pending or self._updates_mode() == "poll")
+                self._maybe_sync_recent_execution_fills()
                 self._initial_snapshot_pending = False
             except Exception as exc:
                 logger.error("Order poll error: %s", exc)
@@ -1114,6 +1134,58 @@ class OrderTracker:
             current_order_ids.add(order_id)
             self._handle_live_order_payload(order, source="poll")
         self._finalize_disappeared_orders(current_order_ids)
+
+    def _persist_execution_fill(self, raw_fill: Dict[str, Any], *, source: str) -> bool:
+        if not getattr(self, "pb_client", None):
+            return False
+        if not raw_fill:
+            return False
+        try:
+            normalized = normalize_execution_fill(
+                raw_fill,
+                environment=self.environment,
+                account=self.account_id,
+                source=source,
+            )
+            if not normalized:
+                return False
+            self.pb_client.upsert_execution_fills([normalized])
+            return True
+        except AttributeError:
+            logger.debug("PB client does not support execution fill upserts")
+        except Exception as exc:
+            logger.debug("PB execution fill sync failed: %s", exc)
+        return False
+
+    def _maybe_sync_recent_execution_fills(self) -> int:
+        interval = self._execution_fill_sync_interval()
+        if interval <= 0 or not getattr(self, "pb_client", None):
+            return 0
+        now = time.time()
+        if self._last_execution_fill_sync_at and now - self._last_execution_fill_sync_at < interval:
+            return 0
+        self._last_execution_fill_sync_at = now
+        try:
+            raw_fills = list(self.broker.list_recent_fills() or [])
+        except Exception as exc:
+            logger.debug("Recent execution fills sync failed: %s", exc)
+            return 0
+        fills = normalize_execution_fills(
+            raw_fills,
+            environment=self.environment,
+            account=self.account_id,
+            source="recent_fills",
+        )
+        if not fills:
+            return 0
+        try:
+            self.pb_client.upsert_execution_fills(fills)
+            return len(fills)
+        except AttributeError:
+            logger.debug("PB client does not support execution fill upserts")
+        except Exception as exc:
+            logger.debug("PB recent execution fill upsert failed: %s", exc)
+        return 0
 
     def _partial_harvest_quantity_mismatch(
         self,
@@ -1576,6 +1648,12 @@ class OrderTracker:
         if self._thread:
             self._thread.join(timeout=10)
             self._thread = None
+        remove_fill_listener = getattr(self.broker, "remove_execution_fill_listener", None)
+        if callable(remove_fill_listener):
+            try:
+                remove_fill_listener(self.on_execution_fill_update)
+            except Exception as exc:
+                logger.debug("Failed to remove execution fill listener: %s", exc)
 
     def status(self) -> dict:
         return {

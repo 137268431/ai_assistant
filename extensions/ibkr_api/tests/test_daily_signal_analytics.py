@@ -315,6 +315,9 @@ class DailySignalAnalyticsTest(unittest.TestCase):
     def test_console_stats_page_wires_daily_signal_analysis_panel(self):
         stats_html = (REPO_ROOT / "runtime" / "ibkr_console" / "static" / "ibkr_stats.html").read_text(encoding="utf-8")
         signals_html = (REPO_ROOT / "runtime" / "ibkr_console" / "static" / "ibkr_signals.html").read_text(encoding="utf-8")
+        nav_js = (REPO_ROOT / "runtime" / "ibkr_console" / "static" / "assets" / "js" / "shared" / "ui-toast-nav.js").read_text(
+            encoding="utf-8"
+        )
         compat_routes = (REPO_ROOT / "runtime" / "ibkr_api" / "src" / "ibkr_api" / "compat" / "routes.py").read_text(
             encoding="utf-8"
         )
@@ -322,12 +325,17 @@ class DailySignalAnalyticsTest(unittest.TestCase):
         for token in (
             "signal-rule-analysis",
             "/api/custom/ibkr/analytics/daily-signals",
+            "allow_fallback: 0",
+            "strict: 1",
+            "dataInsufficient",
             "signalRuleChart",
             "signalRrChart",
             "loadSignalAnalysis",
         ):
             self.assertIn(token, stats_html)
-        self.assertIn("signalsAnalysisLink", signals_html)
+        self.assertNotIn("signalsAnalysisLink", signals_html)
+        self.assertIn("/ibkr_stats.html", nav_js)
+        self.assertIn("label: '复盘'", nav_js)
         self.assertIn("ibkr/analytics/daily-signals", compat_routes)
 
 

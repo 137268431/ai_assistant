@@ -67,6 +67,21 @@ def _to_int(value: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _to_bool(value: Any, default: bool = False) -> bool:
+    if value in (None, ""):
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = _lower(value)
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return bool(default)
+
+
 def _positive_float(*values: Any) -> float | None:
     for value in values:
         parsed = _to_float(value)
@@ -258,6 +273,19 @@ def _commission_known(fill: dict[str, Any]) -> bool:
     return _raw_has_commission(_as_object(fill.get("raw")))
 
 
+def _commission_verified(fill: dict[str, Any]) -> bool:
+    raw = _as_object(fill.get("raw"))
+    if "commission_known" in fill:
+        return _to_bool(fill.get("commission_known"))
+    if "commissionKnown" in fill:
+        return _to_bool(fill.get("commissionKnown"))
+    if "commission_known" in raw:
+        return _to_bool(raw.get("commission_known"))
+    if "commissionKnown" in raw:
+        return _to_bool(raw.get("commissionKnown"))
+    return False
+
+
 def _fill_currency(fill: dict[str, Any]) -> str:
     raw = _as_object(fill.get("raw"))
     return _upper(fill.get("currency") or fill.get("commission_currency") or raw.get("currency"))
@@ -309,6 +337,7 @@ def _compute_fill_trades(
     *,
     start_date: str,
     end_date: str,
+    require_verified_commission: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     missing = Counter()
     trades: list[dict[str, Any]] = []
@@ -326,6 +355,9 @@ def _compute_fill_trades(
         multiplier, supported = _fill_multiplier(fill)
         if not supported:
             missing["unsupported_asset_count"] += 1
+            continue
+        if require_verified_commission and not _commission_verified(fill):
+            missing["commission_missing_count"] += 1
             continue
         if not _commission_known(fill):
             missing["commission_missing_count"] += 1
@@ -713,6 +745,68 @@ def _nonzero_counts(counts: dict[str, int]) -> dict[str, int]:
     return {key: int(value) for key, value in sorted((counts or {}).items()) if int(value or 0) != 0}
 
 
+def _request_bool(params: dict[str, Any], *keys: str, default: bool = False) -> bool:
+    for key in keys:
+        if key in params and params.get(key) not in (None, ""):
+            return _to_bool(params.get(key), default)
+    return bool(default)
+
+
+def _strict_insufficient_response(
+    *,
+    start_date: str,
+    end_date: str,
+    broker_mode: str,
+    data_environment: str,
+    fill_filter: str,
+    order_filter: str,
+    max_pages: int,
+    lookback_days: int,
+    fills: list[dict[str, Any]],
+    fill_trades: list[dict[str, Any]],
+    missing_counts: dict[str, int],
+    warnings: list[dict[str, Any]],
+    reason: str,
+) -> tuple[dict[str, Any], int]:
+    aggregate = _aggregate_trades([])
+    return {
+        "ok": True,
+        "source": "ibkr-api",
+        "pnl_source": FILLS_COLLECTION,
+        "source_collection": FILLS_COLLECTION,
+        "fallback_used": False,
+        "strict": True,
+        "data_status": "insufficient",
+        "data_insufficient": True,
+        "insufficient_reason": reason,
+        "start_date": start_date,
+        "end_date": end_date,
+        "broker_mode": broker_mode,
+        "data_environment": data_environment,
+        "filters": {
+            "fill_filter": fill_filter,
+            "order_filter": order_filter,
+            "max_pages": max_pages,
+            "lookback_days": lookback_days,
+        },
+        "summary": aggregate["summary"],
+        "rows": [],
+        "by_day": [],
+        "by_symbol": [],
+        "daily_rows": [],
+        "symbol_rows": [],
+        "day_symbol_rows": [],
+        "missing_counts": _nonzero_counts(missing_counts),
+        "warnings": warnings,
+        "diagnostics": {
+            "fill_rows": len(fills),
+            "order_rows": 0,
+            "realized_trade_rows": len(fill_trades),
+        },
+        "trades": [],
+    }, 200
+
+
 def build_realized_pnl_summary_response(
     pb: Any,
     *,
@@ -751,6 +845,11 @@ def build_realized_pnl_summary_response(
     )
     max_pages = _bounded_int(request_params.get("max_pages"), 100, 1, 500)
     lookback_days = _bounded_int(request_params.get("lookback_days"), 30, 0, 3650)
+    strict = _request_bool(request_params, "strict", default=False) or not _request_bool(
+        request_params,
+        "allow_fallback",
+        default=True,
+    )
     end_exclusive_date = _next_date_token(end_date)
     start_ms = _parse_time_text_ms(f"{start_date} 00:00:00")
     end_ms = _parse_time_text_ms(f"{end_exclusive_date} 00:00:00")
@@ -783,8 +882,29 @@ def build_realized_pnl_summary_response(
                 error=fill_error,
             )
         )
+        if strict:
+            return _strict_insufficient_response(
+                start_date=start_date,
+                end_date=end_date,
+                broker_mode=broker_mode,
+                data_environment=data_environment,
+                fill_filter=fill_filter,
+                order_filter=order_filter,
+                max_pages=max_pages,
+                lookback_days=lookback_days,
+                fills=[],
+                fill_trades=[],
+                missing_counts={"execution_fills_unavailable_count": 1},
+                warnings=warnings,
+                reason="execution_fills_unavailable",
+            )
     elif fills:
-        fill_trades, fill_missing_counts = _compute_fill_trades(fills, start_date=start_date, end_date=end_date)
+        fill_trades, fill_missing_counts = _compute_fill_trades(
+            fills,
+            start_date=start_date,
+            end_date=end_date,
+            require_verified_commission=strict,
+        )
         if fill_trades:
             aggregate = _aggregate_trades(fill_trades)
             missing_counts = _nonzero_counts(fill_missing_counts)
@@ -802,6 +922,9 @@ def build_realized_pnl_summary_response(
                 "pnl_source": FILLS_COLLECTION,
                 "source_collection": FILLS_COLLECTION,
                 "fallback_used": False,
+                "strict": bool(strict),
+                "data_status": "complete",
+                "data_insufficient": False,
                 "start_date": start_date,
                 "end_date": end_date,
                 "broker_mode": broker_mode,
@@ -830,18 +953,58 @@ def build_realized_pnl_summary_response(
             }, 200
         warnings.append(
             _warning(
-                "execution_fills_no_realized_trades_using_orders",
-                "ibkr_execution_fills rows were present but did not produce realized trades; using computable orders fallback",
+                "execution_fills_no_complete_realized_trades" if strict else "execution_fills_no_realized_trades_using_orders",
+                (
+                    "ibkr_execution_fills rows were present but did not produce complete strict realized trades"
+                    if strict
+                    else "ibkr_execution_fills rows were present but did not produce realized trades; using computable orders fallback"
+                ),
                 missing_counts=_nonzero_counts(fill_missing_counts),
             )
         )
+        if strict:
+            return _strict_insufficient_response(
+                start_date=start_date,
+                end_date=end_date,
+                broker_mode=broker_mode,
+                data_environment=data_environment,
+                fill_filter=fill_filter,
+                order_filter=order_filter,
+                max_pages=max_pages,
+                lookback_days=lookback_days,
+                fills=fills,
+                fill_trades=fill_trades,
+                missing_counts=fill_missing_counts,
+                warnings=warnings,
+                reason="execution_fills_no_complete_realized_trades",
+            )
     else:
         warnings.append(
             _warning(
-                "execution_fills_empty_using_orders",
-                "ibkr_execution_fills had no rows for the broker mode; using computable orders fallback",
+                "execution_fills_empty" if strict else "execution_fills_empty_using_orders",
+                (
+                    "ibkr_execution_fills had no rows for the broker mode; strict realized PnL is unavailable"
+                    if strict
+                    else "ibkr_execution_fills had no rows for the broker mode; using computable orders fallback"
+                ),
             )
         )
+        if strict:
+            return _strict_insufficient_response(
+                start_date=start_date,
+                end_date=end_date,
+                broker_mode=broker_mode,
+                data_environment=data_environment,
+                fill_filter=fill_filter,
+                order_filter=order_filter,
+                max_pages=max_pages,
+                lookback_days=lookback_days,
+                fills=[],
+                fill_trades=[],
+                missing_counts={"execution_fills_empty_count": 1},
+                warnings=warnings,
+                reason="execution_fills_empty",
+            )
 
     orders, order_error = _load_records(
         pb,
@@ -884,6 +1047,9 @@ def build_realized_pnl_summary_response(
         "pnl_source": "orders",
         "source_collection": ORDERS_COLLECTION,
         "fallback_used": True,
+        "strict": False,
+        "data_status": "fallback",
+        "data_insufficient": False,
         "start_date": start_date,
         "end_date": end_date,
         "broker_mode": broker_mode,

@@ -30,6 +30,83 @@
         .stat-value.positive { color: var(--long); }
         .stat-value.negative { color: var(--short); }
 
+        .stats-page {
+            --stats-shell-border: rgba(147, 197, 253, 0.15);
+            --stats-shell-bg:
+                radial-gradient(circle at 8% 0%, rgba(79, 209, 197, 0.13), transparent 32%),
+                radial-gradient(circle at 92% 8%, rgba(246, 173, 85, 0.10), transparent 30%),
+                linear-gradient(145deg, rgba(8, 22, 31, 0.98), rgba(5, 13, 22, 0.96));
+            --stats-card-bg:
+                linear-gradient(180deg, rgba(13, 30, 42, 0.92), rgba(5, 13, 22, 0.88));
+        }
+
+        .stats-page > section {
+            margin-bottom: 14px;
+        }
+
+        .stats-overview-panel,
+        .history-analytics-panel,
+        .trades-detail-panel {
+            position: relative;
+            overflow: hidden;
+            padding: 16px;
+            border: 1px solid var(--stats-shell-border);
+            border-radius: 20px;
+            background: var(--stats-shell-bg);
+            box-shadow: 0 22px 54px rgba(0, 0, 0, 0.30), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+        }
+
+        .stats-overview-panel::before,
+        .history-analytics-panel::before,
+        .trades-detail-panel::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background-image:
+                linear-gradient(rgba(148, 163, 184, 0.04) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(148, 163, 184, 0.03) 1px, transparent 1px);
+            background-size: 42px 42px;
+            -webkit-mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.88), transparent 86%);
+            mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.88), transparent 86%);
+            pointer-events: none;
+        }
+
+        .stats-overview-panel > *,
+        .history-analytics-panel > *,
+        .trades-detail-panel > * {
+            position: relative;
+            z-index: 1;
+        }
+
+        .overview-stats-grid {
+            padding-bottom: 0;
+        }
+
+        .overview-stats-grid .stat-card {
+            position: relative;
+            overflow: hidden;
+            min-height: 88px;
+            border-color: rgba(147, 197, 253, 0.13);
+            background: var(--stats-card-bg);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+        }
+
+        .overview-stats-grid .stat-card::after {
+            content: '';
+            position: absolute;
+            inset: 0 0 auto;
+            height: 2px;
+            background: linear-gradient(90deg, rgba(79, 209, 197, 0.80), rgba(246, 173, 85, 0.10));
+            opacity: 0.72;
+        }
+
+        .overview-stats-grid .stat-label {
+            color: rgba(159, 176, 195, 0.86);
+            font-weight: 800;
+            letter-spacing: 1.1px;
+            text-transform: uppercase;
+        }
+
         .chart-grid {
             display: grid;
             grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -41,10 +118,12 @@
         .chart-container {
             margin: 0;
             padding: 14px;
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
+            background:
+                linear-gradient(180deg, rgba(12, 27, 39, 0.92), rgba(5, 13, 22, 0.90));
+            border: 1px solid rgba(147, 197, 253, 0.13);
+            border-radius: 16px;
             min-width: 0;
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
         }
 
         .chart-canvas-wrap {
@@ -67,10 +146,10 @@
 
         .detail-section {
             margin: 0 0 12px;
-            padding: 14px;
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
+            padding: 16px;
+            background: var(--stats-shell-bg);
+            border: 1px solid rgba(147, 197, 253, 0.15);
+            border-radius: 20px;
         }
 
         .section-title {
@@ -78,6 +157,55 @@
             margin-bottom: 12px;
             color: var(--text);
             font-weight: 600;
+        }
+
+        .overview-head,
+        .history-analytics-head,
+        .detail-section-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 16px;
+            margin-bottom: 12px;
+        }
+
+        .overview-kicker,
+        .history-analytics-kicker,
+        .trades-detail-kicker {
+            color: var(--accent);
+            font-family: var(--font-mono);
+            font-size: 10px;
+            font-weight: 800;
+            letter-spacing: 1.8px;
+            line-height: 1;
+            margin-bottom: 7px;
+            text-transform: uppercase;
+        }
+
+        .overview-title,
+        .history-analytics-title,
+        .trades-detail-title {
+            margin-bottom: 6px;
+            font-size: clamp(18px, 1.8vw, 24px);
+            letter-spacing: -0.04em;
+        }
+
+        .overview-copy,
+        .history-analytics-copy,
+        .trades-detail-copy {
+            color: #9fb0c3;
+            font-size: 11.5px;
+            line-height: 1.5;
+        }
+
+        .history-chart-grid {
+            padding-bottom: 0;
+        }
+
+        .history-chart-grid .chart-title {
+            margin-bottom: 10px;
+            font-size: 13px;
+            letter-spacing: -0.01em;
         }
 
         /* 日期选择按钮组 */
@@ -88,10 +216,11 @@
         }
 
         .date-range-btn {
-            padding: 6px 12px;
-            border-radius: 8px;
-            border: 1px solid var(--border);
-            background: transparent;
+            min-height: 36px;
+            padding: 0 12px;
+            border-radius: 12px;
+            border: 1px solid rgba(147, 197, 253, 0.14);
+            background: rgba(255, 255, 255, 0.035);
             color: var(--muted);
             font-size: 11px;
             font-family: 'JetBrains Mono', monospace;
@@ -99,11 +228,18 @@
             transition: all 0.2s;
         }
 
+        .date-range-btn:hover {
+            border-color: rgba(79, 209, 197, 0.32);
+            background: rgba(79, 209, 197, 0.08);
+            color: #d7e7f5;
+        }
+
         .date-range-btn.active {
-            background: var(--accent);
-            border-color: var(--accent);
-            color: var(--bg);
+            background: linear-gradient(180deg, rgba(79, 209, 197, 0.95), rgba(45, 212, 191, 0.72));
+            border-color: rgba(79, 209, 197, 0.42);
+            color: #04111a;
             font-weight: 700;
+            box-shadow: 0 10px 24px rgba(45, 212, 191, 0.14);
         }
 
         .date-inputs {
@@ -114,14 +250,23 @@
         }
 
         .date-input {
-            padding: 6px 10px;
-            border-radius: 8px;
-            border: 1px solid var(--border);
-            background: var(--surface2);
+            min-height: 36px;
+            padding: 0 10px;
+            border-radius: 12px;
+            border: 1px solid rgba(147, 197, 253, 0.14);
+            background: rgba(16, 34, 45, 0.86);
             color: var(--text);
             font-size: 11px;
             font-family: 'JetBrains Mono', monospace;
             outline: none;
+        }
+
+        .date-range-separator {
+            color: rgba(159, 176, 195, 0.78);
+            font-family: var(--font-mono);
+            font-size: 10px;
+            font-weight: 800;
+            letter-spacing: 1px;
         }
 
         .date-input::-webkit-calendar-picker-indicator {
@@ -129,18 +274,27 @@
         }
 
         .apply-date-btn {
-            padding: 6px 12px;
-            border-radius: 8px;
-            border: none;
-            background: var(--accent);
-            color: var(--bg);
+            min-height: 36px;
+            padding: 0 12px;
+            border-radius: 12px;
+            border: 1px solid rgba(79, 209, 197, 0.34);
+            background: linear-gradient(180deg, rgba(79, 209, 197, 0.95), rgba(45, 212, 191, 0.72));
+            color: #04111a;
             font-size: 11px;
             font-family: 'JetBrains Mono', monospace;
             cursor: pointer;
             font-weight: 600;
+            box-shadow: 0 10px 24px rgba(45, 212, 191, 0.14);
         }
 
         /* 表格样式 */
+        .data-table-wrap {
+            overflow: auto;
+            border: 1px solid rgba(147, 197, 253, 0.12);
+            border-radius: 16px;
+            background: rgba(2, 8, 18, 0.36);
+        }
+
         .data-table {
             width: 100%;
             border-collapse: collapse;
@@ -154,11 +308,13 @@
         }
 
         .data-table th {
+            background: rgba(8, 20, 32, 0.82);
             color: var(--muted);
             font-weight: 600;
             font-family: 'JetBrains Mono', monospace;
             font-size: 10px;
             letter-spacing: 0.5px;
+            text-transform: uppercase;
         }
 
         .data-table td {
@@ -168,6 +324,14 @@
 
         .data-table tr:hover {
             background: rgba(255,255,255,0.02);
+        }
+
+        .data-table tr:last-child td {
+            border-bottom: 0;
+        }
+
+        .trades-detail-panel .data-table {
+            min-width: 980px;
         }
 
         .pnl-positive { color: var(--long); }
@@ -222,7 +386,12 @@
         }
 
         .stats-toolbar {
-            margin-bottom: 12px;
+            margin-bottom: 14px;
+            padding: 10px;
+            border: 1px solid rgba(147, 197, 253, 0.12);
+            border-radius: 16px;
+            background: rgba(2, 8, 18, 0.42);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
         }
 
         .stats-toolbar .date-range-selector {
@@ -840,6 +1009,17 @@
 
         /* 手机适配 */
         @media (max-width: 768px) {
+            .stats-page > section {
+                margin-bottom: 8px;
+            }
+
+            .stats-overview-panel,
+            .history-analytics-panel,
+            .trades-detail-panel {
+                padding: 10px;
+                border-radius: 16px;
+            }
+
             .stats-grid {
                 grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
                 gap: 8px;
@@ -878,6 +1058,13 @@
                 padding: 10px;
             }
 
+            .overview-head,
+            .history-analytics-head,
+            .detail-section-head {
+                flex-direction: column;
+                gap: 8px;
+            }
+
             .data-table {
                 font-size: 10px;
             }
@@ -891,17 +1078,20 @@
             }
 
             .date-range-btn {
-                padding: 4px 8px;
+                min-height: 32px;
+                padding: 0 8px;
                 font-size: 10px;
             }
 
             .date-input {
-                padding: 4px 8px;
+                min-height: 32px;
+                padding: 0 8px;
                 font-size: 10px;
             }
 
             .apply-date-btn {
-                padding: 4px 8px;
+                min-height: 32px;
+                padding: 0 8px;
                 font-size: 10px;
             }
 
@@ -1029,6 +1219,13 @@
             }
 
             .realized-pnl-panel {
+                padding: 9px;
+                border-radius: 16px;
+            }
+
+            .stats-overview-panel,
+            .history-analytics-panel,
+            .trades-detail-panel {
                 padding: 9px;
                 border-radius: 16px;
             }

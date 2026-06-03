@@ -14,6 +14,7 @@ class FakePBClient:
         self.rows = list(rows or [])
         self.signal_rows = list(signal_rows or [])
         self.upserts = []
+        self.execution_fill_upserts = []
         self.updates = []
         self.events = []
         self.get_records_calls = []
@@ -109,6 +110,10 @@ class FakePBClient:
         self.upserts.append(dict(data))
         return {"success": True}
 
+    def upsert_execution_fills(self, items):
+        self.execution_fill_upserts.extend(dict(item) for item in (items or []))
+        return {"ok": True, "total": len(items or [])}
+
     def get_first_record(self, collection, filter=None, sort=None):
         rows = self.get_records(collection, filter=filter, sort=sort, per_page=1)
         return rows[0] if rows else None
@@ -134,6 +139,7 @@ class FakeBroker:
     def __init__(self, *, all_open_orders=None):
         self.all_open_orders = list(all_open_orders or [])
         self.list_open_orders_calls = []
+        self.execution_fill_listeners = []
 
     def list_open_orders(self, include_all=False):
         self.list_open_orders_calls.append(bool(include_all))
@@ -147,8 +153,48 @@ class FakeBroker:
     def list_recent_fills(self):
         return []
 
+    def add_execution_fill_listener(self, callback):
+        self.execution_fill_listeners.append(callback)
+
+    def remove_execution_fill_listener(self, callback):
+        self.execution_fill_listeners = [item for item in self.execution_fill_listeners if item != callback]
+
 
 class OrderTrackerIdentityTest(unittest.TestCase):
+    def test_execution_fill_callback_persists_verified_ibkr_fill(self):
+        pb_client = FakePBClient()
+        broker = FakeBroker()
+        tracker = OrderTracker(pb_client=pb_client, broker=broker, environment="paper")
+
+        self.assertEqual([tracker.on_execution_fill_update], broker.execution_fill_listeners)
+
+        tracker.on_execution_fill_update(
+            {
+                "exec_id": "0000e1.123",
+                "order_id": "117",
+                "symbol": "OKTA",
+                "side": "BOT",
+                "shares": 38,
+                "price": 104.21,
+                "commission": 0.5,
+                "commission_known": True,
+                "commission_currency": "USD",
+                "realized_pnl": 0,
+                "realized_pnl_known": True,
+                "time": "20260602  10:01:00",
+                "account": "DU123",
+            }
+        )
+
+        self.assertEqual(1, len(pb_client.execution_fill_upserts))
+        fill = pb_client.execution_fill_upserts[0]
+        self.assertEqual("0000e1.123", fill["exec_id"])
+        self.assertEqual("117", fill["order_id"])
+        self.assertEqual("OKTA", fill["symbol"])
+        self.assertEqual("buy", fill["side"])
+        self.assertEqual("paper", fill["environment"])
+        self.assertTrue(fill["commission_known"])
+
     def test_sync_prefers_coid_match_over_duplicate_broker_order_id(self):
         pb_client = FakePBClient()
         tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="live")

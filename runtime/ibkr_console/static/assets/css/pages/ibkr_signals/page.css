@@ -63,7 +63,7 @@
         .signals-command-tools {
             min-width: 0;
             display: grid;
-            grid-template-columns: max-content minmax(240px, 1fr) max-content max-content;
+            grid-template-columns: max-content minmax(240px, 1fr) max-content;
             gap: 10px;
             align-items: center;
             justify-self: stretch;
@@ -89,7 +89,6 @@
         .signals-command-date .date-btn,
         .signals-command-date .date-input,
         .search-input.signals-command-search,
-        .signals-analysis-link,
         .signals-command-refresh .refresh-btn,
         .signals-command-refresh .refresh-select {
             min-height: 40px;
@@ -123,28 +122,6 @@
 
         .search-input.signals-command-search::placeholder {
             color: rgba(144, 167, 184, 0.72);
-        }
-
-        .signals-analysis-link {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            height: 40px;
-            padding: 0 14px;
-            border: 1px solid rgba(79, 209, 197, 0.20);
-            background: rgba(79, 209, 197, 0.08);
-            color: #9DEFE8;
-            text-decoration: none;
-            font-weight: 700;
-            white-space: nowrap;
-            transition: border-color 0.18s ease, background 0.18s ease, color 0.18s ease;
-        }
-
-        .signals-analysis-link:hover,
-        .signals-analysis-link:active {
-            border-color: rgba(79, 209, 197, 0.32);
-            background: rgba(79, 209, 197, 0.14);
-            color: var(--text);
         }
 
         .signals-command-refresh .refresh-control {
@@ -2276,7 +2253,6 @@
             }
 
             .signals-command-search,
-            .signals-analysis-link,
             .signals-command-refresh .refresh-btn,
             .signals-command-refresh .refresh-select,
             .signals-command-date .date-input {

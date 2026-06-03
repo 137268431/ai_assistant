@@ -227,6 +227,81 @@ class RealizedPnlAnalyticsTest(unittest.TestCase):
         self.assertIn("execution_fills_empty_using_orders", warning_codes)
         self.assertEqual({}, payload["missing_counts"])
 
+    def test_strict_mode_does_not_fallback_when_execution_fills_empty(self):
+        records = {
+            "ibkr_execution_fills": [],
+            "orders": [
+                {
+                    "environment": "paper",
+                    "id": "exit-msft",
+                    "role": "take_profit",
+                    "status": "Filled",
+                    "symbol": "MSFT",
+                    "realized_net_pnl": 24.25,
+                    "us_time": "2026-05-21 10:00:00",
+                },
+            ],
+        }
+
+        payload, pb = self._build_response(
+            records,
+            params={"start_date": "2026-05-21", "end_date": "2026-05-21", "allow_fallback": "0"},
+        )
+
+        self.assertFalse(payload["fallback_used"])
+        self.assertTrue(payload["strict"])
+        self.assertTrue(payload["data_insufficient"])
+        self.assertEqual("insufficient", payload["data_status"])
+        self.assertEqual("ibkr_execution_fills", payload["pnl_source"])
+        self.assertFalse(any(call[0] == "orders" for call in pb.calls), "strict mode must not read orders fallback")
+
+    def test_strict_mode_requires_verified_commission(self):
+        records = {
+            "ibkr_execution_fills": [
+                {
+                    "environment": "paper",
+                    "exec_id": "aapl-buy-1",
+                    "symbol": "AAPL",
+                    "side": "buy",
+                    "shares": 10,
+                    "price": 100,
+                    "commission": 1,
+                    "commission_known": True,
+                    "trade_time": "2026-05-21 09:30:00",
+                },
+                {
+                    "environment": "paper",
+                    "exec_id": "aapl-sell-1",
+                    "symbol": "AAPL",
+                    "side": "sell",
+                    "shares": 10,
+                    "price": 110,
+                    "commission": 0.5,
+                    "commission_known": True,
+                    "trade_time": "2026-05-21 10:00:00",
+                },
+            ],
+            "orders": [],
+        }
+
+        payload, _ = self._build_response(
+            records,
+            params={"start_date": "2026-05-21", "end_date": "2026-05-21", "strict": "1"},
+        )
+
+        self.assertFalse(payload["fallback_used"])
+        self.assertTrue(payload["strict"])
+        self.assertFalse(payload["data_insufficient"])
+        self.assertAlmostEqual(98.5, payload["summary"]["realized_net_pnl"], places=2)
+
+        records["ibkr_execution_fills"][1].pop("commission_known")
+        payload, _ = self._build_response(
+            records,
+            params={"start_date": "2026-05-21", "end_date": "2026-05-21", "strict": "1"},
+        )
+        self.assertTrue(payload["data_insufficient"])
+        self.assertEqual(1, payload["missing_counts"]["commission_missing_count"])
+
     def test_registers_route_and_lists_compat_custom_route(self):
         app = _FakeApp()
         exports = register_analytics_routes(

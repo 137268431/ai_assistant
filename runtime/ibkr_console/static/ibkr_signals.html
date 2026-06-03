@@ -9,7 +9,7 @@
     <script>document.write(getCommonStyles());</script>
     <script>document.write('<style>' + getIndicatorModalStyles() + '</style>');</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-    <link rel="stylesheet" href="/assets/css/pages/ibkr_signals/page.css?v=20260530-signals-compact-1">
+    <link rel="stylesheet" href="/assets/css/pages/ibkr_signals/page.css?v=20260603-signals-no-stats-link-v1">
 </head>
 <body>
     <div id="contextBar"></div>
@@ -28,7 +28,6 @@
             <div class="signals-command-tools">
                 <div class="signals-command-date" id="datePicker"></div>
                 <input class="search-input signals-command-search" id="searchInput" placeholder="搜索股票/信号ID..." oninput="onSearchChange(this.value)">
-                <a class="mini-link" id="signalsAnalysisLink" href="/ibkr_stats.html">统计</a>
                 <div class="signals-command-refresh" id="signalsRefreshControl"></div>
             </div>
         </section>
@@ -745,8 +744,6 @@
             const executionParams = { date: currentDate };
             if (filterSignalId) executionParams.signal_id = filterSignalId;
             document.getElementById('pageBridge').innerHTML = renderExecutionBridge('/ibkr_signals.html', executionParams);
-            const analysisLink = document.getElementById('signalsAnalysisLink');
-            if (analysisLink) analysisLink.href = buildPageUrl('/ibkr_stats.html', { date: currentDate });
             renderSignalsTopSection();
             renderFilterNote();
         }

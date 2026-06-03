@@ -14,71 +14,80 @@
     <div id="contextBar"></div>
     <div id="pageBridge"></div>
 
-    <div class="content">
-        <div class="stats-toolbar">
-            <div class="page-toolbar-row">
-                <div class="date-range-selector">
-                    <button class="date-range-btn" data-range="7days">近7天</button>
-                    <button class="date-range-btn active" data-range="30days">近30天</button>
-                    <button class="date-range-btn" data-range="90days">近90天</button>
-                    <button class="date-range-btn" data-range="all">全部</button>
+    <div class="content stats-page">
+        <section class="stats-overview-panel">
+            <div class="overview-head">
+                <div>
+                    <div class="overview-kicker">RANGE OVERVIEW</div>
+                    <div class="section-title overview-title">统计概览</div>
+                    <div class="overview-copy">统一当前日期范围，快速查看订单、平仓、盈亏、胜率与信号概况。</div>
                 </div>
-                <div class="date-inputs">
-                    <input type="date" class="date-input" id="startDate" title="开始日期">
-                    <span style="color: #94a3b8;">至</span>
-                    <input type="date" class="date-input" id="endDate" title="结束日期">
-                    <button class="apply-date-btn" onclick="applyCustomDate()">应用</button>
-                </div>
-                <div id="statsRefreshControl"></div>
             </div>
-        </div>
+            <div class="stats-toolbar">
+                <div class="page-toolbar-row">
+                    <div class="date-range-selector">
+                        <button class="date-range-btn" data-range="7days">近7天</button>
+                        <button class="date-range-btn active" data-range="30days">近30天</button>
+                        <button class="date-range-btn" data-range="90days">近90天</button>
+                        <button class="date-range-btn" data-range="all">全部</button>
+                    </div>
+                    <div class="date-inputs">
+                        <input type="date" class="date-input" id="startDate" title="开始日期">
+                        <span class="date-range-separator">至</span>
+                        <input type="date" class="date-input" id="endDate" title="结束日期">
+                        <button class="apply-date-btn" onclick="applyCustomDate()">应用</button>
+                    </div>
+                    <div id="statsRefreshControl"></div>
+                </div>
+            </div>
 
-        <div class="stats-grid">
-            <div class="stat-card">
-                <div class="stat-label">总订单数</div>
-                <div class="stat-value" id="totalOrders">-</div>
+            <div class="stats-grid overview-stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">总订单数</div>
+                    <div class="stat-value" id="totalOrders">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">平仓次数</div>
+                    <div class="stat-value" id="totalTrades">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">总盈亏</div>
+                    <div class="stat-value" id="totalPnL">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">总手续费</div>
+                    <div class="stat-value" id="totalCommission">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">胜率</div>
+                    <div class="stat-value" id="winRate">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">平均盈亏比</div>
+                    <div class="stat-value" id="avgRR">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">盈利次数</div>
+                    <div class="stat-value positive" id="wins">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">亏损次数</div>
+                    <div class="stat-value negative" id="losses">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">总信号数</div>
+                    <div class="stat-value" id="totalSignals">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">多头信号</div>
+                    <div class="stat-value positive" id="signalsLong">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">空头信号</div>
+                    <div class="stat-value negative" id="signalsShort">-</div>
+                </div>
             </div>
-            <div class="stat-card">
-                <div class="stat-label">平仓次数</div>
-                <div class="stat-value" id="totalTrades">-</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">总盈亏</div>
-                <div class="stat-value" id="totalPnL">-</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">总手续费</div>
-                <div class="stat-value" id="totalCommission">-</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">胜率</div>
-                <div class="stat-value" id="winRate">-</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">平均盈亏比</div>
-                <div class="stat-value" id="avgRR">-</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">盈利次数</div>
-                <div class="stat-value positive" id="wins">-</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">亏损次数</div>
-                <div class="stat-value negative" id="losses">-</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">总信号数</div>
-                <div class="stat-value" id="totalSignals">-</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">多头信号</div>
-                <div class="stat-value positive" id="signalsLong">-</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">空头信号</div>
-                <div class="stat-value negative" id="signalsShort">-</div>
-            </div>
-        </div>
+        </section>
 
         <section class="realized-pnl-panel" id="realizedPnlAnalytics">
             <div class="realized-pnl-head">
@@ -200,30 +209,45 @@
             </div>
         </section>
 
-        <div class="chart-grid">
-            <div class="chart-container">
-                <div class="chart-title">📈 收益曲线</div>
-                <div class="chart-canvas-wrap"><canvas id="pnlChart"></canvas></div>
+        <section class="history-analytics-panel">
+            <div class="history-analytics-head">
+                <div>
+                    <div class="history-analytics-kicker">PERFORMANCE TIMELINE</div>
+                    <div class="section-title history-analytics-title">历史统计趋势</div>
+                    <div class="history-analytics-copy">沿用当前日期范围，汇总收益、每日盈亏、信号与订单累计节奏。</div>
+                </div>
             </div>
+            <div class="chart-grid history-chart-grid">
+                <div class="chart-container">
+                    <div class="chart-title">收益曲线</div>
+                    <div class="chart-canvas-wrap"><canvas id="pnlChart"></canvas></div>
+                </div>
 
-            <div class="chart-container">
-                <div class="chart-title">📊 每日盈亏明细</div>
-                <div class="chart-canvas-wrap"><canvas id="dailyChart"></canvas></div>
+                <div class="chart-container">
+                    <div class="chart-title">每日盈亏明细</div>
+                    <div class="chart-canvas-wrap"><canvas id="dailyChart"></canvas></div>
+                </div>
+
+                <div class="chart-container">
+                    <div class="chart-title">信号曲线 (累计信号数)</div>
+                    <div class="chart-canvas-wrap"><canvas id="signalChart"></canvas></div>
+                </div>
+
+                <div class="chart-container">
+                    <div class="chart-title">订单曲线 (累计订单数)</div>
+                    <div class="chart-canvas-wrap"><canvas id="orderChart"></canvas></div>
+                </div>
             </div>
+        </section>
 
-            <div class="chart-container">
-                <div class="chart-title">🎯 信号曲线 (累计信号数)</div>
-                <div class="chart-canvas-wrap"><canvas id="signalChart"></canvas></div>
+        <section class="detail-section trades-detail-panel">
+            <div class="detail-section-head">
+                <div>
+                    <div class="trades-detail-kicker">CLOSED ORDERS</div>
+                    <div class="section-title trades-detail-title">平仓订单明细</div>
+                    <div class="trades-detail-copy">展示当前统计区间内的平仓记录，并与上方趋势图使用同一口径。</div>
+                </div>
             </div>
-
-            <div class="chart-container">
-                <div class="chart-title">📦 订单曲线 (累计订单数)</div>
-                <div class="chart-canvas-wrap"><canvas id="orderChart"></canvas></div>
-            </div>
-        </div>
-
-        <div class="detail-section">
-            <div class="section-title">📋 平仓订单明细</div>
             <div class="data-table-wrap">
                 <table class="data-table">
                     <thead>
@@ -244,7 +268,7 @@
                 </table>
             </div>
             <div class="pagination" id="pagination"></div>
-        </div>
+        </section>
     </div>
 
     <div id="nav"></div>
@@ -482,6 +506,17 @@
             const num = Number(value);
             if (!Number.isFinite(num) || Math.abs(num) < 0.005) return '';
             return num > 0 ? 'positive' : 'negative';
+        }
+
+        function isRealizedDataInsufficient(payload) {
+            return Boolean(payload?.data_insufficient || payload?.data_status === 'insufficient');
+        }
+
+        function realizedSourceLabel(source) {
+            const text = String(source || '').trim();
+            if (text === 'ibkr_execution_fills') return 'IBKR execution fills';
+            if (text === 'orders') return 'orders fallback';
+            return text || '--';
         }
 
         function normalizeStatsKey(value) {
@@ -926,6 +961,31 @@
             return { symbol, netPnl, grossPnl, commission, exitCount, winCount, lossCount, flatCount, avgPnl, winRate };
         }
 
+        function normalizeRealizedTradeRow(row) {
+            if (!row || typeof row !== 'object') return null;
+            const date = normalizeStatsDateText(readStatsText(row, ['date', 'day', 'trade_date', 'exit_date', 'created']));
+            const symbol = readStatsText(row, ['symbol', 'ticker']).trim().toUpperCase();
+            const quantity = readStatsNumber(row, ['quantity', 'shares', 'qty']) ?? 0;
+            const entryPrice = readStatsNumber(row, ['entry_price', 'entryPrice']) ?? null;
+            const exitPrice = readStatsNumber(row, ['exit_price', 'exitPrice', 'price']) ?? null;
+            const netPnl = readStatsNumber(row, REALIZED_NET_PNL_FIELDS);
+            const grossPnl = readStatsNumber(row, REALIZED_GROSS_PNL_FIELDS);
+            const commission = readStatsNumber(row, REALIZED_COMMISSION_FIELDS) ?? 0;
+            if (!date || !symbol) return null;
+            return {
+                date,
+                symbol,
+                direction: readStatsText(row, ['direction', 'side']) || '--',
+                orderType: readStatsText(row, ['exit_type', 'order_type', 'role']) || '平仓',
+                entryPrice,
+                exitPrice,
+                quantity,
+                pnl: netPnl ?? grossPnl ?? null,
+                rr: readStatsNumber(row, ['rr', 'rr_ratio', 'risk_reward']) ?? null,
+                commission,
+            };
+        }
+
         function mergeRealizedRows(rows, keyField) {
             const merged = new Map();
             rows.forEach((row) => {
@@ -952,6 +1012,7 @@
         }
 
         function normalizeRealizedPnlPayload(payload, startDateText, endDateText) {
+            const dataInsufficient = isRealizedDataInsufficient(payload);
             const dailyRows = firstStatsRows(payload, [
                 'daily_rows',
                 'daily',
@@ -978,6 +1039,10 @@
             ], 'symbol').map(normalizeRealizedSymbolRow).filter(Boolean);
             const mergedDailyRows = mergeRealizedRows(dailyRows, 'date').sort((left, right) => left.date.localeCompare(right.date));
             const mergedSymbolRows = mergeRealizedRows(symbolRows, 'symbol').sort((left, right) => right.netPnl - left.netPnl);
+            const tradeRows = (Array.isArray(payload?.trades) ? payload.trades : [])
+                .map(normalizeRealizedTradeRow)
+                .filter(Boolean)
+                .sort((left, right) => String(right.date || '').localeCompare(String(left.date || '')));
             const source = findRealizedSummarySource(payload);
             const missingCounts = payload?.missing_counts && typeof payload.missing_counts === 'object' ? payload.missing_counts : {};
             const sumMissingCounts = (pattern) => Object.entries(missingCounts).reduce((sum, [key, value]) => (
@@ -985,13 +1050,13 @@
             ), 0);
             const aggregateRows = mergedSymbolRows.length ? mergedSymbolRows : mergedDailyRows;
             const aggregate = (key) => aggregateRows.reduce((sum, row) => sum + Number(row[key] || 0), 0);
-            const netPnl = readStatsNumber(source, REALIZED_NET_PNL_FIELDS) ?? aggregate('netPnl');
-            const grossPnl = readStatsNumber(source, REALIZED_GROSS_PNL_FIELDS) ?? aggregate('grossPnl');
-            const commission = readStatsNumber(source, REALIZED_COMMISSION_FIELDS) ?? aggregate('commission');
-            const exitCount = readStatsNumber(source, REALIZED_EXIT_COUNT_FIELDS) ?? aggregate('exitCount');
-            const winCount = readStatsNumber(source, REALIZED_WIN_COUNT_FIELDS) ?? aggregate('winCount');
-            const lossCount = readStatsNumber(source, REALIZED_LOSS_COUNT_FIELDS) ?? aggregate('lossCount');
-            const flatCount = readStatsNumber(source, REALIZED_FLAT_COUNT_FIELDS) ?? aggregate('flatCount');
+            const netPnl = dataInsufficient ? null : (readStatsNumber(source, REALIZED_NET_PNL_FIELDS) ?? aggregate('netPnl'));
+            const grossPnl = dataInsufficient ? null : (readStatsNumber(source, REALIZED_GROSS_PNL_FIELDS) ?? aggregate('grossPnl'));
+            const commission = dataInsufficient ? null : (readStatsNumber(source, REALIZED_COMMISSION_FIELDS) ?? aggregate('commission'));
+            const exitCount = dataInsufficient ? null : (readStatsNumber(source, REALIZED_EXIT_COUNT_FIELDS) ?? aggregate('exitCount'));
+            const winCount = dataInsufficient ? null : (readStatsNumber(source, REALIZED_WIN_COUNT_FIELDS) ?? aggregate('winCount'));
+            const lossCount = dataInsufficient ? null : (readStatsNumber(source, REALIZED_LOSS_COUNT_FIELDS) ?? aggregate('lossCount'));
+            const flatCount = dataInsufficient ? null : (readStatsNumber(source, REALIZED_FLAT_COUNT_FIELDS) ?? aggregate('flatCount'));
             const profitAmount = readStatsNumber(source, ['profit_amount', 'gross_profit', 'winning_pnl', 'positive_pnl'])
                 ?? aggregateRows.reduce((sum, row) => sum + Math.max(0, Number(row.netPnl || 0)), 0);
             const lossAmount = readStatsNumber(source, ['loss_amount', 'gross_loss', 'losing_pnl', 'negative_pnl'])
@@ -1013,6 +1078,8 @@
                 endDateText,
                 dailyRows: mergedDailyRows,
                 symbolRows: mergedSymbolRows,
+                tradeRows,
+                dataInsufficient,
                 summary: {
                     netPnl,
                     grossPnl,
@@ -1031,6 +1098,7 @@
                     avgPnl,
                     profitFactor,
                     source: readStatsText(payload, ['pnl_source', 'source_collection']) || readStatsText(source, ['source', 'pnl_source']) || readStatsText(payload, ['source']) || 'realized_net_pnl',
+                    insufficientReason: readStatsText(payload, ['insufficient_reason']) || '',
                 },
             };
         }
@@ -1062,8 +1130,8 @@
                 ['range', `${normalized.startDateText} ~ ${normalized.endDateText}`],
                 ['broker', getEnvironmentLabel(brokerMode)],
                 ['data', getEnvironmentLabel(dataEnvironment)],
-                ['basis', 'net after commission'],
-                ['source', summary.source || '--'],
+                ['basis', normalized.dataInsufficient ? 'strict / data insufficient' : 'strict net after commission'],
+                ['source', realizedSourceLabel(summary.source)],
             ];
             meta.innerHTML = pills.map(([label, value]) => `
                 <span class="realized-pnl-meta-pill">
@@ -1077,6 +1145,31 @@
             const cards = document.getElementById('realizedPnlCards');
             if (!cards) return;
             const summary = normalized.summary || {};
+            if (normalized.dataInsufficient) {
+                const issueCount = Number(summary.missingCount || 0) + Number(summary.fillMissingCount || 0) + Number(summary.commissionMissingCount || 0) + Number(summary.ibkrMismatchCount || 0);
+                cards.innerHTML = [
+                    renderRealizedPnlCard({
+                        label: 'NET PNL',
+                        value: '--',
+                        copy: 'IBKR execution fills 不足',
+                        valueClass: 'negative',
+                        cardClass: 'tone-negative',
+                    }),
+                    renderRealizedPnlCard({ label: 'GROSS PNL', value: '--', copy: 'strict mode only' }),
+                    renderRealizedPnlCard({ label: 'COMMISSION', value: '--', copy: 'requires commissionReport' }),
+                    renderRealizedPnlCard({ label: 'CLOSED', value: '--', copy: 'no complete fill chain' }),
+                    renderRealizedPnlCard({ label: 'WIN RATE', value: '--', copy: 'not computed from orders' }),
+                    renderRealizedPnlCard({ label: 'AVG TRADE', value: '--', copy: summary.insufficientReason || 'data insufficient' }),
+                    renderRealizedPnlCard({ label: 'PROFIT FACTOR', value: '--', copy: realizedSourceLabel(summary.source) }),
+                    renderRealizedPnlCard({
+                        label: 'QUALITY',
+                        value: issueCount ? formatStatsNumber(issueCount) : 'DATA',
+                        copy: 'missing verified fills/fees',
+                        valueClass: 'negative',
+                    }),
+                ].join('');
+                return;
+            }
             const netTone = valueToneClass(summary.netPnl);
             const lossAbs = Math.abs(Number(summary.lossAmount || 0));
             const qualityIssues = Number(summary.missingCount || 0) + Number(summary.fillMissingCount || 0) + Number(summary.commissionMissingCount || 0) + Number(summary.ibkrMismatchCount || 0);
@@ -1215,6 +1308,10 @@
         function renderRealizedPnlTable(normalized) {
             const tbody = document.getElementById('realizedSymbolTable');
             if (!tbody) return;
+            if (normalized.dataInsufficient) {
+                tbody.innerHTML = '<tr><td colspan="10" class="loading">缺少完整 IBKR execution fills / commissionReport，无法给出准确标的盈亏。</td></tr>';
+                return;
+            }
             const rows = Array.isArray(normalized.symbolRows) ? normalized.symbolRows : [];
             if (!rows.length) {
                 tbody.innerHTML = '<tr><td colspan="10" class="loading">暂无标的已实现盈亏数据</td></tr>';
@@ -1263,7 +1360,9 @@
                 broker_mode: brokerMode,
                 data_environment: dataEnvironment,
                 market_data_mode: dataEnvironment,
-                environment: currentEnvironment,
+                environment: brokerMode,
+                allow_fallback: 0,
+                strict: 1,
             })}`;
             renderRealizedPnlLoading(safeStart, safeEnd);
             try {
@@ -1305,7 +1404,10 @@
                 const endTimeMs = rangeBounds.endMs;
                 const startDate = new Date(startTimeMs);
                 const endDate = new Date(Math.max(startTimeMs, endTimeMs - 1));
-                const timeFilter = `environment = "${escapeQueryValue(currentEnvironment)}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`;
+                const brokerMode = typeof getConsoleBrokerMode === 'function' ? getConsoleBrokerMode() : getCurrentBrokerMode();
+                const dataEnvironment = typeof getSharedDataEnvironment === 'function' ? getSharedDataEnvironment() : currentEnvironment;
+                const orderFilter = `environment = "${escapeQueryValue(brokerMode)}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`;
+                const signalFilter = `environment = "${escapeQueryValue(dataEnvironment)}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`;
                 const realizedPnlPromise = loadRealizedPnlAnalytics({
                     startDateText,
                     endDateText,
@@ -1318,7 +1420,7 @@
                 try {
                     // 分页拉取，避免单次请求过大触发 502。
                     orders = await fetchAllRecords('orders', {
-                        filter: timeFilter,
+                        filter: orderFilter,
                         sort: '-created',
                         perPage: 200,
                         maxPages: 12
@@ -1329,7 +1431,7 @@
 
                 try {
                     ibkr_signals = await fetchAllRecords('ibkr_signals', {
-                        filter: timeFilter,
+                        filter: signalFilter,
                         sort: '-created',
                         perPage: 200,
                         maxPages: 12
@@ -1338,12 +1440,12 @@
                     softErrors.push(`ibkr_signals: ${error.message || error}`);
                 }
 
-                const stats = calculateStats(orders);
-                renderStats(stats, ibkr_signals);
-                renderCharts(orders, ibkr_signals, startDate, endDate);
-                renderTradesTable(orders);
                 const realizedPnlAnalytics = await realizedPnlPromise;
                 const realizedPnlSummary = realizedPnlAnalytics?.summary || null;
+                const stats = calculateStats(orders, realizedPnlAnalytics);
+                renderStats(stats, ibkr_signals, realizedPnlAnalytics);
+                renderCharts(orders, ibkr_signals, startDate, endDate, realizedPnlAnalytics);
+                renderTradesTable(realizedPnlAnalytics);
 
                 // Cache for resize redraw (no network requests on scroll).
                 cachedOrders = orders;
@@ -1351,14 +1453,15 @@
                 cachedStartDate = startDate;
                 cachedEndDate = endDate;
                 setPageContextMeta([
-                    { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
+                    { label: 'Broker', value: getEnvironmentLabel(brokerMode), tone: brokerMode },
+                    { label: 'Data', value: getEnvironmentLabel(dataEnvironment), tone: dataEnvironment },
                     { label: '范围', value: customStartDate && customEndDate ? `${customStartDate} ~ ${customEndDate}` : currentRange },
-                    { label: '订单', value: `${orders.length} 条` },
+                    { label: '订单', value: `${stats.totalOrders} / ${stats.rawOrders} IBKR` },
                     { label: '信号', value: `${ibkr_signals.length} 条` },
                     {
-                        label: '已实现',
-                        value: realizedPnlSummary ? formatStatsMoney(realizedPnlSummary.netPnl) : '--',
-                        tone: realizedPnlSummary ? valueToneClass(realizedPnlSummary.netPnl) : '',
+                        label: 'PnL',
+                        value: realizedPnlAnalytics?.dataInsufficient ? '数据不足' : (realizedPnlSummary ? formatStatsMoney(realizedPnlSummary.netPnl) : '--'),
+                        tone: realizedPnlAnalytics?.dataInsufficient ? 'negative' : (realizedPnlSummary ? valueToneClass(realizedPnlSummary.netPnl) : ''),
                     },
                 ]);
                 setPageRefreshTime();
@@ -1373,105 +1476,43 @@
             }
         }
 
-        function calculateStats(orders) {
-            const entryOrders = {};
-            let totalPnL = 0;
-            let wins = 0;
-            let losses = 0;
-            let totalCommission = 0;
-            let rrSum = 0;
-            let rrCount = 0;
-            const trades = [];
-
-            orders.forEach(order => {
-                const uniqueId = order.unique_id || '';
-                const parts = uniqueId.split('_');
-
-                if (parts.length < 5) return;
-
-                const baseId = parts.slice(0, 4).join('_');
-                const orderType = parts[4];
-
-                if (orderType === 'Entry' && order.status === 'Filled') {
-                    entryOrders[baseId] = order;
-                } else if ((orderType === 'TakeProfit' || orderType === 'StopLoss') && order.status === 'Filled') {
-                    const entry = entryOrders[baseId];
-                    if (entry) {
-                        const direction = order.direction;
-                        const entryPrice = parseFloat(entry.fill_price || entry.limit_price);
-                        const exitPrice = parseFloat(order.fill_price || order.limit_price);
-                        const quantity = parseFloat(order.filled_qty || order.quantity);
-
-                        let pnl = 0;
-                        if (direction === 'long') {
-                            pnl = (exitPrice - entryPrice) * quantity;
-                        } else {
-                            pnl = (entryPrice - exitPrice) * quantity;
-                        }
-
-                        totalPnL += pnl;
-
-                        const commission = parseFloat(order.commission) || 0;
-                        totalCommission += commission;
-
-                        const rr = parseFloat(order.rr_ratio) || 0;
-                        if (rr > 0) {
-                            rrSum += rr;
-                            rrCount++;
-                        }
-
-                        if (pnl > 0) wins++;
-                        else if (pnl < 0) losses++;
-
-                        trades.push({
-                            date: order.created.split(' ')[0],
-                            symbol: order.symbol,
-                            direction: direction,
-                            orderType: orderType === 'TakeProfit' ? '止盈' : '止损',
-                            entryPrice: entryPrice,
-                            exitPrice: exitPrice,
-                            quantity: quantity,
-                            pnl: pnl,
-                            rr: rr,
-                            commission: commission
-                        });
-                    }
-                }
-            });
-
-            const totalTrades = wins + losses;
-            const winRate = totalTrades > 0 ? Math.round((wins / totalTrades) * 100) : 0;
-            const avgRR = rrCount > 0 ? rrSum / rrCount : 0;
-
+        function calculateStats(orders, realized = null) {
+            const orderRows = Array.isArray(orders) ? orders : [];
+            const brokerConfirmedOrders = orderRows.filter((order) => String(order?.broker_order_id || order?.order_id || '').trim());
+            const summary = realized?.summary || {};
             return {
-                totalOrders: orders.length,
-                totalTrades: totalTrades,
-                totalPnL: totalPnL,
-                totalCommission: totalCommission,
-                winRate: winRate,
-                avgRR: avgRR,
-                wins: wins,
-                losses: losses,
-                trades: trades
+                rawOrders: orderRows.length,
+                totalOrders: brokerConfirmedOrders.length,
+                brokerOrderCoverage: orderRows.length ? (brokerConfirmedOrders.length / orderRows.length) * 100 : null,
+                totalTrades: realized?.dataInsufficient ? null : summary.exitCount,
+                totalPnL: realized?.dataInsufficient ? null : summary.netPnl,
+                totalCommission: realized?.dataInsufficient ? null : summary.commission,
+                winRate: realized?.dataInsufficient ? null : summary.winRate,
+                avgRR: realized?.dataInsufficient ? null : summary.profitFactor,
+                wins: realized?.dataInsufficient ? null : summary.winCount,
+                losses: realized?.dataInsufficient ? null : summary.lossCount,
+                dataInsufficient: Boolean(realized?.dataInsufficient),
             };
         }
 
-        function renderStats(stats, ibkr_signals = []) {
+        function renderStats(stats, ibkr_signals = [], realized = null) {
             document.getElementById('totalOrders').textContent = stats.totalOrders;
-            document.getElementById('totalTrades').textContent = stats.totalTrades;
+            document.getElementById('totalOrders').title = `IBKR broker_order_id coverage: ${formatStatsPct(stats.brokerOrderCoverage)} (${stats.totalOrders}/${stats.rawOrders})`;
+            document.getElementById('totalTrades').textContent = stats.totalTrades === null ? '--' : formatStatsNumber(stats.totalTrades);
 
             const pnlEl = document.getElementById('totalPnL');
-            pnlEl.textContent = `$${stats.totalPnL.toFixed(2)}`;
-            pnlEl.className = 'stat-value ' + (stats.totalPnL >= 0 ? 'positive' : 'negative');
+            pnlEl.textContent = stats.totalPnL === null ? '--' : formatStatsMoney(stats.totalPnL);
+            pnlEl.className = 'stat-value ' + (stats.totalPnL === null ? 'negative' : (stats.totalPnL >= 0 ? 'positive' : 'negative'));
+            pnlEl.title = stats.dataInsufficient ? '缺少完整 IBKR execution fills / commissionReport，未计算准确盈亏。' : realizedSourceLabel(realized?.summary?.source);
 
             const commEl = document.getElementById('totalCommission');
-            commEl.textContent = `$${stats.totalCommission.toFixed(2)}`;
+            commEl.textContent = stats.totalCommission === null ? '--' : formatStatsMoney(stats.totalCommission);
             commEl.className = 'stat-value';
 
-            document.getElementById('winRate').textContent = stats.winRate + '%';
-            document.getElementById('avgRR').textContent = stats.avgRR > 0 ? stats.avgRR.toFixed(2) : '-';
-            document.getElementById('wins').textContent = stats.wins;
-            document.getElementById('losses').textContent = stats.losses;
+            document.getElementById('winRate').textContent = stats.winRate === null ? '--' : formatStatsPct(stats.winRate);
+            document.getElementById('avgRR').textContent = stats.avgRR === null ? '--' : formatStatsFactor(stats.avgRR);
+            document.getElementById('wins').textContent = stats.wins === null ? '--' : formatStatsNumber(stats.wins);
+            document.getElementById('losses').textContent = stats.losses === null ? '--' : formatStatsNumber(stats.losses);
 
             // 信号统计
             document.getElementById('totalSignals').textContent = ibkr_signals.length;
@@ -1481,9 +1522,8 @@
             document.getElementById('signalsShort').textContent = signalsShort;
         }
 
-        function renderCharts(orders, ibkr_signals, startDate, endDate) {
+        function renderCharts(orders, ibkr_signals, startDate, endDate, realized = null) {
             const dailyPnL = {};
-            const entryOrders = {};
 
             // 每日信号统计（区分多空）
             const dailySignalsLong = {};
@@ -1495,8 +1535,6 @@
 
             orders.forEach(order => {
                 const date = order.created.split(' ')[0];
-                const uniqueId = order.unique_id || '';
-                const parts = uniqueId.split('_');
 
                 // 统计订单数
                 const orderDirection = order.direction;
@@ -1505,48 +1543,23 @@
                 } else if (orderDirection === 'short') {
                     dailyOrdersShort[date] = (dailyOrdersShort[date] || 0) + 1;
                 }
-
-                if (parts.length < 5) return;
-
-                const baseId = parts.slice(0, 4).join('_');
-                const orderType = parts[4];
-
-                if (orderType === 'Entry' && order.status === 'Filled') {
-                    entryOrders[baseId] = order;
-                } else if ((orderType === 'TakeProfit' || orderType === 'StopLoss') && order.status === 'Filled') {
-                    const entry = entryOrders[baseId];
-                    if (entry) {
-                        const direction = order.direction;
-                        const entryPrice = parseFloat(entry.fill_price || entry.limit_price);
-                        const exitPrice = parseFloat(order.fill_price || order.limit_price);
-                        const quantity = parseFloat(order.filled_qty || order.quantity);
-
-                        let pnl = 0;
-                        if (direction === 'long') {
-                            pnl = (exitPrice - entryPrice) * quantity;
-                        } else {
-                            pnl = (entryPrice - exitPrice) * quantity;
-                        }
-
-                        dailyPnL[date] = (dailyPnL[date] || 0) + pnl;
-                    }
-                }
             });
 
-            // 统计信号数
-            console.log('Signals data:', ibkr_signals);
+            if (!realized?.dataInsufficient) {
+                (realized?.dailyRows || []).forEach((row) => {
+                    if (row?.date) dailyPnL[row.date] = Number(row.netPnl || 0);
+                });
+            }
+
             ibkr_signals.forEach(signal => {
                 const date = signal.created.split(' ')[0];
                 const direction = signal.direction;
-                console.log('Signal:', signal.symbol, direction, date);
                 if (direction === 'long') {
                     dailySignalsLong[date] = (dailySignalsLong[date] || 0) + 1;
                 } else if (direction === 'short') {
                     dailySignalsShort[date] = (dailySignalsShort[date] || 0) + 1;
                 }
             });
-            console.log('Daily ibkr_signals long:', dailySignalsLong);
-            console.log('Daily ibkr_signals short:', dailySignalsShort);
 
             // 生成日期标签
             const labels = [];
@@ -1582,7 +1595,7 @@
                 options: buildChartOptions()
             });
 
-            // 每日盈亏柱状图
+            // 每日盈亏柱状图（严格使用 IBKR execution fills，不从订单价格推算）
             const dailyData = labels.map(date => dailyPnL[date] || 0);
             const barColors = dailyData.map(pnl => pnl >= 0 ? '#10b981' : '#ef4444');
 
@@ -1683,19 +1696,24 @@
             });
         }
 
-        function renderTradesTable(orders) {
-            const stats = calculateStats(orders);
-            allTrades = stats.trades;
+        function renderTradesTable(realized = null) {
+            allTrades = realized?.dataInsufficient ? [] : (Array.isArray(realized?.tradeRows) ? realized.tradeRows : []);
             currentPage = 1;
-            renderTradesPage();
+            renderTradesPage(realized);
         }
 
-        function renderTradesPage() {
+        function renderTradesPage(realized = cachedRealizedPnlAnalytics?.normalized) {
             const tbody = document.getElementById('tradesTable');
             const paginationEl = document.getElementById('pagination');
 
+            if (realized?.dataInsufficient) {
+                tbody.innerHTML = '<tr><td colspan="10" class="loading">缺少完整 IBKR execution fills / commissionReport，无法展示准确平仓明细。</td></tr>';
+                paginationEl.innerHTML = '';
+                return;
+            }
+
             if (allTrades.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="10" class="loading">暂无平仓记录</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="10" class="loading">暂无 IBKR execution fills 平仓记录</td></tr>';
                 paginationEl.innerHTML = '';
                 return;
             }
@@ -1711,12 +1729,12 @@
                     <td>${trade.symbol}</td>
                     <td>${trade.direction === 'long' ? '做多' : '做空'}</td>
                     <td>${trade.orderType}</td>
-                    <td>$${trade.entryPrice.toFixed(2)}</td>
-                    <td>$${trade.exitPrice.toFixed(2)}</td>
+                    <td>${formatStatsMoney(trade.entryPrice)}</td>
+                    <td>${formatStatsMoney(trade.exitPrice)}</td>
                     <td>${trade.quantity}</td>
-                    <td class="${trade.pnl >= 0 ? 'pnl-positive' : 'pnl-negative'}">$${trade.pnl.toFixed(2)}</td>
+                    <td class="${Number(trade.pnl || 0) >= 0 ? 'pnl-positive' : 'pnl-negative'}">${formatStatsMoney(trade.pnl)}</td>
                     <td>${trade.rr > 0 ? trade.rr.toFixed(2) : '-'}</td>
-                    <td>$${trade.commission.toFixed(2)}</td>
+                    <td>${formatStatsMoney(trade.commission)}</td>
                 </tr>
             `).join('');
 
@@ -1830,7 +1848,7 @@
 
                 setChartHeights();
                 if (cachedOrders && cachedSignals && cachedStartDate && cachedEndDate) {
-                    renderCharts(cachedOrders, cachedSignals, cachedStartDate, cachedEndDate);
+                    renderCharts(cachedOrders, cachedSignals, cachedStartDate, cachedEndDate, cachedRealizedPnlAnalytics?.normalized);
                 }
                 if (cachedSignalAnalytics) {
                     renderSignalAnalysisCharts(cachedSignalAnalytics);
@@ -1842,8 +1860,11 @@
         });
 
         window.onEnvironmentChange = function(environment) {
-            currentEnvironment = environment;
-            location.href = buildPageUrl('/ibkr_stats.html', {}, { environment: currentEnvironment });
+            const brokerMode = typeof normalizeBrokerMode === 'function'
+                ? normalizeBrokerMode(environment, getCurrentBrokerMode())
+                : environment;
+            const dataEnvironment = typeof getSharedDataEnvironment === 'function' ? getSharedDataEnvironment() : currentEnvironment;
+            location.href = buildPageUrl('/ibkr_stats.html', {}, { environment: dataEnvironment, brokerMode, dataEnvironment });
         };
     </script>
 </body>

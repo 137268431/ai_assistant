@@ -102,6 +102,7 @@ class _IBGatewayApp(EWrapper, EClient):
 
         self._market_data_listeners: list[Callable[[dict], None]] = []
         self._order_update_listeners: list[Callable[[dict], None]] = []
+        self._execution_fill_listeners: list[Callable[[dict], None]] = []
         self._ticker_meta: Dict[int, dict] = {}
         self._ticker_payloads: Dict[int, dict] = {}
         self._conid_to_ticker: Dict[int, int] = {}
@@ -297,6 +298,16 @@ class _IBGatewayApp(EWrapper, EClient):
         with self._listener_lock:
             if callback in self._order_update_listeners:
                 self._order_update_listeners.remove(callback)
+
+    def add_execution_fill_listener(self, callback: Callable[[dict], None]):
+        with self._listener_lock:
+            if callback not in self._execution_fill_listeners:
+                self._execution_fill_listeners.append(callback)
+
+    def remove_execution_fill_listener(self, callback: Callable[[dict], None]):
+        with self._listener_lock:
+            if callback in self._execution_fill_listeners:
+                self._execution_fill_listeners.remove(callback)
 
     def _has_pending_request_kind(self, *kinds: str) -> bool:
         requested = {str(kind or "") for kind in kinds}
@@ -872,6 +883,7 @@ class _IBGatewayApp(EWrapper, EClient):
             **pending_commission,
         }
         self._executions[exec_id] = execution_payload
+        self._emit_execution_fill_update(execution_payload)
         ctx = self._pending_requests.get(int(reqId))
         if ctx:
             existing_index = next(
@@ -954,10 +966,12 @@ class _IBGatewayApp(EWrapper, EClient):
             "commission_report_received_at": _iso_now(),
         }
         order_update: dict[str, Any] | None = None
+        execution_update: dict[str, Any] | None = None
         with self._state_lock:
             self._commission_reports[exec_id] = payload
             if exec_id in self._executions:
                 self._executions[exec_id].update(payload)
+                execution_update = dict(self._executions[exec_id])
                 order_id = str(self._executions[exec_id].get("orderId") or self._executions[exec_id].get("order_id") or "")
                 if order_id:
                     current = dict(self._open_orders.get(order_id) or {})
@@ -987,6 +1001,8 @@ class _IBGatewayApp(EWrapper, EClient):
                         refreshed = dict(item)
                         refreshed.update(payload)
                         ctx.items[index] = refreshed
+        if execution_update:
+            self._emit_execution_fill_update(execution_update)
         if order_update:
             self._emit_order_update(order_update)
 
@@ -998,6 +1014,15 @@ class _IBGatewayApp(EWrapper, EClient):
                 listener(dict(payload))
             except Exception:
                 logger.exception("Order update listener failed")
+
+    def _emit_execution_fill_update(self, payload: dict):
+        with self._listener_lock:
+            listeners = list(self._execution_fill_listeners)
+        for listener in listeners:
+            try:
+                listener(dict(payload))
+            except Exception:
+                logger.exception("Execution fill listener failed")
 
     def next_order_ids(self, count: int, minimum: int = 0) -> List[int]:
         if not self._ready_event.wait(DEFAULT_CONNECT_TIMEOUT_SECONDS):
@@ -1895,6 +1920,12 @@ class BrokerAdapter:
 
     def remove_order_update_listener(self, callback: Callable[[dict], None]):
         self.client.remove_order_update_listener(callback)
+
+    def add_execution_fill_listener(self, callback: Callable[[dict], None]):
+        self.client.add_execution_fill_listener(callback)
+
+    def remove_execution_fill_listener(self, callback: Callable[[dict], None]):
+        self.client.remove_execution_fill_listener(callback)
 
     def resolve_contract(
         self,
