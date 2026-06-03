@@ -711,6 +711,139 @@ class UniverseRoutesTest(unittest.TestCase):
         self.assertIn("方向一致技术条件 5/2", ready_explanation["passed"])
         self.assertEqual([], ready_explanation["missing"])
 
+    def test_today_targets_counts_tv_aligned_sd_window_activation_touches(self):
+        pb = _MinimalPB()
+
+        def et_ms(text: str) -> int:
+            return int(datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=ET).timestamp() * 1000)
+
+        pb._records["ibkr_targets"] = [
+            {
+                "id": "target-aapl",
+                "symbol": "AAPL",
+                "environment": "live",
+                "date": "2026-05-29",
+                "status": "candidate",
+                "direction_bias": "long",
+                "score": 80,
+                "extra": {"source": "tradingview"},
+            },
+            {
+                "id": "target-msft",
+                "symbol": "MSFT",
+                "environment": "live",
+                "date": "2026-05-29",
+                "status": "active",
+                "direction_bias": "short",
+                "score": 82,
+                "extra": {"source": "tradingview", "active_gate_passed": True},
+            },
+            {
+                "id": "target-nvda",
+                "symbol": "NVDA",
+                "environment": "live",
+                "date": "2026-05-29",
+                "status": "candidate",
+                "direction_bias": "neutral",
+                "score": 70,
+                "extra": {"source": "tradingview"},
+            },
+        ]
+        pb._all_records["tv_webhook_events"] = [
+            {
+                "event_id": "aapl-window-upper-old",
+                "event_type": "pre_alert",
+                "symbol": "AAPL",
+                "environment": "live",
+                "date": "2026-05-29",
+                "bar_time_ms": et_ms("2026-05-29 09:36:00"),
+                "payload": {
+                    "pre_alert_stage": "window_activation",
+                    "activation_window": "upper",
+                    "interval": "2",
+                    "bar_time_ms": et_ms("2026-05-29 09:36:00"),
+                    "us_time": "2026-05-29 09:36:00",
+                },
+            },
+            {
+                "event_id": "aapl-window-lower-new",
+                "event_type": "pre_alert",
+                "symbol": "AAPL",
+                "environment": "live",
+                "date": "2026-05-29",
+                "bar_time_ms": et_ms("2026-05-29 09:38:00"),
+                "payload": {
+                    "pre_alert_stage": "window_activation",
+                    "activation_window": "lower",
+                    "interval": "2",
+                    "bar_time_ms": et_ms("2026-05-29 09:38:00"),
+                    "us_time": "2026-05-29 09:38:00",
+                },
+            },
+            {
+                "event_id": "msft-window_upper-fallback",
+                "event_type": "pre_alert",
+                "symbol": "MSFT",
+                "environment": "live",
+                "date": "2026-05-29",
+                "bar_time_ms": et_ms("2026-05-29 09:40:00"),
+                "payload": {
+                    "pre_alert_stage": "window_activation",
+                    "interval": "2",
+                    "bar_time_ms": et_ms("2026-05-29 09:40:00"),
+                    "us_time": "2026-05-29 09:40:00",
+                },
+            },
+            {
+                "event_id": "nvda-observe-only",
+                "event_type": "pre_alert",
+                "symbol": "NVDA",
+                "environment": "live",
+                "date": "2026-05-29",
+                "bar_time_ms": et_ms("2026-05-29 09:42:00"),
+                "payload": {
+                    "pre_alert_stage": "observe",
+                    "interval": "2",
+                    "bar_time_ms": et_ms("2026-05-29 09:42:00"),
+                },
+            },
+            {
+                "event_id": "tsla-window-lower",
+                "event_type": "pre_alert",
+                "symbol": "TSLA",
+                "environment": "live",
+                "date": "2026-05-29",
+                "bar_time_ms": et_ms("2026-05-29 09:44:00"),
+                "payload": {
+                    "pre_alert_stage": "window_activation",
+                    "activation_window": "lower",
+                    "interval": "2",
+                    "bar_time_ms": et_ms("2026-05-29 09:44:00"),
+                },
+            },
+        ]
+
+        with mock.patch("ibkr_api.universe.today_targets.time.time", return_value=et_ms("2026-05-29 09:45:00") / 1000):
+            payload, status_code = build_today_targets_response(
+                pb,
+                payload={"environment": "live", "market_date": "2026-05-29"},
+                normalize_environment=lambda value, default="live": str(value or default).strip().lower() or default,
+                time_strings=lambda: {"us": "2026-05-29 09:45:00", "cn": "2026-05-29 21:45:00", "date": "2026-05-29"},
+            )
+
+        self.assertEqual(200, status_code)
+        summary = payload["summary"]
+        self.assertEqual(1, summary["tv_sd_upper_touch_count"])
+        self.assertEqual(1, summary["tv_sd_lower_touch_count"])
+        self.assertEqual(2, summary["tv_sd_touch_count"])
+        self.assertEqual("TV 2m", summary["tv_sd_touch_interval_label"])
+        self.assertEqual("tv_pre_alert_window_activation", summary["tv_sd_touch_basis"])
+        by_symbol = {item["symbol"]: item for item in payload["items"]}
+        self.assertEqual("lower", by_symbol["AAPL"]["tv_sd_touch"]["side"])
+        self.assertEqual("aapl-window-lower-new", by_symbol["AAPL"]["tv_sd_touch"]["event_id"])
+        self.assertEqual("upper", by_symbol["MSFT"]["tv_sd_touch"]["side"])
+        self.assertEqual({}, by_symbol["NVDA"]["tv_sd_touch"])
+
     def test_today_targets_demotes_active_after_terminal_latest_signal(self):
         pb = _MinimalPB()
 

@@ -56,6 +56,186 @@ from ibkr_compute.universe.target_execution import build_target_execution_metada
 
 NormalizeEnvironment = Callable[[Any, str], str]
 TimeStrings = Callable[[], dict[str, str]]
+TV_SD_TOUCH_BASIS = "tv_pre_alert_window_activation"
+
+
+def _empty_tv_sd_touch_summary() -> dict[str, Any]:
+    return {
+        "tv_sd_upper_touch_count": 0,
+        "tv_sd_lower_touch_count": 0,
+        "tv_sd_touch_count": 0,
+        "tv_sd_touch_interval_label": "TV",
+        "tv_sd_touch_basis": TV_SD_TOUCH_BASIS,
+    }
+
+
+def _tv_sd_payload_parts(row: dict[str, Any]) -> list[dict[str, Any]]:
+    payload = parse_json_object(row.get("payload"))
+    extra = parse_json_object(row.get("extra"))
+    payload_extra = parse_json_object(payload.get("extra")) if isinstance(payload, dict) else {}
+    return [dict(row or {}), payload, extra, payload_extra]
+
+
+def _first_tv_sd_value(row: dict[str, Any], *keys: str) -> Any:
+    for source in _tv_sd_payload_parts(row):
+        for key in keys:
+            value = source.get(key)
+            if value not in (None, ""):
+                return value
+    return None
+
+
+def _first_tv_sd_text(row: dict[str, Any], *keys: str) -> str:
+    return to_text(_first_tv_sd_value(row, *keys))
+
+
+def _normalize_tv_interval_label(value: Any) -> str:
+    text = to_text(value).strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if "entry=" in lowered:
+        for part in text.split(";"):
+            key, _, raw_value = part.partition("=")
+            if key.strip().lower() == "entry":
+                text = raw_value.strip()
+                lowered = text.lower()
+                break
+    if lowered.startswith("chart="):
+        text = text.split("=", 1)[1].strip()
+        lowered = text.lower()
+    if lowered.endswith("min"):
+        lowered = lowered[:-3].strip() + "m"
+    if lowered.isdigit():
+        return f"{int(lowered)}m"
+    if lowered.endswith("m") and lowered[:-1].isdigit():
+        return f"{int(lowered[:-1])}m"
+    if lowered in {"d", "1d"}:
+        return "1d"
+    return lowered
+
+
+def _tv_sd_touch_side(row: dict[str, Any]) -> str:
+    event_type = _first_tv_sd_text(row, "event_type").lower()
+    if event_type and event_type != "pre_alert":
+        return ""
+    stage = _first_tv_sd_text(row, "pre_alert_stage").lower()
+    activation_window = _first_tv_sd_text(row, "activation_window", "sd_activation_window", "window").lower()
+    if stage and stage not in {"window_activation", "sd_window_activation"}:
+        return ""
+    if activation_window in {"upper", "sd_upper", "window_upper", "upper_window"}:
+        return "upper"
+    if activation_window in {"lower", "sd_lower", "window_lower", "lower_window"}:
+        return "lower"
+    fallback_text = " ".join(
+        _first_tv_sd_text(row, key).lower()
+        for key in ("event_id", "position_id", "signal_id", "reason")
+    )
+    if any(token in fallback_text for token in ("window_upper", "upper_window", "pending_window_upper")):
+        return "upper"
+    if any(token in fallback_text for token in ("window_lower", "lower_window", "pending_window_lower")):
+        return "lower"
+    return ""
+
+
+def _tv_sd_touch_time_ms(row: dict[str, Any]) -> int:
+    return to_int(
+        _first_tv_sd_value(
+            row,
+            "bar_time_ms",
+            "bar_open_ms",
+            "last_bar_time_ms",
+            "first_bar_time_ms",
+        ),
+        0,
+    )
+
+
+def _tv_sd_touch_item(row: dict[str, Any], side: str) -> dict[str, Any]:
+    bar_time_ms = _tv_sd_touch_time_ms(row)
+    interval = _normalize_tv_interval_label(
+        _first_tv_sd_value(row, "interval", "entry_tf", "chart_tf", "timeframe", "timeframe_stack")
+    )
+    return {
+        "side": side,
+        "interval": interval,
+        "event_id": _first_tv_sd_text(row, "event_id", "tv_event_id"),
+        "bar_time_ms": bar_time_ms,
+        "us_time": _first_tv_sd_text(row, "us_time", "time", "timestamp") or (format_et_datetime(bar_time_ms) if bar_time_ms > 0 else ""),
+    }
+
+
+def _build_tv_sd_touch_payload(
+    pb: Any,
+    *,
+    data_environment: str,
+    market_date: str,
+    market_start_ms: int,
+    market_end_ms: int,
+    symbols: list[str],
+) -> dict[str, Any]:
+    symbol_set = {to_text(symbol).upper() for symbol in symbols if to_text(symbol)}
+    if not symbol_set:
+        return {"by_symbol": {}, "summary": _empty_tv_sd_touch_summary()}
+    records = load_records_for_symbols(
+        pb,
+        "tv_webhook_events",
+        base_filter_parts=[
+            f'environment = "{escape_filter(data_environment)}"',
+            f'date = "{escape_filter(market_date)}"',
+            'event_type = "pre_alert"',
+            f"bar_time_ms >= {market_start_ms}",
+            f"bar_time_ms < {market_end_ms}",
+        ],
+        symbols=list(symbol_set),
+        sort="-bar_time_ms,-updated",
+        max_pages=20,
+    )
+    latest_by_symbol: dict[str, dict[str, Any]] = {}
+    latest_sort_key: dict[str, tuple[int, str, str, str]] = {}
+    for raw_row in records:
+        row = dict(raw_row or {})
+        symbol = _first_tv_sd_text(row, "symbol").upper()
+        if not symbol or symbol not in symbol_set:
+            continue
+        event_date = _first_tv_sd_text(row, "date", "market_date")
+        if event_date and event_date != market_date:
+            continue
+        side = _tv_sd_touch_side(row)
+        if side not in {"upper", "lower"}:
+            continue
+        bar_time_ms = _tv_sd_touch_time_ms(row)
+        if bar_time_ms > 0 and not (market_start_ms <= bar_time_ms < market_end_ms):
+            continue
+        item = _tv_sd_touch_item(row, side)
+        sort_key = (
+            to_int(item.get("bar_time_ms"), 0),
+            to_text(row.get("updated")),
+            to_text(row.get("created")),
+            to_text(item.get("event_id")),
+        )
+        if sort_key >= latest_sort_key.get(symbol, (0, "", "", "")):
+            latest_sort_key[symbol] = sort_key
+            latest_by_symbol[symbol] = item
+
+    upper_count = sum(1 for item in latest_by_symbol.values() if item.get("side") == "upper")
+    lower_count = sum(1 for item in latest_by_symbol.values() if item.get("side") == "lower")
+    intervals = sorted({to_text(item.get("interval")) for item in latest_by_symbol.values() if to_text(item.get("interval"))})
+    interval_label = "TV"
+    if len(intervals) == 1:
+        interval_label = f"TV {intervals[0]}"
+    elif len(intervals) > 1:
+        interval_label = "TV mixed"
+    return {
+        "by_symbol": latest_by_symbol,
+        "summary": {
+            "tv_sd_upper_touch_count": upper_count,
+            "tv_sd_lower_touch_count": lower_count,
+            "tv_sd_touch_count": upper_count + lower_count,
+            "tv_sd_touch_interval_label": interval_label,
+            "tv_sd_touch_basis": TV_SD_TOUCH_BASIS,
+        },
+    }
 
 
 def build_today_targets_response(
@@ -142,6 +322,7 @@ def build_today_targets_response(
                 "execution_eligible_count": 0,
                 "observe_only_count": 0,
                 "watch_only_count": 0,
+                **_empty_tv_sd_touch_summary(),
             },
             "filters": filters,
             "filtered_summary": {"total": 0, "ready_count": 0, "signaled_count": 0, "needs_action_count": 0},
@@ -211,6 +392,16 @@ def build_today_targets_response(
         sort="-bar_time_ms",
         max_pages=12,
     )
+    tv_sd_touch_payload = _build_tv_sd_touch_payload(
+        pb,
+        data_environment=data_environment,
+        market_date=market_date,
+        market_start_ms=market_start_ms,
+        market_end_ms=market_end_ms,
+        symbols=ordered_symbols,
+    )
+    tv_sd_touch_by_symbol = tv_sd_touch_payload.get("by_symbol") if isinstance(tv_sd_touch_payload.get("by_symbol"), dict) else {}
+    tv_sd_touch_summary = tv_sd_touch_payload.get("summary") if isinstance(tv_sd_touch_payload.get("summary"), dict) else _empty_tv_sd_touch_summary()
 
     daily_history_by_symbol: dict[str, list[dict[str, Any]]] = {}
     fallback_daily_by_symbol: dict[str, dict[str, Any]] = {}
@@ -379,6 +570,7 @@ def build_today_targets_response(
             "context_allowed_sides": list(execution_meta.get("context_allowed_sides") or []),
             "subscription_selected": bool(target_extra.get("subscription_selected")),
             "within_subscription_budget": bool(target_extra.get("within_subscription_budget")),
+            "tv_sd_touch": dict(tv_sd_touch_by_symbol.get(symbol) or {}),
         }
         tradability_score, assessment_notes = build_tradability_assessment(row)
         row["tradability_score"] = tradability_score
@@ -481,6 +673,7 @@ def build_today_targets_response(
             "execution_eligible_count": execution_eligible_count,
             "observe_only_count": observe_only_count,
             "watch_only_count": watch_only_count,
+            **tv_sd_touch_summary,
         },
         "filters": filters,
         "filtered_summary": filtered_summary,

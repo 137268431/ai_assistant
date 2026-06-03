@@ -268,6 +268,9 @@ class TvPrimaryIngestTests(unittest.TestCase):
             "quality_score": 82,
             "market_date": "2026-05-29",
             "environment": "live",
+            "pre_alert_stage": "window_activation",
+            "activation_window": "upper",
+            "interval": "2",
             "us_time": "2026-05-29 09:36:00",
             "bar_time_ms": _et_ms("2026-05-29 09:36:00"),
             **_mtf_payload(),
@@ -284,12 +287,17 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertEqual(target_extra["activation_source"], "tradingview")
         self.assertEqual(target_extra["first_tv_event_id"], "tv-pre-1")
         self.assertEqual(target_extra["last_tv_event_id"], "tv-pre-1")
+        self.assertEqual(target_extra["pre_alert_stage"], "window_activation")
+        self.assertEqual(target_extra["activation_window"], "upper")
+        self.assertEqual(target_extra["interval"], "2")
         self.assertEqual(target_extra["entry_tf"], "2")
         self.assertEqual(target_extra["confirm_tfs"], "5,15,60")
         self.assertEqual(target_extra["mtf_status"], "warn")
         self.assertEqual(target_extra["mtf_last_status"], "warn")
         self.assertEqual(target_extra["mtf"]["status"], "warn")
         event_extra = pb.records[TV_EVENT_COLLECTION][0]["extra"]
+        self.assertEqual(event_extra["activation_window"], "upper")
+        self.assertEqual(event_extra["interval"], "2")
         self.assertEqual(event_extra["mtf_status"], "warn")
         self.assertEqual(event_extra["mtf"]["mode"], "shadow_soft")
         self.assertEqual(pb.records[TV_EVENT_COLLECTION][0]["status"], "routed")

@@ -27,6 +27,9 @@ async function collectHomeOverviewIssues(page, mobile = false) {
   return page.evaluate(({ isMobileViewport, requiredRows }) => {
     const issues = [];
     const tip = document.getElementById('todayTargetsTimeTip');
+    const sdSummary = document.getElementById('todayTargetsSdSummary');
+    const sdUpper = document.getElementById('todayTargetsSdUpper');
+    const sdLower = document.getElementById('todayTargetsSdLower');
     const badge = document.querySelector('.home-panel-tip-badge');
     const tipCard = document.querySelector('.home-panel-tip');
     const stackCard = document.getElementById('overviewStackCard');
@@ -37,6 +40,7 @@ async function collectHomeOverviewIssues(page, mobile = false) {
     const toolChips = Array.from(document.querySelectorAll('#homeQuickLinks .home-tool-chip'));
 
     const tipText = String(tip?.textContent || '').trim();
+    const sdSummaryText = String(sdSummary?.textContent || '').trim();
     const badgeText = String(badge?.textContent || '').trim();
     const tipStyle = tipCard ? window.getComputedStyle(tipCard) : null;
     const stackSummaryText = String(stackSummary?.textContent || '').trim();
@@ -51,6 +55,12 @@ async function collectHomeOverviewIssues(page, mobile = false) {
       .filter(Boolean);
 
     if (!tip) issues.push('missing_targets_time_tip');
+    if (!sdSummary) issues.push('missing_targets_sd_summary');
+    if (!sdUpper) issues.push('missing_targets_sd_upper');
+    if (!sdLower) issues.push('missing_targets_sd_lower');
+    if (sdSummary && (!sdSummaryText.includes('SD上轨') || !sdSummaryText.includes('SD下轨'))) {
+      issues.push(`targets_sd_summary_text:${sdSummaryText || 'empty'}`);
+    }
     if (!badge) issues.push('missing_targets_tip_badge');
     if (!tipCard) issues.push('missing_targets_tip_card');
     if (tip && !tipText.includes('美东交易日')) issues.push('targets_time_tip_missing_market_date_copy');

@@ -369,6 +369,10 @@
             color: var(--short);
         }
 
+        .home-stat-subline .candidate {
+            color: #f6ad55;
+        }
+
         .home-stat-separator {
             color: rgba(148, 163, 184, 0.7);
         }

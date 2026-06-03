@@ -717,6 +717,7 @@ def _base_extra(
     quality_score = _float(payload.get("quality_score"), activity_score)
     link_trade_group_id = _trade_group_id(payload)
     link_origin_signal_id = _origin_signal_id(payload)
+    interval = _interval_text(payload)
     base = {
         **extra,
         "source": TRADINGVIEW_SOURCE,
@@ -733,6 +734,23 @@ def _base_extra(
         "tv_snapshot": _as_object(payload.get("tv_snapshot")),
         "reason": _text(payload.get("reason") or extra.get("reason")),
     }
+    if interval:
+        base["interval"] = interval
+    for key in (
+        "pre_alert_stage",
+        "activation_window",
+        "activation_window_upper",
+        "activation_window_lower",
+        "entry_decides_direction",
+        "qualified",
+        "activity_grade",
+        "missing_components",
+        "lower_window_valid",
+        "upper_window_valid",
+    ):
+        value = _payload_first(payload, key)
+        if value not in (None, "", []):
+            base[key] = value
     if link_trade_group_id:
         base["trade_group_id"] = link_trade_group_id
         base["bracket_group"] = link_trade_group_id

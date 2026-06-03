@@ -110,8 +110,13 @@
                                     <span class="candidate" id="todayTargetsCandidate">-</span>
                                 </div>
                             </div>
+                            <div class="home-stat-subline" id="todayTargetsSdSummary">
+                                <span class="candidate">SD上轨 <span id="todayTargetsSdUpper">-</span></span>
+                                <span class="home-stat-separator">/</span>
+                                <span class="long">SD下轨 <span id="todayTargetsSdLower">-</span></span>
+                            </div>
                             <div class="home-stat-label">今日目标池</div>
-                            <div class="home-stat-foot">ACTIVE / CANDIDATE</div>
+                            <div class="home-stat-foot" id="todayTargetsFoot">ACTIVE / CANDIDATE</div>
                         </a>
 
                     </div>
@@ -622,8 +627,14 @@
         function renderTargetSummary(summary = {}, marketDate = getUsDate(), targetUrl = buildPageUrl('/ibkr_screener.html', { tab: 'targets' })) {
             const activeCount = Number(summary.active_count || 0);
             const candidateCount = Number(summary.candidate_count || 0);
+            const sdUpperCount = Number(summary.tv_sd_upper_touch_count || 0);
+            const sdLowerCount = Number(summary.tv_sd_lower_touch_count || 0);
+            const sdIntervalLabel = String(summary.tv_sd_touch_interval_label || 'TV').trim() || 'TV';
             document.getElementById('todayTargetsActive').textContent = formatNumber(activeCount, 0);
             document.getElementById('todayTargetsCandidate').textContent = formatNumber(candidateCount, 0);
+            document.getElementById('todayTargetsSdUpper').textContent = formatNumber(sdUpperCount, 0);
+            document.getElementById('todayTargetsSdLower').textContent = formatNumber(sdLowerCount, 0);
+            document.getElementById('todayTargetsFoot').textContent = `ACTIVE / CANDIDATE · ${sdIntervalLabel}`;
             document.getElementById('targetsSummaryLink').href = targetUrl;
             setCardTone('targetsSummaryLink', activeCount > 0 ? 'long' : (candidateCount > 0 ? 'candidate' : 'neutral'));
             renderOverviewMeta(marketDate);
@@ -690,7 +701,7 @@
             renderTargetSummary(summary, marketDate, todayTargetsUrl);
             renderTodayTargetsTimeTip(latestTodayTargetsPayload);
 
-            metaEl.textContent = `共 ${summary.total || 0} 条 · active ${summary.active_count || 0} · candidate ${summary.candidate_count || 0}`;
+            metaEl.textContent = `共 ${summary.total || 0} 条 · active ${summary.active_count || 0} · candidate ${summary.candidate_count || 0} · SD上轨 ${summary.tv_sd_upper_touch_count || 0} · SD下轨 ${summary.tv_sd_lower_touch_count || 0}`;
 
             if (!items.length) {
                 setSectionState('homeTargets', 'empty');
@@ -768,6 +779,9 @@
                 renderTodayTargetsTimeTip();
                 document.getElementById('todayTargetsActive').textContent = '--';
                 document.getElementById('todayTargetsCandidate').textContent = '--';
+                document.getElementById('todayTargetsSdUpper').textContent = '--';
+                document.getElementById('todayTargetsSdLower').textContent = '--';
+                document.getElementById('todayTargetsFoot').textContent = 'ACTIVE / CANDIDATE';
                 setCardTone('targetsSummaryLink', 'neutral');
             }
         }
