@@ -80,6 +80,68 @@
             </div>
         </div>
 
+        <section class="realized-pnl-panel" id="realizedPnlAnalytics">
+            <div class="realized-pnl-head">
+                <div class="realized-pnl-title-block">
+                    <div class="realized-pnl-kicker">REALIZED NET PNL</div>
+                    <div class="section-title realized-pnl-title">实际平仓盈亏分析</div>
+                    <div class="realized-pnl-copy">统计口径：IBKR 已实现净盈亏，扣除佣金后按日期与标的聚合。</div>
+                </div>
+                <div class="realized-pnl-meta" id="realizedPnlMeta">等待加载...</div>
+            </div>
+            <div class="stats-grid realized-pnl-grid" id="realizedPnlCards">
+                <div class="stat-card realized-pnl-card">
+                    <div class="stat-label">NET PNL</div>
+                    <div class="stat-value realized-pnl-value">--</div>
+                    <div class="realized-pnl-card-copy">等待加载</div>
+                </div>
+            </div>
+            <div class="chart-grid realized-pnl-chart-grid">
+                <div class="chart-container realized-pnl-chart-card">
+                    <div class="realized-pnl-chart-head">
+                        <div class="chart-title">每日已实现净盈亏</div>
+                        <div class="realized-pnl-chart-copy">按平仓日聚合，绿色盈利、红色亏损。</div>
+                    </div>
+                    <div class="chart-canvas-wrap realized-pnl-chart-wrap"><canvas id="realizedDailyChart"></canvas></div>
+                </div>
+                <div class="chart-container realized-pnl-chart-card">
+                    <div class="realized-pnl-chart-head">
+                        <div class="chart-title">累计已实现净盈亏</div>
+                        <div class="realized-pnl-chart-copy">区间内从 0 开始累计净盈亏。</div>
+                    </div>
+                    <div class="chart-canvas-wrap realized-pnl-chart-wrap"><canvas id="realizedCumulativeChart"></canvas></div>
+                </div>
+                <div class="chart-container realized-pnl-chart-card realized-pnl-symbol-chart-card">
+                    <div class="realized-pnl-chart-head">
+                        <div class="chart-title">标的 Top / Bottom</div>
+                        <div class="realized-pnl-chart-copy">按标的净盈亏展示赢家与拖累项。</div>
+                    </div>
+                    <div class="chart-canvas-wrap realized-pnl-symbol-wrap"><canvas id="realizedSymbolChart"></canvas></div>
+                </div>
+            </div>
+            <div class="data-table-wrap realized-pnl-table-wrap">
+                <table class="data-table realized-pnl-table">
+                    <thead>
+                        <tr>
+                            <th>标的</th>
+                            <th>平仓</th>
+                            <th>Win</th>
+                            <th>Loss</th>
+                            <th>Flat</th>
+                            <th>Net PnL</th>
+                            <th>Gross</th>
+                            <th>Commission</th>
+                            <th>Avg</th>
+                            <th>Win Rate</th>
+                        </tr>
+                    </thead>
+                    <tbody id="realizedSymbolTable">
+                        <tr><td colspan="10" class="loading">等待加载...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
         <section class="signal-analysis-panel" id="signal-rule-analysis">
             <div class="signal-analysis-head">
                 <div class="signal-analysis-title-block">
@@ -199,6 +261,9 @@
         let orderChart = null;
         let signalRuleChart = null;
         let signalRrChart = null;
+        let realizedDailyChart = null;
+        let realizedCumulativeChart = null;
+        let realizedSymbolChart = null;
         let currentPage = 1;
         const pageSize = 20;
         let allTrades = [];
@@ -209,6 +274,7 @@
         let cachedStartDate = null;
         let cachedEndDate = null;
         let cachedSignalAnalytics = null;
+        let cachedRealizedPnlAnalytics = null;
 
         function getChartHeight() {
             const width = window.innerWidth;
@@ -230,7 +296,9 @@
             const height = `${getChartHeight()}px`;
             const signalHeight = `${getSignalChartHeight()}px`;
             document.querySelectorAll('.chart-canvas-wrap').forEach((node) => {
-                node.style.height = node.classList.contains('signal-chart-wrap') ? signalHeight : height;
+                node.style.height = (node.classList.contains('signal-chart-wrap') || node.classList.contains('realized-pnl-symbol-wrap'))
+                    ? signalHeight
+                    : height;
             });
         }
 
@@ -261,13 +329,19 @@
                 },
                 grid: { color: indexAxis === 'y' ? 'rgba(148, 163, 184, 0.06)' : 'rgba(148, 163, 184, 0.1)' }
             };
+            const valueTicks = {
+                color: '#9fb0c3',
+                maxTicksLimit: options.valueMaxTicks || (compact ? 5 : 7),
+                font: { size: tiny ? 9 : 10, family: 'JetBrains Mono' }
+            };
+            if (typeof options.valueTickFormatter === 'function') {
+                valueTicks.callback = function(value) {
+                    return options.valueTickFormatter(value);
+                };
+            }
             const valueScale = {
                 beginAtZero: true,
-                ticks: {
-                    color: '#9fb0c3',
-                    maxTicksLimit: options.valueMaxTicks || (compact ? 5 : 7),
-                    font: { size: tiny ? 9 : 10, family: 'JetBrains Mono' }
-                },
+                ticks: valueTicks,
                 grid: { color: 'rgba(148, 163, 184, 0.1)' }
             };
             const plugins = {
@@ -289,7 +363,8 @@
                         },
                         label(context) {
                             const raw = indexAxis === 'y' ? context.parsed.x : context.parsed.y;
-                            return `${options.tooltipLabel}: ${formatStatsNumber(raw)}`;
+                            const formatter = typeof options.tooltipFormatter === 'function' ? options.tooltipFormatter : formatStatsNumber;
+                            return `${options.tooltipLabel}: ${formatter(raw)}`;
                         }
                     }
                 };
@@ -362,6 +437,7 @@
         }
 
         function formatStatsNumber(value, digits = 0) {
+            if (value === null || value === undefined || value === '') return '--';
             const num = Number(value);
             if (!Number.isFinite(num)) return '--';
             return num.toLocaleString('en-US', {
@@ -371,13 +447,26 @@
         }
 
         function formatStatsMoney(value) {
+            if (value === null || value === undefined || value === '') return '--';
             const num = Number(value);
             if (!Number.isFinite(num)) return '--';
             const sign = num < 0 ? '-' : '';
             return `${sign}$${Math.abs(num).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
         }
 
+        function formatStatsCompactMoney(value) {
+            if (value === null || value === undefined || value === '') return '--';
+            const num = Number(value);
+            if (!Number.isFinite(num)) return '--';
+            const sign = num < 0 ? '-' : '';
+            const abs = Math.abs(num);
+            if (abs >= 1000000) return `${sign}$${(abs / 1000000).toFixed(1)}M`;
+            if (abs >= 1000) return `${sign}$${(abs / 1000).toFixed(1)}K`;
+            return `${sign}$${abs >= 100 ? abs.toFixed(0) : abs.toFixed(2)}`;
+        }
+
         function formatStatsPct(value) {
+            if (value === null || value === undefined || value === '') return '--';
             const num = Number(value);
             if (!Number.isFinite(num)) return '--';
             return `${num.toFixed(1)}%`;
@@ -393,6 +482,85 @@
             const num = Number(value);
             if (!Number.isFinite(num) || Math.abs(num) < 0.005) return '';
             return num > 0 ? 'positive' : 'negative';
+        }
+
+        function normalizeStatsKey(value) {
+            return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+        }
+
+        function getStatsObjectField(source, fields = []) {
+            if (!source || typeof source !== 'object') return undefined;
+            const sources = [source];
+            if (source.extra && typeof source.extra === 'object') sources.push(source.extra);
+            for (const item of sources) {
+                for (const field of fields) {
+                    if (item[field] !== undefined && item[field] !== null && item[field] !== '') return item[field];
+                }
+            }
+            const normalizedFields = new Set(fields.map(normalizeStatsKey));
+            for (const item of sources) {
+                for (const [key, value] of Object.entries(item)) {
+                    if (value === undefined || value === null || value === '') continue;
+                    if (normalizedFields.has(normalizeStatsKey(key))) return value;
+                }
+            }
+            return undefined;
+        }
+
+        function readStatsNumber(source, fields = []) {
+            const value = getStatsObjectField(source, fields);
+            const num = Number(value);
+            return Number.isFinite(num) ? num : null;
+        }
+
+        function readStatsText(source, fields = []) {
+            const value = getStatsObjectField(source, fields);
+            return value === undefined || value === null ? '' : String(value);
+        }
+
+        function asStatsRows(value, keyField = 'key') {
+            if (Array.isArray(value)) return value.filter((item) => item && typeof item === 'object');
+            if (!value || typeof value !== 'object') return [];
+            return Object.entries(value).map(([key, item]) => (
+                item && typeof item === 'object'
+                    ? { [keyField]: key, ...item }
+                    : { [keyField]: key, value: item, realized_net_pnl: item, net_pnl: item }
+            ));
+        }
+
+        function getStatsPath(source, path) {
+            return String(path || '').split('.').reduce((current, part) => {
+                if (!current || typeof current !== 'object') return undefined;
+                return current[part];
+            }, source);
+        }
+
+        function firstStatsRows(source, paths = [], keyField = 'key') {
+            for (const path of paths) {
+                const rows = asStatsRows(getStatsPath(source, path), keyField);
+                if (rows.length) return rows;
+            }
+            return [];
+        }
+
+        function normalizeStatsDateText(value) {
+            if (value === undefined || value === null || value === '') return '';
+            const text = String(value);
+            if (/^\d{4}-\d{2}-\d{2}/.test(text)) return text.slice(0, 10);
+            const num = Number(value);
+            if (Number.isFinite(num) && num > 1000000000) return getCurrentEtDateString(new Date(num < 100000000000 ? num * 1000 : num));
+            return '';
+        }
+
+        function buildStatsDateLabels(startDateText, endDateText) {
+            const labels = [];
+            let current = startDateText || endDateText || getCurrentEtDateString();
+            const end = endDateText || current;
+            for (let guard = 0; current <= end && guard < 4000; guard += 1) {
+                labels.push(current);
+                current = shiftDateString(current, 1);
+            }
+            return labels;
         }
 
         async function fetchSignalAnalysisPayload(path, force = false) {
@@ -618,7 +786,500 @@
             }).join('');
         }
 
-        async function loadStats() {
+        const REALIZED_NET_PNL_FIELDS = ['realized_net_pnl', 'realized_pnl_net', 'net_pnl', 'net', 'pnl', 'total', 'realizedPnl', 'realizedPNL'];
+        const REALIZED_GROSS_PNL_FIELDS = ['realized_gross_pnl', 'gross_pnl', 'gross', 'grossPnl'];
+        const REALIZED_COMMISSION_FIELDS = ['commission', 'commissions', 'ibkr_commission', 'fees', 'commission_amount'];
+        const REALIZED_EXIT_COUNT_FIELDS = ['exit_count', 'closed_trades', 'closed_count', 'trade_count', 'trades', 'count', 'total_trades'];
+        const REALIZED_WIN_COUNT_FIELDS = ['win_count', 'wins', 'winning_trades', 'profit_count'];
+        const REALIZED_LOSS_COUNT_FIELDS = ['loss_count', 'losses', 'losing_trades'];
+        const REALIZED_FLAT_COUNT_FIELDS = ['flat_count', 'flats', 'breakeven_count'];
+
+        async function fetchRealizedPnlPayload(path, force = false) {
+            const cacheOptions = {
+                profile: 'tradingList',
+                ttlMs: 30000,
+                swrMs: 30000,
+                force,
+                tags: ['stats', 'realized-pnl-summary', currentEnvironment]
+            };
+            if (typeof cachedPageJson === 'function') {
+                return cachedPageJson(path, { retryAttempts: 3, retryDelayMs: 500 }, cacheOptions);
+            }
+            if (typeof cachedCustomJson === 'function') {
+                return cachedCustomJson(path, '', {}, cacheOptions);
+            }
+            const token = getToken();
+            const headers = {};
+            if (token) headers.Authorization = `Bearer ${token}`;
+            const response = await fetchWithRetry(`${BASE_URL}${path}`, { method: 'GET', headers }, { attempts: 3, retryDelayMs: 500 });
+            if (response.status === 401 || response.status === 403) {
+                handleAuthError();
+                throw new Error('Authentication failed');
+            }
+            const payload = await response.json();
+            if (!response.ok || payload?.ok === false) throw new Error(payload?.error || payload?.message || `Request failed (${response.status})`);
+            return payload;
+        }
+
+        function renderRealizedPnlLoading(startDateText, endDateText) {
+            const meta = document.getElementById('realizedPnlMeta');
+            const cards = document.getElementById('realizedPnlCards');
+            const table = document.getElementById('realizedSymbolTable');
+            if (meta) meta.textContent = `加载 ${startDateText || '--'} ~ ${endDateText || '--'} 已实现净盈亏...`;
+            if (cards && !cachedRealizedPnlAnalytics) {
+                cards.innerHTML = `
+                    <div class="stat-card realized-pnl-card">
+                        <div class="stat-label">NET PNL</div>
+                        <div class="stat-value realized-pnl-value">--</div>
+                        <div class="realized-pnl-card-copy">等待汇总</div>
+                    </div>
+                `;
+            }
+            if (table && !cachedRealizedPnlAnalytics) {
+                table.innerHTML = '<tr><td colspan="10" class="loading">等待加载...</td></tr>';
+            }
+        }
+
+        function destroyRealizedPnlCharts() {
+            if (realizedDailyChart) realizedDailyChart.destroy();
+            if (realizedCumulativeChart) realizedCumulativeChart.destroy();
+            if (realizedSymbolChart) realizedSymbolChart.destroy();
+            realizedDailyChart = null;
+            realizedCumulativeChart = null;
+            realizedSymbolChart = null;
+        }
+
+        function renderRealizedPnlError(message) {
+            const safeMessage = escapeStatsHtml(message || '未知错误');
+            const meta = document.getElementById('realizedPnlMeta');
+            const cards = document.getElementById('realizedPnlCards');
+            const table = document.getElementById('realizedSymbolTable');
+            if (meta) meta.textContent = `已实现盈亏加载失败：${message || '未知错误'}`;
+            if (cards) {
+                cards.innerHTML = `
+                    <div class="stat-card realized-pnl-card realized-pnl-error-card">
+                        <div class="stat-label">ERROR</div>
+                        <div class="stat-value negative realized-pnl-value">失败</div>
+                        <div class="realized-pnl-card-copy">${safeMessage}</div>
+                    </div>
+                `;
+            }
+            if (table) table.innerHTML = `<tr><td colspan="10" class="loading">${safeMessage}</td></tr>`;
+            destroyRealizedPnlCharts();
+        }
+
+        function findRealizedSummarySource(payload) {
+            const candidates = [
+                payload?.summary?.realized,
+                payload?.summary?.pnl,
+                payload?.summary,
+                payload?.realized,
+                payload?.pnl,
+                payload?.stats,
+                payload,
+            ];
+            const fields = [
+                ...REALIZED_NET_PNL_FIELDS,
+                ...REALIZED_EXIT_COUNT_FIELDS,
+                ...REALIZED_COMMISSION_FIELDS,
+                'profit_amount',
+                'loss_amount',
+            ];
+            return candidates.find((item) => item && typeof item === 'object' && getStatsObjectField(item, fields) !== undefined) || {};
+        }
+
+        function normalizedStatsPct(source, fields, winCount = null, lossCount = null, flatCount = null) {
+            const raw = readStatsNumber(source, fields);
+            if (raw !== null) return Math.abs(raw) <= 1 ? raw * 100 : raw;
+            const wins = Number(winCount);
+            const losses = Number(lossCount);
+            const flats = Number(flatCount);
+            const total = (Number.isFinite(wins) ? wins : 0) + (Number.isFinite(losses) ? losses : 0) + (Number.isFinite(flats) ? flats : 0);
+            return total > 0 && Number.isFinite(wins) ? (wins / total) * 100 : null;
+        }
+
+        function normalizeRealizedDailyRow(row) {
+            const date = normalizeStatsDateText(readStatsText(row, ['date', 'day', 'market_date', 'trade_date', 'created_date', 'created', 'key']));
+            if (!date) return null;
+            const netPnl = readStatsNumber(row, REALIZED_NET_PNL_FIELDS) ?? readStatsNumber(row, ['value']) ?? 0;
+            const grossPnl = readStatsNumber(row, REALIZED_GROSS_PNL_FIELDS) ?? netPnl;
+            const commission = readStatsNumber(row, REALIZED_COMMISSION_FIELDS) ?? 0;
+            const exitCount = readStatsNumber(row, REALIZED_EXIT_COUNT_FIELDS) ?? 0;
+            const winCount = readStatsNumber(row, REALIZED_WIN_COUNT_FIELDS) ?? 0;
+            const lossCount = readStatsNumber(row, REALIZED_LOSS_COUNT_FIELDS) ?? 0;
+            const flatCount = readStatsNumber(row, REALIZED_FLAT_COUNT_FIELDS) ?? 0;
+            return { date, netPnl, grossPnl, commission, exitCount, winCount, lossCount, flatCount };
+        }
+
+        function normalizeRealizedSymbolRow(row) {
+            const symbol = readStatsText(row, ['symbol', 'ticker', 'underlying', 'contract_symbol', 'key']).trim().toUpperCase();
+            if (!symbol) return null;
+            const netPnl = readStatsNumber(row, REALIZED_NET_PNL_FIELDS) ?? readStatsNumber(row, ['value']) ?? 0;
+            const grossPnl = readStatsNumber(row, REALIZED_GROSS_PNL_FIELDS) ?? netPnl;
+            const commission = readStatsNumber(row, REALIZED_COMMISSION_FIELDS) ?? 0;
+            const exitCount = readStatsNumber(row, REALIZED_EXIT_COUNT_FIELDS) ?? 0;
+            const winCount = readStatsNumber(row, REALIZED_WIN_COUNT_FIELDS) ?? 0;
+            const lossCount = readStatsNumber(row, REALIZED_LOSS_COUNT_FIELDS) ?? 0;
+            const flatCount = readStatsNumber(row, REALIZED_FLAT_COUNT_FIELDS) ?? 0;
+            const avgPnl = readStatsNumber(row, ['avg_net_pnl', 'avg_pnl', 'average_pnl', 'mean_pnl']) ?? (exitCount > 0 ? netPnl / exitCount : null);
+            const winRate = normalizedStatsPct(row, ['win_rate', 'winRate'], winCount, lossCount, flatCount);
+            return { symbol, netPnl, grossPnl, commission, exitCount, winCount, lossCount, flatCount, avgPnl, winRate };
+        }
+
+        function mergeRealizedRows(rows, keyField) {
+            const merged = new Map();
+            rows.forEach((row) => {
+                if (!row || !row[keyField]) return;
+                const key = row[keyField];
+                const current = merged.get(key) || { ...row, netPnl: 0, grossPnl: 0, commission: 0, exitCount: 0, winCount: 0, lossCount: 0, flatCount: 0 };
+                current.netPnl += Number(row.netPnl || 0);
+                current.grossPnl += Number(row.grossPnl || 0);
+                current.commission += Number(row.commission || 0);
+                current.exitCount += Number(row.exitCount || 0);
+                current.winCount += Number(row.winCount || 0);
+                current.lossCount += Number(row.lossCount || 0);
+                current.flatCount += Number(row.flatCount || 0);
+                merged.set(key, current);
+            });
+            return Array.from(merged.values()).map((row) => {
+                const winRate = row.exitCount > 0 ? (row.winCount / row.exitCount) * 100 : null;
+                return {
+                    ...row,
+                    avgPnl: row.exitCount > 0 ? row.netPnl / row.exitCount : (row.avgPnl ?? null),
+                    winRate: winRate ?? row.winRate ?? null,
+                };
+            });
+        }
+
+        function normalizeRealizedPnlPayload(payload, startDateText, endDateText) {
+            const dailyRows = firstStatsRows(payload, [
+                'daily_rows',
+                'daily',
+                'daily_pnl',
+                'pnl_daily',
+                'daily_series',
+                'daily_stats',
+                'by_day',
+                'charts.daily',
+                'series.daily',
+                'summary.daily',
+            ], 'date').map(normalizeRealizedDailyRow).filter(Boolean);
+            const symbolRows = firstStatsRows(payload, [
+                'symbol_rows',
+                'symbols',
+                'by_symbol',
+                'symbol_pnl',
+                'pnl_by_symbol',
+                'symbol_summary',
+                'symbol_stats',
+                'charts.symbols',
+                'series.symbols',
+                'items',
+            ], 'symbol').map(normalizeRealizedSymbolRow).filter(Boolean);
+            const mergedDailyRows = mergeRealizedRows(dailyRows, 'date').sort((left, right) => left.date.localeCompare(right.date));
+            const mergedSymbolRows = mergeRealizedRows(symbolRows, 'symbol').sort((left, right) => right.netPnl - left.netPnl);
+            const source = findRealizedSummarySource(payload);
+            const missingCounts = payload?.missing_counts && typeof payload.missing_counts === 'object' ? payload.missing_counts : {};
+            const sumMissingCounts = (pattern) => Object.entries(missingCounts).reduce((sum, [key, value]) => (
+                pattern.test(String(key || '')) ? sum + (Number(value) || 0) : sum
+            ), 0);
+            const aggregateRows = mergedSymbolRows.length ? mergedSymbolRows : mergedDailyRows;
+            const aggregate = (key) => aggregateRows.reduce((sum, row) => sum + Number(row[key] || 0), 0);
+            const netPnl = readStatsNumber(source, REALIZED_NET_PNL_FIELDS) ?? aggregate('netPnl');
+            const grossPnl = readStatsNumber(source, REALIZED_GROSS_PNL_FIELDS) ?? aggregate('grossPnl');
+            const commission = readStatsNumber(source, REALIZED_COMMISSION_FIELDS) ?? aggregate('commission');
+            const exitCount = readStatsNumber(source, REALIZED_EXIT_COUNT_FIELDS) ?? aggregate('exitCount');
+            const winCount = readStatsNumber(source, REALIZED_WIN_COUNT_FIELDS) ?? aggregate('winCount');
+            const lossCount = readStatsNumber(source, REALIZED_LOSS_COUNT_FIELDS) ?? aggregate('lossCount');
+            const flatCount = readStatsNumber(source, REALIZED_FLAT_COUNT_FIELDS) ?? aggregate('flatCount');
+            const profitAmount = readStatsNumber(source, ['profit_amount', 'gross_profit', 'winning_pnl', 'positive_pnl'])
+                ?? aggregateRows.reduce((sum, row) => sum + Math.max(0, Number(row.netPnl || 0)), 0);
+            const lossAmount = readStatsNumber(source, ['loss_amount', 'gross_loss', 'losing_pnl', 'negative_pnl'])
+                ?? aggregateRows.reduce((sum, row) => sum + Math.min(0, Number(row.netPnl || 0)), 0);
+            const missingCount = readStatsNumber(source, ['missing_count', 'estimated_missing_count', 'missing'])
+                ?? sumMissingCounts(/missing|unsupported|mismatch|currency/i);
+            const fillMissingCount = readStatsNumber(source, ['fill_missing_count', 'fill_missing'])
+                ?? sumMissingCounts(/fill.*missing|missing.*fill/i);
+            const commissionMissingCount = readStatsNumber(source, ['commission_missing_count', 'commission_missing'])
+                ?? sumMissingCounts(/commission.*missing|missing.*commission/i);
+            const ibkrMismatchCount = readStatsNumber(source, ['ibkr_realized_pnl_mismatch_count', 'realized_pnl_mismatch_count'])
+                ?? sumMissingCounts(/mismatch/i);
+            const winRate = normalizedStatsPct(source, ['win_rate', 'winRate'], winCount, lossCount, flatCount);
+            const avgPnl = readStatsNumber(source, ['avg_net_pnl', 'avg_pnl', 'average_pnl']) ?? (exitCount > 0 ? netPnl / exitCount : null);
+            const profitFactor = Math.abs(lossAmount) > 0 ? profitAmount / Math.abs(lossAmount) : (profitAmount > 0 ? Infinity : null);
+            return {
+                payload,
+                startDateText,
+                endDateText,
+                dailyRows: mergedDailyRows,
+                symbolRows: mergedSymbolRows,
+                summary: {
+                    netPnl,
+                    grossPnl,
+                    commission,
+                    exitCount,
+                    winCount,
+                    lossCount,
+                    flatCount,
+                    profitAmount,
+                    lossAmount,
+                    missingCount,
+                    fillMissingCount,
+                    commissionMissingCount,
+                    ibkrMismatchCount,
+                    winRate,
+                    avgPnl,
+                    profitFactor,
+                    source: readStatsText(payload, ['pnl_source', 'source_collection']) || readStatsText(source, ['source', 'pnl_source']) || readStatsText(payload, ['source']) || 'realized_net_pnl',
+                },
+            };
+        }
+
+        function formatStatsFactor(value) {
+            if (value === Infinity) return '∞';
+            return formatStatsRatio(value);
+        }
+
+        function renderRealizedPnlCard({ label, value, copy = '', valueClass = '', cardClass = '', title = '' }) {
+            const className = ['stat-card', 'realized-pnl-card', cardClass].filter(Boolean).join(' ');
+            const valueClassName = ['stat-value', 'realized-pnl-value', valueClass].filter(Boolean).join(' ');
+            return `
+                <div class="${escapeStatsHtml(className)}">
+                    <div class="stat-label">${escapeStatsHtml(label)}</div>
+                    <div class="${escapeStatsHtml(valueClassName)}" title="${escapeStatsHtml(title || value || '')}">${escapeStatsHtml(String(value))}</div>
+                    <div class="realized-pnl-card-copy">${escapeStatsHtml(copy)}</div>
+                </div>
+            `;
+        }
+
+        function renderRealizedPnlMeta(normalized) {
+            const meta = document.getElementById('realizedPnlMeta');
+            if (!meta) return;
+            const summary = normalized.summary || {};
+            const brokerMode = normalized.payload?.broker_mode || (typeof getConsoleBrokerMode === 'function' ? getConsoleBrokerMode() : getCurrentBrokerMode());
+            const dataEnvironment = normalized.payload?.data_environment || (typeof getSharedDataEnvironment === 'function' ? getSharedDataEnvironment() : currentEnvironment);
+            const pills = [
+                ['range', `${normalized.startDateText} ~ ${normalized.endDateText}`],
+                ['broker', getEnvironmentLabel(brokerMode)],
+                ['data', getEnvironmentLabel(dataEnvironment)],
+                ['basis', 'net after commission'],
+                ['source', summary.source || '--'],
+            ];
+            meta.innerHTML = pills.map(([label, value]) => `
+                <span class="realized-pnl-meta-pill">
+                    <span>${escapeStatsHtml(label)}</span>
+                    <strong>${escapeStatsHtml(String(value || '--'))}</strong>
+                </span>
+            `).join('');
+        }
+
+        function renderRealizedPnlCards(normalized) {
+            const cards = document.getElementById('realizedPnlCards');
+            if (!cards) return;
+            const summary = normalized.summary || {};
+            const netTone = valueToneClass(summary.netPnl);
+            const lossAbs = Math.abs(Number(summary.lossAmount || 0));
+            const qualityIssues = Number(summary.missingCount || 0) + Number(summary.fillMissingCount || 0) + Number(summary.commissionMissingCount || 0) + Number(summary.ibkrMismatchCount || 0);
+            cards.innerHTML = [
+                renderRealizedPnlCard({
+                    label: 'NET PNL',
+                    value: formatStatsMoney(summary.netPnl),
+                    copy: 'realized after commission',
+                    valueClass: netTone,
+                    cardClass: netTone ? `tone-${netTone}` : '',
+                }),
+                renderRealizedPnlCard({ label: 'GROSS PNL', value: formatStatsMoney(summary.grossPnl), copy: 'before commission', valueClass: valueToneClass(summary.grossPnl) }),
+                renderRealizedPnlCard({ label: 'COMMISSION', value: formatStatsMoney(summary.commission), copy: 'entry + exit fees' }),
+                renderRealizedPnlCard({ label: 'CLOSED', value: formatStatsNumber(summary.exitCount), copy: `${formatStatsNumber(summary.winCount)}W / ${formatStatsNumber(summary.lossCount)}L / ${formatStatsNumber(summary.flatCount)}F` }),
+                renderRealizedPnlCard({ label: 'WIN RATE', value: formatStatsPct(summary.winRate), copy: 'wins / closed exits' }),
+                renderRealizedPnlCard({ label: 'AVG TRADE', value: formatStatsMoney(summary.avgPnl), copy: 'net per closed trade', valueClass: valueToneClass(summary.avgPnl) }),
+                renderRealizedPnlCard({ label: 'PROFIT FACTOR', value: formatStatsFactor(summary.profitFactor), copy: `${formatStatsMoney(summary.profitAmount)} / ${formatStatsMoney(lossAbs)}` }),
+                renderRealizedPnlCard({
+                    label: 'QUALITY',
+                    value: qualityIssues ? formatStatsNumber(qualityIssues) : 'OK',
+                    copy: `missing ${formatStatsNumber(summary.missingCount)} · mismatch ${formatStatsNumber(summary.ibkrMismatchCount)}`,
+                    valueClass: qualityIssues ? 'negative' : 'positive',
+                }),
+            ].join('');
+        }
+
+        function selectTopBottomSymbolRows(symbolRows) {
+            const rows = (Array.isArray(symbolRows) ? symbolRows : []).filter((row) => row && Number.isFinite(Number(row.netPnl)));
+            if (rows.length <= 10) return rows.slice().sort((left, right) => right.netPnl - left.netPnl);
+            const selected = [];
+            const seen = new Set();
+            rows.slice().sort((left, right) => right.netPnl - left.netPnl).slice(0, 5).forEach((row) => {
+                selected.push(row);
+                seen.add(row.symbol);
+            });
+            rows.slice().sort((left, right) => left.netPnl - right.netPnl).slice(0, 5).reverse().forEach((row) => {
+                if (!seen.has(row.symbol)) selected.push(row);
+            });
+            return selected;
+        }
+
+        function renderRealizedPnlCharts(normalized) {
+            const labels = buildStatsDateLabels(normalized.startDateText, normalized.endDateText);
+            const dailyByDate = new Map((normalized.dailyRows || []).map((row) => [row.date, row]));
+            const dailyData = labels.map((date) => Number(dailyByDate.get(date)?.netPnl || 0));
+            let cumulative = 0;
+            const cumulativeData = dailyData.map((value) => {
+                cumulative += Number(value || 0);
+                return cumulative;
+            });
+            const moneyTooltip = {
+                tooltipFormatter: formatStatsMoney,
+                valueTickFormatter: formatStatsCompactMoney,
+            };
+
+            const dailyCtx = document.getElementById('realizedDailyChart')?.getContext('2d');
+            if (dailyCtx) {
+                if (realizedDailyChart) realizedDailyChart.destroy();
+                realizedDailyChart = new Chart(dailyCtx, {
+                    type: 'bar',
+                    data: {
+                        labels,
+                        datasets: [{
+                            label: '每日已实现净盈亏 ($)',
+                            data: dailyData,
+                            backgroundColor: dailyData.map((value) => Number(value || 0) >= 0 ? 'rgba(34, 197, 94, 0.72)' : 'rgba(248, 113, 113, 0.76)'),
+                            borderColor: dailyData.map((value) => Number(value || 0) >= 0 ? 'rgba(74, 222, 128, 0.92)' : 'rgba(252, 165, 165, 0.92)'),
+                            borderWidth: 1,
+                            borderRadius: 7,
+                        }]
+                    },
+                    options: buildChartOptions({
+                        showLegend: false,
+                        tooltipLabel: '净盈亏',
+                        ...moneyTooltip,
+                    })
+                });
+            }
+
+            const cumulativeCtx = document.getElementById('realizedCumulativeChart')?.getContext('2d');
+            if (cumulativeCtx) {
+                if (realizedCumulativeChart) realizedCumulativeChart.destroy();
+                realizedCumulativeChart = new Chart(cumulativeCtx, {
+                    type: 'line',
+                    data: {
+                        labels,
+                        datasets: [{
+                            label: '累计已实现净盈亏 ($)',
+                            data: cumulativeData,
+                            borderColor: '#f6ad55',
+                            backgroundColor: 'rgba(246, 173, 85, 0.12)',
+                            pointRadius: labels.length > 45 ? 0 : 2,
+                            pointHoverRadius: 4,
+                            tension: 0.32,
+                            fill: true,
+                        }]
+                    },
+                    options: buildChartOptions({
+                        showLegend: false,
+                        tooltipLabel: '累计净盈亏',
+                        ...moneyTooltip,
+                    })
+                });
+            }
+
+            const symbolRows = selectTopBottomSymbolRows(normalized.symbolRows);
+            const symbolCtx = document.getElementById('realizedSymbolChart')?.getContext('2d');
+            if (symbolCtx) {
+                if (realizedSymbolChart) realizedSymbolChart.destroy();
+                realizedSymbolChart = new Chart(symbolCtx, {
+                    type: 'bar',
+                    data: {
+                        labels: symbolRows.map((row) => row.symbol),
+                        datasets: [{
+                            label: '标的净盈亏 ($)',
+                            data: symbolRows.map((row) => row.netPnl),
+                            backgroundColor: symbolRows.map((row) => Number(row.netPnl || 0) >= 0 ? 'rgba(34, 197, 94, 0.72)' : 'rgba(248, 113, 113, 0.76)'),
+                            borderColor: symbolRows.map((row) => Number(row.netPnl || 0) >= 0 ? 'rgba(74, 222, 128, 0.92)' : 'rgba(252, 165, 165, 0.92)'),
+                            borderWidth: 1,
+                            borderRadius: 8,
+                            barPercentage: 0.72,
+                            categoryPercentage: 0.82,
+                        }]
+                    },
+                    options: buildChartOptions({
+                        indexAxis: 'y',
+                        showLegend: false,
+                        tooltipLabel: '净盈亏',
+                        categoryMaxTicks: 12,
+                        ...moneyTooltip,
+                    })
+                });
+            }
+        }
+
+        function renderRealizedPnlTable(normalized) {
+            const tbody = document.getElementById('realizedSymbolTable');
+            if (!tbody) return;
+            const rows = Array.isArray(normalized.symbolRows) ? normalized.symbolRows : [];
+            if (!rows.length) {
+                tbody.innerHTML = '<tr><td colspan="10" class="loading">暂无标的已实现盈亏数据</td></tr>';
+                return;
+            }
+            tbody.innerHTML = rows.map((row) => {
+                const netTone = Number(row.netPnl || 0) >= 0 ? 'pnl-positive' : 'pnl-negative';
+                const avgTone = Number(row.avgPnl || 0) >= 0 ? 'pnl-positive' : 'pnl-negative';
+                return `
+                    <tr>
+                        <td class="realized-symbol-cell">
+                            <div class="realized-symbol-name">${escapeStatsHtml(row.symbol || '--')}</div>
+                            <div class="realized-symbol-sub">net after commission</div>
+                        </td>
+                        <td class="numeric">${escapeStatsHtml(formatStatsNumber(row.exitCount))}</td>
+                        <td class="numeric">${escapeStatsHtml(formatStatsNumber(row.winCount))}</td>
+                        <td class="numeric">${escapeStatsHtml(formatStatsNumber(row.lossCount))}</td>
+                        <td class="numeric">${escapeStatsHtml(formatStatsNumber(row.flatCount))}</td>
+                        <td class="numeric ${netTone}">${escapeStatsHtml(formatStatsMoney(row.netPnl))}</td>
+                        <td class="numeric ${Number(row.grossPnl || 0) >= 0 ? 'pnl-positive' : 'pnl-negative'}">${escapeStatsHtml(formatStatsMoney(row.grossPnl))}</td>
+                        <td class="numeric">${escapeStatsHtml(formatStatsMoney(row.commission))}</td>
+                        <td class="numeric ${avgTone}">${escapeStatsHtml(formatStatsMoney(row.avgPnl))}</td>
+                        <td class="numeric">${escapeStatsHtml(formatStatsPct(row.winRate))}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function renderRealizedPnlAnalytics(payload, startDateText, endDateText) {
+            const normalized = normalizeRealizedPnlPayload(payload || {}, startDateText, endDateText);
+            renderRealizedPnlMeta(normalized);
+            renderRealizedPnlCards(normalized);
+            renderRealizedPnlCharts(normalized);
+            renderRealizedPnlTable(normalized);
+            return normalized;
+        }
+
+        async function loadRealizedPnlAnalytics({ startDateText, endDateText, force = false } = {}) {
+            const safeEnd = endDateText || getCurrentEtDateString();
+            const safeStart = startDateText || safeEnd;
+            const brokerMode = typeof getConsoleBrokerMode === 'function' ? getConsoleBrokerMode() : getCurrentBrokerMode();
+            const dataEnvironment = typeof getSharedDataEnvironment === 'function' ? getSharedDataEnvironment() : currentEnvironment;
+            const path = `/api/custom/ibkr/analytics/realized-pnl-summary${buildStatsQuery({
+                start_date: safeStart,
+                end_date: safeEnd,
+                broker_mode: brokerMode,
+                data_environment: dataEnvironment,
+                market_data_mode: dataEnvironment,
+                environment: currentEnvironment,
+            })}`;
+            renderRealizedPnlLoading(safeStart, safeEnd);
+            try {
+                const payload = await fetchRealizedPnlPayload(path, force);
+                const normalized = renderRealizedPnlAnalytics(payload, safeStart, safeEnd);
+                cachedRealizedPnlAnalytics = { payload, normalized, startDateText: safeStart, endDateText: safeEnd };
+                return normalized;
+            } catch (error) {
+                console.error('加载已实现盈亏分析失败:', error);
+                renderRealizedPnlError(error.message || String(error));
+                cachedRealizedPnlAnalytics = null;
+                return null;
+            }
+        }
+
+        async function loadStats({ forceAnalytics = false } = {}) {
             try {
                 setChartHeights();
                 let endDateText = getCurrentEtDateString();
@@ -645,6 +1306,11 @@
                 const startDate = new Date(startTimeMs);
                 const endDate = new Date(Math.max(startTimeMs, endTimeMs - 1));
                 const timeFilter = `environment = "${escapeQueryValue(currentEnvironment)}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`;
+                const realizedPnlPromise = loadRealizedPnlAnalytics({
+                    startDateText,
+                    endDateText,
+                    force: forceAnalytics,
+                });
 
                 let orders = [];
                 let ibkr_signals = [];
@@ -676,6 +1342,8 @@
                 renderStats(stats, ibkr_signals);
                 renderCharts(orders, ibkr_signals, startDate, endDate);
                 renderTradesTable(orders);
+                const realizedPnlAnalytics = await realizedPnlPromise;
+                const realizedPnlSummary = realizedPnlAnalytics?.summary || null;
 
                 // Cache for resize redraw (no network requests on scroll).
                 cachedOrders = orders;
@@ -687,6 +1355,11 @@
                     { label: '范围', value: customStartDate && customEndDate ? `${customStartDate} ~ ${customEndDate}` : currentRange },
                     { label: '订单', value: `${orders.length} 条` },
                     { label: '信号', value: `${ibkr_signals.length} 条` },
+                    {
+                        label: '已实现',
+                        value: realizedPnlSummary ? formatStatsMoney(realizedPnlSummary.netPnl) : '--',
+                        tone: realizedPnlSummary ? valueToneClass(realizedPnlSummary.netPnl) : '',
+                    },
                 ]);
                 setPageRefreshTime();
 
@@ -1115,7 +1788,7 @@
 
         function manualRefresh() {
             spinPageRefreshButton('statsRefreshBtn');
-            loadStats();
+            loadStats({ forceAnalytics: true });
             loadSignalAnalysis({ force: true });
         }
 
@@ -1135,14 +1808,16 @@
             document.getElementById('contextBar').innerHTML = renderPageContextBar('📈 IBKR 统计', {
                 subtitle: '收益 / 信号 / 订单 / 平仓明细',
             });
-            document.getElementById('pageBridge').innerHTML = renderAnalyticsBridge('/ibkr_stats.html');
+            document.getElementById('pageBridge').innerHTML = typeof renderReviewBridge === 'function'
+                ? renderReviewBridge('/ibkr_stats.html')
+                : renderAnalyticsBridge('/ibkr_stats.html');
             document.getElementById('nav').innerHTML = renderNav('/ibkr_stats.html');
             setChartHeights();
             await withPageLoading(
                 () => Promise.all([loadStats(), loadSignalAnalysis()]),
                 {
                     title: '统计页加载中',
-                    copy: '正在同步收益、信号、订单、规则分布和平仓统计图表。',
+                    copy: '正在同步已实现盈亏、信号、订单、规则分布和平仓统计图表。',
                 }
             );
 
@@ -1159,6 +1834,9 @@
                 }
                 if (cachedSignalAnalytics) {
                     renderSignalAnalysisCharts(cachedSignalAnalytics);
+                }
+                if (cachedRealizedPnlAnalytics?.normalized) {
+                    renderRealizedPnlCharts(cachedRealizedPnlAnalytics.normalized);
                 }
             });
         });

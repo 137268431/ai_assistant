@@ -141,6 +141,18 @@
     </section>
   </div>
 
+  <script>
+    (function bindReviewDomainBridge() {
+      const activePage = '/ibkr_lifecycle_flow.html';
+      const fallbackExecutionBridge = window.renderExecutionBridge;
+      window.renderExecutionBridge = function renderReviewDomainBridge(page, params) {
+        if (page === activePage && typeof window.renderReviewBridge === 'function') {
+          return window.renderReviewBridge(page, params);
+        }
+        return typeof fallbackExecutionBridge === 'function' ? fallbackExecutionBridge(page, params) : '';
+      };
+    })();
+  </script>
   <script src="/assets/js/pages/ibkr_lifecycle_flow/page.js?v=20260519-mode-split"></script>
 </body>
 </html>

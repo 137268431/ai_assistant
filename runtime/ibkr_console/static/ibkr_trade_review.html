@@ -108,6 +108,18 @@
 
   </main>
 
+  <script>
+    (function bindReviewDomainBridge() {
+      const activePage = '/ibkr_trade_review.html';
+      const fallbackExecutionBridge = window.renderExecutionBridge;
+      window.renderExecutionBridge = function renderReviewDomainBridge(page, params) {
+        if (page === activePage && typeof window.renderReviewBridge === 'function') {
+          return window.renderReviewBridge(page, params);
+        }
+        return typeof fallbackExecutionBridge === 'function' ? fallbackExecutionBridge(page, params) : '';
+      };
+    })();
+  </script>
   <script src="/assets/js/pages/ibkr_trade_review/page.js?v=20260528-trade-review-traded-ui-1"></script>
 </body>
 </html>

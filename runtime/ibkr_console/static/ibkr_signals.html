@@ -28,6 +28,7 @@
             <div class="signals-command-tools">
                 <div class="signals-command-date" id="datePicker"></div>
                 <input class="search-input signals-command-search" id="searchInput" placeholder="搜索股票/信号ID..." oninput="onSearchChange(this.value)">
+                <a class="mini-link" id="signalsAnalysisLink" href="/ibkr_stats.html">统计</a>
                 <div class="signals-command-refresh" id="signalsRefreshControl"></div>
             </div>
         </section>
@@ -744,6 +745,8 @@
             const executionParams = { date: currentDate };
             if (filterSignalId) executionParams.signal_id = filterSignalId;
             document.getElementById('pageBridge').innerHTML = renderExecutionBridge('/ibkr_signals.html', executionParams);
+            const analysisLink = document.getElementById('signalsAnalysisLink');
+            if (analysisLink) analysisLink.href = buildPageUrl('/ibkr_stats.html', { date: currentDate });
             renderSignalsTopSection();
             renderFilterNote();
         }

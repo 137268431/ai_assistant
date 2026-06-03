@@ -239,6 +239,249 @@
             flex: 0 0 auto;
         }
 
+        .realized-pnl-panel {
+            --realized-panel-border: rgba(246, 173, 85, 0.20);
+            position: relative;
+            overflow: hidden;
+            margin: 0 0 14px;
+            padding: 16px;
+            border: 1px solid var(--realized-panel-border);
+            border-radius: 20px;
+            background:
+                radial-gradient(circle at 8% 4%, rgba(246, 173, 85, 0.22), transparent 32%),
+                radial-gradient(circle at 90% 10%, rgba(72, 187, 120, 0.14), transparent 34%),
+                linear-gradient(145deg, rgba(18, 19, 12, 0.98), rgba(5, 13, 20, 0.96));
+            box-shadow: 0 22px 54px rgba(0, 0, 0, 0.30), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+        }
+
+        .realized-pnl-panel::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background:
+                linear-gradient(120deg, rgba(246, 173, 85, 0.055) 0 1px, transparent 1px 24px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.028) 1px, transparent 1px);
+            background-size: 24px 24px, 44px 44px;
+            -webkit-mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.86), transparent 88%);
+            mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.86), transparent 88%);
+            pointer-events: none;
+        }
+
+        .realized-pnl-panel > * {
+            position: relative;
+            z-index: 1;
+        }
+
+        .realized-pnl-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 16px;
+            margin-bottom: 12px;
+        }
+
+        .realized-pnl-title-block {
+            min-width: 0;
+        }
+
+        .realized-pnl-kicker {
+            color: #f6ad55;
+            font-family: var(--font-mono);
+            font-size: 10px;
+            font-weight: 800;
+            letter-spacing: 1.8px;
+            line-height: 1;
+            margin-bottom: 7px;
+            text-transform: uppercase;
+        }
+
+        .realized-pnl-title {
+            margin-bottom: 6px;
+            font-size: clamp(18px, 1.8vw, 24px);
+            letter-spacing: -0.04em;
+        }
+
+        .realized-pnl-copy,
+        .realized-pnl-meta,
+        .realized-pnl-card-copy,
+        .realized-pnl-chart-copy,
+        .realized-symbol-sub {
+            color: #a9b7c2;
+            font-size: 11.5px;
+            line-height: 1.5;
+        }
+
+        .realized-pnl-meta {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            gap: 7px;
+            max-width: 620px;
+            font-family: var(--font-mono);
+        }
+
+        .realized-pnl-meta-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            min-height: 28px;
+            padding: 5px 9px;
+            border: 1px solid rgba(246, 173, 85, 0.16);
+            border-radius: 999px;
+            background: rgba(2, 8, 18, 0.46);
+        }
+
+        .realized-pnl-meta-pill span {
+            color: rgba(169, 183, 194, 0.78);
+            font-size: 9px;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+
+        .realized-pnl-meta-pill strong {
+            color: var(--text);
+            font-size: 10.5px;
+            font-weight: 800;
+        }
+
+        .realized-pnl-grid {
+            grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
+            gap: 10px;
+            padding-bottom: 12px;
+        }
+
+        .realized-pnl-card {
+            position: relative;
+            overflow: hidden;
+            min-height: 102px;
+            padding: 14px;
+            border: 1px solid rgba(246, 173, 85, 0.14);
+            background:
+                linear-gradient(180deg, rgba(24, 27, 20, 0.92), rgba(6, 13, 20, 0.90));
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+        }
+
+        .realized-pnl-card::after {
+            content: '';
+            position: absolute;
+            inset: 0 auto 0 0;
+            width: 3px;
+            background: linear-gradient(180deg, rgba(246, 173, 85, 0.92), rgba(79, 209, 197, 0.18));
+            opacity: 0.82;
+        }
+
+        .realized-pnl-card.tone-positive::after {
+            background: linear-gradient(180deg, rgba(72, 187, 120, 0.95), rgba(72, 187, 120, 0.12));
+        }
+
+        .realized-pnl-card.tone-negative::after {
+            background: linear-gradient(180deg, rgba(252, 129, 129, 0.95), rgba(252, 129, 129, 0.12));
+        }
+
+        .realized-pnl-card .stat-label {
+            color: rgba(169, 183, 194, 0.88);
+            font-size: 10px;
+            font-weight: 800;
+            letter-spacing: 1.2px;
+        }
+
+        .realized-pnl-value {
+            margin-top: 6px;
+            font-size: clamp(22px, 2.1vw, 30px);
+            line-height: 1.02;
+            letter-spacing: -0.04em;
+        }
+
+        .realized-pnl-card-copy {
+            margin-top: 7px;
+            font-family: var(--font-mono);
+        }
+
+        .realized-pnl-error-card {
+            grid-column: 1 / -1;
+        }
+
+        .realized-pnl-chart-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px;
+            padding-bottom: 12px;
+        }
+
+        .realized-pnl-chart-card {
+            padding: 14px;
+            border: 1px solid rgba(246, 173, 85, 0.14);
+            background:
+                linear-gradient(180deg, rgba(16, 21, 20, 0.94), rgba(4, 10, 18, 0.91));
+        }
+
+        .realized-pnl-symbol-chart-card {
+            grid-column: 1 / -1;
+        }
+
+        .realized-pnl-chart-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .realized-pnl-chart-head .chart-title {
+            margin-bottom: 0;
+            font-size: 13px;
+            letter-spacing: -0.01em;
+        }
+
+        .realized-pnl-chart-copy {
+            max-width: 340px;
+            color: rgba(169, 183, 194, 0.76);
+            font-size: 10.5px;
+            text-align: right;
+        }
+
+        .realized-pnl-table-wrap {
+            overflow: auto;
+            border: 1px solid rgba(246, 173, 85, 0.12);
+            border-radius: 16px;
+            background: rgba(2, 8, 18, 0.36);
+        }
+
+        .realized-pnl-table {
+            min-width: 980px;
+        }
+
+        .realized-pnl-table th {
+            background: rgba(18, 20, 16, 0.88);
+            color: rgba(169, 183, 194, 0.88);
+            text-transform: uppercase;
+        }
+
+        .realized-pnl-table td {
+            vertical-align: middle;
+        }
+
+        .realized-pnl-table .numeric {
+            text-align: right;
+            white-space: nowrap;
+        }
+
+        .realized-symbol-cell {
+            min-width: 150px;
+        }
+
+        .realized-symbol-name {
+            color: var(--text);
+            font-weight: 900;
+            letter-spacing: 0.02em;
+        }
+
+        .realized-symbol-sub {
+            margin-top: 4px;
+            font-family: var(--font-mono);
+            font-size: 10px;
+            color: rgba(169, 183, 194, 0.70);
+        }
+
         .signal-analysis-panel {
             --signal-panel-border: rgba(147, 197, 253, 0.18);
             position: relative;
@@ -673,6 +916,48 @@
                 margin-left: 0;
             }
 
+            .realized-pnl-panel {
+                padding: 10px;
+                margin-bottom: 8px;
+            }
+
+            .realized-pnl-head {
+                flex-direction: column;
+                gap: 10px;
+            }
+
+            .realized-pnl-meta {
+                justify-content: flex-start;
+                max-width: none;
+            }
+
+            .realized-pnl-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+
+            .realized-pnl-chart-grid {
+                grid-template-columns: 1fr;
+                gap: 8px;
+            }
+
+            .realized-pnl-symbol-chart-card {
+                grid-column: auto;
+            }
+
+            .realized-pnl-chart-head {
+                flex-direction: column;
+                gap: 4px;
+            }
+
+            .realized-pnl-chart-copy {
+                max-width: none;
+                text-align: left;
+            }
+
+            .realized-pnl-table {
+                min-width: 880px;
+            }
+
             .signal-analysis-panel {
                 padding: 10px;
                 margin-bottom: 8px;
@@ -741,6 +1026,15 @@
             .date-inputs {
                 gap: 4px;
                 flex-wrap: wrap;
+            }
+
+            .realized-pnl-panel {
+                padding: 9px;
+                border-radius: 16px;
+            }
+
+            .realized-pnl-grid {
+                grid-template-columns: 1fr;
             }
 
             .signal-analysis-panel {

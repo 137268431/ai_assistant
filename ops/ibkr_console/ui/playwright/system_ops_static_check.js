@@ -170,11 +170,16 @@ try {
   const navHtml = ui.renderNav('/ibkr_monitor.html');
   const navLabels = collectNavLabels(navHtml);
   assert(navLabels.length === 6, `nav_label_count:${navLabels.length}`);
-  assert(JSON.stringify(navLabels) === JSON.stringify(['首页', '执行', '标的', '研究', '回测', '系统']), `nav_labels:${navLabels.join('/')}`);
+  assert(JSON.stringify(navLabels) === JSON.stringify(['首页', '执行', '标的', '复盘', '回测', '系统']), `nav_labels:${navLabels.join('/')}`);
   assert(!navLabels.includes('运维'), 'legacy_ops_bottom_nav_label');
   assert(/nav-item active/.test(navHtml) && navHtml.includes('系统'), 'system_nav_not_active_for_ops_page');
   assert(ui.getIbkrServiceHealthTone('idle') === 'neutral', 'shared_service_tone_idle_not_neutral');
 
+  const reviewBridge = ui.renderReviewBridge('/ibkr_trade_review.html', { market_date: '2026-05-21', limit: '500' });
+  assert(includesAll(reviewBridge, ['收益统计', '每日复盘', '生命周期']), 'review_bridge_missing_expected_labels');
+  assert(/page-bridge-link active[\s\S]*每日复盘/.test(reviewBridge), 'review_bridge_trade_review_not_active');
+  const executionBridge = ui.renderExecutionBridge('/ibkr_signals.html');
+  assert(!executionBridge.includes('每日复盘') && !executionBridge.includes('生命周期'), 'execution_bridge_still_contains_review_domain');
   const systemBridge = ui.renderSystemBridge('/ibkr_config.html');
   assert(includesAll(systemBridge, ['总览', '运维', '控制台', '配置']), 'system_bridge_missing_expected_labels');
   const opsBridge = ui.renderOpsBridge('/ibkr_data_quality.html');

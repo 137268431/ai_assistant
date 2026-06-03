@@ -92,12 +92,12 @@ class LifecycleFlowStaticSmokeTest(unittest.TestCase):
             ),
             "runtime/ibkr_console/static/assets/js/shared/ui-toast-nav.js": (
                 "/ibkr_lifecycle_flow.html",
-                "执行",
+                "复盘",
             ),
             "runtime/ibkr_console/static/assets/js/shared/ui-bridges.js": (
                 "/ibkr_lifecycle_flow.html",
                 "生命周期",
-                "renderExecutionBridge",
+                "renderReviewBridge",
             ),
         }
 
@@ -115,7 +115,7 @@ class LifecycleFlowStaticSmokeTest(unittest.TestCase):
 
         for token in (
             "currentExecutionLayerFilter",
-            "20260527-execution-layer",
+            "/assets/js/pages/ibkr_screener/current-targets.js",
         ):
             self.assertIn(token, screener_html)
         for token in (
@@ -169,6 +169,28 @@ class LifecycleFlowStaticSmokeTest(unittest.TestCase):
 
         self.assertIn("lifecycle_url", daily_review)
         self.assertIn("date={market_date}", daily_review)
+
+    def test_review_domain_nav_and_bridge_are_split_from_execution(self):
+        nav_js = read_repo_text("runtime/ibkr_console/static/assets/js/shared/ui-toast-nav.js")
+        bridge_js = read_repo_text("runtime/ibkr_console/static/assets/js/shared/ui-bridges.js")
+        self.assertIn("function renderExecutionBridge", bridge_js)
+        self.assertIn("function renderAnalyticsBridge", bridge_js)
+        execution_body = bridge_js.split("function renderExecutionBridge", 1)[1].split("function renderAnalyticsBridge", 1)[0]
+
+        for token in ("首页", "执行", "标的", "复盘", "回测", "系统", "/ibkr_stats.html"):
+            self.assertIn(token, nav_js)
+        for token in ("function renderReviewBridge", "收益统计", "每日复盘", "生命周期"):
+            self.assertIn(token, bridge_js)
+        for relative_path in (
+            "runtime/ibkr_console/static/ibkr_trade_review.html",
+            "runtime/ibkr_console/static/ibkr_lifecycle_flow.html",
+        ):
+            with self.subTest(relative_path=relative_path):
+                self.assertIn("renderReviewBridge", read_repo_text(relative_path))
+        self.assertIn("renderReviewBridge(activePage, params)", execution_body)
+        self.assertNotIn("path: '/ibkr_trade_review.html'", execution_body)
+        self.assertNotIn("path: '/ibkr_lifecycle_flow.html'", execution_body)
+        self.assertNotIn("label: '每日复盘'", execution_body)
 
 
 if __name__ == "__main__":

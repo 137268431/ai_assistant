@@ -19,7 +19,7 @@
   }
 
   function isUiBundleLoaded() {
-    return ['showToast', 'renderPageTopSection', 'renderBacktestsBridge', 'showLoading']
+    return ['showToast', 'renderPageTopSection', 'renderBacktestsBridge', 'renderReviewBridge', 'showLoading']
       .every((name) => typeof currentFunction(name) === 'function');
   }
 
@@ -79,6 +79,14 @@
     `;
   }
 
+  function isReviewPage(activePage) {
+    return ['/ibkr_stats.html', '/ibkr_trade_review.html', '/ibkr_lifecycle_flow.html'].includes(activePage);
+  }
+
+  function isReviewBridgePage(activePage) {
+    return ['/ibkr_stats.html', '/ibkr_trade_review.html', '/ibkr_lifecycle_flow.html'].includes(activePage);
+  }
+
   const fallbacks = {
     showToast(msg, duration = 2500) {
       if (typeof document === 'undefined') return;
@@ -96,10 +104,12 @@
     },
     renderNav(activePage) {
       const pages = [
-        { path: '/index.html', icon: '🏠', label: '首页' },
-        { path: '/ibkr_signals.html', aliases: ['/ibkr_signals.html', '/ibkr_execution_actions.html', '/orders.html', '/ibkr_order_details.html', '/ibkr_lifecycle_flow.html', '/ibkr_trade_review.html', '/ibkr_account.html'], icon: '📡', label: '执行' },
-        { path: '/ibkr_screener.html', aliases: ['/ibkr_screener.html', '/ibkr_watchlist.html', '/ibkr_targets.html'], icon: '🎯', label: '目标' },
-        { path: '/ibkr_system.html', aliases: ['/ibkr_system.html', '/ibkr_runtime.html', '/ibkr_config.html'], icon: '🖥️', label: '系统' }
+        { path: '/index.html', aliases: ['/', '/index.html'], icon: '🏠', label: '首页' },
+        { path: '/ibkr_signals.html', aliases: ['/ibkr_signals.html', '/ibkr_execution_actions.html', '/orders.html', '/ibkr_order_details.html', '/ibkr_account.html'], icon: '📡', label: '执行' },
+        { path: '/ibkr_screener.html', aliases: ['/ibkr_screener.html', '/ibkr_watchlist.html', '/ibkr_targets.html'], icon: '🎯', label: '标的' },
+        { path: '/ibkr_stats.html', aliases: ['/ibkr_stats.html', '/ibkr_trade_review.html', '/ibkr_lifecycle_flow.html'], icon: '🧾', label: '复盘' },
+        { path: '/ibkr_backtests.html', aliases: ['/ibkr_backtests.html'], icon: '🧪', label: '回测' },
+        { path: '/ibkr_system.html', aliases: ['/ibkr_system.html', '/ibkr_runtime.html', '/ibkr_config.html', '/ibkr_monitor.html', '/ibkr_warmup.html', '/ibkr_data_quality.html', '/ibkr_history_rebuild.html', '/ibkr_system_logic.html'], icon: '🖥️', label: '系统' }
       ];
       return `
         <div class="nav" style="--nav-count:${pages.length}">
@@ -119,21 +129,50 @@
         { path: '/ibkr_config.html', kicker: 'Config', label: '配置', copy: '环境配置', options: { allowGlobal: true }, active: activePage === '/ibkr_config.html' }
       ]);
     },
+    renderReviewBridge(activePage, params = {}) {
+      const bridgeParams = params && typeof params === 'object' ? params : {};
+      const cleanParams = (targetPath) => {
+        const result = {};
+        Object.entries(bridgeParams).forEach(([key, value]) => {
+          if (value !== undefined && value !== null && value !== '' && !['limit', 'include_events'].includes(key)) {
+            result[key] = value;
+          }
+        });
+        const dateValue = result.date || result.market_date || '';
+        if (targetPath === '/ibkr_trade_review.html') {
+          if (dateValue) result.market_date = dateValue;
+        } else if (dateValue) {
+          result.date = dateValue;
+          delete result.market_date;
+        }
+        return result;
+      };
+      return global.renderPageBridge([
+        { path: '/ibkr_stats.html', params: cleanParams('/ibkr_stats.html'), kicker: 'PnL', label: '收益统计', copy: '收益 / 信号 / 订单', active: activePage === '/ibkr_stats.html' },
+        { path: '/ibkr_trade_review.html', params: cleanParams('/ibkr_trade_review.html'), kicker: 'Daily Review', label: '每日复盘', copy: '原因 / 问题', active: activePage === '/ibkr_trade_review.html' },
+        { path: '/ibkr_lifecycle_flow.html', params: cleanParams('/ibkr_lifecycle_flow.html'), kicker: 'Lifecycle', label: '生命周期', copy: '流程 / 事件', active: activePage === '/ibkr_lifecycle_flow.html' }
+      ]);
+    },
     renderExecutionBridge(activePage, params = {}) {
+      if (isReviewPage(activePage)) {
+        return global.renderReviewBridge(activePage, params);
+      }
       const bridgeParams = params && typeof params === 'object' ? params : {};
       return global.renderPageBridge([
         { path: '/ibkr_signals.html', params: bridgeParams, kicker: 'Signals', label: '主信号', copy: '确认 / 执行', active: activePage === '/ibkr_signals.html' },
         { path: '/ibkr_execution_actions.html', params: bridgeParams, kicker: 'Actions', label: '执行动作', copy: '平仓 / 调整', active: ['/ibkr_execution_actions.html'].includes(activePage) },
         { path: '/orders.html', params: bridgeParams, kicker: 'Orders', label: '订单', copy: '状态 / 操作', active: activePage === '/orders.html' || activePage === '/ibkr_order_details.html' },
-        { path: '/ibkr_lifecycle_flow.html', params: bridgeParams, kicker: 'Lifecycle', label: '生命周期', copy: '流程 / 事件', active: activePage === '/ibkr_lifecycle_flow.html' },
-        { path: '/ibkr_trade_review.html', params: bridgeParams, kicker: 'Review', label: '每日复盘', copy: '原因 / 问题', active: activePage === '/ibkr_trade_review.html' },
         { path: '/ibkr_account.html', params: bridgeParams, kicker: 'Account', label: '账户', copy: '净值 / 持仓', active: activePage === '/ibkr_account.html' }
       ]);
     },
     renderAnalyticsBridge(activePage, options = {}) {
+      if (activePage === '/ibkr_stats.html') {
+        return global.renderReviewBridge(activePage, options && typeof options.reviewParams === 'object' ? options.reviewParams : {});
+      }
       return global.renderPageBridge([
-        { path: '/ibkr_signals.html', params: options && typeof options.signalParams === 'object' ? options.signalParams : {}, kicker: 'TV Webhook', label: '信号执行', copy: '预警 / 开仓 / 平仓', active: activePage === '/ibkr_signals.html' },
-        { path: '/ibkr_screener.html', params: { tab: 'screener', view: 'current' }, kicker: 'Targets', label: '今日标的', copy: '活跃度 / 标池', active: activePage === '/ibkr_screener.html' }
+        { path: '/ibkr_indicators.html', params: options && typeof options.indicatorParams === 'object' ? options.indicatorParams : {}, kicker: 'Indicators', label: '指标列表', copy: '技术快照 / Trace', active: activePage === '/ibkr_indicators.html' },
+        { path: '/ibkr_chart.html', params: options && typeof options.chartParams === 'object' ? options.chartParams : {}, kicker: 'Chart', label: '图表工作台', copy: 'K 线 / 诊断', active: activePage === '/ibkr_chart.html' },
+        { path: '/ibkr_stats.html', params: options && typeof options.statsParams === 'object' ? options.statsParams : {}, kicker: 'PnL', label: '收益统计', copy: '收益 / 信号 / 订单', active: activePage === '/ibkr_stats.html' }
       ]);
     },
     renderHomeBridge() {
@@ -235,7 +274,7 @@
     'renderClientPaginationBar', 'renderPageTopSection',
     'renderPageLoadingOverlay', 'ensurePageLoadingOverlay', 'setPageLoading', 'withPageLoading',
     'spinPageRefreshButton', 'renderPageContextBar', 'renderPageBridge', 'renderSystemBridge',
-    'renderExecutionBridge', 'renderAnalyticsBridge', 'renderHomeBridge', 'renderOpsBridge',
+    'renderExecutionBridge', 'renderReviewBridge', 'renderAnalyticsBridge', 'renderHomeBridge', 'renderOpsBridge',
     'renderBacktestsBridge', 'getCommonStyles', 'showLoading', 'hideLoading', 'withLoading',
     'guardedLoader', 'showConfirmDialog', 'getIndicatorModalStyles', 'renderIndicatorModalHTML',
     'showIndicatorModal', 'closeIndicatorModal'
