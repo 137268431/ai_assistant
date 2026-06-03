@@ -177,8 +177,9 @@ class LifecycleFlowStaticSmokeTest(unittest.TestCase):
         self.assertIn("function renderAnalyticsBridge", bridge_js)
         execution_body = bridge_js.split("function renderExecutionBridge", 1)[1].split("function renderAnalyticsBridge", 1)[0]
 
-        for token in ("首页", "执行", "标的", "复盘", "回测", "系统", "/ibkr_stats.html"):
+        for token in ("首页", "执行", "标的", "复盘", "系统", "/ibkr_stats.html"):
             self.assertIn(token, nav_js)
+        self.assertNotIn("label: '回测'", nav_js)
         for token in ("function renderReviewBridge", "收益统计", "每日复盘", "生命周期"):
             self.assertIn(token, bridge_js)
         for relative_path in (

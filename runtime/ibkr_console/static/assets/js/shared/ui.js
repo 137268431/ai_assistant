@@ -108,7 +108,6 @@
         { path: '/ibkr_signals.html', aliases: ['/ibkr_signals.html', '/ibkr_execution_actions.html', '/orders.html', '/ibkr_order_details.html', '/ibkr_account.html'], icon: '📡', label: '执行' },
         { path: '/ibkr_screener.html', aliases: ['/ibkr_screener.html', '/ibkr_watchlist.html', '/ibkr_targets.html'], icon: '🎯', label: '标的' },
         { path: '/ibkr_stats.html', aliases: ['/ibkr_stats.html', '/ibkr_trade_review.html', '/ibkr_lifecycle_flow.html'], icon: '🧾', label: '复盘' },
-        { path: '/ibkr_backtests.html', aliases: ['/ibkr_backtests.html'], icon: '🧪', label: '回测' },
         { path: '/ibkr_system.html', aliases: ['/ibkr_system.html', '/ibkr_runtime.html', '/ibkr_config.html', '/ibkr_monitor.html', '/ibkr_warmup.html', '/ibkr_data_quality.html', '/ibkr_history_rebuild.html', '/ibkr_system_logic.html'], icon: '🖥️', label: '系统' }
       ];
       return `
@@ -193,7 +192,7 @@
       ]);
     },
     getCommonStyles() {
-      return '<link rel="stylesheet" href="/assets/css/common.css?v=20260529-tv-primary-lean-1">';
+      return '<link rel="stylesheet" href="/assets/css/common.css?v=20260603-main-nav-no-backtest-v1">';
     },
     showConfirmDialog(options = {}) {
       const message = options.message || options.title || '确认操作？';

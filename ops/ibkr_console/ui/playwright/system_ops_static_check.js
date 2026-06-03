@@ -169,8 +169,8 @@ try {
   const ui = buildUiSandbox();
   const navHtml = ui.renderNav('/ibkr_monitor.html');
   const navLabels = collectNavLabels(navHtml);
-  assert(navLabels.length === 6, `nav_label_count:${navLabels.length}`);
-  assert(JSON.stringify(navLabels) === JSON.stringify(['首页', '执行', '标的', '复盘', '回测', '系统']), `nav_labels:${navLabels.join('/')}`);
+  assert(navLabels.length === 5, `nav_label_count:${navLabels.length}`);
+  assert(JSON.stringify(navLabels) === JSON.stringify(['首页', '执行', '标的', '复盘', '系统']), `nav_labels:${navLabels.join('/')}`);
   assert(!navLabels.includes('运维'), 'legacy_ops_bottom_nav_label');
   assert(/nav-item active/.test(navHtml) && navHtml.includes('系统'), 'system_nav_not_active_for_ops_page');
   assert(ui.getIbkrServiceHealthTone('idle') === 'neutral', 'shared_service_tone_idle_not_neutral');
@@ -227,7 +227,7 @@ try {
 
 const commonCss = readStatic('assets/css/common.css');
 assert(!commonCss.includes('var(--nav-count, 7)'), 'common_css_legacy_nav_default_7');
-assert(commonCss.includes('var(--nav-count, 6)'), 'common_css_missing_nav_default_6');
+assert(commonCss.includes('var(--nav-count, 5)'), 'common_css_missing_nav_default_5');
 assert(/--page-shell-max:\s*100%;/.test(commonCss), 'common_css_page_shell_not_fluid');
 assert(/--page-shell-max-wide:\s*100%;/.test(commonCss), 'common_css_page_shell_wide_not_fluid');
 const fixedShellMaxWidth = /\.(?:page-shell|home-shell|content|lifecycle-shell|account-shell)(?![-\w])[^{}]*\{[^}]*max-width\s*:\s*\d+px/gs;
@@ -348,7 +348,7 @@ assert(!/screener-domain-bridge[\s\S]{0,240}page-bridge-copy[\s\S]{0,80}display:
 assert(!/screener-domain-tab\.page-bridge-link[\s\S]{0,120}min-height:\s*42px/.test(screenerCss), 'screener_bridge_compact_height');
 
 const runtimeHtml = readStatic('ibkr_runtime.html');
-const runtimeContextFixVersion = '20260529-tv-primary-lean-1';
+const runtimeContextFixVersion = '20260603-main-nav-no-backtest-v1';
 const commonJs = readStatic('common.js');
 assert(commonJs.includes(`sharedBundleVersion = '${runtimeContextFixVersion}'`), 'common_missing_runtime_context_fix_cachebuster');
 assert(runtimeHtml.includes(`common.js?v=${runtimeContextFixVersion}`), 'runtime_html_missing_runtime_context_fix_cachebuster');
