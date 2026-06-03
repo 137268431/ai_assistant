@@ -403,7 +403,7 @@ const CONFIG_META = {
 
   watchlist_interval_min: meta('标的同步间隔', '标的订阅', 600, '5', '联动 sync_*: 同步窗口内按该间隔刷新 watchlist 股票池'),
   ibkr_target_refresh_sec: meta('目标订阅刷新秒数', '标的订阅', 610, '60', '按 ibkr_targets 刷新当日实时订阅列表'),
-  ibkr_daily_scan_time_et: meta('目标池刷新时间', '标的订阅', 612, '08:20', '每日维护候选池的起始时间，ET 时区；盘中以 TV webhook 激活信号为准'),
+  ibkr_daily_scan_time_et: meta('目标池刷新时间', '标的订阅', 612, '08:20', '每日覆盖预筛的起始时间，ET 时区；08:20-09:20 覆盖预筛，09:25-11:00 topup 增量入池'),
   ibkr_daily_scan_min_avg_10d_volume: meta('目标池最小10D均量', '标的订阅', 614, '100000', '目标池硬门槛：10 日平均成交量至少达到该值'),
   ibkr_daily_scan_min_premarket_volume: meta('目标池最小盘前量', '标的订阅', 616, '5000', '目标池硬门槛：盘前累计成交量至少达到该值'),
   ibkr_target_activity_gate_stages_json: meta('分阶段活跃门槛', '标的订阅', 617, '', 'JSON 配置 08:20-11:00 不同阶段的 activity any_of 门槛；盘前看 premarket_volume，开盘后看 regular_volume / elapsed_rvol'),

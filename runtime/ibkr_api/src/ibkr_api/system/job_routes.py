@@ -24,7 +24,7 @@ from ibkr_api.system.jobs import (
     build_weekly_reauth_followup_response,
     build_weekly_reauth_reminder_response,
 )
-from ibkr_api.system.jobs.open_report import build_system_open_report_response, load_market_snapshots_from_pb
+from ibkr_api.system.jobs.open_report import build_system_open_report_response, load_market_snapshots_from_quotes
 
 
 SystemDeps = dict[str, Any]
@@ -58,6 +58,16 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
     build_active_window_progress_response = deps["build_active_window_progress_response"]
     write_system_event_record = deps["write_system_event_record"]
     startup_chat_id = deps["startup_chat_id"]
+
+    def _load_realtime_market_snapshots(environment: str, symbols: list[str], market_date: str, computed_at_ms: int) -> list[dict[str, Any]]:
+        return load_market_snapshots_from_quotes(
+            request_json_request,
+            runtime_base_url,
+            environment,
+            symbols,
+            market_date,
+            computed_at_ms,
+        )
 
     def _list_live_broker_order_ids(environment: str) -> list[str] | None:
         if not runtime_base_url:
@@ -252,13 +262,7 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
             config_value=config_value,
             console_base_url=console_base_url,
             startup_chat_id=startup_chat_id,
-            load_market_snapshots=lambda environment, symbols, market_date, computed_at_ms: load_market_snapshots_from_pb(
-                pb,
-                environment,
-                symbols,
-                market_date,
-                computed_at_ms,
-            ),
+            load_market_snapshots=_load_realtime_market_snapshots,
             request_json_request=request_json_request,
             compute_base_url=compute_base_url,
         )
@@ -356,13 +360,7 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
             console_base_url=console_base_url,
             signal_chat_id=signal_chat_id,
             startup_chat_id=startup_chat_id,
-            load_market_snapshots=lambda environment, symbols, market_date, computed_at_ms: load_market_snapshots_from_pb(
-                pb,
-                environment,
-                symbols,
-                market_date,
-                computed_at_ms,
-            ),
+            load_market_snapshots=_load_realtime_market_snapshots,
             request_json_request=request_json_request,
             compute_base_url=compute_base_url,
         )
@@ -418,13 +416,7 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
             startup_chat_id=startup_chat_id,
             request_json_request=request_json_request,
             compute_base_url=compute_base_url,
-            load_market_snapshots=lambda environment, symbols, market_date, computed_at_ms: load_market_snapshots_from_pb(
-                pb,
-                environment,
-                symbols,
-                market_date,
-                computed_at_ms,
-            ),
+            load_market_snapshots=_load_realtime_market_snapshots,
         )
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)

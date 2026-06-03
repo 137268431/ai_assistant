@@ -8,6 +8,7 @@ from ibkr_api.universe.today_targets_shared import (
     DEFAULT_TECHNICAL_STATE,
     INTRADAY_REFRESH_RULE,
     MARKET_OPEN_CHECK_TIME_ET,
+    OPEN_RECONCILE_WINDOW_ET,
     TOPUP_WINDOW_ET,
     format_et_datetime,
     normalize_signal_status,
@@ -230,8 +231,10 @@ def build_workflow_guide(runtime_environment: str, market_date: str) -> dict[str
     return {
         "scan_summary_time_et": DAILY_SCAN_SUMMARY_TIME_ET,
         "open_check_time_et": MARKET_OPEN_CHECK_TIME_ET,
+        "open_reconcile_window_et": OPEN_RECONCILE_WINDOW_ET,
         "topup_window_et": TOPUP_WINDOW_ET,
         "intraday_refresh_rule": INTRADAY_REFRESH_RULE,
+        "topup_behavior": "topup 只新增符合 signal-window context 的 active 标的，不移除已有 active。",
         "focus_order_rule": "先看 awaiting_confirm / pending / submitted / protected_active / protection_incomplete，再看 ready 未出信号，最后看 executed / stale。",
         "primary_view_url": build_primary_view_url(runtime_environment, market_date),
         "ready_definition": build_ready_definition(),

@@ -124,7 +124,7 @@
                         <div>
                             <div class="home-panel-kicker">Targets</div>
                             <div class="home-panel-title">今日目标池</div>
-                            <div class="home-panel-copy">查看 TV webhook 激活的 candidate / active 标的、核心理由和执行入口。</div>
+                            <div class="home-panel-copy">查看日筛、增量入池、信号窗口和 TV webhook 共同维护的 candidate / active 标的、核心理由和执行入口。</div>
                         </div>
                         <a id="todayTargetsLink" href="/ibkr_screener.html?tab=screener&view=current" class="home-inline-btn">查看当前标的榜</a>
                     </div>
@@ -655,10 +655,10 @@
             const currentMarketDate = String(payload.current_market_date || marketDate).trim() || marketDate;
             const workflow = payload.workflow || {};
             const scanTimeEt = String(workflow.scan_summary_time_et || '08:20-09:20').trim() || '08:20-09:20';
-            const openCheckTimeEt = String(workflow.open_check_time_et || scanTimeEt).trim() || scanTimeEt;
+            const openReconcileWindowEt = String(workflow.open_reconcile_window_et || workflow.open_check_time_et || '09:25-09:45').trim() || '09:25-09:45';
             const topupWindowEt = String(workflow.topup_window_et || '09:25-11:00').trim() || '09:25-11:00';
             const intradayRefreshRule = String(workflow.intraday_refresh_rule || '5m close-driven').trim() || '5m close-driven';
-            const timingCopy = `${scanTimeEt} ET 每 5 分钟覆盖预筛，${topupWindowEt} ET 增量入池，${openCheckTimeEt} ET 做盘前检查`;
+            const timingCopy = `${scanTimeEt} ET 每 5 分钟覆盖预筛；${topupWindowEt} ET topup 增量入池，只新增符合 signal-window context 的 active 标的；${openReconcileWindowEt} ET open_target_reconcile 防止开盘空池`;
             const dateCopy = marketDate === currentMarketDate
                 ? `首页默认按当前美东交易日 ${marketDate} 展示，不按本地自然日。`
                 : `首页当前展示交易日 ${marketDate}，当前美东交易日为 ${currentMarketDate}。`;

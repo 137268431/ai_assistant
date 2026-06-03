@@ -21,6 +21,7 @@ DEFAULT_OPEN_REPORT_WINDOW_MINUTES = 10
 DEFAULT_OPEN_TARGET_WAIT_SEC = 45.0
 DEFAULT_OPEN_TARGET_POLL_SEC = 3.0
 DEFAULT_MARKET_SYMBOLS = "SPY,QQQ,VIX"
+QUOTE_FRESH_MAX_AGE_S = 600.0
 ET = ZoneInfo("America/New_York")
 MS_PER_DAY = 24 * 60 * 60 * 1000
 PREV_CLOSE_LOOKBACK_DAYS = 10
@@ -358,6 +359,111 @@ def load_market_snapshots_from_pb(pb: Any, environment: str, symbols: list[str],
             }
         )
     return snapshots
+
+
+def _format_quote_update_time(value: Any) -> str:
+    text = _to_text(value)
+    if not text:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(ET)
+        return parsed.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return text[:19].replace("T", " ") if len(text) >= 19 else text
+
+
+def _quote_payload_items(result: Any) -> list[dict[str, Any]]:
+    result_payload = result if isinstance(result, dict) else {}
+    if result_payload.get("ok") is False or _to_int(result_payload.get("status_code"), 0) >= 400:
+        return []
+    payload = result_payload.get("payload") if isinstance(result_payload.get("payload"), dict) else result_payload
+    items = payload.get("items") if isinstance(payload, dict) else []
+    return [dict(item) for item in (items if isinstance(items, list) else []) if isinstance(item, dict)]
+
+
+def _request_quote_items(
+    request_json_request: RequestJsonRequest | None,
+    runtime_base_url: str,
+    environment: str,
+    symbols: list[str],
+) -> dict[str, dict[str, Any]]:
+    if not callable(request_json_request) or not _to_text(runtime_base_url) or not symbols:
+        return {}
+    try:
+        result = request_json_request(
+            "GET",
+            runtime_base_url,
+            "/ibkr/quotes",
+            params={"symbols": ",".join(symbols), "environment": environment},
+            timeout=8.0,
+        )
+    except Exception:
+        return {}
+    quote_map: dict[str, dict[str, Any]] = {}
+    for item in _quote_payload_items(result):
+        symbol = _to_text(item.get("symbol")).upper()
+        if symbol:
+            quote_map[symbol] = item
+    return quote_map
+
+
+def _quote_is_storage_fallback(quote: dict[str, Any]) -> bool:
+    value = quote.get("quote_fallback")
+    return value is True or _to_text(value).lower() == "true"
+
+
+def _missing_quote_snapshot(symbol: str) -> dict[str, Any]:
+    return {
+        "symbol": symbol,
+        "price": 0.0,
+        "prev_close": 0.0,
+        "change_pct": None,
+        "latest_us_time": "",
+        "freshness_min": None,
+        "status": "missing_quote",
+    }
+
+
+def _snapshot_from_realtime_quote(symbol: str, quote: dict[str, Any]) -> dict[str, Any]:
+    price = _to_float_or_none(quote.get("last_price"))
+    if price is None or price <= 0 or _quote_is_storage_fallback(quote):
+        return _missing_quote_snapshot(symbol)
+
+    age_s = _to_float_or_none(quote.get("quote_age_s"))
+    change_pct = _to_float_or_none(quote.get("day_change_pct"))
+    prev_close = _to_float_or_none(quote.get("prev_close"))
+    if change_pct is None and prev_close is not None and prev_close > 0:
+        change_pct = round(((price - prev_close) / prev_close) * 100.0, 2)
+
+    fresh = age_s is not None and age_s <= QUOTE_FRESH_MAX_AGE_S
+    return {
+        "symbol": symbol,
+        "price": round(price, 4),
+        "prev_close": round(prev_close, 4) if prev_close is not None and prev_close > 0 else 0.0,
+        "change_pct": round(change_pct, 4) if change_pct is not None else None,
+        "latest_us_time": _format_quote_update_time(quote.get("last_update") or quote.get("us_time")),
+        "freshness_min": max(0, int(age_s // 60)) if age_s is not None else None,
+        "status": "realtime_quote" if fresh else "stale_quote",
+    }
+
+
+def load_market_snapshots_from_quotes(
+    request_json_request: RequestJsonRequest | None,
+    runtime_base_url: str,
+    environment: str,
+    symbols: list[str],
+    market_date: str,
+    computed_at_ms: int,
+) -> list[dict[str, Any]]:
+    del market_date, computed_at_ms
+    normalized_symbols = _normalize_symbols(symbols)
+    quote_map = _request_quote_items(request_json_request, runtime_base_url, environment, normalized_symbols)
+    return [
+        _snapshot_from_realtime_quote(symbol, quote_map.get(symbol, {}))
+        for symbol in normalized_symbols
+    ]
 
 
 def _target_summary_line(targets_payload: dict[str, Any]) -> str:
@@ -840,9 +946,15 @@ def _open_issue_lines(
     if "websocket" in runtime and not (websocket.get("connected") or websocket.get("ready")):
         issues.append("WebSocket offline")
         blocking = True
+    scan_issue = _scan_issue_text(targets_payload)
+    if scan_issue:
+        issues.append(scan_issue)
     summary_counts = _as_dict(targets_payload.get("summary"))
     if _to_int(summary_counts.get("total"), 0) <= 0:
         issues.append("今日暂无 active / candidate 标的")
+    capture_issue = _opening_capture_issue_text(opening_capture)
+    if capture_issue:
+        issues.append(capture_issue)
     return issues, blocking
 
 
@@ -934,7 +1046,7 @@ def _build_open_report_card(
         target_lines = ["今日暂无 active / candidate 标的。"]
     market_lines = [_format_market_line(item) for item in market_snapshots[:6]] or ["大盘监控数据暂不可用。"]
     service_line, link_line, services_line = _system_lines(summary, monitor)
-    issue_text = ""
+    issue_text = "；".join(_open_issue_lines(summary, monitor, targets_payload, opening_capture)[0])
     level = _report_level(summary, monitor, targets_payload, opening_capture)
     market_session_fields = market_session_detail_fields(market_session_from_calendar(calendar))
     market_session_lines = "\n".join(f"**{key}**: {value}" for key, value in market_session_fields.items())
@@ -953,6 +1065,7 @@ def _build_open_report_card(
                 f"**IBKR链路**: {link_line}\n"
                 f"**服务统计**: {services_line}"
                 f"{market_session_block}"
+                f"{capture_block}"
             ),
         },
         {"tag": "markdown", "content": f"**今日标的**: {_target_summary_line(targets_payload)}\n" + "\n".join(target_lines)},
@@ -1104,6 +1217,7 @@ def _event_detail(
     }
     capture_line = _opening_capture_line(opening_capture)
     if capture_line:
+        detail["开盘采集"] = capture_line
         detail["目标池刷新"] = capture_line
     detail.update(market_session_detail_fields(market_session_from_calendar(calendar)))
     return detail
@@ -1486,5 +1600,6 @@ __all__ = [
     "OPEN_REPORT_STATE_KEY",
     "build_system_open_report_response",
     "load_market_snapshots_from_pb",
+    "load_market_snapshots_from_quotes",
     "matches_open_report_time_window",
 ]

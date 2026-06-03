@@ -22,6 +22,7 @@ from ibkr_api.system.jobs import open_report as open_report_mod
 from ibkr_api.system.jobs.open_report import (
     build_system_open_report_response,
     load_market_snapshots_from_pb,
+    load_market_snapshots_from_quotes,
     matches_open_report_time_window,
 )
 from ibkr_api.system.jobs.market_calendar import (
@@ -120,6 +121,176 @@ class SystemScanSummaryTest(unittest.TestCase):
         self.assertEqual(snapshots[0]["prev_close_time"], "2026-05-13 16:00:00")
         self.assertEqual(snapshots[0]["change_pct"], 0.2)
         self.assertEqual(snapshots[0]["freshness_min"], 5)
+
+    def test_quote_market_snapshot_uses_fresh_realtime_quote(self):
+        calls = []
+
+        def request_json_request(method, base_url, path, params=None, timeout=0, **kwargs):
+            calls.append((method, base_url, path, params, timeout))
+            return {
+                "ok": True,
+                "status_code": 200,
+                "payload": {
+                    "ok": True,
+                    "items": [
+                        {
+                            "symbol": "SPY",
+                            "last_price": 757.74,
+                            "day_change_pct": -0.2409,
+                            "prev_close": 759.57,
+                            "last_update": "2026-06-03T09:36:35.413000-04:00",
+                            "quote_age_s": 3.3,
+                        },
+                        {
+                            "symbol": "QQQ",
+                            "last_price": 745.52,
+                            "day_change_pct": -0.0858,
+                            "prev_close": 746.16,
+                            "last_update": "2026-06-03T09:36:35.413000-04:00",
+                            "quote_age_s": 0.0,
+                        },
+                    ],
+                },
+            }
+
+        snapshots = load_market_snapshots_from_quotes(
+            request_json_request,
+            "http://runtime.internal",
+            "live",
+            ["SPY", "QQQ"],
+            "2026-06-03",
+            0,
+        )
+
+        self.assertEqual(calls[0][2], "/ibkr/quotes")
+        self.assertEqual(calls[0][3], {"symbols": "SPY,QQQ", "environment": "live"})
+        self.assertEqual(snapshots[0]["symbol"], "SPY")
+        self.assertEqual(snapshots[0]["price"], 757.74)
+        self.assertEqual(snapshots[0]["change_pct"], -0.2409)
+        self.assertEqual(snapshots[0]["prev_close"], 759.57)
+        self.assertEqual(snapshots[0]["latest_us_time"], "2026-06-03 09:36:35")
+        self.assertEqual(snapshots[0]["freshness_min"], 0)
+        self.assertEqual(snapshots[0]["status"], "realtime_quote")
+        self.assertEqual(snapshots[1]["status"], "realtime_quote")
+
+    def test_quote_market_snapshot_calculates_change_from_quote_prev_close(self):
+        def request_json_request(method, base_url, path, params=None, timeout=0, **kwargs):
+            return {
+                "ok": True,
+                "payload": {
+                    "items": [
+                        {
+                            "symbol": "SPY",
+                            "last_price": 105,
+                            "prev_close": 100,
+                            "last_update": "2026-06-03 09:31:00",
+                            "quote_age_s": 30,
+                        }
+                    ],
+                },
+            }
+
+        snapshots = load_market_snapshots_from_quotes(
+            request_json_request,
+            "http://runtime.internal",
+            "live",
+            ["SPY"],
+            "2026-06-03",
+            0,
+        )
+
+        self.assertEqual(snapshots[0]["price"], 105)
+        self.assertEqual(snapshots[0]["change_pct"], 5.0)
+        self.assertEqual(snapshots[0]["status"], "realtime_quote")
+
+    def test_quote_market_snapshot_marks_stale_realtime_quote(self):
+        def request_json_request(method, base_url, path, params=None, timeout=0, **kwargs):
+            return {
+                "ok": True,
+                "payload": {
+                    "items": [
+                        {
+                            "symbol": "VIX",
+                            "last_price": 16.28,
+                            "day_change_pct": 3.234,
+                            "prev_close": 15.77,
+                            "last_update": "2026-06-03T09:20:00-04:00",
+                            "quote_age_s": 900,
+                        }
+                    ],
+                },
+            }
+
+        snapshots = load_market_snapshots_from_quotes(
+            request_json_request,
+            "http://runtime.internal",
+            "live",
+            ["VIX"],
+            "2026-06-03",
+            0,
+        )
+
+        self.assertEqual(snapshots[0]["price"], 16.28)
+        self.assertEqual(snapshots[0]["freshness_min"], 15)
+        self.assertEqual(snapshots[0]["status"], "stale_quote")
+
+    def test_quote_market_snapshot_ignores_storage_fallback_and_never_reads_pb_bars(self):
+        def request_json_request(method, base_url, path, params=None, timeout=0, **kwargs):
+            return {
+                "ok": True,
+                "payload": {
+                    "items": [
+                        {
+                            "symbol": "SPY",
+                            "last_price": 743.77,
+                            "day_change_pct": 0.2,
+                            "quote_fallback": True,
+                            "fallback_source": "canonical_5m",
+                            "quote_age_s": None,
+                        }
+                    ],
+                },
+            }
+
+        with mock.patch.object(
+            open_report_mod,
+            "load_market_snapshots_from_pb",
+            side_effect=AssertionError("ibkr_bars fallback should not be used"),
+        ):
+            snapshots = load_market_snapshots_from_quotes(
+                request_json_request,
+                "http://runtime.internal",
+                "live",
+                ["SPY", "QQQ"],
+                "2026-06-03",
+                0,
+            )
+
+        self.assertEqual(snapshots[0]["status"], "missing_quote")
+        self.assertEqual(snapshots[0]["price"], 0.0)
+        self.assertIsNone(snapshots[0]["change_pct"])
+        self.assertEqual(snapshots[1]["status"], "missing_quote")
+
+    def test_quote_market_snapshot_endpoint_failure_returns_missing_without_pb_fallback(self):
+        def request_json_request(method, base_url, path, params=None, timeout=0, **kwargs):
+            return {"ok": False, "status_code": 503, "payload": {"error": "runtime_down"}}
+
+        with mock.patch.object(
+            open_report_mod,
+            "load_market_snapshots_from_pb",
+            side_effect=AssertionError("ibkr_bars fallback should not be used"),
+        ):
+            snapshots = load_market_snapshots_from_quotes(
+                request_json_request,
+                "http://runtime.internal",
+                "live",
+                ["SPY", "QQQ", "VIX"],
+                "2026-06-03",
+                0,
+            )
+
+        self.assertEqual([item["status"] for item in snapshots], ["missing_quote", "missing_quote", "missing_quote"])
+        self.assertEqual([item["price"] for item in snapshots], [0.0, 0.0, 0.0])
 
     def test_scan_summary_sends_weekend_closed_notice_without_loading_targets(self):
         sent = []
