@@ -259,6 +259,34 @@ def _planned_pnl_lines(record_or_data: Any) -> list[str]:
     return [f"**预计盈利 / 预计亏损**: {_format_signed_money(expected_profit)} / {_format_signed_money(expected_loss)}"]
 
 
+def _profit_space_lines(record_or_data: Any) -> list[str]:
+    net_profit = _record_or_extra_value(record_or_data, "expected_net_profit", "profit_space_expected_net_profit")
+    roi_pct = _record_or_extra_value(record_or_data, "expected_net_roi_pct", "net_roi_pct", "profit_space_net_roi_pct")
+    cost_pct = _record_or_extra_value(record_or_data, "cost_pct_of_reward", "profit_space_cost_pct")
+    target_atr = _record_or_extra_value(record_or_data, "target_distance_atr", "profit_space_target_distance_atr")
+    if not any(_has_metric_number(value) for value in (net_profit, roi_pct, cost_pct, target_atr)):
+        return []
+
+    allowed_raw = _record_or_extra_value(record_or_data, "profit_space_entry_allowed")
+    reason = to_text(_record_or_extra_value(record_or_data, "profit_space_filter_reason"))
+    allowed_text = to_text(allowed_raw).lower()
+    if allowed_text in {"true", "1", "yes"} or reason == "pass":
+        state = "过滤通过"
+    elif allowed_text in {"false", "0", "no"}:
+        state = f"未通过{f' · {reason}' if reason else ''}"
+    else:
+        state = reason if reason and reason != "disabled" else ""
+    suffix = f" · {state}" if state else ""
+    return [
+        "**获利空间**: "
+        f"净 {_format_signed_money(net_profit)} / "
+        f"ROI {_format_number(roi_pct)}% / "
+        f"成本 {_format_number(cost_pct, digits=1)}% / "
+        f"TP {_format_number(target_atr, digits=2)} ATR"
+        f"{suffix}"
+    ]
+
+
 def _strategy_capacity_lines(record_or_data: Any) -> list[str]:
     extra = get_signal_extra(record_or_data)
     capacity = extra.get("strategy_capacity")
@@ -667,6 +695,7 @@ def build_signal_notification_card(record_or_data: Any, *, console_base_url: str
     ]
     body_lines.extend(_price_plan_lines(record_or_data))
     body_lines.extend(_planned_pnl_lines(record_or_data))
+    body_lines.extend(_profit_space_lines(record_or_data))
     body_lines.extend(_strategy_capacity_lines(record_or_data))
     body_lines.extend(_buying_power_lines(record_or_data))
     body_lines.extend(_tv_context_lines(record_or_data))
@@ -839,6 +868,7 @@ def build_signal_status_card(record_or_data: Any, *, message: str = "", console_
     ]
     body_lines.extend(_price_plan_lines(record_or_data))
     body_lines.extend(_planned_pnl_lines(record_or_data))
+    body_lines.extend(_profit_space_lines(record_or_data))
     body_lines.extend(_strategy_capacity_lines(record_or_data))
     body_lines.extend(_buying_power_lines(record_or_data))
     body_lines.extend(_tv_context_lines(record_or_data))

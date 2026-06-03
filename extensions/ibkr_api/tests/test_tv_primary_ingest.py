@@ -409,6 +409,15 @@ class TvPrimaryIngestTests(unittest.TestCase):
                 "us_time": "2026-05-29 09:45:00",
                 "activity_score": 88,
                 "quality_score": 90,
+                "atr": 1.25,
+                "atr_pct": 0.75,
+                "profit_space_entry_allowed": True,
+                "profit_space_filter_reason": "pass",
+                "expected_net_profit": 61.5,
+                "expected_net_roi_pct": 1.24,
+                "cost_pct_of_reward": 4.2,
+                "target_distance_atr": 3.0,
+                "min_net_roi_pct_for_entry": 1.0,
                 **_mtf_payload(status="pass", score=100.0),
             },
             config_value=config_value,
@@ -421,6 +430,15 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertEqual(saved["direction"], "long")
         self.assertEqual(saved["extra"]["admission_reason"], "same_day_tv_pre_alert_target")
         self.assertTrue(saved["extra"]["has_same_day_tv_target"])
+        self.assertEqual(saved["extra"]["atr"], 1.25)
+        self.assertEqual(saved["extra"]["atr_pct"], 0.75)
+        self.assertTrue(saved["extra"]["profit_space_entry_allowed"])
+        self.assertEqual(saved["extra"]["profit_space_filter_reason"], "pass")
+        self.assertEqual(saved["extra"]["expected_net_profit"], 61.5)
+        self.assertEqual(saved["extra"]["expected_net_roi_pct"], 1.24)
+        self.assertEqual(saved["extra"]["cost_pct_of_reward"], 4.2)
+        self.assertEqual(saved["extra"]["target_distance_atr"], 3.0)
+        self.assertEqual(saved["extra"]["min_net_roi_pct_for_entry"], 1.0)
         self.assertEqual(pb.records[TV_EVENT_COLLECTION][-1]["status"], "routed")
 
     def test_entry_uses_trade_watchlist_as_authorized_universe_without_active_rank(self):

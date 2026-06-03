@@ -2834,6 +2834,29 @@
                 const mtfSummary = mtfStatus
                     ? `${mtfStatus}${hasMtfScore ? ` / ${formatNumber(mtfScore, 0)}` : ''}`
                     : '';
+                const profitNet = firstFiniteNumber(extra.expected_net_profit, extra.profit_space_expected_net_profit);
+                const profitRoi = firstFiniteNumber(extra.expected_net_roi_pct, extra.net_roi_pct, extra.profit_space_net_roi_pct);
+                const profitCostPct = firstFiniteNumber(extra.cost_pct_of_reward, extra.profit_space_cost_pct);
+                const profitTargetAtr = firstFiniteNumber(extra.target_distance_atr, extra.profit_space_target_distance_atr);
+                const profitReason = String(extra.profit_space_filter_reason || '').trim();
+                const profitAllowedText = String(extra.profit_space_entry_allowed ?? '').trim().toLowerCase();
+                const hasProfitSpace = [profitNet, profitRoi, profitCostPct, profitTargetAtr].some((value) => value !== null) || Boolean(profitReason);
+                const profitState = profitAllowedText === 'true' || profitReason === 'pass'
+                    ? '通过'
+                    : (profitAllowedText === 'false' ? `未通过${profitReason ? `:${profitReason}` : ''}` : (profitReason && profitReason !== 'disabled' ? profitReason : ''));
+                const formatMaybeNumber = (value, digits = 2) => value === null ? '--' : formatNumber(value, digits, '--');
+                const profitSummary = hasProfitSpace
+                    ? `净 ${formatSignedMoney(profitNet, '--')} / ROI ${formatMaybeNumber(profitRoi, 2)}% / 成本 ${formatMaybeNumber(profitCostPct, 1)}% / TP ${formatMaybeNumber(profitTargetAtr, 2)}ATR${profitState ? ` · ${profitState}` : ''}`
+                    : '';
+                const profitGateValues = [
+                    firstFiniteNumber(extra.min_net_profit_for_entry),
+                    firstFiniteNumber(extra.min_net_roi_pct_for_entry),
+                    firstFiniteNumber(extra.max_cost_pct_of_reward),
+                    firstFiniteNumber(extra.min_target_atr_multiple_for_entry),
+                ];
+                const profitGate = profitGateValues.some((value) => value !== null)
+                    ? `净≥${formatSignedMoney(profitGateValues[0], '--')} / ROI≥${formatMaybeNumber(profitGateValues[1], 2)}% / 成本≤${formatMaybeNumber(profitGateValues[2], 1)}% / TP≥${formatMaybeNumber(profitGateValues[3], 2)}ATR`
+                    : '';
                 const sourceText = String(extra.signal_source || extra.source || signal?.source || '').toLowerCase();
                 const hasTvContext = sourceText.includes('tradingview') || sourceText === 'tv' || Boolean(extra.tv_event_id || extra.event_type || extra.position_id || extra.tv_snapshot);
                 if (!hasTvContext) return '';
@@ -2846,6 +2869,8 @@
                     ['entry_tf', extra.entry_tf || mtf.entry_tf],
                     ['confirm_tfs', formatTfList(extra.confirm_tfs || mtf.confirm_tfs)],
                     ['mtf_block', mtfBlockReason && mtfBlockReason !== 'none' ? mtfBlockReason : ''],
+                    ['profit_space', profitSummary],
+                    ['profit_gate', profitGate],
                     ['position', extra.position_id],
                     ['tv_event_id', extra.tv_event_id],
                 ].filter(([, value]) => String(value || '').trim());

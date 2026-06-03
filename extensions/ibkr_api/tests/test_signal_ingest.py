@@ -427,6 +427,35 @@ class SignalIngressBuildersTest(unittest.TestCase):
             for card in (notification_card, status_card):
                 self.assertIn(expected_line, card["elements"][0]["content"])
 
+    def test_signal_cards_include_profit_space_metrics_when_available(self):
+        record = {
+            "id": "sig-row-profit-space",
+            "signal_id": "sig-profit-space",
+            "symbol": "MDB",
+            "direction": "long",
+            "environment": "paper",
+            "status": "pending",
+            "entry": 367.10,
+            "stop_loss": 363.35,
+            "take_profit": 372.73,
+            "shares": 13,
+            "extra": {
+                "expected_net_profit": 69.82,
+                "expected_net_roi_pct": 1.46,
+                "cost_pct_of_reward": 4.64,
+                "target_distance_atr": 4.5,
+                "profit_space_entry_allowed": True,
+                "profit_space_filter_reason": "pass",
+            },
+        }
+
+        notification_card = build_signal_notification_card(record, console_base_url="https://console.example.com")
+        status_card = build_signal_status_card(record, message="信号已确认，等待执行", console_base_url="https://console.example.com")
+
+        expected_line = "**获利空间**: 净 +$69.82 / ROI 1.46% / 成本 4.6% / TP 4.50 ATR · 过滤通过"
+        for card in (notification_card, status_card):
+            self.assertIn(expected_line, card["elements"][0]["content"])
+
     def test_signal_cards_include_strategy_capacity_when_available(self):
         record = {
             "id": "sig-row-capacity",

@@ -785,6 +785,41 @@ def _base_extra(
         value = _payload_first(payload, key)
         if value not in (None, "", []):
             base[key] = value
+    for key in (
+        "atr",
+        "atr_pct",
+        "volatility_filter_enabled",
+        "min_atr_pct_for_entry",
+        "volatility_atr_pct",
+        "volatility_entry_blocked",
+        "volatility_entry_allowed",
+        "profit_space_filter_enabled",
+        "profit_space_entry_allowed",
+        "profit_space_entry_blocked",
+        "profit_space_filter_reason",
+        "entry_notional",
+        "expected_gross_profit",
+        "estimated_round_trip_cost",
+        "expected_net_profit",
+        "expected_net_roi_pct",
+        "cost_pct_of_reward",
+        "target_distance_atr",
+        "profit_space_target_price",
+        "profit_space_final_target_price",
+        "final_target_gross_profit",
+        "final_target_net_profit",
+        "final_target_net_roi_pct",
+        "final_target_distance_atr",
+        "min_net_profit_for_entry",
+        "min_net_roi_pct_for_entry",
+        "max_cost_pct_of_reward",
+        "min_target_atr_multiple_for_entry",
+        "estimated_round_trip_fee",
+        "estimated_slippage_per_share_per_side",
+    ):
+        value = _payload_first(payload, key)
+        if value not in (None, "", []):
+            base[key] = value
     if link_trade_group_id:
         base["trade_group_id"] = link_trade_group_id
         base["bracket_group"] = link_trade_group_id
