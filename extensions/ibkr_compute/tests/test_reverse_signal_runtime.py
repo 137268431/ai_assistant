@@ -265,6 +265,53 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
         self.assertTrue(extra["auto_reentry_disabled"])
         self.assertIn("tv_exit_confirmed", extra["reverse_state_path"])
 
+    def test_tv_exit_origin_rejected_cancels_without_position_lookup(self):
+        reverse = {
+            "id": "rev-tv-exit-rejected",
+            "symbol": "AAPL",
+            "source": "tradingview",
+            "action_type": "close",
+            "status": "pending",
+            "environment": "live",
+            "priority": 10,
+            "bar_time_ms": 1,
+            "extra": {
+                "event_type": "exit",
+                "reverse_kind": "tv_exit",
+                "direction": "long",
+                "origin_signal_id": "tv-entry-rejected",
+                "trade_group_id": "grp-rejected",
+            },
+        }
+        signals = [
+            {
+                "id": "sig-rejected",
+                "signal_id": "tv-entry-rejected",
+                "environment": "live",
+                "symbol": "AAPL",
+                "direction": "long",
+                "status": "pending",
+                "extra": {"execution_by_mode": {"live": {"status": "rejected"}}},
+            }
+        ]
+        pb = _FakePB(reverse_rows=[reverse], signal_rows=signals)
+        lifecycle = _FakeOrderLifecycle([[{"symbol": "AAPL", "position": 10}]])
+        placer = _FakeOrderPlacer()
+
+        ReverseSignalHandler(pb, order_lifecycle=lifecycle, order_placer=placer, environment="live").check_and_process()
+
+        updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        extra = updated["extra"]
+        self.assertEqual("cancelled", updated["status"])
+        self.assertIn("tv_exit_origin_order_not_active", updated["reason"])
+        self.assertEqual("not_executable", extra["execution_readiness"])
+        self.assertEqual("tv_exit_origin_order_not_active", extra["execution_blocked_reason"])
+        self.assertEqual("origin_order_not_active", extra["order_linkage_status"])
+        self.assertTrue(extra["gateway_request_blocked"])
+        self.assertEqual(0, lifecycle.calls)
+        self.assertEqual([], placer.calls)
+        self.assertEqual("cancelled", pb.acks[0]["status"])
+
     def test_close_submission_unconfirmed_marks_cancelled_without_retrying(self):
         reverse = {
             "id": "rev-close-unconfirmed",
@@ -842,7 +889,15 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
             }
         ]
         pb = _FakePB(reverse_rows=[reverse], order_rows=symbol_only_orders)
-        modifier = _FakeOrderModifier(pb)
+        broker = _FakeBroker(open_orders=[
+            {
+                "orderId": "sl-symbol-only-live",
+                "orderRef": "sl_unlinked",
+                "role": "stop_loss",
+                "status": "Submitted",
+            }
+        ])
+        modifier = _FakeOrderModifier(pb, broker=broker)
 
         ReverseSignalHandler(pb, order_modifier=modifier, environment="live").check_and_process()
 
@@ -852,10 +907,126 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
         self.assertIn("risk_update_linkage_missing", updated["reason"])
         self.assertEqual("linkage_missing", extra["adjust_results"]["stop_loss"]["reason"])
         self.assertFalse(extra["child_order_resolution"]["linkage_exists"])
+        self.assertTrue(extra["gateway_request_blocked"])
+        self.assertTrue(extra["child_order_resolution"]["gateway_request_blocked"])
+        self.assertEqual("not_executable", extra["execution_readiness"])
+        self.assertEqual("risk_update_linkage_missing", extra["execution_blocked_reason"])
+        self.assertEqual("missing", extra["order_linkage_status"])
         self.assertEqual([], modifier.stop_updates)
+        self.assertEqual([], broker.calls)
         self.assertEqual("cancelled", pb.acks[0]["status"])
 
-    def test_tv_risk_update_linked_child_missing_cancels_unresolved(self):
+    def test_tv_risk_update_trade_group_hint_only_defers_without_gateway(self):
+        reverse = {
+            "id": "rev-risk-trade-group-hint-only",
+            "symbol": "AAPL",
+            "source": "tradingview",
+            "action_type": "adjust_bracket",
+            "status": "pending",
+            "environment": "live",
+            "priority": 10,
+            "bar_time_ms": 1,
+            "extra": {
+                "event_type": "risk_update",
+                "reverse_kind": "tv_risk_update",
+                "direction": "long",
+                "trade_group_id": "grp-1",
+                "risk_update_seq": 2,
+                "previous_stop_loss": 180.0,
+                "new_sl": 181.25,
+            },
+        }
+        broker = _FakeBroker(open_orders=[
+            {
+                "orderId": "sl-1003",
+                "orderRef": "sl_grp-1",
+                "role": "stop_loss",
+                "status": "Submitted",
+            }
+        ])
+        pb = _FakePB(reverse_rows=[reverse])
+        modifier = _FakeOrderModifier(pb, broker=broker)
+
+        ReverseSignalHandler(pb, order_modifier=modifier, environment="live").check_and_process()
+
+        updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        extra = updated["extra"]
+        self.assertEqual("pending", updated["status"])
+        self.assertIn("risk_update_local_order_linkage_missing", updated["reason"])
+        self.assertEqual("local_order_linkage_missing", extra["adjust_results"]["stop_loss"]["reason"])
+        self.assertFalse(extra["child_order_resolution"]["linkage_exists"])
+        self.assertTrue(extra["child_order_resolution"]["linkage_hint_exists"])
+        self.assertFalse(extra["child_order_resolution"]["gateway_lookup_allowed"])
+        self.assertTrue(extra["gateway_request_blocked"])
+        self.assertTrue(extra["child_order_resolution"]["gateway_request_blocked"])
+        self.assertEqual("deferred", extra["execution_readiness"])
+        self.assertEqual("local_order_linkage_missing", extra["order_linkage_status"])
+        self.assertEqual("young_waiting_local_order_linkage", extra["missing_child_order_defer"]["reason"])
+        self.assertEqual([], modifier.stop_updates)
+        self.assertEqual([], broker.calls)
+        self.assertEqual("pending", pb.acks[0]["status"])
+
+    def test_tv_risk_update_origin_rejected_cancels_without_gateway(self):
+        reverse = {
+            "id": "rev-risk-origin-rejected",
+            "symbol": "AAPL",
+            "source": "tradingview",
+            "action_type": "adjust_bracket",
+            "status": "pending",
+            "environment": "live",
+            "priority": 10,
+            "bar_time_ms": 1,
+            "extra": {
+                "event_type": "risk_update",
+                "reverse_kind": "tv_risk_update",
+                "direction": "long",
+                "origin_signal_id": "tv-entry-rejected",
+                "trade_group_id": "grp-rejected",
+                "risk_update_seq": 2,
+                "previous_stop_loss": 180.0,
+                "new_sl": 181.25,
+            },
+        }
+        signals = [
+            {
+                "id": "sig-rejected",
+                "signal_id": "tv-entry-rejected",
+                "environment": "live",
+                "symbol": "AAPL",
+                "direction": "long",
+                "status": "pending",
+                "extra": {"execution_by_mode": {"live": {"status": "rejected"}}},
+            }
+        ]
+        broker = _FakeBroker(open_orders=[
+            {
+                "orderId": "sl-1003",
+                "orderRef": "sl_grp-rejected",
+                "role": "stop_loss",
+                "status": "Submitted",
+            }
+        ])
+        pb = _FakePB(reverse_rows=[reverse], signal_rows=signals)
+        modifier = _FakeOrderModifier(pb, broker=broker)
+
+        ReverseSignalHandler(pb, order_modifier=modifier, environment="live").check_and_process()
+
+        updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        extra = updated["extra"]
+        self.assertEqual("cancelled", updated["status"])
+        self.assertIn("risk_update_origin_order_not_active", updated["reason"])
+        self.assertEqual("origin_order_not_active", extra["adjust_results"]["stop_loss"]["reason"])
+        self.assertTrue(extra["child_order_resolution"]["origin_execution_terminal"])
+        self.assertFalse(extra["child_order_resolution"]["gateway_lookup_allowed"])
+        self.assertTrue(extra["gateway_request_blocked"])
+        self.assertEqual("not_executable", extra["execution_readiness"])
+        self.assertEqual("origin_order_not_active", extra["order_linkage_status"])
+        self.assertEqual("origin_execution_terminal", extra["missing_child_order_defer"]["reason"])
+        self.assertEqual([], modifier.stop_updates)
+        self.assertEqual([], broker.calls)
+        self.assertEqual("cancelled", pb.acks[0]["status"])
+
+    def test_tv_risk_update_linked_child_missing_defers_unresolved(self):
         reverse = {
             "id": "rev-risk-linked-child-missing",
             "symbol": "AAPL",
@@ -887,19 +1058,84 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
             }
         ]
         pb = _FakePB(reverse_rows=[reverse], signal_rows=signals)
-        modifier = _FakeOrderModifier(pb)
+        broker = _FakeBroker(open_orders=[])
+        modifier = _FakeOrderModifier(pb, broker=broker)
 
         ReverseSignalHandler(pb, order_modifier=modifier, environment="live").check_and_process()
 
         updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
         extra = updated["extra"]
-        self.assertEqual("cancelled", updated["status"])
+        self.assertEqual("pending", updated["status"])
         self.assertIn("risk_update_child_order_id_unresolved", updated["reason"])
         self.assertEqual("child_order_id_unresolved", extra["adjust_results"]["stop_loss"]["reason"])
         self.assertTrue(extra["child_order_resolution"]["linkage_exists"])
         self.assertEqual(["stop_loss"], extra["child_order_resolution"]["unresolved_sides"])
+        self.assertFalse(extra["gateway_request_blocked"])
+        self.assertTrue(extra["child_order_resolution"]["gateway_lookup_allowed"])
+        self.assertEqual("deferred", extra["execution_readiness"])
+        self.assertEqual("risk_update_child_order_id_unresolved", extra["execution_blocked_reason"])
+        self.assertEqual("child_order_id_unresolved", extra["order_linkage_status"])
+        self.assertTrue(extra["missing_child_order_defer"]["enabled"])
         self.assertEqual([], modifier.stop_updates)
-        self.assertEqual("cancelled", pb.acks[0]["status"])
+        self.assertEqual(1, len(broker.calls))
+        self.assertEqual("pending", pb.acks[0]["status"])
+
+    def test_tv_risk_update_allows_gateway_lookup_with_local_linkage(self):
+        reverse = {
+            "id": "rev-risk-live-linked-child",
+            "symbol": "AAPL",
+            "source": "tradingview",
+            "action_type": "adjust_bracket",
+            "status": "pending",
+            "environment": "live",
+            "priority": 10,
+            "bar_time_ms": 1,
+            "extra": {
+                "event_type": "risk_update",
+                "reverse_kind": "tv_risk_update",
+                "direction": "long",
+                "origin_signal_id": "tv-entry-live-1",
+                "trade_group_id": "grp-1",
+                "risk_update_seq": 2,
+                "previous_stop_loss": 180.0,
+                "new_sl": 181.25,
+            },
+        }
+        signals = [
+            {
+                "id": "sig-row-live-1",
+                "signal_id": "tv-entry-live-1",
+                "environment": "live",
+                "symbol": "AAPL",
+                "direction": "long",
+                "status": "submitted",
+                "extra": {"execution_by_mode": {"live": {"status": "submitted"}}},
+            }
+        ]
+        pb = _FakePB(reverse_rows=[reverse], signal_rows=signals)
+        broker = _FakeBroker(
+            open_orders=[
+                {
+                    "orderId": "sl-1003",
+                    "orderRef": "sl_grp-1",
+                    "role": "stop_loss",
+                    "status": "Submitted",
+                }
+            ]
+        )
+        modifier = _FakeOrderModifier(pb, broker=broker)
+
+        ReverseSignalHandler(pb, order_modifier=modifier, environment="live").check_and_process()
+
+        updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        extra = updated["extra"]
+        self.assertEqual("confirmed", updated["status"])
+        self.assertEqual("adjust_bracket_confirmed", updated["reason"])
+        self.assertEqual([("sl-1003", 181.25)], modifier.stop_updates)
+        self.assertEqual(1, len(broker.calls))
+        self.assertFalse(extra["child_order_resolution"]["gateway_request_blocked"])
+        self.assertTrue(extra["child_order_resolution"]["gateway_lookup_allowed"])
+        self.assertEqual("broker_open_orders", extra["child_order_resolution"]["sources"]["stop_loss"])
 
     def test_tv_risk_update_blocks_stale_sequence_without_modifying_orders(self):
         reverse = {

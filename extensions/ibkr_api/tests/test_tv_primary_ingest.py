@@ -1031,6 +1031,105 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertTrue(reverse["extra"]["runner_enabled"])
         self.assertTrue(reverse["extra"]["runner_active"])
 
+    def test_risk_update_coalesces_same_type_pending_update(self):
+        pb = _FakePB()
+
+        for event_id, seq, new_stop in (
+            ("tv-risk-breakeven-1", 1, 187.10),
+            ("tv-risk-breakeven-2", 2, 188.20),
+        ):
+            response, status = _process(
+                pb,
+                {
+                    "source": "tv",
+                    "event_type": "risk_update",
+                    "event_id": event_id,
+                    "symbol": "AAPL",
+                    "position_side": "long",
+                    "signal_id": "tv-entry-coalesce-1",
+                    "trade_group_id": "tv-entry-coalesce-1",
+                    "new_stop_loss": new_stop,
+                    "risk_update_reason": "breakeven_trail",
+                    "risk_update_seq": seq,
+                    "environment": "paper",
+                    "market_data_mode": "live",
+                },
+            )
+            self.assertEqual(status, 200)
+            self.assertTrue(response["ok"])
+
+        self.assertEqual(len(pb.records["ibkr_reverse_signals"]), 1)
+        reverse = pb.records["ibkr_reverse_signals"][0]
+        self.assertEqual(reverse["extra"]["risk_update_type"], "breakeven_stop")
+        self.assertEqual(reverse["extra"]["risk_update_seq"], 2)
+        self.assertEqual(reverse["extra"]["new_sl"], 188.20)
+        self.assertTrue(reverse["extra"]["superseded_by_latest_risk_update"])
+        self.assertEqual(reverse["extra"]["superseded_updates"][0]["risk_update_seq"], 1)
+
+    def test_risk_update_keeps_different_types_pending(self):
+        pb = _FakePB()
+
+        for event_id, reason, seq in (
+            ("tv-risk-breakeven-type", "breakeven_trail", 1),
+            ("tv-risk-runner-type", "runner_trail", 2),
+        ):
+            response, status = _process(
+                pb,
+                {
+                    "source": "tv",
+                    "event_type": "risk_update",
+                    "event_id": event_id,
+                    "symbol": "AAPL",
+                    "position_side": "long",
+                    "signal_id": "tv-entry-types-1",
+                    "trade_group_id": "tv-entry-types-1",
+                    "new_stop_loss": 187.10 + seq,
+                    "risk_update_reason": reason,
+                    "risk_update_seq": seq,
+                    "environment": "paper",
+                    "market_data_mode": "live",
+                },
+            )
+            self.assertEqual(status, 200)
+            self.assertTrue(response["ok"])
+
+        self.assertEqual(len(pb.records["ibkr_reverse_signals"]), 2)
+        types = {row["extra"]["risk_update_type"] for row in pb.records["ibkr_reverse_signals"]}
+        self.assertEqual(types, {"breakeven_stop", "runner_trail_stop"})
+
+    def test_risk_update_stale_seq_does_not_overwrite_newer_same_type(self):
+        pb = _FakePB()
+
+        for event_id, seq, new_stop in (
+            ("tv-risk-runner-newer", 5, 190.50),
+            ("tv-risk-runner-stale", 4, 189.00),
+        ):
+            response, status = _process(
+                pb,
+                {
+                    "source": "tv",
+                    "event_type": "risk_update",
+                    "event_id": event_id,
+                    "symbol": "AAPL",
+                    "position_side": "long",
+                    "signal_id": "tv-entry-stale-1",
+                    "trade_group_id": "tv-entry-stale-1",
+                    "new_stop_loss": new_stop,
+                    "risk_update_reason": "runner_trail_stop",
+                    "risk_update_seq": seq,
+                    "environment": "paper",
+                    "market_data_mode": "live",
+                },
+            )
+            self.assertEqual(status, 200)
+            self.assertTrue(response["ok"])
+
+        self.assertEqual(len(pb.records["ibkr_reverse_signals"]), 1)
+        reverse = pb.records["ibkr_reverse_signals"][0]
+        self.assertEqual(reverse["extra"]["risk_update_type"], "runner_trail_stop")
+        self.assertEqual(reverse["extra"]["risk_update_seq"], 5)
+        self.assertEqual(reverse["extra"]["new_sl"], 190.50)
+
     def test_exit_routes_to_close_reverse_signal(self):
         pb = _FakePB()
         response, status = _process(
@@ -1054,6 +1153,30 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertEqual(reverse["action_type"], "close")
         self.assertEqual(reverse["priority"], 9)
         self.assertEqual(reverse["extra"]["reverse_kind"], "tv_exit")
+
+    def test_exit_close_reverse_signals_do_not_coalesce(self):
+        pb = _FakePB()
+
+        for event_id in ("tv-exit-no-coalesce-1", "tv-exit-no-coalesce-2"):
+            response, status = _process(
+                pb,
+                {
+                    "source": "tv",
+                    "event_type": "exit",
+                    "event_id": event_id,
+                    "symbol": "AAPL",
+                    "position_side": "long",
+                    "signal_id": "tv-entry-exit-1",
+                    "exit_reason": "take_profit",
+                    "environment": "paper",
+                    "market_data_mode": "live",
+                },
+            )
+            self.assertEqual(status, 200)
+            self.assertTrue(response["ok"])
+
+        self.assertEqual(len(pb.records["ibkr_reverse_signals"]), 2)
+        self.assertEqual([row["action_type"] for row in pb.records["ibkr_reverse_signals"]], ["close", "close"])
 
     def test_exit_preserves_exit_reason_and_runner_metadata(self):
         pb = _FakePB()

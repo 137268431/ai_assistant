@@ -627,6 +627,40 @@ def _requested_sides(payload: dict[str, Any]) -> list[str]:
     return sides
 
 
+def _risk_update_type(
+    payload: dict[str, Any],
+    *,
+    reason: str,
+    requested_sides: list[str],
+    requested_sides_explicit: bool,
+) -> str:
+    explicit = _lower(_payload_first(payload, "risk_update_type", "update_type", default=""))
+    if explicit:
+        return explicit
+    reason_key = _lower(reason)
+    if "initial" in reason_key and "protection" in reason_key:
+        return "initial_protection_bracket"
+    if "runner" in reason_key and "activation" in reason_key:
+        return "runner_activation"
+    if "runner" in reason_key and ("trail" in reason_key or "stop" in reason_key):
+        return "runner_trail_stop"
+    if "breakeven" in reason_key or "break_even" in reason_key:
+        return "breakeven_stop"
+    has_sl = _payload_has_any(payload, "new_stop_loss", "new_sl")
+    has_tp = _payload_has_any(payload, "new_take_profit", "new_tp")
+    if requested_sides_explicit:
+        side_set = set(requested_sides or [])
+        has_sl = "stop_loss" in side_set
+        has_tp = "take_profit" in side_set
+    if has_sl and has_tp:
+        return "bracket_update"
+    if has_sl:
+        return "stop_loss_update"
+    if has_tp:
+        return "take_profit_update"
+    return reason_key or "risk_update"
+
+
 def _runner_fields(payload: dict[str, Any], *, take_profit: float, event_type: str) -> dict[str, Any]:
     runner_enabled = parse_boolean(
         _payload_first(payload, "runner_enabled", "tp_checkpoint_runner", "enable_runner", "runner_mode", default=False),
@@ -1435,14 +1469,20 @@ def _route_reverse(
             }
         )
     else:
+        requested_sides = _requested_sides(payload)
+        requested_sides_explicit = _payload_has_key(payload, "requested_sides", "requested_side", "adjust_sides", "adjust_side")
         extra.update(
             {
                 "risk_update_reason": risk_update_reason,
                 "risk_update_seq": _int(_payload_first(payload, "risk_update_seq", default=0), 0),
+                "risk_update_type": _risk_update_type(
+                    payload,
+                    reason=risk_update_reason,
+                    requested_sides=requested_sides,
+                    requested_sides_explicit=requested_sides_explicit,
+                ),
             }
         )
-        requested_sides = _requested_sides(payload)
-        requested_sides_explicit = _payload_has_key(payload, "requested_sides", "requested_side", "adjust_sides", "adjust_side")
         if requested_sides_explicit:
             extra["requested_sides"] = requested_sides
         if _payload_has_any(payload, "new_stop_loss", "new_sl") and (
@@ -1484,7 +1524,7 @@ def _route_reverse(
         "us_time": _text(payload.get("us_time")),
         "cn_time": _text(payload.get("cn_time")),
         "extra": {**extra, "action_type": action_type, "reverse_kind": f"tv_{event_type}", "target_state": "tv_primary"},
-        "dedupe": False if event_type == "risk_update" else True,
+        "dedupe": event_type == "risk_update",
     }
     result = upsert_reverse_record(pb, reverse_payload, escape_filter=escape_filter)
     record = dict(result.get("record") or {}) if isinstance(result, dict) else {}

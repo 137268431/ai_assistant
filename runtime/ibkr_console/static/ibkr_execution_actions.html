@@ -83,6 +83,19 @@
             return Number.isFinite(num) ? num : fallback;
         }
 
+        function toBoolean(value, fallback = false) {
+            if (typeof value === 'boolean') return value;
+            if (typeof value === 'number') return value !== 0;
+            const text = String(value == null ? '' : value).trim().toLowerCase();
+            if (['true', '1', 'yes', 'y', 'on', 'blocked'].includes(text)) return true;
+            if (['false', '0', 'no', 'n', 'off', 'allowed'].includes(text)) return false;
+            return fallback;
+        }
+
+        function hasDisplayValue(value) {
+            return value !== undefined && value !== null && value !== '';
+        }
+
         function formatMoney(value) {
             const amount = toNumber(value);
             return amount ? `$${amount.toFixed(2)}` : 'N/A';
@@ -97,6 +110,15 @@
             const qty = toNumber(value);
             if (!qty) return '0';
             return Number.isInteger(qty) ? String(qty) : qty.toFixed(2);
+        }
+
+        function formatBooleanStatus(value) {
+            if (value === '') return '-';
+            return toBoolean(value) ? '是' : '否';
+        }
+
+        function normalizeMetaToken(value) {
+            return String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
         }
 
         function calculateAmount(entryPrice, targetPrice, quantity) {
@@ -341,6 +363,28 @@
 
         function normalizeSignal(raw) {
             const extra = raw.extra || {};
+            const riskUpdateSequence = extra.risk_update_sequence || raw.risk_update_sequence || {};
+            const childOrderResolution = extra.child_order_resolution || raw.child_order_resolution || {};
+            const requestedSides = Array.isArray(raw.requested_sides)
+                ? raw.requested_sides
+                : (Array.isArray(extra.requested_sides) ? extra.requested_sides : []);
+            const inferredRiskUpdateType = (() => {
+                if (requestedSides.length > 1) return 'bracket';
+                if (requestedSides.length === 1) return requestedSides[0];
+                if (extra.new_sl || raw.new_sl) return 'stop_loss';
+                if (extra.new_tp || raw.new_tp) return 'take_profit';
+                return '';
+            })();
+            const gatewayBlockedRaw = firstNonEmpty(raw.gateway_request_blocked, extra.gateway_request_blocked, '');
+            const linkageStatus = firstNonEmpty(
+                raw.order_linkage_status,
+                extra.order_linkage_status,
+                childOrderResolution.order_linkage_status,
+                childOrderResolution.linkage_status,
+                childOrderResolution.linkage_exists === true
+                    ? ((childOrderResolution.unresolved_sides || []).length ? 'unresolved' : 'linked')
+                    : (childOrderResolution.linkage_exists === false ? 'missing' : '')
+            );
             return {
                 ...raw,
                 extra,
@@ -371,6 +415,12 @@
                 new_sl: toNumber(raw.new_sl, toNumber(extra.new_sl, 0)),
                 old_tp: toNumber(raw.old_tp, toNumber(extra.old_tp, 0)),
                 new_tp: toNumber(raw.new_tp, toNumber(extra.new_tp, 0)),
+                risk_update_type: firstNonEmpty(raw.risk_update_type, extra.risk_update_type, inferredRiskUpdateType),
+                risk_update_seq: toNumber(firstNonEmpty(raw.risk_update_seq, extra.risk_update_seq, riskUpdateSequence.incoming_seq, 0), 0),
+                execution_readiness: firstNonEmpty(raw.execution_readiness, extra.execution_readiness, ''),
+                execution_blocked_message: firstNonEmpty(raw.execution_blocked_message, extra.execution_blocked_message, ''),
+                order_linkage_status: linkageStatus,
+                gateway_request_blocked: gatewayBlockedRaw === '' ? '' : toBoolean(gatewayBlockedRaw),
                 manual_requested: !!(raw.manual_requested || extra.manual_requested),
                 manual_requested_at: raw.manual_requested_at || extra.manual_requested_at || '',
                 result_status: raw.result_status || extra.result_status || '',
@@ -438,6 +488,11 @@
                 signal.order_unique_id,
                 signal.broker_order_id,
                 signal.id,
+                signal.risk_update_type,
+                signal.risk_update_seq,
+                signal.execution_readiness,
+                signal.order_linkage_status,
+                signal.execution_blocked_message,
             ].some((value) => String(value || '').toUpperCase().includes(query));
         }
 
@@ -656,12 +711,116 @@
             return direction === 'long' ? '做多 📈' : direction === 'short' ? '做空 📉' : (direction || 'N/A');
         }
 
+        function isTvRiskUpdate(signal) {
+            const extra = signal?.extra || {};
+            const tokens = [
+                signal?.reverse_kind,
+                signal?.action_type,
+                signal?.source,
+                signal?.reason,
+                extra.reverse_kind,
+                extra.event_type,
+                extra.tv_event_type,
+                extra.risk_update_reason,
+            ].map((value) => String(value || '').trim().toLowerCase()).filter(Boolean);
+            return tokens.some((token) => token === 'tv_risk_update' || token === 'risk_update' || token.includes('risk_update'));
+        }
+
+        function formatRiskUpdateType(value) {
+            const text = String(value || '').trim();
+            const key = normalizeMetaToken(text);
+            return {
+                bracket: '保护单组合',
+                stop_loss: '止损',
+                sl: '止损',
+                take_profit: '止盈',
+                tp: '止盈',
+                runner_activation: 'Runner 激活',
+                runner_stop: 'Runner 止盈',
+                safety_tp: '安全止盈',
+            }[key] || formatExecutionActionText(text) || '-';
+        }
+
+        function formatExecutionReadiness(value) {
+            const text = String(value || '').trim();
+            const key = normalizeMetaToken(text);
+            return {
+                ready: '可执行',
+                blocked: '已阻止',
+                gateway_blocked: 'Gateway 已阻止',
+                gateway_request_blocked: 'Gateway 已阻止',
+                not_ready: '未就绪',
+                waiting_linkage: '等待订单关联',
+                order_linkage_missing: '缺订单关联',
+            }[key] || formatExecutionActionText(text) || '-';
+        }
+
+        function formatOrderLinkageStatus(value) {
+            const text = String(value || '').trim();
+            const key = normalizeMetaToken(text);
+            return {
+                linked: '已关联',
+                resolved: '已解析',
+                unresolved: '未解析',
+                missing: '缺失',
+                linkage_missing: '缺订单关联',
+                child_order_id_unresolved: '子订单未解析',
+                risk_update_child_order_id_unresolved: '子订单未解析',
+                risk_update_linkage_missing: '缺订单关联',
+                partial: '部分关联',
+            }[key] || formatExecutionActionText(text) || '-';
+        }
+
+        function renderRiskUpdateGridItems(signal) {
+            const showRiskFields = isTvRiskUpdate(signal)
+                || hasDisplayValue(signal.risk_update_type)
+                || signal.risk_update_seq > 0
+                || hasDisplayValue(signal.execution_readiness)
+                || hasDisplayValue(signal.execution_blocked_message)
+                || hasDisplayValue(signal.order_linkage_status)
+                || hasDisplayValue(signal.gateway_request_blocked);
+            if (!showRiskFields) return '';
+            return `
+                <div class="signal-item">
+                    <div class="signal-label">Risk Update 类型 / 序号</div>
+                    <div class="signal-value">${escapeHtml(formatRiskUpdateType(signal.risk_update_type))} / ${escapeHtml(signal.risk_update_seq > 0 ? String(signal.risk_update_seq) : '-')}</div>
+                </div>
+                <div class="signal-item">
+                    <div class="signal-label">执行准备 / 订单关联</div>
+                    <div class="signal-value">${escapeHtml(formatExecutionReadiness(signal.execution_readiness))} / ${escapeHtml(formatOrderLinkageStatus(signal.order_linkage_status))}</div>
+                </div>
+                <div class="signal-item">
+                    <div class="signal-label">Gateway 请求阻止</div>
+                    <div class="signal-value">${escapeHtml(formatBooleanStatus(signal.gateway_request_blocked))}</div>
+                </div>
+                ${signal.execution_blocked_message ? `
+                    <div class="signal-item full-width">
+                        <div class="signal-label">执行阻止说明</div>
+                        <div class="signal-value" style="font-size: 12px;">${escapeHtml(formatExecutionActionText(signal.execution_blocked_message))}</div>
+                    </div>
+                ` : ''}
+            `;
+        }
+
         function renderInfoNotes(signal) {
             const tpPrice = signal.new_tp || signal.take_profit;
             const slPrice = signal.new_sl || signal.stop_loss;
             const tpAmount = calculateAmount(signal.entry_price, tpPrice, signal.quantity);
             const slAmount = calculateAmount(signal.entry_price, slPrice, signal.quantity);
             const notes = [];
+            const tvRiskUpdate = isTvRiskUpdate(signal);
+            const gatewayBlocked = hasDisplayValue(signal.gateway_request_blocked) && toBoolean(signal.gateway_request_blocked);
+            const readinessBlocked = normalizeMetaToken(signal.execution_readiness).includes('blocked');
+
+            if (tvRiskUpdate) {
+                notes.push(`<div class="signal-note signal-note-warning"><strong>TV 风控更新:</strong> 执行只会尝试修改已关联保护单价格，不会创建主订单或新的 TP/SL 保护订单；同一类型 risk_update 会以最新序号/最新记录为准，较旧同类型更新会被替换或跳过。</div>`);
+            }
+            if (gatewayBlocked || readinessBlocked || signal.execution_blocked_message) {
+                const blockedText = signal.execution_blocked_message
+                    ? ` ${formatExecutionActionText(signal.execution_blocked_message)}`
+                    : ' Gateway 已阻止此请求继续创建或补建订单。';
+                notes.push(`<div class="signal-note signal-note-warning"><strong>Gateway 保护:</strong>${escapeHtml(blockedText)}</div>`);
+            }
 
             if (signal.triggered_signals?.length) {
                 notes.push(`<div class="signal-note"><strong>触发条件:</strong> ${escapeHtml(signal.triggered_signals.map(formatExecutionActionText).join(', '))}</div>`);
@@ -727,6 +886,12 @@
             badges.push(`<span class="indicator-badge badge-priority">优先级 ${escapeHtml(signal.priority || '-')}</span>`);
             badges.push(`<span class="indicator-badge badge-source">${escapeHtml(formatExecutionActionText(signal.source || '-'))}</span>`);
             badges.push(`<span class="indicator-badge badge-source">${escapeHtml(getReverseKindText(signal.reverse_kind))}</span>`);
+            if (isTvRiskUpdate(signal) || hasDisplayValue(signal.risk_update_type) || signal.risk_update_seq > 0) {
+                badges.push(`<span class="indicator-badge badge-vwap">Risk ${escapeHtml(formatRiskUpdateType(signal.risk_update_type))} #${escapeHtml(signal.risk_update_seq > 0 ? String(signal.risk_update_seq) : '-')}</span>`);
+            }
+            if (hasDisplayValue(signal.gateway_request_blocked)) {
+                badges.push(`<span class="indicator-badge badge-source">Gateway blocked=${escapeHtml(formatBooleanStatus(signal.gateway_request_blocked))}</span>`);
+            }
             return badges.length ? `<div class="indicator-badges">${badges.join('')}</div>` : '';
         }
 
@@ -808,6 +973,7 @@
                                 <div class="signal-label">执行结果 / 动作</div>
                                 <div class="signal-value">${escapeHtml(formatExecutionActionText(signal.result_status || '-'))} / ${escapeHtml(formatExecutionActionText(signal.executed_action || signal.action_type || '-'))}</div>
                             </div>
+                            ${renderRiskUpdateGridItems(signal)}
                             <div class="signal-item">
                                 <div class="signal-label">创建时间</div>
                                 <div class="signal-value">${escapeHtml(formatMarketTime(signal.created, 'time'))}</div>
@@ -846,7 +1012,11 @@
                 if (input === null) return;
                 reason = input.trim();
             } else {
-                if (!confirm('请求 IBKR 执行该动作？')) return;
+                const signal = allSignals.find((item) => item.id === id);
+                const warning = isTvRiskUpdate(signal)
+                    ? '请求 IBKR 执行该 TV 风控更新？\n注意：该执行只会尝试修改已关联保护单，不会创建主订单或新的 TP/SL 保护订单；同一类型 risk_update 以最新一条为准。'
+                    : '请求 IBKR 执行该动作？';
+                if (!confirm(warning)) return;
             }
 
             try {

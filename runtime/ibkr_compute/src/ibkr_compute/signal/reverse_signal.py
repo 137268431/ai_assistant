@@ -397,6 +397,38 @@ class ReverseSignalHandler:
             "detail": detail,
         }
 
+    @classmethod
+    def _annotate_execution_blocked(
+        cls,
+        detail: Dict[str, Any],
+        *,
+        readiness: str,
+        reason: str,
+        message: str,
+        order_linkage_status: str,
+        gateway_request_blocked: bool = True,
+        **context: Any,
+    ) -> None:
+        detail["execution_readiness"] = readiness
+        detail["execution_blocked_reason"] = reason
+        detail["execution_blocked_message"] = message
+        detail["order_linkage_status"] = order_linkage_status
+        detail["gateway_request_blocked"] = bool(gateway_request_blocked)
+        runtime_detail = detail.setdefault("reverse_runtime_detail", {})
+        runtime_detail.update(
+            {
+                "execution_readiness": readiness,
+                "execution_blocked_reason": reason,
+                "execution_blocked_message": message,
+                "order_linkage_status": order_linkage_status,
+                "gateway_request_blocked": bool(gateway_request_blocked),
+            }
+        )
+        if context:
+            runtime_detail["execution_blocked_context"] = {
+                key: value for key, value in context.items() if value not in (None, "")
+            }
+
     def _mark_ready_reentry(self, signal: dict, detail: Dict[str, Any], reason: str = "ready_reentry") -> Dict[str, Any]:
         if self._is_tradingview_reverse_signal(signal):
             return self._mark_tv_exit_confirmed(signal, detail, reason)
@@ -798,6 +830,28 @@ class ReverseSignalHandler:
         return False
 
     def _handle_close(self, signal: dict, detail: Dict[str, Any]) -> Dict[str, Any]:
+        tv_exit_preflight = self._tv_exit_non_executable_preflight(signal)
+        if tv_exit_preflight:
+            detail["tv_exit_preflight"] = tv_exit_preflight
+            reason = str(tv_exit_preflight.get("reason") or "tv_exit_not_executable")
+            self._annotate_execution_blocked(
+                detail,
+                readiness="not_executable",
+                reason=reason,
+                message=str(tv_exit_preflight.get("message") or "TV exit cannot execute without an active origin order/position."),
+                order_linkage_status=str(tv_exit_preflight.get("order_linkage_status") or "origin_order_not_active"),
+                gateway_request_blocked=True,
+                origin_execution_status=tv_exit_preflight.get("origin_execution_status"),
+                active_related_order_count=tv_exit_preflight.get("active_related_order_count"),
+            )
+            return self._mark_blocked(
+                detail,
+                reason,
+                order_linkage_status=detail.get("order_linkage_status"),
+                gateway_request_blocked=True,
+                origin_execution_status=tv_exit_preflight.get("origin_execution_status"),
+            )
+
         if not self.order_lifecycle or not self.order_placer:
             logger.warning("Order placer/lifecycle not configured for close")
             return self._mark_blocked(detail, "close_dependencies_missing")
@@ -888,6 +942,50 @@ class ReverseSignalHandler:
 
         detail["close_old_position"] = "confirmed"
         return self._start_cooldown_and_ready(signal, symbol, detail, "close_confirmed_ready_reentry")
+
+    def _tv_exit_non_executable_preflight(self, signal: dict) -> Dict[str, Any]:
+        if not self._is_tv_exit_signal(signal):
+            return {}
+        broker_mode = self._risk_update_broker_mode(signal)
+        origin_signal_id = self._origin_signal_id(signal)
+        origin = self._origin_signal_record(signal) if origin_signal_id else {}
+        execution_payload, execution_mode = self._origin_execution_payload(origin, broker_mode)
+        if not self._origin_execution_terminal(origin, execution_payload):
+            return {}
+
+        trade_group_id = self._related_trade_group_id(signal)
+        order_ids = self._related_order_ids_from_signal(signal)
+        related_orders = self._fetch_related_orders(
+            trade_group_id=trade_group_id,
+            order_ids=order_ids,
+            environment=broker_mode,
+        )
+        active_related = [order for order in related_orders or [] if self._is_active_order(order)]
+        if active_related:
+            return {}
+
+        origin_execution_status = self._normalized_execution_status(
+            (execution_payload or {}).get("status")
+            or (execution_payload or {}).get("order_status")
+            or (origin or {}).get("status")
+        )
+        return {
+            "reason": "tv_exit_origin_order_not_active",
+            "message": (
+                "Gateway position/open-order lookup skipped because the TV exit origin order is terminal "
+                f"({origin_execution_status or 'unknown'}) and no active local related orders exist."
+            ),
+            "order_linkage_status": "origin_order_not_active",
+            "gateway_request_blocked": True,
+            "broker_mode": broker_mode,
+            "origin_signal_id": origin_signal_id,
+            "origin_signal_found": bool(origin),
+            "origin_execution_mode": execution_mode,
+            "origin_execution_status": origin_execution_status,
+            "trade_group_id": trade_group_id,
+            "related_order_count": len(related_orders or []),
+            "active_related_order_count": len(active_related),
+        }
 
     def _cancel_old_order_if_present(self, signal: dict, detail: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         trade_group_id = self._related_trade_group_id(signal)
@@ -1118,11 +1216,127 @@ class ReverseSignalHandler:
         return any("risk_update" in token for token in tokens) and bool(tokens & {"tv", "tradingview"})
 
     @classmethod
+    def _is_tv_exit_signal(cls, signal: dict) -> bool:
+        tokens = cls._source_tokens(signal)
+        if "tv_exit" in tokens:
+            return True
+        return "exit" in tokens and bool(tokens & {"tv", "tradingview"})
+
+    @classmethod
     def _is_order_flow_signal(cls, signal: dict) -> bool:
         return any("order_flow" in token for token in cls._source_tokens(signal))
 
     def _missing_child_order_retry_pending_enabled(self, signal: dict) -> bool:
-        return False
+        if not self._is_tv_risk_update_signal(signal):
+            return False
+        return self._config_bool_prefer(
+            ("tv_risk_update_missing_child_order_retry_pending", "tv_risk_update_retry_missing_child_orders"),
+            True,
+        )
+
+    @staticmethod
+    def _timestamp_from_value(value: Any) -> Tuple[Optional[float], str]:
+        if value in (None, ""):
+            return None, ""
+        if isinstance(value, (int, float)):
+            numeric = float(value)
+            if numeric <= 0:
+                return None, ""
+            return (numeric / 1000.0 if numeric > 10_000_000_000 else numeric), "numeric"
+        text = str(value or "").strip()
+        if not text:
+            return None, ""
+        try:
+            numeric = float(text)
+            if numeric > 0:
+                return (numeric / 1000.0 if numeric > 10_000_000_000 else numeric), "numeric"
+        except (TypeError, ValueError):
+            pass
+        try:
+            normalized = text.replace("Z", "+00:00")
+            parsed = datetime.fromisoformat(normalized)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=ET)
+            return parsed.timestamp(), "iso"
+        except Exception:
+            return None, ""
+
+    def _risk_update_age_status(self, signal: dict) -> Dict[str, Any]:
+        try:
+            max_age_seconds = max(
+                0.0,
+                float(os.environ.get("IBKR_TV_RISK_UPDATE_MISSING_CHILD_DEFER_SECONDS", "180") or 180),
+            )
+        except (TypeError, ValueError):
+            max_age_seconds = 180.0
+        extra = self._signal_extra(signal)
+        timestamp_keys = (
+            "created",
+            "updated",
+            "received_at",
+            "received_time",
+            "ingested_at",
+            "created_at",
+            "updated_at",
+            "event_time",
+            "event_time_ms",
+            "received_at_ms",
+            "created_at_ms",
+        )
+        for source_name, payload in (("reverse_signal", signal), ("reverse_signal.extra", extra)):
+            for key in timestamp_keys:
+                timestamp, kind = self._timestamp_from_value((payload or {}).get(key))
+                if timestamp is None:
+                    continue
+                age_seconds = max(0.0, time.time() - timestamp)
+                return {
+                    "source": f"{source_name}.{key}",
+                    "timestamp_kind": kind,
+                    "age_seconds": round(age_seconds, 3),
+                    "max_defer_seconds": max_age_seconds,
+                    "young": True if max_age_seconds <= 0 else age_seconds <= max_age_seconds,
+                }
+        return {
+            "source": "unavailable",
+            "age_seconds": None,
+            "max_defer_seconds": max_age_seconds,
+            "young": True,
+            "assumed_young": True,
+        }
+
+    def _should_defer_missing_child_order_resolution(
+        self,
+        signal: dict,
+        resolution: Dict[str, Any],
+    ) -> Tuple[bool, Dict[str, Any]]:
+        age_status = self._risk_update_age_status(signal)
+        enabled = self._missing_child_order_retry_pending_enabled(signal)
+        local_linkage_exists = bool((resolution or {}).get("linkage_exists"))
+        linkage_hint_exists = bool((resolution or {}).get("linkage_hint_exists"))
+        status = {
+            "enabled": enabled,
+            "local_linkage_exists": local_linkage_exists,
+            "linkage_hint_exists": linkage_hint_exists,
+            "gateway_lookup_allowed": bool((resolution or {}).get("gateway_lookup_allowed")),
+            "gateway_request_blocked": bool(((resolution or {}).get("detail") or {}).get("gateway_request_blocked")),
+            "origin_execution_terminal": bool(((resolution or {}).get("detail") or {}).get("origin_execution_terminal")),
+            "age": age_status,
+            "reason": "",
+        }
+        if not enabled:
+            status["reason"] = "config_disabled"
+            return False, status
+        if status["origin_execution_terminal"]:
+            status["reason"] = "origin_execution_terminal"
+            return False, status
+        if not local_linkage_exists and not linkage_hint_exists:
+            status["reason"] = "local_linkage_missing"
+            return False, status
+        if not age_status.get("young"):
+            status["reason"] = "risk_update_too_old"
+            return False, status
+        status["reason"] = "young_linked_risk_update" if local_linkage_exists else "young_waiting_local_order_linkage"
+        return True, status
 
     def _incoming_risk_update_seq(self, signal: dict) -> int:
         return self._coerce_int(self._signal_value(signal, "risk_update_seq", 0), 0)
@@ -1557,6 +1771,58 @@ class ReverseSignalHandler:
                 return dict(payload), str(mode or "")
         return {}, ""
 
+    @staticmethod
+    def _normalized_execution_status(value: Any) -> str:
+        return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+    @classmethod
+    def _origin_execution_allows_gateway_lookup(cls, origin: Dict[str, Any], execution_payload: Dict[str, Any]) -> bool:
+        if not origin:
+            return False
+        origin_extra = cls._as_dict((origin or {}).get("extra"))
+        active_statuses = {
+            "accepted",
+            "active",
+            "api_pending",
+            "confirmed",
+            "filled",
+            "partially_filled",
+            "pending_submit",
+            "pre_submitted",
+            "presubmitted",
+            "submitted",
+        }
+        status = cls._normalized_execution_status(
+            (execution_payload or {}).get("status")
+            or (execution_payload or {}).get("order_status")
+            or origin_extra.get("last_execution_status")
+            or (origin or {}).get("status")
+        )
+        return status in active_statuses
+
+    @classmethod
+    def _origin_execution_terminal(cls, origin: Dict[str, Any], execution_payload: Dict[str, Any]) -> bool:
+        if not origin:
+            return False
+        origin_extra = cls._as_dict((origin or {}).get("extra"))
+        terminal_statuses = {
+            "cancelled",
+            "canceled",
+            "error",
+            "expired",
+            "failed",
+            "inactive",
+            "not_submitted",
+            "rejected",
+        }
+        status = cls._normalized_execution_status(
+            (execution_payload or {}).get("status")
+            or (execution_payload or {}).get("order_status")
+            or origin_extra.get("last_execution_status")
+            or (origin or {}).get("status")
+        )
+        return status in terminal_statuses
+
     def _bracket_trade_group_candidates(
         self,
         signal: dict,
@@ -1737,6 +2003,13 @@ class ReverseSignalHandler:
         origin_signal_id = self._origin_signal_id(signal)
         origin = self._origin_signal_record(signal) if origin_signal_id else {}
         execution_payload, execution_mode = self._origin_execution_payload(origin, broker_mode)
+        origin_execution_status = self._normalized_execution_status(
+            (execution_payload or {}).get("status")
+            or (execution_payload or {}).get("order_status")
+            or (origin or {}).get("status")
+        )
+        origin_execution_terminal = self._origin_execution_terminal(origin, execution_payload)
+        origin_execution_lookup_allowed = self._origin_execution_allows_gateway_lookup(origin, execution_payload)
         trade_group_ids = self._bracket_trade_group_candidates(signal, origin, execution_payload)
         explicit_child_ids = self._unique_nonempty(
             [
@@ -1750,6 +2023,9 @@ class ReverseSignalHandler:
             "origin_signal_id": origin_signal_id,
             "origin_signal_found": bool(origin),
             "origin_execution_mode": execution_mode,
+            "origin_execution_status": origin_execution_status,
+            "origin_execution_terminal": origin_execution_terminal,
+            "origin_execution_lookup_allowed": origin_execution_lookup_allowed,
             "trade_group_ids": trade_group_ids,
             "linkage_order_ids": linkage_order_ids,
             "sources": {},
@@ -1783,40 +2059,90 @@ class ReverseSignalHandler:
                     }
             unresolved = [side for side in missing_sides if side not in resolved]
 
+        linkage_hint_exists = bool(origin_signal_id or trade_group_ids or linkage_order_ids or origin)
+        local_linkage_exists = bool(
+            linkage_order_ids
+            or related_orders
+            or resolved
+            or ((origin_signal_id and origin) and origin_execution_lookup_allowed)
+        )
+        detail["linkage_hint_exists"] = linkage_hint_exists
+        detail["linkage_exists"] = local_linkage_exists
+        detail["local_linkage_exists"] = local_linkage_exists
+        detail["gateway_lookup_allowed"] = False
+        detail["gateway_request_blocked"] = False
+
         if unresolved:
             stable_refs = self._stable_bracket_refs(signal, origin, execution_payload, related_orders, trade_group_ids)
             detail["stable_refs"] = stable_refs
-            live_checked, live_orders, live_error = self._load_live_open_orders()
-            detail["live_open_orders_checked"] = bool(live_checked)
-            if live_error:
-                detail["live_open_orders_error"] = live_error
-            if live_checked:
-                detail["live_open_orders_count"] = len(live_orders)
-                for side in list(unresolved):
-                    order_id, order = self._select_child_order_id_from_live_orders(
-                        live_orders,
-                        side,
-                        trade_group_ids=trade_group_ids,
-                        stable_refs=stable_refs,
+            if local_linkage_exists:
+                detail["gateway_lookup_allowed"] = True
+                live_checked, live_orders, live_error = self._load_live_open_orders()
+                detail["live_open_orders_checked"] = bool(live_checked)
+                if live_error:
+                    detail["live_open_orders_error"] = live_error
+                if live_checked:
+                    detail["live_open_orders_count"] = len(live_orders)
+                    for side in list(unresolved):
+                        order_id, order = self._select_child_order_id_from_live_orders(
+                            live_orders,
+                            side,
+                            trade_group_ids=trade_group_ids,
+                            stable_refs=stable_refs,
+                        )
+                        if order_id:
+                            resolved[side] = order_id
+                            detail["sources"][side] = "broker_open_orders"
+                            detail.setdefault("live_open_order_matches", {})[side] = {
+                                "order_id": order_id,
+                                "order_ref": str(order.get("orderRef") or order.get("cOID") or ""),
+                                "status": self._order_status(order),
+                            }
+            else:
+                detail["gateway_request_blocked"] = True
+                detail["live_open_orders_checked"] = False
+                detail["execution_readiness"] = "not_executable"
+                if origin_execution_terminal:
+                    detail["execution_blocked_reason"] = "risk_update_origin_order_not_active"
+                    detail["execution_blocked_message"] = (
+                        "Gateway open-order lookup skipped because the origin signal order status is terminal "
+                        f"({origin_execution_status or 'unknown'})."
                     )
-                    if order_id:
-                        resolved[side] = order_id
-                        detail["sources"][side] = "broker_open_orders"
-                        detail.setdefault("live_open_order_matches", {})[side] = {
-                            "order_id": order_id,
-                            "order_ref": str(order.get("orderRef") or order.get("cOID") or ""),
-                            "status": self._order_status(order),
-                        }
+                elif linkage_hint_exists:
+                    detail["execution_blocked_reason"] = "risk_update_local_order_linkage_missing"
+                    detail["execution_blocked_message"] = (
+                        "Gateway open-order lookup skipped because the risk_update only has TV payload hints; "
+                        "no local signal/order child linkage is available yet."
+                    )
+                else:
+                    detail["execution_blocked_reason"] = "risk_update_linkage_missing"
+                    detail["execution_blocked_message"] = (
+                        "Gateway open-order lookup skipped because the risk_update has no origin, "
+                        "trade group, order id, or child order linkage."
+                    )
 
         unresolved = [side for side in missing_sides if side not in resolved]
-        linkage_exists = bool(origin_signal_id or trade_group_ids or linkage_order_ids)
-        detail["linkage_exists"] = linkage_exists
+        linkage_exists = bool(local_linkage_exists)
+        if not linkage_exists and origin_execution_terminal:
+            detail["order_linkage_status"] = "origin_order_not_active"
+        elif not linkage_exists and linkage_hint_exists:
+            detail["order_linkage_status"] = "local_order_linkage_missing"
+        elif not linkage_exists:
+            detail["order_linkage_status"] = "missing"
+        elif unresolved and resolved:
+            detail["order_linkage_status"] = "partial_child_order_id_unresolved"
+        elif unresolved:
+            detail["order_linkage_status"] = "child_order_id_unresolved"
+        else:
+            detail["order_linkage_status"] = "resolved"
         detail["resolved_order_ids"] = dict(resolved)
         detail["unresolved_sides"] = unresolved
         return {
             "resolved": resolved,
             "unresolved_sides": unresolved,
             "linkage_exists": linkage_exists,
+            "linkage_hint_exists": linkage_hint_exists,
+            "gateway_lookup_allowed": bool(detail.get("gateway_lookup_allowed")),
             "detail": detail,
         }
 
@@ -2081,12 +2407,45 @@ class ReverseSignalHandler:
 
             unresolved_sides = list(resolution.get("unresolved_sides") or [])
             if unresolved_sides and self._is_tv_risk_update_signal(signal):
-                block_reason = (
-                    "risk_update_child_order_id_unresolved"
-                    if resolution.get("linkage_exists")
-                    else "risk_update_linkage_missing"
+                resolution_detail = resolution.get("detail", {})
+                local_linkage_exists = bool(resolution.get("linkage_exists"))
+                linkage_hint_exists = bool(resolution.get("linkage_hint_exists"))
+                origin_execution_terminal = bool(resolution_detail.get("origin_execution_terminal"))
+                if origin_execution_terminal:
+                    block_reason = "risk_update_origin_order_not_active"
+                    side_reason = "origin_order_not_active"
+                elif local_linkage_exists:
+                    block_reason = "risk_update_child_order_id_unresolved"
+                    side_reason = "child_order_id_unresolved"
+                elif linkage_hint_exists:
+                    block_reason = "risk_update_local_order_linkage_missing"
+                    side_reason = "local_order_linkage_missing"
+                else:
+                    block_reason = "risk_update_linkage_missing"
+                    side_reason = "linkage_missing"
+                order_linkage_status = str(
+                    resolution_detail.get("order_linkage_status")
+                    or (
+                        "origin_order_not_active"
+                        if origin_execution_terminal
+                        else (
+                            "child_order_id_unresolved"
+                            if local_linkage_exists
+                            else ("local_order_linkage_missing" if linkage_hint_exists else "missing")
+                        )
+                    )
                 )
-                side_reason = "child_order_id_unresolved" if resolution.get("linkage_exists") else "linkage_missing"
+                should_defer, defer_status = self._should_defer_missing_child_order_resolution(signal, resolution)
+                execution_readiness = "deferred" if should_defer else "not_executable"
+                if should_defer and not local_linkage_exists:
+                    blocked_message = (
+                        "Risk update is deferred until local bracket order linkage is available; "
+                        "Gateway lookup is blocked for TV-hint-only updates."
+                    )
+                elif should_defer:
+                    blocked_message = "Risk update is deferred until bracket child order linkage is available."
+                else:
+                    blocked_message = "Risk update cannot execute without local bracket child order linkage."
                 results = self._build_adjust_resolution_block_results(
                     side_inputs=side_inputs,
                     blocked_sides=unresolved_sides,
@@ -2099,11 +2458,35 @@ class ReverseSignalHandler:
                     "succeeded_sides": [],
                     "failed_sides": unresolved_sides,
                 }
+                detail["gateway_request_blocked"] = bool(resolution_detail.get("gateway_request_blocked"))
+                detail["execution_readiness"] = execution_readiness
+                detail["execution_blocked_reason"] = block_reason
+                detail["execution_blocked_message"] = blocked_message
+                detail["order_linkage_status"] = order_linkage_status
+                detail["missing_child_order_defer"] = defer_status
+                resolution_detail["execution_readiness"] = execution_readiness
+                resolution_detail["execution_blocked_reason"] = block_reason
+                resolution_detail["execution_blocked_message"] = blocked_message
+                resolution_detail["order_linkage_status"] = order_linkage_status
+                resolution_detail["missing_child_order_defer"] = defer_status
+                if should_defer:
+                    detail["adjust_bracket"] = "deferred"
+                    detail["deferred"] = True
+                    return self._mark_retryable_blocked(
+                        detail,
+                        block_reason,
+                        missing_sides=unresolved_sides,
+                        missing_order_keys=[side_specs[side]["order_key"] for side in unresolved_sides],
+                        order_linkage_status=order_linkage_status,
+                        gateway_request_blocked=bool(resolution_detail.get("gateway_request_blocked")),
+                    )
                 return self._mark_blocked(
                     detail,
                     block_reason,
                     missing_sides=unresolved_sides,
                     missing_order_keys=[side_specs[side]["order_key"] for side in unresolved_sides],
+                    order_linkage_status=order_linkage_status,
+                    gateway_request_blocked=bool(resolution_detail.get("gateway_request_blocked")),
                 )
 
         if has_explicit_requested_sides and not explicit_requested_sides:
