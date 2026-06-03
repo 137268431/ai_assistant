@@ -1725,6 +1725,38 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         self.assertEqual("blocked", patch["extra"]["buying_power_guard"]["state"])
         self.assertEqual("自动开仓已被购买力阈值拦截", pb.events[-1]["title"])
 
+    def test_buying_power_guard_waits_when_account_snapshot_unavailable(self):
+        signal = self._signal("AAPL")
+        signal["shares"] = 50
+        pb = FakeSignalPBClient({"id": "row-aapl", "extra": {"source": "ibkr_compute"}})
+        service = FakeSignalService(
+            signal,
+            lifecycle=FakeLifecycle(),
+            pb=pb,
+            config=FakeConfig({"entry_pre_submit_guard_enabled": "false"}),
+            account_snapshot={
+                "ok": False,
+                "summary": {},
+                "buying_power_guard": {
+                    "state": "unavailable",
+                    "reason": "gateway_unavailable",
+                    "available": False,
+                },
+            },
+        )
+
+        service._process_signals()
+
+        self.assertEqual([], service.signal_router.processed)
+        self.assertEqual(["sig-aapl"], service.signal_router.released)
+        self.assertEqual([], service.order_placer.calls)
+        patch = pb.updates[-1][2]
+        self.assertEqual("pending", _broker_execution(patch)["status"])
+        self.assertEqual("gateway_unavailable", patch["extra"]["status_reason"])
+        self.assertEqual("waiting_for_account_snapshot", patch["extra"]["execution_state"])
+        self.assertEqual("unavailable", patch["extra"]["buying_power_guard"]["state"])
+        self.assertEqual("自动开仓暂停：账户/Gateway不可用", pb.events[-1]["title"])
+
     def test_buying_power_warning_continues_and_ack_includes_guard(self):
         signal = self._signal("AAPL")
         signal["shares"] = 100

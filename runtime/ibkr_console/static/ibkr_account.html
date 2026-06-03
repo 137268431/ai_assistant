@@ -363,6 +363,8 @@
 
         function getAccountBuyingPowerLabel(snapshot = latestSnapshot) {
             if (!snapshot) return '--';
+            const guard = getBuyingPowerGuard(snapshot);
+            if (guard.state === 'unavailable' || guard.available === false) return '不可用';
             const summary = snapshot?.summary || {};
             const remaining = getSummaryRemainingBuyingPower(summary);
             const pct = Number(firstDefined(summary.remaining_buying_power_pct_net_liq, snapshot?.buying_power_guard?.remaining_pct_net_liq));
@@ -375,7 +377,10 @@
             const existing = snapshot?.buying_power_guard && typeof snapshot.buying_power_guard === 'object'
                 ? { ...snapshot.buying_power_guard }
                 : {};
-            const remaining = Number(firstDefined(existing.remaining, summary.remaining_buying_power, summary.buying_power, 0) || 0);
+            const rawRemaining = firstDefined(existing.remaining, summary.remaining_buying_power, summary.buying_power);
+            const remainingNumber = Number(rawRemaining);
+            const available = existing.available === false ? false : Number.isFinite(remainingNumber);
+            const remaining = available ? remainingNumber : null;
             const netLiq = Number(firstDefined(existing.net_liquidation, summary.net_liquidation, 0) || 0);
             const warnUsd = Number(firstDefined(existing.warn_usd, 25000) || 0);
             const warnPct = Number(firstDefined(existing.warn_pct_net_liq, 20) || 0);
@@ -384,18 +389,21 @@
             const warnFloor = Number(firstDefined(existing.warn_floor, Math.max(warnUsd, netLiq > 0 ? netLiq * warnPct / 100 : 0)) || 0);
             const blockFloor = Number(firstDefined(existing.block_floor, Math.max(blockUsd, netLiq > 0 ? netLiq * blockPct / 100 : 0)) || 0);
             const requested = Number(firstDefined(existing.requested_exposure, 0) || 0);
-            const remainingAfter = Number(firstDefined(existing.remaining_after, remaining - requested) || 0);
+            const rawRemainingAfter = firstDefined(existing.remaining_after, available ? remaining - requested : null);
+            const remainingAfterNumber = Number(rawRemainingAfter);
+            const remainingAfter = Number.isFinite(remainingAfterNumber) ? remainingAfterNumber : null;
             let state = String(firstDefined(existing.state, '') || '').toLowerCase();
-            if (!state) state = remainingAfter < blockFloor ? 'blocked' : (remainingAfter < warnFloor ? 'warning' : 'ok');
+            if (!state) state = !available ? 'unavailable' : (remainingAfter < blockFloor ? 'blocked' : (remainingAfter < warnFloor ? 'warning' : 'ok'));
             return {
                 enabled: existing.enabled !== false,
+                available,
                 basis: existing.basis || 'buying_power',
                 remaining,
                 net_liquidation: netLiq,
                 remaining_after: remainingAfter,
                 requested_exposure: requested,
-                remaining_pct_net_liq: netLiq > 0 ? remaining / netLiq * 100 : Number(firstDefined(existing.remaining_pct_net_liq, 0) || 0),
-                remaining_after_pct_net_liq: netLiq > 0 ? remainingAfter / netLiq * 100 : Number(firstDefined(existing.remaining_after_pct_net_liq, 0) || 0),
+                remaining_pct_net_liq: available && netLiq > 0 ? remaining / netLiq * 100 : Number(firstDefined(existing.remaining_pct_net_liq, 0) || 0),
+                remaining_after_pct_net_liq: remainingAfter !== null && netLiq > 0 ? remainingAfter / netLiq * 100 : Number(firstDefined(existing.remaining_after_pct_net_liq, 0) || 0),
                 warn_floor: warnFloor,
                 block_floor: blockFloor,
                 warn_usd: warnUsd,
@@ -403,7 +411,7 @@
                 block_usd: blockUsd,
                 block_pct_net_liq: blockPct,
                 state,
-                reason: existing.reason || (state === 'ok' ? 'ok' : `buying_power_below_${state === 'blocked' ? 'block' : 'warning'}_threshold`),
+                reason: existing.reason || (state === 'ok' ? 'ok' : (state === 'unavailable' ? 'account_snapshot_unavailable' : `buying_power_below_${state === 'blocked' ? 'block' : 'warning'}_threshold`)),
             };
         }
 
@@ -1684,6 +1692,19 @@
             const baseGuard = getBuyingPowerGuard(latestSnapshot);
             if (baseGuard.enabled === false) return { ...baseGuard, state: 'disabled', blocked: false, warning: false };
             const estimate = estimateTicketExposure(state || getManualOrderState());
+            if (baseGuard.available === false || baseGuard.state === 'unavailable') {
+                return {
+                    ...baseGuard,
+                    requested_exposure: estimate.exposure,
+                    exposure_price: estimate.price,
+                    exposure_reason: estimate.reason,
+                    remaining_after: null,
+                    remaining_after_pct_net_liq: null,
+                    state: 'unavailable',
+                    blocked: true,
+                    warning: false,
+                };
+            }
             const remainingAfter = baseGuard.remaining - estimate.exposure;
             let stateText = remainingAfter < baseGuard.block_floor ? 'blocked' : (remainingAfter < baseGuard.warn_floor ? 'warning' : 'ok');
             if (estimate.reason === 'price_missing' && Number(state?.quantity || 0) > 0) {
@@ -1730,13 +1751,17 @@
 
             const bp = evaluateTicketBuyingPower(state);
             if (bp.state !== 'unknown' && bp.state !== 'disabled') {
-                lines.push(`<span class="ticket-bp-line">当前剩余购买力: <strong>${escapeHtml(formatMoney(bp.remaining))}</strong> (${escapeHtml(formatPercent(bp.remaining_pct_net_liq))} NetLiq)</span>`);
-                if (bp.requested_exposure > 0) {
+                if (bp.state === 'unavailable') {
+                    lines.push(`<span class="ticket-bp-line danger">账户/Gateway 快照不可用，暂停提交并等待重试。</span>`);
+                } else {
+                    lines.push(`<span class="ticket-bp-line">当前剩余购买力: <strong>${escapeHtml(formatMoney(bp.remaining))}</strong> (${escapeHtml(formatPercent(bp.remaining_pct_net_liq))} NetLiq)</span>`);
+                }
+                if (bp.requested_exposure > 0 && bp.state !== 'unavailable') {
                     lines.push(`<span class="ticket-bp-line ${bp.blocked ? 'danger' : bp.warning ? 'warning' : ''}">预估占用 / 下单后: <strong>${escapeHtml(formatMoney(bp.requested_exposure))}</strong> / <strong>${escapeHtml(formatMoney(bp.remaining_after))}</strong> (${escapeHtml(formatPercent(bp.remaining_after_pct_net_liq))} NetLiq)</span>`);
                 }
-                if (bp.blocked) {
+                if (bp.state !== 'unavailable' && bp.blocked) {
                     lines.push(`<span class="ticket-bp-line danger">剩余购买力将低于禁止阈值 ${escapeHtml(formatMoney(bp.block_floor))}，禁止提交。</span>`);
-                } else if (bp.warning) {
+                } else if (bp.state !== 'unavailable' && bp.warning) {
                     lines.push(`<span class="ticket-bp-line warning">剩余购买力将低于预警阈值 ${escapeHtml(formatMoney(bp.warn_floor))}，提交后会报警。</span>`);
                 }
             }
@@ -2899,6 +2924,11 @@
                 return;
             }
             const bp = evaluateTicketBuyingPower(state);
+            if (bp.state === 'unavailable') {
+                renderTicketPreview();
+                showToast('账户/Gateway 快照不可用，暂停提交并等待重试');
+                return;
+            }
             if (bp.blocked) {
                 renderTicketPreview();
                 showToast(`剩余购买力不足：下单后 ${formatMoney(bp.remaining_after)}，低于禁止阈值 ${formatMoney(bp.block_floor)}`);

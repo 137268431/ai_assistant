@@ -201,6 +201,78 @@ def _build_snapshot_counts(positions: list[dict], orders: list[dict], live_open_
     }
 
 
+def _buying_power_unavailable_reason(service_status: dict, summary_error: str, summary: dict) -> str:
+    status = service_status if isinstance(service_status, dict) else {}
+    gateway = status.get("gateway") if isinstance(status.get("gateway"), dict) else {}
+    session = status.get("session") if isinstance(status.get("session"), dict) else {}
+    if gateway and not bool(gateway.get("running") or gateway.get("reachable")):
+        return "gateway_unavailable"
+    if session and session.get("authenticated") is False:
+        return "session_unauthenticated"
+    if summary_error:
+        return "account_snapshot_unavailable"
+    if not isinstance(summary, dict) or not summary:
+        return "account_snapshot_unavailable"
+    return "buying_power_unavailable"
+
+
+def _build_ibkr_account_buying_power_snapshot(service) -> dict:
+    context = build_snapshot_context(service, include_pnl=False)
+    api_app = context["api_app"]
+    cache_key = (context["runtime_environment"], f"{context['account_id']}::buying_power", False)
+    cached = load_cached_snapshot(api_app, cache_key)
+    if cached:
+        return cached
+
+    summary_raw = {}
+    summary_error = ""
+    lifecycle = getattr(service, "order_lifecycle", None)
+    getter = getattr(lifecycle, "get_account_summary", None)
+    if callable(getter):
+        try:
+            value = getter(context["account_id"])
+            summary_raw = value if isinstance(value, dict) else {}
+        except Exception as exc:
+            summary_error = str(exc)
+    else:
+        summary_error = "account_summary_unavailable"
+    if not summary_raw and not summary_error:
+        summary_error = "account_summary_unavailable"
+
+    summary = _build_snapshot_summary(summary_raw, context["account_id"], [], {})
+    guard = build_buying_power_guard(
+        summary,
+        config=getattr(service, "config", None),
+        environment=context["runtime_environment"],
+    )
+    guard["source"] = "account_summary"
+    if guard.get("state") == "unavailable":
+        guard["reason"] = _buying_power_unavailable_reason(
+            context["service_status"],
+            summary_error,
+            summary,
+        )
+        guard["snapshot_error"] = summary_error or guard["reason"]
+
+    payload = {
+        "ok": bool(guard.get("available")),
+        "environment": context["runtime_environment"],
+        "account_id": context["account_id"],
+        "service_running": bool(getattr(service, "is_running", False)),
+        "service_starting": bool(getattr(service, "is_starting", False)),
+        "session_authenticated": bool((context["service_status"].get("session") or {}).get("authenticated")),
+        "gateway_running": bool((context["service_status"].get("gateway") or {}).get("running")),
+        "summary": summary,
+        "buying_power_guard": guard,
+        "summary_raw": summary_raw,
+        "errors": {"summary": summary_error},
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "source": "account_summary",
+    }
+    store_cached_snapshot(api_app, cache_key, payload)
+    return payload
+
+
 def _build_ibkr_account_snapshot(service, *, include_pnl: bool = True) -> dict:
     context = build_snapshot_context(service, include_pnl=include_pnl)
     api_app = context["api_app"]
@@ -265,4 +337,4 @@ def _build_ibkr_account_snapshot(service, *, include_pnl: bool = True) -> dict:
     return payload
 
 
-__all__ = ["_build_ibkr_account_snapshot"]
+__all__ = ["_build_ibkr_account_buying_power_snapshot", "_build_ibkr_account_snapshot"]

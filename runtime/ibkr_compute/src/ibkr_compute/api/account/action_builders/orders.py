@@ -9,7 +9,10 @@ from ibkr_compute.api.account.buying_power_guard import (
     estimate_entry_exposure,
 )
 from ibkr_compute.api.account.live import _api_app, _app_coerce_float
-from ibkr_compute.api.account.snapshot import _build_ibkr_account_snapshot
+from ibkr_compute.api.account.snapshot import (
+    _build_ibkr_account_buying_power_snapshot,
+    _build_ibkr_account_snapshot,
+)
 from ibkr_compute.api.shared.service_status import get_service_status_snapshot
 
 
@@ -30,6 +33,14 @@ def _notify_manual_buying_power_event(
     notifier = getattr(pb, "notify_system_event", None)
     if not callable(notifier):
         return
+    def guard_number(key: str):
+        raw = (guard or {}).get(key)
+        if raw in (None, ""):
+            return "不可用"
+        try:
+            return round(float(raw), 2)
+        except (TypeError, ValueError):
+            return "不可用"
     try:
         notifier(
             title,
@@ -37,11 +48,11 @@ def _notify_manual_buying_power_event(
                 "标的": symbol,
                 "方向": direction,
                 "数量": quantity,
-                "当前剩余购买力": round(float((guard or {}).get("remaining") or 0.0), 2),
-                "本次预估占用": round(float((guard or {}).get("requested_exposure") or 0.0), 2),
-                "下单后剩余购买力": round(float((guard or {}).get("remaining_after") or 0.0), 2),
-                "预警阈值": round(float((guard or {}).get("warn_floor") or 0.0), 2),
-                "禁止阈值": round(float((guard or {}).get("block_floor") or 0.0), 2),
+                "当前剩余购买力": guard_number("remaining"),
+                "本次预估占用": guard_number("requested_exposure"),
+                "下单后剩余购买力": guard_number("remaining_after"),
+                "预警阈值": guard_number("warn_floor"),
+                "禁止阈值": guard_number("block_floor"),
                 "状态": str((guard or {}).get("state") or "ok"),
                 "原因": str((guard or {}).get("reason") or ""),
             },
@@ -182,7 +193,6 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
         if direction == "short" and not (take_profit_price < entry_price < stop_loss_price):
             return {"ok": False, "error": "For short limit orders, take profit < entry < stop is required"}, 400
 
-    pre_submit_snapshot = _build_ibkr_account_snapshot(service)
     requested_exposure = estimate_entry_exposure(
         quantity,
         entry_price,
@@ -201,14 +211,49 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
             "direction": direction,
             "quantity": quantity,
             "order_type": order_type,
-            "snapshot": pre_submit_snapshot,
         }, 400
+    pre_submit_snapshot = _build_ibkr_account_buying_power_snapshot(service)
     buying_power_guard = build_buying_power_guard(
         (pre_submit_snapshot or {}).get("summary") or {},
         config=getattr(service, "config", None),
         environment=runtime_environment,
         requested_exposure=requested_exposure,
     )
+    snapshot_guard = (pre_submit_snapshot or {}).get("buying_power_guard")
+    if isinstance(snapshot_guard, dict):
+        for key in ("source", "snapshot_error"):
+            if snapshot_guard.get(key) not in (None, ""):
+                buying_power_guard[key] = snapshot_guard.get(key)
+        if buying_power_guard.get("state") == "unavailable" and snapshot_guard.get("reason"):
+            buying_power_guard["reason"] = snapshot_guard.get("reason")
+    if isinstance((pre_submit_snapshot or {}).get("errors"), dict):
+        buying_power_guard["snapshot_errors"] = dict((pre_submit_snapshot or {}).get("errors") or {})
+    if buying_power_guard.get("state") == "unavailable":
+        _notify_manual_buying_power_event(
+            service,
+            title="手动开仓暂停：账户/Gateway不可用",
+            level="error",
+            environment=runtime_environment,
+            symbol=symbol,
+            direction=direction,
+            quantity=quantity,
+            guard=buying_power_guard,
+        )
+        return {
+            "ok": False,
+            "error": "buying_power_unavailable",
+            "action": "place_order",
+            "environment": runtime_environment,
+            "symbol": symbol,
+            "direction": direction,
+            "quantity": quantity,
+            "order_type": order_type,
+            "entry_price": float(entry_price or 0.0),
+            "take_profit_price": float(take_profit_price),
+            "stop_loss_price": float(stop_loss_price),
+            "buying_power_guard": buying_power_guard,
+            "snapshot": pre_submit_snapshot,
+        }, 503
     if buying_power_guard.get("state") == "blocked":
         _notify_manual_buying_power_event(
             service,

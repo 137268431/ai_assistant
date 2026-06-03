@@ -22,6 +22,44 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
     return float(number)
 
 
+def _optional_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number:
+        return None
+    return float(number)
+
+
+def _summary_lookup(summary: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(summary, dict):
+        return {}
+    return {str(key).strip().lower(): value for key, value in summary.items()}
+
+
+def _summary_number(summary: dict[str, Any], *keys: str) -> float | None:
+    lookup = _summary_lookup(summary)
+    for key in keys:
+        raw_value = lookup.get(str(key).strip().lower())
+        if isinstance(raw_value, dict):
+            lowered = {str(k).strip().lower(): v for k, v in raw_value.items()}
+            for field in ("amount", "value"):
+                number = _optional_float(lowered.get(field))
+                if number is not None:
+                    return number
+        else:
+            number = _optional_float(raw_value)
+            if number is not None:
+                return number
+    return None
+
+
+def _summary_has_any(summary: dict[str, Any], *keys: str) -> bool:
+    lookup = _summary_lookup(summary)
+    return any(str(key).strip().lower() in lookup for key in keys)
+
+
 def _safe_bool(value: Any, default: bool = False) -> bool:
     if value is None:
         return bool(default)
@@ -89,10 +127,12 @@ def _config_float(config: Any, key: str, environment: str = "live", default: flo
 def enrich_buying_power_summary(summary: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(summary, dict):
         return {}
-    remaining = _safe_float(summary.get("remaining_buying_power"), _safe_float(summary.get("buying_power"), 0.0))
-    net_liq = _safe_float(summary.get("net_liquidation"), 0.0)
+    remaining = _summary_number(summary, "remaining_buying_power", "buying_power")
+    net_liq = _summary_number(summary, "net_liquidation") or 0.0
     summary["remaining_buying_power"] = remaining
-    summary["remaining_buying_power_pct_net_liq"] = (remaining / net_liq * 100.0) if net_liq > 0 else 0.0
+    summary["remaining_buying_power_pct_net_liq"] = (
+        (remaining / net_liq * 100.0) if remaining is not None and net_liq > 0 else None
+    )
     return summary
 
 
@@ -135,10 +175,12 @@ def build_buying_power_guard(
         runtime_environment,
         bool(DEFAULT_BUYING_POWER_GUARD["ibkr_buying_power_guard_enabled"]),
     )
-    remaining = _safe_float(summary_obj.get("remaining_buying_power"), _safe_float(summary_obj.get("buying_power"), 0.0))
-    net_liq = _safe_float(summary_obj.get("net_liquidation"), 0.0)
+    remaining_value = _summary_number(summary_obj, "remaining_buying_power", "buying_power")
+    remaining_available = remaining_value is not None
+    remaining = float(remaining_value) if remaining_available else None
+    net_liq = _summary_number(summary_obj, "net_liquidation") or 0.0
     requested = max(0.0, _safe_float(requested_exposure, 0.0))
-    remaining_after = remaining - requested
+    remaining_after = remaining - requested if remaining is not None else None
     warn_usd = max(
         0.0,
         _config_float(
@@ -182,23 +224,45 @@ def build_buying_power_guard(
     reason = "ok"
     if not enabled:
         reason = "buying_power_guard_disabled"
-    elif remaining_after < block_floor:
+    elif not remaining_available:
+        state = "unavailable"
+        reason = (
+            "account_snapshot_unavailable"
+            if not _summary_has_any(
+                summary_obj,
+                "account_code",
+                "account_type",
+                "net_liquidation",
+                "available_funds",
+                "excess_liquidity",
+                "equity_with_loan",
+                "gross_position_value",
+                "total_cash_value",
+                "initial_margin",
+                "maintenance_margin",
+            )
+            else "buying_power_unavailable"
+        )
+    elif remaining_after is not None and remaining_after < block_floor:
         state = "blocked"
         reason = "buying_power_below_block_threshold"
-    elif remaining_after < warn_floor:
+    elif remaining_after is not None and remaining_after < warn_floor:
         state = "warning"
         reason = "buying_power_below_warning_threshold"
 
     return {
         "enabled": bool(enabled),
+        "available": bool(remaining_available),
         "basis": "buying_power",
         "environment": runtime_environment,
         "remaining": remaining,
         "net_liquidation": net_liq,
         "remaining_after": remaining_after,
         "requested_exposure": requested,
-        "remaining_pct_net_liq": (remaining / net_liq * 100.0) if net_liq > 0 else 0.0,
-        "remaining_after_pct_net_liq": (remaining_after / net_liq * 100.0) if net_liq > 0 else 0.0,
+        "remaining_pct_net_liq": (remaining / net_liq * 100.0) if remaining is not None and net_liq > 0 else None,
+        "remaining_after_pct_net_liq": (
+            (remaining_after / net_liq * 100.0) if remaining_after is not None and net_liq > 0 else None
+        ),
         "warn_floor": warn_floor,
         "block_floor": block_floor,
         "warn_usd": warn_usd,

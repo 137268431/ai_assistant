@@ -295,6 +295,16 @@ class TradingServiceSignalsMixin:
 
                 sig = guarded_sig
                 buying_power_guard = self._evaluate_signal_buying_power_guard(sig)
+                if buying_power_guard.get("state") == "unavailable":
+                    service_mod.logger.warning(
+                        "Signal waiting for account/Gateway snapshot before buying-power guard: signal_id=%s symbol=%s reason=%s",
+                        signal_id,
+                        sig.get("symbol"),
+                        buying_power_guard.get("reason"),
+                    )
+                    self._mark_signal_buying_power_unavailable(sig, buying_power_guard)
+                    self._notify_buying_power_guard(sig, buying_power_guard, level="error", event_type="alert")
+                    continue
                 if buying_power_guard.get("state") == "blocked":
                     service_mod.logger.warning(
                         "Signal blocked by buying-power guard: signal_id=%s symbol=%s remaining_after=%s block_floor=%s",
@@ -393,6 +403,19 @@ class TradingServiceSignalsMixin:
                             sig = self._apply_order_flow_entry_decision(sig, order_flow_decision)
                             if self._safe_float(sig.get("entry"), 0.0) != previous_entry:
                                 buying_power_guard = self._evaluate_signal_buying_power_guard(sig)
+                                if buying_power_guard.get("state") == "unavailable":
+                                    service_mod.logger.warning(
+                                        "Signal waiting for account/Gateway snapshot after order-flow repricing: signal_id=%s symbol=%s reason=%s",
+                                        signal_id,
+                                        sig.get("symbol"),
+                                        buying_power_guard.get("reason"),
+                                    )
+                                    self._mark_signal_buying_power_unavailable(sig, buying_power_guard)
+                                    self._notify_buying_power_guard(sig, buying_power_guard, level="error", event_type="alert")
+                                    releaser = getattr(order_flow_manager, "release_symbol", None)
+                                    if callable(releaser):
+                                        releaser(symbol, reason=str(buying_power_guard.get("reason") or "account_snapshot_unavailable"))
+                                    continue
                                 if buying_power_guard.get("state") == "blocked":
                                     service_mod.logger.warning(
                                         "Signal blocked by buying-power guard after order-flow repricing: signal_id=%s symbol=%s remaining_after=%s block_floor=%s",
@@ -1249,9 +1272,9 @@ class TradingServiceSignalsMixin:
                 _service_mod().logger.warning("Buying-power snapshot provider failed: %s", exc)
                 return {}
         try:
-            from ibkr_compute.api.account.snapshot import _build_ibkr_account_snapshot
+            from ibkr_compute.api.account.snapshot import _build_ibkr_account_buying_power_snapshot
 
-            snapshot = _build_ibkr_account_snapshot(self)
+            snapshot = _build_ibkr_account_buying_power_snapshot(self)
             return snapshot if isinstance(snapshot, dict) else {}
         except Exception as exc:
             _service_mod().logger.warning("Buying-power snapshot failed: %s", exc)
@@ -1274,6 +1297,15 @@ class TradingServiceSignalsMixin:
             environment=service_mod.ENVIRONMENT,
             requested_exposure=exposure,
         )
+        snapshot_guard = (snapshot or {}).get("buying_power_guard")
+        if isinstance(snapshot_guard, dict):
+            for key in ("source", "snapshot_error"):
+                if snapshot_guard.get(key) not in (None, ""):
+                    guard[key] = snapshot_guard.get(key)
+            if guard.get("state") == "unavailable" and snapshot_guard.get("reason"):
+                guard["reason"] = snapshot_guard.get("reason")
+        if isinstance((snapshot or {}).get("errors"), dict):
+            guard["snapshot_errors"] = dict((snapshot or {}).get("errors") or {})
         guard["snapshot_fetched_at"] = (snapshot or {}).get("fetched_at") or ""
         if exposure <= 0 and guard.get("enabled"):
             guard["state"] = "blocked"
@@ -1322,10 +1354,20 @@ class TradingServiceSignalsMixin:
             return
         state = str((guard or {}).get("state") or "ok").strip().lower()
         title = "自动开仓购买力预警"
-        if state == "blocked":
+        if state == "unavailable":
+            title = "自动开仓暂停：账户/Gateway不可用"
+        elif state == "blocked":
             title = "自动开仓已被购买力阈值拦截"
         elif level == "info":
             title = "自动开仓已提交"
+        def guard_number(key: str):
+            raw = (guard or {}).get(key)
+            if raw in (None, ""):
+                return "不可用"
+            try:
+                return round(float(raw), 2)
+            except (TypeError, ValueError):
+                return "不可用"
         try:
             notifier(
                 title,
@@ -1334,11 +1376,11 @@ class TradingServiceSignalsMixin:
                     "标的": str((sig or {}).get("symbol") or "").upper(),
                     "方向": str((sig or {}).get("direction") or ""),
                     "数量": int(self._safe_float((sig or {}).get("shares"), 0.0)),
-                    "当前剩余购买力": round(float((guard or {}).get("remaining") or 0.0), 2),
-                    "本次预估占用": round(float((guard or {}).get("requested_exposure") or 0.0), 2),
-                    "下单后剩余购买力": round(float((guard or {}).get("remaining_after") or 0.0), 2),
-                    "预警阈值": round(float((guard or {}).get("warn_floor") or 0.0), 2),
-                    "禁止阈值": round(float((guard or {}).get("block_floor") or 0.0), 2),
+                    "当前剩余购买力": guard_number("remaining"),
+                    "本次预估占用": guard_number("requested_exposure"),
+                    "下单后剩余购买力": guard_number("remaining_after"),
+                    "预警阈值": guard_number("warn_floor"),
+                    "禁止阈值": guard_number("block_floor"),
                     "状态": state,
                     "原因": str((guard or {}).get("reason") or ""),
                 },
@@ -1582,6 +1624,45 @@ class TradingServiceSignalsMixin:
         except Exception as exc:
             service_mod.logger.error(
                 "Failed to mark signal buying-power-blocked: signal_id=%s error=%s",
+                signal_id,
+                exc,
+            )
+
+    def _mark_signal_buying_power_unavailable(self, sig: dict, guard: dict):
+        service_mod = _service_mod()
+        if not self.pb:
+            return
+
+        signal_id = str(sig.get("signal_id") or "").strip()
+        if not signal_id:
+            return
+
+        reason = str((guard or {}).get("reason") or "account_snapshot_unavailable").strip()
+        if not reason:
+            reason = "account_snapshot_unavailable"
+        try:
+            record, existing_extra = self._load_signal_record_and_extra(sig)
+            if not record:
+                return
+            signal_extra = sig.get("extra") if isinstance(sig.get("extra"), dict) else {}
+            patch = self._signal_broker_patch(
+                "pending",
+                reason,
+                existing_extra,
+                {
+                    **signal_extra,
+                    **self._buying_power_extra_fields(guard),
+                    "status_reason": reason,
+                    "execution_state": "waiting_for_account_snapshot",
+                    "waiting_for_account_snapshot": True,
+                    "waiting_for_account_snapshot_at": self._now_iso(),
+                    "buying_power_blocked": False,
+                },
+            )
+            self.pb.update_record("ibkr_signals", record["id"], patch)
+        except Exception as exc:
+            service_mod.logger.error(
+                "Failed to mark signal buying-power-unavailable: signal_id=%s error=%s",
                 signal_id,
                 exc,
             )

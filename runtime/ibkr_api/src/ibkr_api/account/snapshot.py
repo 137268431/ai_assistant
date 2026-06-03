@@ -119,10 +119,10 @@ def _enrich_buying_power_summary(payload: dict[str, Any]) -> None:
         return
     remaining = to_float(summary.get("remaining_buying_power"))
     if remaining is None:
-        remaining = to_float(summary.get("buying_power")) or 0.0
+        remaining = to_float(summary.get("buying_power"))
     net_liq = to_float(summary.get("net_liquidation")) or 0.0
     summary["remaining_buying_power"] = remaining
-    summary["remaining_buying_power_pct_net_liq"] = (remaining / net_liq * 100.0) if net_liq > 0 else 0.0
+    summary["remaining_buying_power_pct_net_liq"] = (remaining / net_liq * 100.0) if remaining is not None and net_liq > 0 else None
     payload["summary"] = summary
     if isinstance(payload.get("buying_power_guard"), dict):
         return
@@ -132,9 +132,28 @@ def _enrich_buying_power_summary(payload: dict[str, Any]) -> None:
     block_pct = 10.0
     warn_floor = max(warn_usd, net_liq * warn_pct / 100.0 if net_liq > 0 else 0.0)
     block_floor = max(block_usd, net_liq * block_pct / 100.0 if net_liq > 0 else 0.0)
-    state = "blocked" if remaining < block_floor else ("warning" if remaining < warn_floor else "ok")
+    state = "unavailable" if remaining is None else ("blocked" if remaining < block_floor else ("warning" if remaining < warn_floor else "ok"))
+    summary_has_account_fields = any(
+        key in summary
+        for key in (
+            "account_code",
+            "account_type",
+            "net_liquidation",
+            "available_funds",
+            "excess_liquidity",
+            "equity_with_loan",
+            "gross_position_value",
+            "total_cash_value",
+        )
+    )
+    reason = "ok"
+    if state == "unavailable":
+        reason = "buying_power_unavailable" if summary_has_account_fields else "account_snapshot_unavailable"
+    elif state != "ok":
+        reason = f"buying_power_below_{'block' if state == 'blocked' else 'warning'}_threshold"
     payload["buying_power_guard"] = {
         "enabled": True,
+        "available": remaining is not None,
         "basis": "buying_power",
         "environment": to_text(payload.get("environment") or "live"),
         "remaining": remaining,
@@ -150,7 +169,7 @@ def _enrich_buying_power_summary(payload: dict[str, Any]) -> None:
         "block_usd": block_usd,
         "block_pct_net_liq": block_pct,
         "state": state,
-        "reason": "ok" if state == "ok" else f"buying_power_below_{'block' if state == 'blocked' else 'warning'}_threshold",
+        "reason": reason,
     }
 
 

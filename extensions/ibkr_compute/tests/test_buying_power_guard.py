@@ -60,6 +60,28 @@ class BuyingPowerGuardHelperTest(unittest.TestCase):
         self.assertEqual("blocked", guard["state"])
         self.assertEqual("buying_power_below_block_threshold", guard["reason"])
 
+    def test_guard_unavailable_when_buying_power_missing(self):
+        guard = build_buying_power_guard(
+            {"net_liquidation": 100000},
+            requested_exposure=3000,
+        )
+
+        self.assertEqual("unavailable", guard["state"])
+        self.assertFalse(guard["available"])
+        self.assertEqual("buying_power_unavailable", guard["reason"])
+        self.assertIsNone(guard["remaining"])
+        self.assertIsNone(guard["remaining_after"])
+
+    def test_guard_treats_explicit_zero_buying_power_as_real_balance(self):
+        guard = build_buying_power_guard(
+            {"buying_power": 0, "net_liquidation": 100000},
+            requested_exposure=0,
+        )
+
+        self.assertTrue(guard["available"])
+        self.assertEqual(0.0, guard["remaining"])
+        self.assertEqual("blocked", guard["state"])
+
     def test_estimate_entry_exposure_uses_market_order_conservative_price(self):
         exposure = estimate_entry_exposure(10, None, 104, 98, "long", "MKT")
 
@@ -126,6 +148,7 @@ class BuyingPowerManualOrderActionTest(unittest.TestCase):
         self.old_api_app = order_actions._api_app
         self.old_coerce_float = order_actions._app_coerce_float
         self.old_snapshot = order_actions._build_ibkr_account_snapshot
+        self.old_bp_snapshot = order_actions._build_ibkr_account_buying_power_snapshot
         self.old_action_response = order_actions._build_snapshot_action_response
         order_actions._api_app = lambda: FakeApiApp()
         order_actions._app_coerce_float = lambda value, default=None: (
@@ -136,11 +159,12 @@ class BuyingPowerManualOrderActionTest(unittest.TestCase):
         order_actions._api_app = self.old_api_app
         order_actions._app_coerce_float = self.old_coerce_float
         order_actions._build_ibkr_account_snapshot = self.old_snapshot
+        order_actions._build_ibkr_account_buying_power_snapshot = self.old_bp_snapshot
         order_actions._build_snapshot_action_response = self.old_action_response
 
     def test_manual_order_blocked_when_remaining_buying_power_would_cross_block_floor(self):
         service = FakeOrderService()
-        order_actions._build_ibkr_account_snapshot = lambda _service: {
+        order_actions._build_ibkr_account_buying_power_snapshot = lambda _service: {
             "ok": True,
             "summary": {"buying_power": 12000, "net_liquidation": 100000},
         }
@@ -168,7 +192,7 @@ class BuyingPowerManualOrderActionTest(unittest.TestCase):
 
     def test_manual_order_warning_continues_and_surfaces_guard(self):
         service = FakeOrderService()
-        order_actions._build_ibkr_account_snapshot = lambda _service: {
+        order_actions._build_ibkr_account_buying_power_snapshot = lambda _service: {
             "ok": True,
             "summary": {"buying_power": 30000, "net_liquidation": 100000},
         }
@@ -196,6 +220,40 @@ class BuyingPowerManualOrderActionTest(unittest.TestCase):
         self.assertEqual(1, len(service.order_placer.calls))
         self.assertTrue(any(event["title"] == "手动开仓购买力预警" for event in service.pb.events))
         self.assertTrue(any(event["title"] == "手动开仓已提交" for event in service.pb.events))
+
+    def test_manual_order_pauses_when_buying_power_snapshot_unavailable(self):
+        service = FakeOrderService()
+        order_actions._build_ibkr_account_buying_power_snapshot = lambda _service: {
+            "ok": False,
+            "summary": {},
+            "buying_power_guard": {
+                "state": "unavailable",
+                "reason": "gateway_unavailable",
+                "available": False,
+            },
+            "errors": {"summary": "gateway_unavailable"},
+        }
+
+        payload, status = order_actions._build_ibkr_place_order_response(
+            service,
+            {
+                "symbol": "AAPL",
+                "direction": "long",
+                "quantity": 50,
+                "order_type": "LMT",
+                "entry_price": 100,
+                "take_profit_price": 104,
+                "stop_loss_price": 98,
+            },
+        )
+
+        self.assertEqual(503, status)
+        self.assertFalse(payload["ok"])
+        self.assertEqual("buying_power_unavailable", payload["error"])
+        self.assertEqual("unavailable", payload["buying_power_guard"]["state"])
+        self.assertEqual("gateway_unavailable", payload["buying_power_guard"]["reason"])
+        self.assertEqual([], service.order_placer.calls)
+        self.assertEqual("手动开仓暂停：账户/Gateway不可用", service.pb.events[-1]["title"])
 
 
 if __name__ == "__main__":
