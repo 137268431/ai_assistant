@@ -82,6 +82,12 @@ async function collectHomeOverviewIssues(page, mobile = false) {
     if (sdSummary && (!sdSummaryText.includes('SD上轨') || !sdSummaryText.includes('SD下轨'))) {
       issues.push(`targets_sd_summary_text:${sdSummaryText || 'empty'}`);
     }
+    const targetsFoot = document.getElementById('todayTargetsFoot');
+    const targetsFootText = String(targetsFoot?.textContent || '').trim();
+    if (!targetsFoot) issues.push('missing_targets_execution_foot');
+    if (targetsFoot && (!targetsFootText.includes('执行中') || !targetsFootText.includes('目标ACTIVE'))) {
+      issues.push(`targets_execution_foot_text:${targetsFootText || 'empty'}`);
+    }
     if (!badge) issues.push('missing_targets_tip_badge');
     if (!tipCard) issues.push('missing_targets_tip_card');
     if (tip && !tipText.includes('美东交易日')) issues.push('targets_time_tip_missing_market_date_copy');
@@ -131,10 +137,10 @@ async function collectHomeOverviewIssues(page, mobile = false) {
     if (ordersStatus && (!ordersStatusText.includes('已成交') || !ordersStatusText.includes('挂单') || !ordersStatusText.includes('已取消'))) {
       issues.push(`orders_status_summary_text:${ordersStatusText || 'empty'}`);
     }
-    if (ordersGroup && (!ordersGroupText.includes('交易组') || !ordersGroupText.includes('Entry单'))) {
+    if (ordersGroup && (!ordersGroupText.includes('交易组(去重)') || !ordersGroupText.includes('Entry单'))) {
       issues.push(`orders_group_summary_text:${ordersGroupText || 'empty'}`);
     }
-    if (ordersFoot && (!ordersFootText.includes('当前挂单组') || !ordersFootText.includes('可取消组') || !ordersFootText.includes('可改单组'))) {
+    if (ordersFoot && (!ordersFootText.includes('当前挂单组') || !ordersFootText.includes('订单腿 Entry') || !ordersFootText.includes('可取消组') || !ordersFootText.includes('可改单组'))) {
       issues.push(`orders_foot_missing_live_open_order_groups:${ordersFootText || 'empty'}`);
     }
     if (positionsLabel && !/(当前持仓|无实际持仓|持仓接口不可用)/.test(positionsLabelText)) {

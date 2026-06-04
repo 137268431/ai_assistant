@@ -313,6 +313,9 @@ def build_today_targets_response(
                 "total": 0,
                 "active_count": 0,
                 "candidate_count": 0,
+                "target_active_count": 0,
+                "target_candidate_count": 0,
+                "execution_active_count": 0,
                 "operable_count": 0,
                 "technical_ready_count": 0,
                 "signaled_count": 0,
@@ -473,6 +476,7 @@ def build_today_targets_response(
     items: list[dict[str, Any]] = []
     active_count = 0
     candidate_count = 0
+    execution_active_count = 0
     operable_count = 0
     technical_ready_count = 0
     signaled_count = 0
@@ -526,6 +530,15 @@ def build_today_targets_response(
                 target_status_reason = "deactivated_after_close"
             else:
                 target_status_reason = "active_gate_not_effective"
+        execution_active = bool(target_status == "active" and (has_open_signal or signal_status_is_open(latest_signal_status)))
+        if execution_active:
+            execution_state_reason = "open_signal_today"
+        elif target_status != "active":
+            execution_state_reason = target_status_reason or "target_not_active"
+        elif latest_signal_status:
+            execution_state_reason = "latest_signal_not_open"
+        else:
+            execution_state_reason = "no_signal_today"
         direction_bias = to_text(first_defined(target.get("direction_bias"), "neutral")).lower() or "neutral"
         execution_meta = build_target_execution_metadata(
             target_extra,
@@ -546,6 +559,8 @@ def build_today_targets_response(
             "target_status": target_status,
             "stored_target_status": stored_target_status,
             "target_status_reason": target_status_reason,
+            "execution_active": execution_active,
+            "execution_state_reason": execution_state_reason,
             "direction_bias": direction_bias,
             "score": score,
             "target_score": score,
@@ -614,6 +629,8 @@ def build_today_targets_response(
             active_count += 1
         if target_status == "candidate":
             candidate_count += 1
+        if row["execution_active"]:
+            execution_active_count += 1
         if row["is_operable"]:
             operable_count += 1
         if row["technical_state"] == "ready":
@@ -669,6 +686,9 @@ def build_today_targets_response(
             "total": len(items),
             "active_count": active_count,
             "candidate_count": candidate_count,
+            "target_active_count": active_count,
+            "target_candidate_count": candidate_count,
+            "execution_active_count": execution_active_count,
             "operable_count": operable_count,
             "technical_ready_count": technical_ready_count,
             "signaled_count": signaled_count,

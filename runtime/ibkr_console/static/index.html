@@ -74,8 +74,8 @@
                                 </div>
                             </div>
                             <div class="home-stat-label">今日订单</div>
-                            <div class="home-stat-subline home-stat-detail" id="todayOrdersStatusSummary">今日: 已成交 - / 挂单 - / 已取消 -</div>
-                            <div class="home-stat-subline home-stat-detail" id="todayOrdersGroupSummary">已平仓 - / 交易组 - / Entry单 -</div>
+                            <div class="home-stat-subline home-stat-detail" id="todayOrdersStatusSummary">Entry: 已成交 - / 挂单 - / 已取消 -</div>
+                            <div class="home-stat-subline home-stat-detail" id="todayOrdersGroupSummary">已平仓组 - / 交易组(去重) - / Entry单(开仓) -</div>
                             <div class="home-stat-foot" id="todayOrdersFoot">当前挂单组 - · 可取消组 - · 可改单组 -</div>
                         </a>
 
@@ -119,8 +119,8 @@
                                 <span class="home-stat-separator">/</span>
                                 <span class="long">SD下轨 <span id="todayTargetsSdLower">-</span></span>
                             </div>
-                            <div class="home-stat-label">今日目标池</div>
-                            <div class="home-stat-foot" id="todayTargetsFoot">ACTIVE / CANDIDATE</div>
+                            <div class="home-stat-label">今日目标池 · 执行中/Candidate</div>
+                            <div class="home-stat-foot" id="todayTargetsFoot">执行中 / CANDIDATE · 目标ACTIVE -</div>
                         </a>
 
                     </div>
@@ -277,6 +277,7 @@
         let currentEnvironment = getSharedDataEnvironment();
         let currentBrokerMode = getConsoleBrokerMode();
         let latestTodayTargetsPayload = null;
+        let latestDashboardPayload = null;
         let responsiveListenerBound = false;
 
         function escapeHtml(value) {
@@ -628,19 +629,26 @@
             }
         }
 
+        function getTargetDisplayCounts(summary = {}) {
+            const targetActiveCount = Number(summary.target_active_count ?? summary.active_count ?? 0);
+            const targetCandidateCount = Number(summary.target_candidate_count ?? summary.candidate_count ?? 0);
+            const executionActiveCount = Number(summary.execution_active_count ?? targetActiveCount);
+            return { targetActiveCount, targetCandidateCount, executionActiveCount };
+        }
+
         function renderTargetSummary(summary = {}, marketDate = getUsDate(), targetUrl = buildPageUrl('/ibkr_screener.html', { tab: 'targets' })) {
-            const activeCount = Number(summary.active_count || 0);
-            const candidateCount = Number(summary.candidate_count || 0);
+            const { targetActiveCount, targetCandidateCount, executionActiveCount } = getTargetDisplayCounts(summary);
             const sdUpperCount = Number(summary.tv_sd_upper_touch_count || 0);
             const sdLowerCount = Number(summary.tv_sd_lower_touch_count || 0);
             const sdIntervalLabel = String(summary.tv_sd_touch_interval_label || 'TV').trim() || 'TV';
-            document.getElementById('todayTargetsActive').textContent = formatNumber(activeCount, 0);
-            document.getElementById('todayTargetsCandidate').textContent = formatNumber(candidateCount, 0);
+            document.getElementById('todayTargetsActive').textContent = formatNumber(executionActiveCount, 0);
+            document.getElementById('todayTargetsCandidate').textContent = formatNumber(targetCandidateCount, 0);
             document.getElementById('todayTargetsSdUpper').textContent = formatNumber(sdUpperCount, 0);
             document.getElementById('todayTargetsSdLower').textContent = formatNumber(sdLowerCount, 0);
-            document.getElementById('todayTargetsFoot').textContent = `ACTIVE / CANDIDATE · ${sdIntervalLabel}`;
+            document.getElementById('todayTargetsFoot').textContent = `执行中 / CANDIDATE · 目标ACTIVE ${formatNumber(targetActiveCount, 0)} · ${sdIntervalLabel}`;
             document.getElementById('targetsSummaryLink').href = targetUrl;
-            setCardTone('targetsSummaryLink', activeCount > 0 ? 'long' : (candidateCount > 0 ? 'candidate' : 'neutral'));
+            document.getElementById('targetsSummaryLink').title = `执行中 ${formatNumber(executionActiveCount, 0)}；目标池 ACTIVE ${formatNumber(targetActiveCount, 0)}；Candidate ${formatNumber(targetCandidateCount, 0)}。执行中按今日 open signal 统计，已终止/已平仓不再占用首页主数字。`;
+            setCardTone('targetsSummaryLink', executionActiveCount > 0 ? 'long' : (targetCandidateCount > 0 || targetActiveCount > 0 ? 'candidate' : 'neutral'));
             renderOverviewMeta(marketDate);
         }
 
@@ -705,7 +713,8 @@
             renderTargetSummary(summary, marketDate, todayTargetsUrl);
             renderTodayTargetsTimeTip(latestTodayTargetsPayload);
 
-            metaEl.textContent = `共 ${summary.total || 0} 条 · active ${summary.active_count || 0} · candidate ${summary.candidate_count || 0} · SD上轨 ${summary.tv_sd_upper_touch_count || 0} · SD下轨 ${summary.tv_sd_lower_touch_count || 0}`;
+            const { targetActiveCount, targetCandidateCount, executionActiveCount } = getTargetDisplayCounts(summary);
+            metaEl.textContent = `共 ${summary.total || 0} 条 · 执行中 ${executionActiveCount} · 目标active ${targetActiveCount} · candidate ${targetCandidateCount} · SD上轨 ${summary.tv_sd_upper_touch_count || 0} · SD下轨 ${summary.tv_sd_lower_touch_count || 0}`;
 
             if (!items.length) {
                 setSectionState('homeTargets', 'empty');
@@ -785,7 +794,7 @@
                 document.getElementById('todayTargetsCandidate').textContent = '--';
                 document.getElementById('todayTargetsSdUpper').textContent = '--';
                 document.getElementById('todayTargetsSdLower').textContent = '--';
-                document.getElementById('todayTargetsFoot').textContent = 'ACTIVE / CANDIDATE';
+                document.getElementById('todayTargetsFoot').textContent = '执行中 / CANDIDATE · 目标ACTIVE --';
                 setCardTone('targetsSummaryLink', 'neutral');
             }
         }
@@ -1014,6 +1023,7 @@
         }
 
         function applyDashboardSummary(payload = {}) {
+            latestDashboardPayload = payload || {};
             const summary = payload.summary || {};
             const signals = summary.signals || {};
             const reverseSignals = summary.reverse_signals || summary.execution_actions || {};
@@ -1067,20 +1077,20 @@
             document.getElementById('todayOrdersShort').textContent = formatNumber(orders.short || 0, 0);
             setText(
                 'todayOrdersStatusSummary',
-                `今日: 已成交 ${formatNumber(count(orderStatusCounts, 'filled'), 0)} / 挂单 ${formatNumber(count(orderStatusCounts, 'working'), 0)} / 已取消 ${formatNumber(count(orderStatusCounts, 'cancelled'), 0)}`
+                `Entry: 已成交 ${formatNumber(count(orderStatusCounts, 'filled'), 0)} / 挂单 ${formatNumber(count(orderStatusCounts, 'working'), 0)} / 已取消 ${formatNumber(count(orderStatusCounts, 'cancelled'), 0)}`
             );
             setText(
                 'todayOrdersGroupSummary',
-                `已平仓 ${formatNumber(count(orderGroupStatusCounts, 'closed'), 0)} / 交易组 ${formatNumber(orders.total || 0, 0)} / Entry单 ${formatNumber(orders.entry_order_count || 0, 0)}`
+                `已平仓组 ${formatNumber(count(orderGroupStatusCounts, 'closed'), 0)} / 交易组(去重) ${formatNumber(orders.total || 0, 0)} / Entry单(开仓) ${formatNumber(orders.entry_order_count || 0, 0)}`
             );
             setText(
                 'todayOrdersFoot',
                 liveOrdersAvailable
-                    ? `当前挂单组 ${formatNumber(liveOrderGroupCount, 0)} · 可取消组 ${formatNumber(liveOrderCancelableGroupCount, 0)} · 可改单组 ${formatNumber(liveOrderEditableGroupCount, 0)}`
+                    ? `当前挂单组 ${formatNumber(liveOrderGroupCount, 0)} · 订单腿 Entry ${formatNumber(liveOrders.entry || 0, 0)} / TP ${formatNumber(liveOrders.take_profit || 0, 0)} / SL ${formatNumber(liveOrders.stop_loss || 0, 0)} · 可取消组 ${formatNumber(liveOrderCancelableGroupCount, 0)} · 可改单组 ${formatNumber(liveOrderEditableGroupCount, 0)}`
                     : `当前挂单组接口不可用${liveOrders.error ? ` · ${liveOrders.error}` : ''}`
             );
             document.getElementById('ordersLink').title = liveOrdersAvailable
-                ? `Gateway 当前挂单组 ${formatNumber(liveOrderGroupCount, 0)}；订单腿 ${formatNumber(liveOrderLegCount, 0)}: Entry ${formatNumber(liveOrders.entry || 0, 0)} / TP ${formatNumber(liveOrders.take_profit || 0, 0)} / SL ${formatNumber(liveOrders.stop_loss || 0, 0)} / Close ${formatNumber(liveOrders.close || 0, 0)}`
+                ? `做多交易组 ${formatNumber(orders.long || 0, 0)}，做空交易组 ${formatNumber(orders.short || 0, 0)}；交易组=按信号/Trade Group 去重的交易链，Entry开仓单=实际开仓订单行，两者不冲突。Gateway 当前挂单组 ${formatNumber(liveOrderGroupCount, 0)}；订单腿 ${formatNumber(liveOrderLegCount, 0)}: Entry ${formatNumber(liveOrders.entry || 0, 0)} / TP ${formatNumber(liveOrders.take_profit || 0, 0)} / SL ${formatNumber(liveOrders.stop_loss || 0, 0)} / Close ${formatNumber(liveOrders.close || 0, 0)}`
                 : `Gateway 当前挂单组暂不可用${liveOrders.error ? `: ${liveOrders.error}` : ''}`;
             document.getElementById('activePositionsLong').textContent = positionsAvailable ? formatNumber(positions.long || 0, 0) : '--';
             document.getElementById('activePositionsShort').textContent = positionsAvailable ? formatNumber(positions.short || 0, 0) : '--';
@@ -1111,6 +1121,9 @@
             const pnlMissingCount = Number(pnlSummary.missing_count || pnlSummary.missingCount || 0);
             const pnlCommissionMissingCount = Number(pnlSummary.commission_missing_count || pnlSummary.commissionMissingCount || 0);
             const pnlCommission = Number(pnlSummary.commission || 0);
+            const pnlEntryCommission = Number(pnlSummary.entry_commission || pnlSummary.entryCommission || 0);
+            const pnlExitCommission = Number(pnlSummary.exit_commission || pnlSummary.exitCommission || 0);
+            const pnlCommissionFillCount = Number(pnlSummary.commission_fill_count || pnlSummary.commissionFillCount || 0);
             document.getElementById('todayPnLWinCount').textContent = formatNumber(pnlSummary.win_count || pnlSummary.winCount || 0, 0);
             document.getElementById('todayPnLLossCount').textContent = formatNumber(pnlSummary.loss_count || pnlSummary.lossCount || 0, 0);
             if (pnlExitCount > 0) {
@@ -1127,7 +1140,13 @@
             const commissionSourceLabel = String(pnlSummary.commission_source_label || 'IBKR commissionReport').trim();
             const pnlBrokerMode = String(payload.broker_mode || currentBrokerMode || '').trim().toLowerCase();
             const commissionEnvironmentLabel = String(pnlSummary.commission_environment_label || (pnlBrokerMode === 'paper' ? 'Paper 模拟' : '')).trim();
-            const pnlFootSegments = [`实际净盈亏已扣手续费`, `手续费 $${formatNumber(Math.abs(pnlCommission), 2)}`, commissionSourceLabel];
+            const commissionBreakdown = (Math.abs(pnlEntryCommission) > 0 || Math.abs(pnlExitCommission) > 0)
+                ? `手续费 $${formatNumber(Math.abs(pnlCommission), 2)} = Entry $${formatNumber(Math.abs(pnlEntryCommission), 2)} + Exit $${formatNumber(Math.abs(pnlExitCommission), 2)}`
+                : `手续费 $${formatNumber(Math.abs(pnlCommission), 2)}`;
+            const pnlFootSegments = [`实际净盈亏已扣手续费`, commissionBreakdown, commissionSourceLabel];
+            if (pnlCommissionFillCount > 0) {
+                pnlFootSegments.push(`fills ${formatNumber(pnlCommissionFillCount, 0)}`);
+            }
             if (commissionEnvironmentLabel) {
                 pnlFootSegments.push(commissionEnvironmentLabel);
             }
@@ -1148,6 +1167,18 @@
             setCardTone('ordersLink', Number(orders.total || 0) > 0 ? 'long' : (liveOrderGroupCount > 0 ? 'candidate' : 'neutral'));
             setCardTone('positionsLink', positionsAvailable && positionTotal > 0 ? 'long' : (liveOrderGroupCount > 0 ? 'candidate' : 'neutral'));
             setCardTone('pnlCardLink', pnl > 0 ? 'long' : (pnl < 0 ? 'short' : 'neutral'));
+            if (latestTodayTargetsPayload) {
+                const targetMarketDate = latestTodayTargetsPayload.market_date || marketDate;
+                const todayTargetsUrl = buildPageUrl('/ibkr_screener.html', {
+                    tab: 'targets',
+                    date: targetMarketDate,
+                    market_date: targetMarketDate
+	            }, {
+	                brokerMode: currentBrokerMode,
+	                dataEnvironment: currentEnvironment
+	            });
+                renderTargetSummary(latestTodayTargetsPayload.summary || {}, targetMarketDate, todayTargetsUrl);
+            }
             renderOverviewMeta(marketDate);
             renderRecentActivityItems(payload.recent_activity || []);
             setSectionState('homeOverview', 'ready');

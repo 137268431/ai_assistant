@@ -395,11 +395,11 @@
         }
 
         .stats-toolbar .date-range-selector {
-            flex: 1 1 280px;
+            flex: 1 1 420px;
         }
 
         .stats-toolbar .date-inputs {
-            flex: 1 1 320px;
+            flex: 1 1 360px;
             justify-content: flex-end;
         }
 
@@ -651,6 +651,34 @@
             color: rgba(169, 183, 194, 0.70);
         }
 
+        .realized-symbol-pagination {
+            margin-top: 10px;
+        }
+
+        .realized-symbol-pagination-bar {
+            margin: 0;
+            border-color: rgba(246, 173, 85, 0.16);
+            background: rgba(246, 173, 85, 0.055);
+        }
+
+        .realized-symbol-page-btn {
+            min-height: 30px;
+            padding: 0 10px;
+            border: 1px solid rgba(246, 173, 85, 0.18);
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.04);
+            color: #d7e7f5;
+            font-family: var(--font-mono);
+            font-size: 10.5px;
+            font-weight: 800;
+            cursor: pointer;
+        }
+
+        .realized-symbol-page-btn:disabled {
+            opacity: 0.35;
+            cursor: not-allowed;
+        }
+
         .signal-analysis-panel {
             --signal-panel-border: rgba(147, 197, 253, 0.18);
             position: relative;
@@ -764,45 +792,6 @@
             border-radius: 16px;
             background: rgba(2, 8, 18, 0.48);
             box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
-        }
-
-        .signal-analysis-date-field {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            min-height: 36px;
-            padding: 0 8px 0 10px;
-            border: 1px solid rgba(147, 197, 253, 0.16);
-            border-radius: 12px;
-            background: rgba(16, 34, 45, 0.80);
-        }
-
-        .signal-analysis-date-field span {
-            color: rgba(159, 176, 195, 0.78);
-            font-family: var(--font-mono);
-            font-size: 9px;
-            font-weight: 800;
-            letter-spacing: 1px;
-            text-transform: uppercase;
-        }
-
-        .signal-analysis-date-field .date-input {
-            min-width: 136px;
-            padding: 0;
-            border: 0;
-            background: transparent;
-            color: var(--text);
-            font-size: 12px;
-        }
-
-        .signal-analysis-primary-btn {
-            min-height: 36px;
-            padding: 0 14px;
-            border: 1px solid rgba(79, 209, 197, 0.34);
-            border-radius: 12px;
-            background: linear-gradient(180deg, rgba(79, 209, 197, 0.95), rgba(45, 212, 191, 0.72));
-            color: #04111a;
-            box-shadow: 0 10px 24px rgba(45, 212, 191, 0.16);
         }
 
         .signal-analysis-link {
@@ -1163,13 +1152,8 @@
                 justify-content: flex-start;
             }
 
-            .signal-analysis-date-field {
-                flex: 1 1 100%;
-            }
-
-            .signal-analysis-primary-btn,
             .signal-analysis-link {
-                flex: 1 1 calc(33.333% - 6px);
+                flex: 1 1 calc(50% - 6px);
             }
 
             .signal-analysis-grid {
@@ -1243,14 +1227,8 @@
                 grid-template-columns: 1fr;
             }
 
-            .signal-analysis-primary-btn,
             .signal-analysis-link {
                 flex-basis: 100%;
-            }
-
-            .signal-analysis-date-field .date-input {
-                min-width: 0;
-                flex: 1 1 auto;
             }
         }
 

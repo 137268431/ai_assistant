@@ -288,13 +288,23 @@ def _summarize_order_groups(orders: list[dict[str, Any]]) -> dict[str, Any]:
         "short": 0,
         "total": 0,
         "entry_order_count": 0,
+        "take_profit_order_count": 0,
+        "stop_loss_order_count": 0,
+        "close_order_count": 0,
         "status_counts": {key: 0 for key in ORDER_STATUS_KEYS},
         "group_status_counts": {key: 0 for key in ORDER_GROUP_STATUS_KEYS},
     }
     grouped: dict[str, list[dict[str, Any]]] = {}
     for index, order in enumerate(orders or []):
         grouped.setdefault(_order_signal_group_key(order, index), []).append(order)
-        if _is_entry_order(order):
+        role = _order_lifecycle_role(order)
+        if role == "take_profit" or role == "repair_tp":
+            summary["take_profit_order_count"] += 1
+        elif role == "stop_loss" or role == "repair_sl":
+            summary["stop_loss_order_count"] += 1
+        elif role in {"close", "manual_close", "market_close"}:
+            summary["close_order_count"] += 1
+        if role == "entry":
             bucket = _order_status_bucket(order)
             summary["status_counts"][bucket] = summary["status_counts"].get(bucket, 0) + 1
 
@@ -892,6 +902,9 @@ def build_home_dashboard_response(
             "short": order_summary["short"],
             "total": order_summary["total"],
             "entry_order_count": order_summary["entry_order_count"],
+            "take_profit_order_count": order_summary["take_profit_order_count"],
+            "stop_loss_order_count": order_summary["stop_loss_order_count"],
+            "close_order_count": order_summary["close_order_count"],
             "status_counts": order_summary["status_counts"],
             "group_status_counts": order_summary["group_status_counts"],
         },

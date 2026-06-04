@@ -237,6 +237,9 @@ class HomeOverviewApiTest(unittest.TestCase):
                 "short": 2,
                 "total": 4,
                 "entry_order_count": 5,
+                "take_profit_order_count": 1,
+                "stop_loss_order_count": 1,
+                "close_order_count": 0,
                 "status_counts": {"working": 1, "filled": 3, "cancelled": 1, "closed": 0, "other": 0},
                 "group_status_counts": {"open": 1, "filled": 1, "closed": 1, "cancelled": 1, "other": 0},
             },
@@ -279,6 +282,10 @@ class HomeOverviewApiTest(unittest.TestCase):
         self.assertAlmostEqual(payload["summary"]["pnl"]["total"], 97.67)
         self.assertAlmostEqual(payload["summary"]["pnl"]["realized_gross_pnl"], 100.0)
         self.assertAlmostEqual(payload["summary"]["pnl"]["commission"], 2.33)
+        self.assertAlmostEqual(payload["summary"]["pnl"]["entry_commission"], 1.33)
+        self.assertAlmostEqual(payload["summary"]["pnl"]["exit_commission"], 1.0)
+        self.assertEqual(payload["summary"]["pnl"]["commission_fill_count"], 3)
+        self.assertAlmostEqual(payload["summary"]["pnl"]["commission_per_exit"], 2.33)
         self.assertEqual(payload["summary"]["pnl"]["source"], "gateway_execution_fills")
         self.assertEqual(payload["summary"]["pnl"]["commission_source_label"], "IBKR commissionReport")
         self.assertEqual(payload["summary"]["pnl"]["commission_environment_label"], "Paper 模拟")

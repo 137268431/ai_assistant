@@ -180,6 +180,29 @@ def _next_date_token(date_token: str) -> str:
     return (datetime.strptime(date_token, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
 
 
+def _resolve_date_range(request_params: dict[str, Any], fallback_date: str) -> tuple[str, str, str | None]:
+    has_range = bool(_text(request_params.get("start_date")) or _text(request_params.get("end_date")))
+    if has_range:
+        start_date = _date_token(
+            request_params.get("start_date") or request_params.get("date") or request_params.get("market_date"),
+            fallback_date,
+        )
+        end_date = _date_token(
+            request_params.get("end_date")
+            or request_params.get("start_date")
+            or request_params.get("date")
+            or request_params.get("market_date")
+            or start_date,
+            start_date,
+        )
+    else:
+        start_date = _date_token(request_params.get("date") or request_params.get("market_date"), fallback_date)
+        end_date = start_date
+    if end_date < start_date:
+        return start_date, end_date, "invalid_date_range"
+    return start_date, end_date, None
+
+
 def _load_records(
     pb: Any,
     collection: str,
@@ -430,8 +453,18 @@ def build_daily_signal_analytics_response(
 ) -> tuple[dict[str, Any], int]:
     request_params = params if isinstance(params, dict) else {}
     fallback_date = _text((time_strings() or {}).get("date")) or datetime.utcnow().strftime("%Y-%m-%d")
-    date_token = _date_token(request_params.get("date") or request_params.get("market_date"), fallback_date)
-    next_date = _next_date_token(date_token)
+    start_date, end_date, date_error = _resolve_date_range(request_params, fallback_date)
+    if date_error:
+        return {
+            "ok": False,
+            "source": "ibkr-api",
+            "error": date_error,
+            "message": "end_date must be on or after start_date",
+            "start_date": start_date,
+            "end_date": end_date,
+        }, 400
+    next_date = _next_date_token(end_date)
+    single_day = start_date == end_date
     # Console URLs often carry environment=live for market-data context; do not
     # let that override the intended default paper execution account.
     raw_broker_mode = request_params.get("broker_mode")
@@ -444,12 +477,20 @@ def build_daily_signal_analytics_response(
     )
     broker_escaped = escape_filter_string(broker_mode)
     data_escaped = escape_filter_string(data_environment)
-    date_escaped = escape_filter_string(date_token)
+    start_date_escaped = escape_filter_string(start_date)
+    end_date_escaped = escape_filter_string(end_date)
     next_date_escaped = escape_filter_string(next_date)
-    signal_filter = (
-        f'environment = "{data_escaped}" && '
-        f'(date = "{date_escaped}" || (us_time >= "{date_escaped} 00:00:00" && us_time < "{next_date_escaped} 00:00:00"))'
-    )
+    if single_day:
+        signal_filter = (
+            f'environment = "{data_escaped}" && '
+            f'(date = "{start_date_escaped}" || (us_time >= "{start_date_escaped} 00:00:00" && us_time < "{next_date_escaped} 00:00:00"))'
+        )
+    else:
+        signal_filter = (
+            f'environment = "{data_escaped}" && '
+            f'((date >= "{start_date_escaped}" && date <= "{end_date_escaped}") || '
+            f'(us_time >= "{start_date_escaped} 00:00:00" && us_time < "{next_date_escaped} 00:00:00"))'
+        )
     signals = _load_records(pb, SIGNALS_COLLECTION, filter_expr=signal_filter, sort="us_time", max_pages=30)
     signal_ids = [_text(row.get("signal_id")) for row in signals if _text(row.get("signal_id"))]
     unique_signal_ids = list(dict.fromkeys(signal_ids))
@@ -646,7 +687,10 @@ def build_daily_signal_analytics_response(
     payload = {
         "ok": True,
         "source": "ibkr-api",
-        "date": date_token,
+        "date": start_date,
+        "start_date": start_date,
+        "end_date": end_date,
+        "range_label": start_date if single_day else f"{start_date} ~ {end_date}",
         "broker_mode": broker_mode,
         "data_environment": data_environment,
         "signal_filter": signal_filter,

@@ -47,6 +47,14 @@ class _FakePB:
             if date_match:
                 token = date_match.group(1)
                 rows = [row for row in rows if row.get("date") == token or str(row.get("us_time") or "").startswith(token)]
+            range_match = re.search(r'date >= "(\d{4}-\d{2}-\d{2})" && date <= "(\d{4}-\d{2}-\d{2})"', text)
+            if range_match:
+                start_token, end_token = range_match.groups()
+                rows = [
+                    row
+                    for row in rows
+                    if start_token <= str(row.get("date") or row.get("us_time") or "")[:10] <= end_token
+                ]
         if collection == "orders":
             signal_ids = re.findall(r'signal_id = "([^"]+)"', text)
             if signal_ids:
@@ -217,6 +225,8 @@ class DailySignalAnalyticsTest(unittest.TestCase):
 
         self.assertTrue(payload["ok"])
         self.assertEqual("2026-05-21", payload["date"])
+        self.assertEqual("2026-05-21", payload["start_date"])
+        self.assertEqual("2026-05-21", payload["end_date"])
         self.assertEqual("paper", payload["broker_mode"])
         self.assertEqual("live", payload["data_environment"])
         self.assertEqual(3, payload["summary"]["total_signals"])
@@ -241,6 +251,80 @@ class DailySignalAnalyticsTest(unittest.TestCase):
         self.assertEqual(1, setup_counts["vwap_trend_pullback_long"])
         self.assertEqual(1, setup_counts["sd_squeeze_breakout_short"])
         self.assertEqual(1, setup_counts["sd_mr_reversal_long"])
+
+    def test_builds_range_signal_summary_with_start_and_end_dates(self):
+        records = {
+            "ibkr_signals": [
+                {
+                    "signal_id": "sig-day-1",
+                    "environment": "live",
+                    "date": "2026-05-20",
+                    "symbol": "AAPL",
+                    "direction": "long",
+                    "entry": 100,
+                    "take_profit": 110,
+                    "stop_loss": 95,
+                    "shares": 10,
+                    "rr": "2.0:1",
+                    "signal": "vwap_trend_pullback_long",
+                },
+                {
+                    "signal_id": "sig-day-2",
+                    "environment": "live",
+                    "date": "2026-05-21",
+                    "symbol": "TSLA",
+                    "direction": "short",
+                    "entry": 100,
+                    "take_profit": 90,
+                    "stop_loss": 105,
+                    "shares": 10,
+                    "rr": "2.0:1",
+                    "signal": "sd_squeeze_breakout_short",
+                },
+                {
+                    "signal_id": "sig-outside",
+                    "environment": "live",
+                    "date": "2026-05-22",
+                    "symbol": "MSFT",
+                    "direction": "long",
+                    "entry": 50,
+                    "take_profit": 53,
+                    "stop_loss": 48,
+                    "shares": 20,
+                    "rr": "1.5:1",
+                    "signal": "sd_mr_reversal_long",
+                },
+            ],
+            "orders": [],
+        }
+        payload, status_code = build_daily_signal_analytics_response(
+            _FakePB(records),
+            params={"start_date": "2026-05-20", "end_date": "2026-05-21"},
+            normalize_environment=_normalize_environment,
+            escape_filter_string=_escape_filter_string,
+            time_strings=lambda: {"date": "2026-05-21"},
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertEqual("2026-05-20", payload["start_date"])
+        self.assertEqual("2026-05-21", payload["end_date"])
+        self.assertEqual("2026-05-20 ~ 2026-05-21", payload["range_label"])
+        self.assertEqual(2, payload["summary"]["total_signals"])
+        self.assertEqual({"vwap_trend_pullback_long", "sd_squeeze_breakout_short"}, {row["key"] for row in payload["setup_rows"]})
+
+    def test_rejects_invalid_range(self):
+        payload, status_code = build_daily_signal_analytics_response(
+            _FakePB({"ibkr_signals": [], "orders": []}),
+            params={"start_date": "2026-05-22", "end_date": "2026-05-21"},
+            normalize_environment=_normalize_environment,
+            escape_filter_string=_escape_filter_string,
+            time_strings=lambda: {"date": "2026-05-21"},
+        )
+
+        self.assertEqual(400, status_code)
+        self.assertFalse(payload["ok"])
+        self.assertEqual("invalid_date_range", payload["error"])
 
     def test_no_winners_returns_null_profit_loss_ratio_with_reason(self):
         records = {
@@ -325,6 +409,9 @@ class DailySignalAnalyticsTest(unittest.TestCase):
         for token in (
             "signal-rule-analysis",
             "/api/custom/ibkr/analytics/daily-signals",
+            'data-range="today"',
+            "start_date: range.startDateText",
+            "end_date: range.endDateText",
             "allow_fallback: 0",
             "strict: 1",
             "dataInsufficient",
@@ -333,6 +420,8 @@ class DailySignalAnalyticsTest(unittest.TestCase):
             "loadSignalAnalysis",
         ):
             self.assertIn(token, stats_html)
+        self.assertNotIn("signalAnalysisDate", stats_html)
+        self.assertNotIn("今日信号规则分析", stats_html)
         self.assertNotIn("signalsAnalysisLink", signals_html)
         self.assertIn("/ibkr_stats.html", nav_js)
         self.assertIn("label: '复盘'", nav_js)

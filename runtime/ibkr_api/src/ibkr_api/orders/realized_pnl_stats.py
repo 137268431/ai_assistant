@@ -25,6 +25,10 @@ def empty_realized_pnl_stats() -> dict[str, Any]:
         "realized_net_pnl": 0.0,
         "realized_gross_pnl": 0.0,
         "commission": 0.0,
+        "entry_commission": 0.0,
+        "exit_commission": 0.0,
+        "commission_fill_count": 0,
+        "commission_per_exit": 0.0,
         "exit_count": 0,
         "win_count": 0,
         "loss_count": 0,
@@ -432,6 +436,9 @@ def build_realized_pnl_stats(
             stats["realized_gross_pnl"] += gross_pnl
             stats["realized_net_pnl"] += net_pnl
             stats["commission"] += commission
+            stats["entry_commission"] += entry_commission
+            stats["exit_commission"] += exit_commission
+            stats["commission_fill_count"] += len(entry_fills) + len(exit_fills)
             if net_pnl > EPSILON:
                 stats["win_count"] += 1
                 stats["profit_amount"] += net_pnl
@@ -445,11 +452,16 @@ def build_realized_pnl_stats(
         "realized_net_pnl",
         "realized_gross_pnl",
         "commission",
+        "entry_commission",
+        "exit_commission",
         "profit_amount",
         "loss_amount",
         "estimated_total",
     ):
         stats[key] = _round_money(stats[key])
+    stats["commission_per_exit"] = _round_money(
+        stats["commission"] / stats["exit_count"] if stats["exit_count"] else 0.0
+    )
     stats["total"] = stats["realized_net_pnl"]
     return stats
 

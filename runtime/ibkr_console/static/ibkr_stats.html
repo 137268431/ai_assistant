@@ -26,8 +26,10 @@
             <div class="stats-toolbar">
                 <div class="page-toolbar-row">
                     <div class="date-range-selector">
+                        <button class="date-range-btn active" data-range="today">今日</button>
+                        <button class="date-range-btn" data-range="yesterday">昨日</button>
                         <button class="date-range-btn" data-range="7days">近7天</button>
-                        <button class="date-range-btn active" data-range="30days">近30天</button>
+                        <button class="date-range-btn" data-range="30days">近30天</button>
                         <button class="date-range-btn" data-range="90days">近90天</button>
                         <button class="date-range-btn" data-range="all">全部</button>
                     </div>
@@ -149,21 +151,17 @@
                     </tbody>
                 </table>
             </div>
+            <div class="realized-symbol-pagination" id="realizedSymbolPagination"></div>
         </section>
 
         <section class="signal-analysis-panel" id="signal-rule-analysis">
             <div class="signal-analysis-head">
                 <div class="signal-analysis-title-block">
                     <div class="signal-analysis-kicker">LIVE RULE DESK</div>
-                    <div class="section-title signal-analysis-title">今日信号规则分析</div>
-                    <div class="signal-analysis-copy">按 live 信号 + 当前 Broker 执行口径聚合规则分布、计划 RR、实际平仓盈亏。</div>
+                    <div class="section-title signal-analysis-title">信号规则分析</div>
+                    <div class="signal-analysis-copy">按当前日期范围内 live 信号 + 当前 Broker 执行口径聚合规则分布、计划 RR、实际平仓盈亏。</div>
                 </div>
                 <div class="signal-analysis-tools">
-                    <label class="signal-analysis-date-field">
-                        <span>日期</span>
-                        <input type="date" class="date-input" id="signalAnalysisDate" title="分析日期">
-                    </label>
-                    <button class="apply-date-btn signal-analysis-primary-btn" onclick="loadSignalAnalysis({ force: true })">分析</button>
                     <a class="mini-link signal-analysis-link" id="signalAnalysisSignalsLink" href="/ibkr_signals.html">信号列表</a>
                     <a class="mini-link signal-analysis-link" id="signalAnalysisOrdersLink" href="/orders.html">订单列表</a>
                 </div>
@@ -275,7 +273,16 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <script>
-        let currentRange = '30days';
+        const STATS_RANGE_LABELS = {
+            today: '今日',
+            yesterday: '昨日',
+            '7days': '近7天',
+            '30days': '近30天',
+            '90days': '近90天',
+            all: '全部',
+            custom: '自定义',
+        };
+        let currentRange = 'today';
         let customStartDate = null;
         let customEndDate = null;
         let currentEnvironment = getCurrentRuntimeEnvironment();
@@ -291,6 +298,8 @@
         let currentPage = 1;
         const pageSize = 20;
         let allTrades = [];
+        const realizedSymbolPageSizeOptions = [10, 20, 50];
+        const realizedSymbolPaginationState = { page: 1, pageSize: 10 };
 
         // Cache last loaded data so resize can redraw charts without refetching.
         let cachedOrders = null;
@@ -456,8 +465,90 @@
                 .replace(/'/g, '&#39;');
         }
 
-        function getSignalAnalysisDate() {
-            return document.getElementById('signalAnalysisDate')?.value || getCurrentEtDateString();
+        function normalizeStatsDateInput(value) {
+            const text = String(value || '').trim();
+            return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : '';
+        }
+
+        function resolveStatsRange() {
+            const today = getCurrentEtDateString();
+            let startDateText = today;
+            let endDateText = today;
+            const hasCustomRange = Boolean(customStartDate && customEndDate);
+            if (hasCustomRange) {
+                startDateText = customStartDate;
+                endDateText = customEndDate;
+            } else if (currentRange === 'yesterday') {
+                startDateText = shiftDateString(today, -1);
+                endDateText = startDateText;
+            } else if (currentRange === '7days') {
+                startDateText = shiftDateString(today, -7);
+            } else if (currentRange === '30days') {
+                startDateText = shiftDateString(today, -30);
+            } else if (currentRange === '90days') {
+                startDateText = shiftDateString(today, -90);
+            } else if (currentRange === 'all') {
+                startDateText = '2020-01-01';
+            } else {
+                currentRange = 'today';
+            }
+            const isSingleDay = startDateText === endDateText;
+            return {
+                rangeKey: hasCustomRange ? 'custom' : currentRange,
+                startDateText,
+                endDateText,
+                isSingleDay,
+                displayLabel: isSingleDay ? startDateText : `${startDateText} ~ ${endDateText}`,
+                label: hasCustomRange ? STATS_RANGE_LABELS.custom : (STATS_RANGE_LABELS[currentRange] || STATS_RANGE_LABELS.today),
+            };
+        }
+
+        function syncStatsDateInputs(range = resolveStatsRange()) {
+            const startInput = document.getElementById('startDate');
+            const endInput = document.getElementById('endDate');
+            if (startInput) startInput.value = range.startDateText;
+            if (endInput) endInput.value = range.endDateText;
+        }
+
+        function syncStatsRangeButtons() {
+            const activeKey = customStartDate && customEndDate ? '' : currentRange;
+            document.querySelectorAll('.date-range-btn').forEach((btn) => {
+                btn.classList.toggle('active', btn.dataset.range === activeKey);
+            });
+        }
+
+        function initializeStatsRangeFromUrl(urlParams) {
+            const startDate = normalizeStatsDateInput(urlParams.get('start_date'));
+            const endDate = normalizeStatsDateInput(urlParams.get('end_date'));
+            const date = normalizeStatsDateInput(urlParams.get('date') || urlParams.get('market_date'));
+            if (startDate || endDate) {
+                customStartDate = startDate || endDate;
+                customEndDate = endDate || startDate;
+                currentRange = 'custom';
+            } else if (date) {
+                const today = getCurrentEtDateString();
+                const yesterday = shiftDateString(today, -1);
+                if (date === today) {
+                    currentRange = 'today';
+                    customStartDate = null;
+                    customEndDate = null;
+                } else if (date === yesterday) {
+                    currentRange = 'yesterday';
+                    customStartDate = null;
+                    customEndDate = null;
+                } else {
+                    currentRange = 'custom';
+                    customStartDate = date;
+                    customEndDate = date;
+                }
+            }
+            if (customStartDate && customEndDate && customEndDate < customStartDate) {
+                const nextStart = customEndDate;
+                customEndDate = customStartDate;
+                customStartDate = nextStart;
+            }
+            syncStatsRangeButtons();
+            syncStatsDateInputs();
         }
 
         function formatStatsNumber(value, digits = 0) {
@@ -629,12 +720,15 @@
             return payload;
         }
 
-        async function loadSignalAnalysis({ force = false } = {}) {
-            const date = getSignalAnalysisDate();
+        async function loadSignalAnalysis({ startDateText, endDateText, force = false } = {}) {
+            const range = startDateText && endDateText
+                ? { startDateText, endDateText }
+                : resolveStatsRange();
             const brokerMode = typeof getConsoleBrokerMode === 'function' ? getConsoleBrokerMode() : getCurrentBrokerMode();
             const dataEnvironment = typeof getSharedDataEnvironment === 'function' ? getSharedDataEnvironment() : currentEnvironment;
             const path = `/api/custom/ibkr/analytics/daily-signals${buildStatsQuery({
-                date,
+                start_date: range.startDateText,
+                end_date: range.endDateText,
                 broker_mode: brokerMode,
                 data_environment: dataEnvironment
             })}`;
@@ -644,7 +738,7 @@
                 renderSignalAnalysis(payload);
                 return payload;
             } catch (error) {
-                console.error('加载今日信号分析失败:', error);
+                console.error('加载信号规则分析失败:', error);
                 renderSignalAnalysisError(error.message || String(error));
                 return null;
             }
@@ -659,11 +753,12 @@
             if (table) table.innerHTML = `<tr><td colspan="10" class="loading">${escapeStatsHtml(message)}</td></tr>`;
         }
 
-        function renderSignalAnalysisMeta({ date, brokerMode, dataEnvironment, ordered, total }) {
+        function renderSignalAnalysisMeta({ startDate, endDate, brokerMode, dataEnvironment, ordered, total }) {
             const meta = document.getElementById('signalAnalysisMeta');
             if (!meta) return;
+            const isSingleDay = startDate && endDate && startDate === endDate;
             meta.innerHTML = [
-                ['date', date],
+                [isSingleDay ? 'date' : 'range', isSingleDay ? startDate : `${startDate || '--'} ~ ${endDate || '--'}`],
                 ['broker', getEnvironmentLabel(brokerMode)],
                 ['data', getEnvironmentLabel(dataEnvironment)],
                 ['ordered', `${ordered}/${total}`],
@@ -691,21 +786,25 @@
             const summary = payload?.summary || {};
             const realized = summary.realized || {};
             const topRule = summary.top_rule || {};
-            const date = payload?.date || getSignalAnalysisDate();
+            const range = resolveStatsRange();
+            const startDate = payload?.start_date || payload?.date || range.startDateText;
+            const endDate = payload?.end_date || payload?.date || range.endDateText;
+            const linkDate = endDate || startDate || getCurrentEtDateString();
             const brokerMode = payload?.broker_mode || (typeof getConsoleBrokerMode === 'function' ? getConsoleBrokerMode() : 'paper');
             const dataEnvironment = payload?.data_environment || currentEnvironment;
             const netPnl = Number(realized.net_pnl || 0);
             const netPnlTone = valueToneClass(netPnl);
             const ratioReason = realized.profit_loss_ratio_reason ? ` · ${realized.profit_loss_ratio_reason}` : '';
             renderSignalAnalysisMeta({
-                date,
+                startDate,
+                endDate,
                 brokerMode,
                 dataEnvironment,
                 ordered: summary.ordered_signals || 0,
                 total: summary.total_signals || 0
             });
-            const signalUrl = buildPageUrl('/ibkr_signals.html', { date }, { brokerMode, dataEnvironment });
-            const orderUrl = buildPageUrl('/orders.html', { date }, { environment: brokerMode, brokerMode, dataEnvironment });
+            const signalUrl = buildPageUrl('/ibkr_signals.html', { date: linkDate }, { brokerMode, dataEnvironment });
+            const orderUrl = buildPageUrl('/orders.html', { date: linkDate }, { environment: brokerMode, brokerMode, dataEnvironment });
             document.getElementById('signalAnalysisSignalsLink').href = signalUrl;
             document.getElementById('signalAnalysisOrdersLink').href = orderUrl;
             document.getElementById('signalAnalysisCards').innerHTML = [
@@ -1305,19 +1404,65 @@
             }
         }
 
-        function renderRealizedPnlTable(normalized) {
+        function renderRealizedSymbolPagination(rows) {
+            const paginationEl = document.getElementById('realizedSymbolPagination');
+            if (!paginationEl) {
+                return { pageRows: rows };
+            }
+            if (typeof createClientPaginationModel !== 'function' || typeof renderClientPaginationBar !== 'function') {
+                paginationEl.innerHTML = '';
+                return { pageRows: rows };
+            }
+            const model = createClientPaginationModel(rows, realizedSymbolPaginationState, {
+                pageSize: 10,
+                pageSizeOptions: realizedSymbolPageSizeOptions,
+            });
+            realizedSymbolPaginationState.page = model.page;
+            realizedSymbolPaginationState.pageSize = model.pageSize;
+            paginationEl.innerHTML = renderClientPaginationBar(model, {
+                key: 'realizedSymbol',
+                label: '标的',
+                pageAction: 'setRealizedSymbolPage',
+                pageSizeAction: 'setRealizedSymbolPageSize',
+                buttonClass: 'realized-symbol-page-btn',
+                rootClass: 'client-pagination page-pagination realized-symbol-pagination-bar',
+            });
+            return model;
+        }
+
+        function setRealizedSymbolPage(_key, page) {
+            realizedSymbolPaginationState.page = Math.max(1, Number(page || 1));
+            renderRealizedPnlTable(cachedRealizedPnlAnalytics?.normalized);
+        }
+
+        function setRealizedSymbolPageSize(_key, pageSize) {
+            const requestedSize = Number(pageSize || realizedSymbolPaginationState.pageSize);
+            realizedSymbolPaginationState.pageSize = realizedSymbolPageSizeOptions.includes(requestedSize)
+                ? requestedSize
+                : realizedSymbolPageSizeOptions[0];
+            realizedSymbolPaginationState.page = 1;
+            renderRealizedPnlTable(cachedRealizedPnlAnalytics?.normalized);
+        }
+
+        function renderRealizedPnlTable(normalized, { resetPage = false } = {}) {
             const tbody = document.getElementById('realizedSymbolTable');
+            const paginationEl = document.getElementById('realizedSymbolPagination');
             if (!tbody) return;
-            if (normalized.dataInsufficient) {
+            if (!normalized || normalized.dataInsufficient) {
                 tbody.innerHTML = '<tr><td colspan="10" class="loading">缺少完整 IBKR execution fills / commissionReport，无法给出准确标的盈亏。</td></tr>';
+                if (paginationEl) paginationEl.innerHTML = '';
                 return;
             }
             const rows = Array.isArray(normalized.symbolRows) ? normalized.symbolRows : [];
             if (!rows.length) {
                 tbody.innerHTML = '<tr><td colspan="10" class="loading">暂无标的已实现盈亏数据</td></tr>';
+                if (paginationEl) paginationEl.innerHTML = '';
                 return;
             }
-            tbody.innerHTML = rows.map((row) => {
+            if (resetPage) realizedSymbolPaginationState.page = 1;
+            const pageModel = renderRealizedSymbolPagination(rows);
+            const pageRows = Array.isArray(pageModel.pageRows) ? pageModel.pageRows : rows;
+            tbody.innerHTML = pageRows.map((row) => {
                 const netTone = Number(row.netPnl || 0) >= 0 ? 'pnl-positive' : 'pnl-negative';
                 const avgTone = Number(row.avgPnl || 0) >= 0 ? 'pnl-positive' : 'pnl-negative';
                 return `
@@ -1345,7 +1490,7 @@
             renderRealizedPnlMeta(normalized);
             renderRealizedPnlCards(normalized);
             renderRealizedPnlCharts(normalized);
-            renderRealizedPnlTable(normalized);
+            renderRealizedPnlTable(normalized, { resetPage: true });
             return normalized;
         }
 
@@ -1381,23 +1526,12 @@
         async function loadStats({ forceAnalytics = false } = {}) {
             try {
                 setChartHeights();
-                let endDateText = getCurrentEtDateString();
-                let startDateText = endDateText;
+                const range = resolveStatsRange();
+                const startDateText = range.startDateText;
+                const endDateText = range.endDateText;
+                syncStatsDateInputs(range);
+                syncStatsRangeButtons();
                 const softErrors = [];
-
-                // 优先使用自定义日期
-                if (customStartDate && customEndDate) {
-                    startDateText = customStartDate;
-                    endDateText = customEndDate;
-                } else if (currentRange === '7days') {
-                    startDateText = shiftDateString(endDateText, -7);
-                } else if (currentRange === '30days') {
-                    startDateText = shiftDateString(endDateText, -30);
-                } else if (currentRange === '90days') {
-                    startDateText = shiftDateString(endDateText, -90);
-                } else {
-                    startDateText = '2020-01-01';
-                }
 
                 const rangeBounds = getEtDateRangeBoundsMs(startDateText, endDateText);
                 const startTimeMs = rangeBounds.startMs;
@@ -1409,6 +1543,11 @@
                 const orderFilter = `environment = "${escapeQueryValue(brokerMode)}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`;
                 const signalFilter = `environment = "${escapeQueryValue(dataEnvironment)}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`;
                 const realizedPnlPromise = loadRealizedPnlAnalytics({
+                    startDateText,
+                    endDateText,
+                    force: forceAnalytics,
+                });
+                const signalAnalysisPromise = loadSignalAnalysis({
                     startDateText,
                     endDateText,
                     force: forceAnalytics,
@@ -1441,6 +1580,7 @@
                 }
 
                 const realizedPnlAnalytics = await realizedPnlPromise;
+                await signalAnalysisPromise;
                 const realizedPnlSummary = realizedPnlAnalytics?.summary || null;
                 const stats = calculateStats(orders, realizedPnlAnalytics);
                 renderStats(stats, ibkr_signals, realizedPnlAnalytics);
@@ -1455,7 +1595,7 @@
                 setPageContextMeta([
                     { label: 'Broker', value: getEnvironmentLabel(brokerMode), tone: brokerMode },
                     { label: 'Data', value: getEnvironmentLabel(dataEnvironment), tone: dataEnvironment },
-                    { label: '范围', value: customStartDate && customEndDate ? `${customStartDate} ~ ${customEndDate}` : currentRange },
+                    { label: '范围', value: `${range.label} ${range.displayLabel}` },
                     { label: '订单', value: `${stats.totalOrders} / ${stats.rawOrders} IBKR` },
                     { label: '信号', value: `${ibkr_signals.length} 条` },
                     {
@@ -1789,6 +1929,7 @@
             document.querySelectorAll('.date-range-btn').forEach(b => b.classList.remove('active'));
 
             // 设置自定义日期
+            currentRange = 'custom';
             customStartDate = startInput;
             customEndDate = endInput;
 
@@ -1800,6 +1941,9 @@
                 document.querySelectorAll('.date-range-btn').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
                 currentRange = btn.dataset.range;
+                customStartDate = null;
+                customEndDate = null;
+                syncStatsDateInputs();
                 loadStats();
             });
         });
@@ -1807,15 +1951,12 @@
         function manualRefresh() {
             spinPageRefreshButton('statsRefreshBtn');
             loadStats({ forceAnalytics: true });
-            loadSignalAnalysis({ force: true });
         }
 
         document.addEventListener('DOMContentLoaded', async () => {
             await initAuth();
             const urlParams = new URLSearchParams(window.location.search);
-            const analysisDate = urlParams.get('date') || getCurrentEtDateString();
-            const analysisDateInput = document.getElementById('signalAnalysisDate');
-            if (analysisDateInput) analysisDateInput.value = analysisDate;
+            initializeStatsRangeFromUrl(urlParams);
             document.getElementById('statsRefreshControl').innerHTML = renderPageRefreshControl({
                 mode: 'manual',
                 buttonId: 'statsRefreshBtn',
@@ -1832,7 +1973,7 @@
             document.getElementById('nav').innerHTML = renderNav('/ibkr_stats.html');
             setChartHeights();
             await withPageLoading(
-                () => Promise.all([loadStats(), loadSignalAnalysis()]),
+                () => loadStats(),
                 {
                     title: '统计页加载中',
                     copy: '正在同步已实现盈亏、信号、订单、规则分布和平仓统计图表。',
