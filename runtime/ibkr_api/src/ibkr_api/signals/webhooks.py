@@ -24,8 +24,13 @@ _CONFIRM_STATUS_HINTS = {
     "rejected": ("fail", "信号已拒绝", "该信号已被拒绝，无法重复操作"),
     "executed": ("ok", "信号已执行", "该信号已执行，无需重复操作"),
     "submitted": ("ok", "订单已提交", "该信号已提交到券商，等待成交或后续订单回报"),
+    "submitted_waiting_fill": ("ok", "订单已提交", "该信号已提交到券商，等待成交"),
     "protected_active": ("ok", "保护单已生效", "入场已成交且止盈/止损保护单已提交，无需重复确认"),
+    "filled_repricing_protection": ("ok", "保护单重定价中", "入场已成交，止盈/止损保护单正在按实际成交价重定价"),
+    "filled_position": ("ok", "持仓已建立", "入场已成交且持仓已建立，无需重复确认"),
     "protection_incomplete": ("warn", "保护单不完整", "入场或下单链路已推进，但保护单未完整生效；请到 Orders / Account 核查"),
+    "protection_reprice_failed": ("warn", "保护单重定价失败", "入场已成交但保护单重定价失败；请立即核查 Orders / Account"),
+    "entry_missed_limit_cap": ("fail", "入场未成交", "该信号因限价上限或未成交错过，无法重复操作"),
     "pending": ("ok", "信号已确认", "该信号已确认，无需重复操作"),
 }
 
@@ -34,8 +39,13 @@ _CANCEL_STATUS_HINTS = {
     "rejected": ("fail", "信号已拒绝", "该信号已被拒绝，无法重复操作"),
     "executed": ("warn", "信号已执行", "信号已执行，无法取消"),
     "submitted": ("warn", "订单已提交", "订单已提交到券商，不能再按信号拒绝取消"),
+    "submitted_waiting_fill": ("warn", "订单已提交", "订单已提交到券商并等待成交，不能再按信号拒绝取消"),
     "protected_active": ("warn", "保护单已生效", "入场已成交且保护单已提交，不能再按信号拒绝取消"),
+    "filled_repricing_protection": ("warn", "保护单重定价中", "入场已成交且保护单正在重定价，不能再按信号拒绝取消"),
+    "filled_position": ("warn", "持仓已建立", "入场已成交且持仓已建立，不能再按信号拒绝取消"),
     "protection_incomplete": ("warn", "保护单不完整", "保护单未完整生效，不能再按信号拒绝取消；请先核查券商订单"),
+    "protection_reprice_failed": ("warn", "保护单重定价失败", "入场已成交但保护单重定价失败，不能再按信号拒绝取消；请先核查券商订单"),
+    "entry_missed_limit_cap": ("fail", "入场未成交", "该信号因限价上限或未成交错过，无法取消"),
     "pending": ("warn", "信号已确认", "该信号已确认，无法取消"),
 }
 

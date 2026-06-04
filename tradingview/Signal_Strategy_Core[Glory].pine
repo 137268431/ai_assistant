@@ -60,6 +60,7 @@ maxCostPctOfReward = input.float(15.0, "Maximum cost / reward (%)", step=1.0, mi
 minTargetAtrMultipleForEntry = input.float(2.0, "Minimum target distance (x ATR)", step=0.25, minval=0.0, group="05 Risk")
 estimatedRoundTripFee = input.float(2.10, "Estimated round-trip fixed costs ($)", step=0.05, minval=0.0, group="05 Risk")
 estimatedSlippagePerSharePerSide = input.float(0.05, "Estimated slippage/share/side ($)", step=0.01, minval=0.0, group="05 Risk")
+tvEntryLimitCapBps = input.float(15.0, "TV->IBKR entry limit cap (bps)", step=1.0, minval=0.0, group="05 Risk")
 
 crsiDomcycle = input.int(20, "cRSI dominant cycle", minval=10, group="06 Oscillators")
 crsiVibration = input.int(6, "cRSI vibration", minval=1, group="06 Oscillators")
@@ -245,6 +246,15 @@ calcRunnerActivationTarget(float entryPrice, float stopPrice, int direction) =>
 calcRunnerSafetyTarget(float entryPrice, float stopPrice, int direction) =>
     float safetyR = math.max(math.max(rrRatio, runnerSafetyR), runnerActivationR)
     calcTargetAtR(entryPrice, stopPrice, direction, safetyR)
+
+roundEntryLimitToTick(float price, int direction) =>
+    float tick = math.max(syminfo.mintick, 0.00000001)
+    direction == -1 ? math.floor(price / tick) * tick : math.ceil(price / tick) * tick
+
+calcSubmittedEntryLimit(float referenceEntry, int direction) =>
+    float cap = tvEntryLimitCapBps / 10000.0
+    float rawLimit = direction == -1 ? referenceEntry * (1.0 - cap) : referenceEntry * (1.0 + cap)
+    roundEntryLimitToTick(rawLimit, direction)
 
 exitTouchesTarget(int direction, float exitPrice, float targetPrice) =>
     not na(targetPrice) and (math.abs(exitPrice - targetPrice) <= syminfo.mintick * 2.0 or (direction == 1 ? exitPrice >= targetPrice : exitPrice <= targetPrice))
@@ -1047,7 +1057,7 @@ calcShortStop(float entryPrice, float qty) =>
     float riskStop = qty > 0.0 ? entryPrice + maxLossPerTrade / qty : atrStop
     math.min(atrStop, riskStop)
 
-buildEntryPayload(string eventIdValue, string signalIdValue, string tradeGroupIdValue, string positionIdValue, string direction, string setup, string reason, float qty, float entryPrice, float stopPrice, float targetPrice, float runnerActivationPrice, bool runnerMode, string divSource, string touchLine) =>
+buildEntryPayload(string eventIdValue, string signalIdValue, string tradeGroupIdValue, string positionIdValue, string direction, string setup, string reason, float qty, float entryPrice, float submittedLimitPrice, float stopPrice, float targetPrice, float runnerActivationPrice, bool runnerMode, string divSource, string touchLine) =>
     float riskPerShare = direction == "long" ? entryPrice - stopPrice : stopPrice - entryPrice
     float targetCheckpoint = runnerMode ? runnerActivationPrice : targetPrice
     basePayload("entry", eventIdValue, positionIdValue) +
@@ -1069,6 +1079,18 @@ buildEntryPayload(string eventIdValue, string signalIdValue, string tradeGroupId
      jsonNum("shares", qty) +
      jsonNum("entry_price", entryPrice) +
      jsonNum("entry", entryPrice) +
+     jsonNum("reference_entry", entryPrice) +
+     jsonNum("reference_stop_loss", stopPrice) +
+     jsonNum("reference_take_profit", targetPrice) +
+     jsonNum("submitted_entry_limit_price", submittedLimitPrice) +
+     jsonNum("submitted_limit_cap_price", submittedLimitPrice) +
+     jsonNum("submitted_limit_cap_bps", tvEntryLimitCapBps) +
+     jsonBool("submitted_limit_cap_applied", true) +
+     jsonBool("reference_protection_only", true) +
+     jsonBool("final_protection_from_fill", true) +
+     jsonStr("entry_order_type", "LMT") +
+     jsonStr("entry_limit_intent", "bounded_marketable") +
+     jsonStr("entry_price_plan", "tv_direct_bounded_limit") +
      jsonNum("stop_loss", stopPrice) +
      jsonNum("take_profit", targetPrice) +
      jsonNum("target_checkpoint", targetCheckpoint) +
@@ -1336,6 +1358,7 @@ if enterLong
         float hardTargetPrice = longHardTargetCandidate
         float runnerActivationPrice = longRunnerActivationCandidate
         float targetPrice = longTargetCandidate
+        float submittedLimitPrice = calcSubmittedEntryLimit(entryPrice, 1)
         string posId = positionId("long")
         string tradeGroup = tradeGroupId("long", longSetup)
         string entryEventId = eventId("entry", longSetup)
@@ -1357,10 +1380,10 @@ if enterLong
         activeBreakevenDone := false
         activeRiskUpdateSeq := 0
         string divSourceForEntry = bullDivSource == "" ? bullDivSourceNow : bullDivSource
-        strategy.entry("TV-L", strategy.long, qty=qty, comment=entryComment("long", longSetup))
+        strategy.entry("TV-L", strategy.long, qty=qty, limit=submittedLimitPrice, comment=entryComment("long", longSetup))
         strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment="平多 · TP/SL", comment_profit="平多 · TP止盈", comment_loss="平多 · SL止损")
         if showFlowLabels
-            label.new(bar_index, low - atrVal * 3.1, "买入做多\n" + setupDisplayName(longSetup) + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("long") + "\n" + dtpEntryFilterText("long", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\n" + profitSpaceSummaryText(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr) + "\nentry " + str.tostring(entryPrice, "#.##"), style=label.style_label_up, color=flowLabelColor("entry", "long"), textcolor=color.white, size=size.normal)
+            label.new(bar_index, low - atrVal * 3.1, "买入做多\n" + setupDisplayName(longSetup) + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("long") + "\n" + dtpEntryFilterText("long", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\n" + profitSpaceSummaryText(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr) + "\nentry " + str.tostring(entryPrice, "#.##") + " / LMT " + str.tostring(submittedLimitPrice, "#.##"), style=label.style_label_up, color=flowLabelColor("entry", "long"), textcolor=color.white, size=size.normal)
         lowerWindowUsed := setupLongMrLower ? true : lowerWindowUsed
         upperWindowUsed := setupLongTrendUpper ? true : upperWindowUsed
         bullDivSeen := false
@@ -1368,7 +1391,7 @@ if enterLong
         bullDivBar := na
         if enableAlerts
             string touchLine = setupLongTrendUpper ? upperBullTouchLine : "none"
-            alert(buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, "long", longSetup, longReason, qty, entryPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode, divSourceForEntry, touchLine), alert.freq_all)
+            alert(buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, "long", longSetup, longReason, qty, entryPrice, submittedLimitPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode, divSourceForEntry, touchLine), alert.freq_all)
             activeRiskUpdateSeq := activeRiskUpdateSeq + 1
             alert(buildRiskPayload(eventId("risk_update", "initial"), posId, "initial_protection", "stop_loss,take_profit", na, na, stopPrice, targetPrice), alert.freq_all)
 
@@ -1381,6 +1404,7 @@ if enterShort
         float hardTargetPrice = shortHardTargetCandidate
         float runnerActivationPrice = shortRunnerActivationCandidate
         float targetPrice = shortTargetCandidate
+        float submittedLimitPrice = calcSubmittedEntryLimit(entryPrice, -1)
         string posId = positionId("short")
         string tradeGroup = tradeGroupId("short", shortSetup)
         string entryEventId = eventId("entry", shortSetup)
@@ -1402,10 +1426,10 @@ if enterShort
         activeBreakevenDone := false
         activeRiskUpdateSeq := 0
         string divSourceForEntry = bearDivSource == "" ? bearDivSourceNow : bearDivSource
-        strategy.entry("TV-S", strategy.short, qty=qty, comment=entryComment("short", shortSetup))
+        strategy.entry("TV-S", strategy.short, qty=qty, limit=submittedLimitPrice, comment=entryComment("short", shortSetup))
         strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment="平空 · TP/SL", comment_profit="平空 · TP止盈", comment_loss="平空 · SL止损")
         if showFlowLabels
-            label.new(bar_index, high + atrVal * 3.1, "卖出做空\n" + setupDisplayName(shortSetup) + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("short") + "\n" + dtpEntryFilterText("short", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\n" + profitSpaceSummaryText(shortExpectedNetProfit, shortExpectedNetRoiPct, shortCostPctOfReward, shortTargetDistanceAtr) + "\nentry " + str.tostring(entryPrice, "#.##"), style=label.style_label_down, color=flowLabelColor("entry", "short"), textcolor=color.white, size=size.normal)
+            label.new(bar_index, high + atrVal * 3.1, "卖出做空\n" + setupDisplayName(shortSetup) + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("short") + "\n" + dtpEntryFilterText("short", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\n" + profitSpaceSummaryText(shortExpectedNetProfit, shortExpectedNetRoiPct, shortCostPctOfReward, shortTargetDistanceAtr) + "\nentry " + str.tostring(entryPrice, "#.##") + " / LMT " + str.tostring(submittedLimitPrice, "#.##"), style=label.style_label_down, color=flowLabelColor("entry", "short"), textcolor=color.white, size=size.normal)
         upperWindowUsed := setupShortMrUpper ? true : upperWindowUsed
         lowerWindowUsed := setupShortTrendLower ? true : lowerWindowUsed
         bearDivSeen := false
@@ -1413,7 +1437,7 @@ if enterShort
         bearDivBar := na
         if enableAlerts
             string touchLine = setupShortTrendLower ? lowerBearTouchLine : "none"
-            alert(buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, "short", shortSetup, shortReason, qty, entryPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode, divSourceForEntry, touchLine), alert.freq_all)
+            alert(buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, "short", shortSetup, shortReason, qty, entryPrice, submittedLimitPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode, divSourceForEntry, touchLine), alert.freq_all)
             activeRiskUpdateSeq := activeRiskUpdateSeq + 1
             alert(buildRiskPayload(eventId("risk_update", "initial"), posId, "initial_protection", "stop_loss,take_profit", na, na, stopPrice, targetPrice), alert.freq_all)
 

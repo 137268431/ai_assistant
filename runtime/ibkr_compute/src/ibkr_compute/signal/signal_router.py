@@ -45,6 +45,9 @@ class SignalRouter:
             return True
         if status in {
             "submitted",
+            "submitted_waiting_fill",
+            "filled_repricing_protection",
+            "filled_position",
             "rejected",
             "expired",
             "blocked",
@@ -52,6 +55,14 @@ class SignalRouter:
             "validation_rejected",
             "submit_failed",
             "protection_incomplete",
+            "protection_reprice_failed",
+            "entry_missed_limit_cap",
+            "ignored_no_broker_position",
+            "stale_signal",
+            "signal_clock_skew",
+            "stale_signal/signal_clock_skew",
+            "executed",
+            "closed",
         }:
             return True
         top_level_status = str(row.get("status") or "").strip().lower()

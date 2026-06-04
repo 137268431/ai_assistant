@@ -33,6 +33,7 @@ TV_TRANSIENT_SIGNAL_TERMINAL_STATUSES = {
     "rejected",
     "expired",
     "blocked",
+    "entry_missed_limit_cap",
     "validation_rejected",
     "submit_failed",
 }

@@ -636,6 +636,57 @@ class TwoFactorBuildersTest(unittest.TestCase):
         self.assertTrue(normalized["gateway_2fa_not_reached"])
         self.assertIn("API 端口未开放", normalized["message"])
 
+    def test_authenticated_runtime_clears_stale_gateway_reset_flags(self):
+        state = {
+            "status": "triggered",
+            "message": "等待手机确认 IBKR 2FA。",
+            "last_result": "waiting_mobile_approval",
+            "reset_recommended": True,
+            "reset_reason": "gateway_socket_unreachable",
+            "gateway_2fa_not_reached": True,
+            "disconnect_reason_code": "local_socket_unreachable",
+            "disconnect_reason_label": "本地 Gateway Socket 不可达",
+            "disconnect_reason_confidence": "high",
+            "disconnect_reason_evidence": {"status_code": 503, "error_codes": [502]},
+        }
+        runtime_status = {
+            "session": {"authenticated": True, "running": True},
+            "gateway": {
+                "running": True,
+                "reachable": True,
+                "status_code": 200,
+                "api_socket_listening": True,
+                "api_socket_port": 4001,
+            },
+            "auth_recovery": {
+                "recovery_phase": "recovered",
+                "probe_result": "authenticated",
+                "last_runtime_authenticated_at": "2026-04-28T11:32:30-04:00",
+                "disconnect_reason_code": "local_socket_unreachable",
+                "disconnect_reason_label": "本地 Gateway Socket 不可达",
+                "disconnect_reason_confidence": "high",
+                "disconnect_reason_evidence": {"status_code": 503, "error_codes": [502]},
+            },
+        }
+
+        normalized = normalize_two_factor_state_with_runtime(
+            state,
+            runtime_status,
+            as_dict=self.as_dict,
+            parse_et_time_ms=parse_et_time_ms,
+        )
+
+        self.assertEqual("success", normalized["status"])
+        self.assertEqual("none", normalized["operator_action"])
+        self.assertFalse(normalized["reset_recommended"])
+        self.assertEqual("", normalized["reset_reason"])
+        self.assertFalse(normalized["gateway_socket_unreachable"])
+        self.assertFalse(normalized["gateway_2fa_not_reached"])
+        self.assertEqual("", normalized["disconnect_reason_code"])
+        self.assertEqual("", normalized["disconnect_reason_label"])
+        self.assertEqual("", normalized["disconnect_reason_confidence"])
+        self.assertEqual({}, normalized["disconnect_reason_evidence"])
+
 
 if __name__ == "__main__":
     unittest.main()

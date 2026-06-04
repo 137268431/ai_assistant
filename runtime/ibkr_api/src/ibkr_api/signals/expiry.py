@@ -20,8 +20,13 @@ SignalChatId = Callable[[str], str]
 
 BROKER_FINAL_STATUSES = {
     "submitted",
+    "submitted_waiting_fill",
+    "filled_repricing_protection",
+    "filled_position",
     "protected_active",
     "protection_incomplete",
+    "protection_reprice_failed",
+    "entry_missed_limit_cap",
     "executed",
     "rejected",
     "expired",

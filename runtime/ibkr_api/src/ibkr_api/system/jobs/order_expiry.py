@@ -36,7 +36,7 @@ SignalChatId = Callable[[str], str]
 ORDER_QUERY_SORT = "-created,-updated,-bar_time_ms"
 ORDER_QUERY_LIMIT = 200
 DEFAULT_VALIDITY_MINUTES = 30
-ORDER_EXPIRY_SIGNAL_STATUSES = {"awaiting_confirm", "pending", "submitted"}
+ORDER_EXPIRY_SIGNAL_STATUSES = {"awaiting_confirm", "pending", "submitted", "submitted_waiting_fill"}
 
 
 def _validity_minutes(config_value: ConfigValue | None, environment: str) -> int:

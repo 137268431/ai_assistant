@@ -7,7 +7,23 @@ from ibkr_api.orders.values import ensure_object, to_text
 from ibkr_api.signals.values import get_signal_extra
 
 
-FINAL_SIGNAL_STATUSES = {"submitted", "protected_active", "protection_incomplete", "executed", "rejected", "expired", "closed"}
+FINAL_SIGNAL_STATUSES = {
+    "submitted",
+    "submitted_waiting_fill",
+    "filled_repricing_protection",
+    "filled_position",
+    "protected_active",
+    "protection_incomplete",
+    "protection_reprice_failed",
+    "entry_missed_limit_cap",
+    "ignored_no_broker_position",
+    "stale_signal",
+    "signal_clock_skew",
+    "executed",
+    "rejected",
+    "expired",
+    "closed",
+}
 
 
 def _utc_now_iso() -> str:

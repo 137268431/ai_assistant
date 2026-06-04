@@ -57,6 +57,10 @@ from ibkr_compute.universe.target_execution import build_target_execution_metada
 NormalizeEnvironment = Callable[[Any, str], str]
 TimeStrings = Callable[[], dict[str, str]]
 TV_SD_TOUCH_BASIS = "tv_pre_alert_window_activation"
+SUBMITTED_SIGNAL_STATUSES = {"submitted", "submitted_waiting_fill"}
+PROTECTED_ACTIVE_SIGNAL_STATUSES = {"protected_active", "filled_repricing_protection", "filled_position"}
+PROTECTION_INCOMPLETE_SIGNAL_STATUSES = {"protection_incomplete", "protection_reprice_failed"}
+ENTRY_MISSED_SIGNAL_STATUSES = {"entry_missed_limit_cap"}
 
 
 def _empty_tv_sd_touch_summary() -> dict[str, Any]:
@@ -318,6 +322,8 @@ def build_today_targets_response(
                 "protected_active_count": 0,
                 "protection_incomplete_count": 0,
                 "executed_count": 0,
+                "entry_missed_count": 0,
+                "missed_count": 0,
                 "stale_count": 0,
                 "execution_eligible_count": 0,
                 "observe_only_count": 0,
@@ -476,6 +482,7 @@ def build_today_targets_response(
     protected_active_count = 0
     protection_incomplete_count = 0
     executed_count = 0
+    entry_missed_count = 0
     stale_count = 0
     execution_eligible_count = 0
     observe_only_count = 0
@@ -619,14 +626,16 @@ def build_today_targets_response(
             awaiting_confirm_count += 1
         if row["latest_signal_status"] == "pending":
             pending_count += 1
-        if row["latest_signal_status"] == "submitted":
+        if row["latest_signal_status"] in SUBMITTED_SIGNAL_STATUSES:
             submitted_count += 1
-        if row["latest_signal_status"] == "protected_active":
+        if row["latest_signal_status"] in PROTECTED_ACTIVE_SIGNAL_STATUSES:
             protected_active_count += 1
-        if row["latest_signal_status"] == "protection_incomplete":
+        if row["latest_signal_status"] in PROTECTION_INCOMPLETE_SIGNAL_STATUSES:
             protection_incomplete_count += 1
         if row["latest_signal_status"] == "executed":
             executed_count += 1
+        if row["latest_signal_status"] in ENTRY_MISSED_SIGNAL_STATUSES:
+            entry_missed_count += 1
         if row["execution_eligible"]:
             execution_eligible_count += 1
         else:
@@ -669,6 +678,8 @@ def build_today_targets_response(
             "protected_active_count": protected_active_count,
             "protection_incomplete_count": protection_incomplete_count,
             "executed_count": executed_count,
+            "entry_missed_count": entry_missed_count,
+            "missed_count": entry_missed_count,
             "stale_count": stale_count,
             "execution_eligible_count": execution_eligible_count,
             "observe_only_count": observe_only_count,

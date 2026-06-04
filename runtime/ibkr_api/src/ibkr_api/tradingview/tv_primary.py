@@ -23,10 +23,30 @@ TV_EVENT_TYPES = {"pre_alert", "entry", "risk_update", "exit", "heartbeat"}
 TV_EVENT_COLLECTION = "tv_webhook_events"
 TRADINGVIEW_SOURCE = "tradingview"
 TV_WEBHOOK_SPOOL_DIR_ENV = "IBKR_TV_WEBHOOK_SPOOL_DIR"
-TV_REAL_ACTIVE_ORDER_STATUSES = {"presubmitted", "pre_submitted", "submitted"}
-TV_REAL_FILLED_ORDER_STATUSES = {"executed", "filled", "partially_filled", "partiallyfilled", "protected_active"}
+TV_REAL_ACTIVE_ORDER_STATUSES = {"presubmitted", "pre_submitted", "submitted", "submitted_waiting_fill"}
+TV_REAL_FILLED_ORDER_STATUSES = {
+    "executed",
+    "filled",
+    "partially_filled",
+    "partiallyfilled",
+    "protected_active",
+    "filled_repricing_protection",
+    "filled_position",
+    "protection_reprice_failed",
+}
 TV_REAL_ORDER_STATUSES = TV_REAL_ACTIVE_ORDER_STATUSES | TV_REAL_FILLED_ORDER_STATUSES
-TV_TERMINAL_ORDER_STATUSES = {"cancelled", "canceled", "closed", "error", "expired", "failed", "inactive", "not_submitted", "rejected"}
+TV_TERMINAL_ORDER_STATUSES = {
+    "cancelled",
+    "canceled",
+    "closed",
+    "entry_missed_limit_cap",
+    "error",
+    "expired",
+    "failed",
+    "inactive",
+    "not_submitted",
+    "rejected",
+}
 
 logger = logging.getLogger(__name__)
 

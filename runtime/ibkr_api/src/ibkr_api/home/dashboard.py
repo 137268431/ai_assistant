@@ -28,6 +28,13 @@ SIGNAL_STATUS_KEYS = (
 ORDER_STATUS_KEYS = ("working", "filled", "cancelled", "closed", "other")
 ORDER_GROUP_STATUS_KEYS = ("open", "filled", "closed", "cancelled", "other")
 LIVE_ORDER_ROLE_KEYS = ("entry", "take_profit", "stop_loss", "close", "other")
+SIGNAL_STATUS_COUNT_BUCKETS = {
+    "submitted_waiting_fill": "submitted",
+    "filled_repricing_protection": "protected_active",
+    "filled_position": "protected_active",
+    "protection_reprice_failed": "protection_incomplete",
+    "entry_missed_limit_cap": "rejected",
+}
 
 
 def _market_date(payload: dict[str, Any], time_strings: TimeStrings) -> tuple[str, int, int]:
@@ -126,7 +133,14 @@ def _signal_effective_status(signal: dict[str, Any], broker_mode: str) -> str:
     extra = _safe_extra(signal)
     record_status = to_text(signal.get("status")).lower()
     note = to_text(signal.get("note") or extra.get("note") or extra.get("status_reason")).lower()
-    if record_status in {"closed", "expired", "rejected", "protection_incomplete"}:
+    if record_status in {
+        "closed",
+        "expired",
+        "rejected",
+        "protection_incomplete",
+        "protection_reprice_failed",
+        "entry_missed_limit_cap",
+    }:
         return record_status
     if note.startswith("closed_by_") or "closed_by_manual_close" in note:
         return "closed"
@@ -142,7 +156,8 @@ def _signal_effective_status(signal: dict[str, Any], broker_mode: str) -> str:
 def _summarize_signals(rows: list[dict[str, Any]], *, broker_mode: str, long_count: int, short_count: int) -> dict[str, Any]:
     status_counts = {key: 0 for key in SIGNAL_STATUS_KEYS}
     for row in rows or []:
-        status = _signal_effective_status(row, broker_mode)
+        raw_status = _signal_effective_status(row, broker_mode)
+        status = SIGNAL_STATUS_COUNT_BUCKETS.get(raw_status, raw_status)
         if status in status_counts:
             status_counts[status] += 1
     terminal_count = status_counts["expired"] + status_counts["rejected"]

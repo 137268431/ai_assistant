@@ -343,6 +343,14 @@ def normalize_two_factor_state_with_runtime(
                 "recovery_phase": "recovered",
                 "auto_restart_scheduled": False,
                 "manual_takeover_active": False,
+                "gateway_socket_unreachable": False,
+                "gateway_2fa_not_reached": False,
+                "reset_recommended": False,
+                "reset_reason": "",
+                "disconnect_reason_code": "",
+                "disconnect_reason_label": "",
+                "disconnect_reason_confidence": "",
+                "disconnect_reason_evidence": {},
             }
         )
         return derive_2fa_action_state(state, as_dict=as_dict, parse_et_time_ms=parse_et_time_ms)

@@ -50,13 +50,17 @@ REAL_ACTIVE_ORDER_STATUSES = {
     "PRESUBMITTED",
     "PRE_SUBMITTED",
     "SUBMITTED",
+    "SUBMITTED_WAITING_FILL",
 }
 REAL_FILLED_ORDER_STATUSES = {
     "EXECUTED",
     "FILLED",
+    "FILLED_POSITION",
+    "FILLED_REPRICING_PROTECTION",
     "PARTIALLYFILLED",
     "PARTIALLY_FILLED",
     "PROTECTED_ACTIVE",
+    "PROTECTION_REPRICE_FAILED",
 }
 REAL_ORDER_STATUSES = REAL_ACTIVE_ORDER_STATUSES | REAL_FILLED_ORDER_STATUSES
 TRACEABLE_CANCEL_ORDER_STATUSES = REAL_ACTIVE_ORDER_STATUSES | {
@@ -919,7 +923,7 @@ class ReverseSignalHandler:
             str(extra.get("target_state") or "").strip().lower(),
             str(extra.get("target_signal_status") or "").strip().lower(),
         }
-        if "protection_incomplete" in status_values:
+        if status_values & {"protection_incomplete", "protection_reprice_failed"}:
             return True
         for source in (signal, extra):
             if bool(source.get("protection_incomplete")):
@@ -2108,11 +2112,16 @@ class ReverseSignalHandler:
             "api_pending",
             "confirmed",
             "filled",
+            "filled_position",
+            "filled_repricing_protection",
             "partially_filled",
             "pending_submit",
             "pre_submitted",
             "presubmitted",
+            "protected_active",
+            "protection_reprice_failed",
             "submitted",
+            "submitted_waiting_fill",
         }
         status = cls._normalized_execution_status(
             (execution_payload or {}).get("status")
@@ -2134,6 +2143,7 @@ class ReverseSignalHandler:
             "expired",
             "failed",
             "inactive",
+            "entry_missed_limit_cap",
             "not_submitted",
             "rejected",
         }

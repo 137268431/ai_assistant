@@ -350,6 +350,10 @@ class TradingServiceAuthRecoveryMixin:
             auto_restart_scheduled=False,
             last_runtime_authenticated_at=stamp,
             last_recovery_source=source,
+            disconnect_reason_code="",
+            disconnect_reason_label="",
+            disconnect_reason_confidence="",
+            disconnect_reason_evidence={},
             lock_owner="",
             lock_expires_at="",
         )

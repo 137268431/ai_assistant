@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -286,7 +287,12 @@ class FakeOrderPlacer:
 
     def place_bracket_order(self, **kwargs):
         self.calls.append(dict(kwargs))
-        return {"ok": True, "order_ids": ["101", "102", "103"], "bracket_group": "AAPL_long"}
+        return {
+            "ok": True,
+            "order_ids": ["101", "102", "103"],
+            "bracket_group": "AAPL_long",
+            "protection_complete": True,
+        }
 
     def place_harvest_bracket_order(self, **kwargs):
         self.calls.append(dict(kwargs))
@@ -401,6 +407,10 @@ class FakeWsClient:
 
 class FakeSignalService(TradingServiceSignalsMixin):
     def __init__(self, signal, *, lifecycle, pb, quote_book=None, config=None, account_snapshot=None, ws_client=None):
+        from ibkr_compute.orchestration import trading_service as service_mod
+
+        service_mod.ENVIRONMENT = "paper"
+        service_mod.DATA_ENVIRONMENT = "live"
         self.session_keeper = FakeSessionKeeper()
         self.signal_router = FakeSignalRouter([signal])
         self.signal_processor = FakeSignalProcessor()
@@ -645,6 +655,52 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
         self.assertEqual(result["oca_group"], sl_order.ocaGroup)
         self.assertEqual(1, tp_order.ocaType)
         self.assertEqual(1, sl_order.ocaType)
+
+    def test_place_bracket_order_sets_adaptive_algo_on_entry_limit(self):
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeClient(
+            submission_result={
+                "ok": True,
+                "orders": {"101": {"ok": True}, "102": {"ok": True}, "103": {"ok": True}},
+                "missing_order_ids": [],
+            }
+        )
+        adapter.resolve_contract = lambda **kwargs: {
+            "conid": 123,
+            "symbol": "AAPL",
+            "sec_type": "STK",
+            "exchange": "SMART",
+            "currency": "USD",
+        }
+
+        original_order = ib_gateway.Order
+        original_contract = ib_gateway.Contract
+        try:
+            ib_gateway.Order = FakeOrder
+            ib_gateway.Contract = FakeContract
+            result = ib_gateway.BrokerAdapter.place_bracket_order(
+                adapter,
+                conid=123,
+                symbol="AAPL",
+                direction="long",
+                quantity=10,
+                entry_price=100.15,
+                take_profit_price=104.0,
+                stop_loss_price=98.0,
+                entry_algo_strategy="Adaptive",
+                entry_adaptive_priority="Patient",
+            )
+        finally:
+            ib_gateway.Order = original_order
+            ib_gateway.Contract = original_contract
+
+        self.assertTrue(result["ok"])
+        entry_order = adapter.client.placed_orders[0][1]
+        self.assertEqual("Adaptive", entry_order.algoStrategy)
+        self.assertEqual("adaptivePriority", entry_order.algoParams[0].tag)
+        self.assertEqual("Patient", entry_order.algoParams[0].value)
+        self.assertEqual("Adaptive", result["entry_algo_strategy"])
+        self.assertEqual("Patient", result["entry_adaptive_priority"])
 
     def test_place_bracket_order_uses_explicit_sanitized_trade_group_for_order_refs(self):
         adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
@@ -1182,6 +1238,30 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
         self.assertEqual("entry_NFLX_short_20260506_101500", pb_client.upserts[1]["parent_order_unique_id"])
         self.assertEqual("entry_NFLX_short_20260506_101500", pb_client.upserts[2]["parent_order_unique_id"])
 
+    def test_order_placer_passes_adaptive_entry_algo_to_broker(self):
+        pb_client = FakeOrderPBClient()
+        broker = FakeBracketBroker()
+        placer = OrderPlacer(pb_client=pb_client, broker=broker, account_id="DU123")
+
+        result = placer.place_bracket_order(
+            conid=123,
+            symbol="AAPL",
+            direction="long",
+            quantity=10,
+            entry_price=100.15,
+            take_profit_price=104.0,
+            stop_loss_price=98.0,
+            signal_id="sig-aapl",
+            entry_algo_strategy="Adaptive",
+            entry_adaptive_priority="Patient",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("Adaptive", broker.calls[0]["entry_algo_strategy"])
+        self.assertEqual("Patient", broker.calls[0]["entry_adaptive_priority"])
+        self.assertEqual("Adaptive", result["entry_algo_strategy"])
+        self.assertEqual("Patient", result["entry_adaptive_priority"])
+
     def test_bracket_order_links_origin_signal_execution_metadata_in_live_data_env(self):
         pb_client = FakeOrderAndSignalPBClient(
             {
@@ -1300,6 +1380,22 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
             },
         }
 
+    def _tv_signal(self, symbol="AAPL", *, age_sec=1.0):
+        signal = self._signal(symbol)
+        pine_eval_ms = int((time.time() - age_sec) * 1000)
+        extra = {
+            "source": "tradingview",
+            "pine_eval_ms": pine_eval_ms,
+            "risk_per_share": 2.0,
+            "reward_risk": 2.0,
+            "atr": 1.25,
+        }
+        signal["extra"] = extra
+        signal["raw"]["extra"] = dict(extra)
+        signal["source"] = "tradingview"
+        signal["raw"]["source"] = "tradingview"
+        return signal
+
     def test_capacity_full_keeps_signal_pending_and_retriable(self):
         signal = self._signal("AAPL")
         pb = FakeSignalPBClient({"id": "row-aapl", "extra": {"source": "ibkr_compute"}})
@@ -1332,6 +1428,96 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         self.assertEqual(104.08, adjusted["take_profit"])
         self.assertEqual("marketable", adjusted["extra"]["entry_limit_intent"])
         self.assertEqual(98.0, adjusted["extra"]["order_flow_original_stop_loss"])
+
+    def test_tv_direct_signal_uses_freshness_and_bounded_adaptive_limit_without_quote_subscription(self):
+        signal = self._tv_signal("AAPL")
+        pb = FakeSignalPBClient({"id": "row-aapl", "extra": dict(signal["extra"])})
+        quote_book = FakeQuoteBook({})
+        service = FakeSignalService(
+            signal,
+            lifecycle=FakeLifecycle(),
+            pb=pb,
+            quote_book=quote_book,
+            config=FakeConfig({"tv_entry_limit_cap_bps": 15, "entry_pre_submit_guard_enabled": "true"}),
+        )
+
+        service._process_signals()
+
+        self.assertEqual(["sig-aapl"], service.signal_router.processed)
+        self.assertEqual([], service.signal_router.released)
+        self.assertEqual([], quote_book.calls)
+        self.assertEqual(1, len(service.order_placer.calls))
+        order_payload = service.order_placer.calls[0]
+        self.assertEqual(100.15, order_payload["entry_price"])
+        self.assertEqual(98.0, order_payload["stop_loss_price"])
+        self.assertEqual(104.0, order_payload["take_profit_price"])
+        self.assertEqual("tv_direct", order_payload["order_ref_suffix"])
+        self.assertEqual("Adaptive", order_payload["entry_algo_strategy"])
+        self.assertEqual("Normal", order_payload["entry_adaptive_priority"])
+        self.assertEqual("submitted_waiting_fill", pb.acks[-1]["status"])
+        ack_extra = pb.acks[-1]["order"]["extra"]
+        self.assertTrue(ack_extra["tv_direct_entry"])
+        self.assertEqual("bounded_marketable", ack_extra["entry_limit_intent"])
+        self.assertEqual(100.0, ack_extra["reference_entry"])
+        self.assertEqual(100.15, ack_extra["submitted_entry_limit_price"])
+        self.assertTrue(ack_extra["final_protection_from_fill"])
+
+    def test_tv_direct_signal_skips_runtime_readiness_validation(self):
+        signal = self._tv_signal("AAPL")
+        pb = FakeSignalPBClient({"id": "row-aapl", "extra": dict(signal["extra"])})
+        service = FakeSignalService(signal, lifecycle=FakeLifecycle(), pb=pb)
+        service.signal_processor.validate_signal = mock.Mock(side_effect=AssertionError("runtime validation should be skipped"))
+        service.signal_processor._is_signal_expired = mock.Mock(side_effect=AssertionError("runtime expiry should be skipped"))
+
+        service._process_signals()
+
+        self.assertEqual(["sig-aapl"], service.signal_router.processed)
+        self.assertEqual([], service.signal_router.released)
+        self.assertEqual(1, len(service.order_placer.calls))
+        service.signal_processor.validate_signal.assert_not_called()
+        service.signal_processor._is_signal_expired.assert_not_called()
+        ack_extra = pb.acks[-1]["order"]["extra"]
+        self.assertTrue(ack_extra["tv_direct_signal_processor_validation_skipped"])
+        self.assertEqual("freshness_only_then_hard_safety", ack_extra["tv_direct_validation_policy"])
+
+    def test_tv_direct_signal_uses_tv_limit_cap_when_present(self):
+        signal = self._tv_signal("AAPL")
+        signal["submitted_limit_cap_bps"] = 20
+        signal["extra"]["submitted_limit_cap_bps"] = 20
+        pb = FakeSignalPBClient({"id": "row-aapl", "extra": dict(signal["extra"])})
+        service = FakeSignalService(
+            signal,
+            lifecycle=FakeLifecycle(),
+            pb=pb,
+            config=FakeConfig({"tv_entry_limit_cap_bps": 15}),
+        )
+
+        service._process_signals()
+
+        self.assertEqual(100.2, service.order_placer.calls[0]["entry_price"])
+        ack_extra = pb.acks[-1]["order"]["extra"]
+        self.assertEqual(20.0, ack_extra["submitted_limit_cap_bps"])
+        self.assertEqual(100.2, ack_extra["submitted_entry_limit_price"])
+
+    def test_tv_direct_stale_signal_is_expired_before_order_submission(self):
+        signal = self._tv_signal("AAPL", age_sec=300.0)
+        pb = FakeSignalPBClient({"id": "row-aapl", "extra": dict(signal["extra"])})
+        service = FakeSignalService(
+            signal,
+            lifecycle=FakeLifecycle(),
+            pb=pb,
+            config=FakeConfig({"tv_entry_freshness_sec": 120}),
+        )
+
+        service._process_signals()
+
+        self.assertEqual(["sig-aapl"], service.signal_router.processed)
+        self.assertEqual([], service.signal_router.released)
+        self.assertEqual([], service.order_placer.calls)
+        patch = pb.updates[-1][2]
+        self.assertEqual("expired", _broker_execution(patch)["status"])
+        self.assertEqual("stale_signal", patch["extra"]["status_reason"])
+        self.assertTrue(patch["extra"]["tv_direct_rejected"])
 
     def test_signal_expired_validation_marks_expired_not_rejected(self):
         signal = self._signal("AAPL")

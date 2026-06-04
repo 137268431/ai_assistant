@@ -70,8 +70,13 @@ TV_FLOW_SOURCE_VALUES = {"tv", "tradingview", "tv_webhook", "webhook_tv", "tradi
 TV_FLOW_BROKER_MODES = {"live", "paper"}
 TV_FLOW_HANDLED_SIGNAL_STATUSES = {
     "submitted",
+    "submitted_waiting_fill",
+    "filled_repricing_protection",
+    "filled_position",
     "protected_active",
     "protection_incomplete",
+    "protection_reprice_failed",
+    "entry_missed_limit_cap",
     "executed",
     "rejected",
     "expired",

@@ -10,8 +10,15 @@ from ibkr_api.signals.values import get_signal_extra
 EscapeFilterString = Callable[[Any], str]
 
 MUTABLE_SIGNAL_STATUSES = {"awaiting_confirm", "pending"}
-BROKER_CONTROLLED_SIGNAL_STATUSES = {"submitted", "protected_active", "executed"}
-PROTECTION_BLOCK_SIGNAL_STATUSES = {"protection_incomplete"}
+BROKER_CONTROLLED_SIGNAL_STATUSES = {
+    "submitted",
+    "submitted_waiting_fill",
+    "filled_repricing_protection",
+    "filled_position",
+    "protected_active",
+    "executed",
+}
+PROTECTION_BLOCK_SIGNAL_STATUSES = {"protection_incomplete", "protection_reprice_failed"}
 ACTIVE_SIGNAL_STATUSES = MUTABLE_SIGNAL_STATUSES | BROKER_CONTROLLED_SIGNAL_STATUSES | PROTECTION_BLOCK_SIGNAL_STATUSES
 INACTIVE_SIGNAL_STATUSES = {"rejected", "expired", "closed", "cancelled", "canceled", "dropped"}
 STRONG_REVERSE_SCORE = 6.0
@@ -532,7 +539,12 @@ def build_reverse_record_payload(
     incoming_extra = ensure_object(incoming.get("extra"))
     strength = calculate_signal_strength(incoming)
     existing_status = to_text(active_status or existing.get("status")).lower()
-    action_type = "close" if existing_status in {"protected_active", "executed"} else "cancel"
+    action_type = (
+        "close"
+        if existing_status
+        in {"protected_active", "filled_repricing_protection", "filled_position", "protection_reprice_failed", "executed"}
+        else "cancel"
+    )
     target_state = "filled_position" if action_type == "close" else "pending_entry"
     trade_group_id = to_text(
         existing.get("trade_group_id")

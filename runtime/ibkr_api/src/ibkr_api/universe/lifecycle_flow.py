@@ -50,10 +50,15 @@ TERMINAL_EVENT_TYPES = {
     "manual_close",
     "trade_closed",
     "entry_canceled",
+    "entry_missed",
     "signal_rejected",
     "signal_expired",
 }
 ENTRY_TERMINAL_STATUSES = {"cancelled", "canceled", "expired", "rejected", "inactive"}
+SUBMITTED_SIGNAL_STATUSES = {"submitted", "submitted_waiting_fill"}
+PROTECTED_SIGNAL_STATUSES = {"protected_active", "filled_repricing_protection", "filled_position"}
+PROTECTION_INCOMPLETE_SIGNAL_STATUSES = {"protection_incomplete", "protection_reprice_failed"}
+ENTRY_MISSED_SIGNAL_STATUSES = {"entry_missed_limit_cap"}
 
 
 def _now_ms() -> int:
@@ -748,17 +753,36 @@ def _extract_signal_reason(row: dict[str, Any], extra: dict[str, Any]) -> str:
     ))
 
 
+def _signal_execution_for_mode(extra: dict[str, Any], broker_mode: str) -> dict[str, Any]:
+    execution_by_mode = _json_object(extra.get("execution_by_mode"))
+    for key in (broker_mode, _lower(broker_mode), _upper(broker_mode)):
+        execution = execution_by_mode.get(key)
+        if isinstance(execution, dict):
+            return dict(execution)
+    return {}
+
+
+def _signal_effective_status(row: dict[str, Any], extra: dict[str, Any], broker_mode: str) -> str:
+    top_level_status = _lower(first_defined(row.get("status"), extra.get("status")))
+    if top_level_status in {"closed", "expired", "rejected", "cancelled", "canceled"} | ENTRY_MISSED_SIGNAL_STATUSES:
+        return top_level_status
+    broker_status = _lower(_signal_execution_for_mode(extra, broker_mode).get("status"))
+    return broker_status or top_level_status
+
+
 def _signal_status_event_type(status: str) -> tuple[str, str, str]:
     normalized = _lower(status)
     if normalized in {"awaiting_confirm", "confirm_pending"}:
         return "signal_pending_confirmation", "confirmation", "active"
-    if normalized in {"pending", "confirmed", "submitted", "executed", "protected_active"}:
+    if normalized in {"pending", "confirmed", "executed"} | SUBMITTED_SIGNAL_STATUSES | PROTECTED_SIGNAL_STATUSES:
         return "signal_confirmed", "confirmation", "done"
     if normalized in {"rejected", "cancelled", "canceled"}:
         return "signal_rejected", "confirmation", "terminal"
     if normalized in {"expired"}:
         return "signal_expired", "confirmation", "terminal"
-    if normalized in {"blocked", "dropped", "skipped", "protection_incomplete"}:
+    if normalized in ENTRY_MISSED_SIGNAL_STATUSES:
+        return "entry_missed", "execution", "terminal"
+    if normalized in {"blocked", "dropped", "skipped"} | PROTECTION_INCOMPLETE_SIGNAL_STATUSES:
         return "signal_blocked", "confirmation", "blocked"
     return "signal_status", "confirmation", "done"
 
@@ -803,12 +827,15 @@ def _signal_status_time_ms(status: str, row: dict[str, Any], extra: dict[str, An
     elif normalized in {"rejected", "cancelled", "canceled"}:
         ms_keys[:0] = ["rejected_at_ms", "cancelled_at_ms", "canceled_at_ms"]
         text_keys[:0] = ["rejected_at", "cancelled_at", "canceled_at"]
-    elif normalized in {"confirmed", "pending", "submitted", "executed", "protected_active"}:
+    elif normalized in {"confirmed", "pending", "executed"} | SUBMITTED_SIGNAL_STATUSES | PROTECTED_SIGNAL_STATUSES:
         ms_keys[:0] = ["confirmed_at_ms", "reconfirmed_at_ms", "submitted_at_ms", "executed_at_ms", "protected_at_ms"]
         text_keys[:0] = ["confirmed_at", "reconfirmed_at", "submitted_at", "executed_at", "protected_at"]
-    elif normalized in {"blocked", "dropped", "skipped", "protection_incomplete"}:
+    elif normalized in {"blocked", "dropped", "skipped"} | PROTECTION_INCOMPLETE_SIGNAL_STATUSES:
         ms_keys[:0] = ["blocked_at_ms", "dropped_at_ms", "skipped_at_ms"]
         text_keys[:0] = ["blocked_at", "dropped_at", "skipped_at", "status_repaired_at"]
+    elif normalized in ENTRY_MISSED_SIGNAL_STATUSES:
+        ms_keys[:0] = ["entry_missed_at_ms", "missed_at_ms", "expired_at_ms", "cancelled_at_ms", "canceled_at_ms"]
+        text_keys[:0] = ["entry_missed_at", "missed_at", "expired_at", "cancelled_at", "canceled_at"]
     elif normalized in {"closed", "completed"}:
         ms_keys[:0] = ["closed_at_ms", "closed_bar_time_ms", "exit_fill_bar_time_ms"]
         text_keys[:0] = ["closed_at", "completed_at", "exit_fill_time"]
@@ -1267,23 +1294,35 @@ def _build_live_events(
                 },
             )
         )
-        status = _lower(row.get("status"))
+        broker_execution = _signal_execution_for_mode(extra, environment)
+        status = _signal_effective_status(row, extra, environment)
         if status and status not in {"generated", "new"}:
             event_type, stage, state = _signal_status_event_type(status)
             status_ts_ms = _signal_status_time_ms(status, row, extra, ts_ms)
+            broker_status_reason = (
+                first_defined(broker_execution.get("status_reason"), broker_execution.get("note"))
+                if _lower(broker_execution.get("status")) == status
+                else None
+            )
             events.append(
                 _base_event(
                     event_type,
                     stage=stage,
                     state=state,
                     label=status.replace("_", " "),
-                    reason=_safe_text(first_defined(extra.get("status_reason"), row.get("note"), reason, status)),
+                    reason=_safe_text(
+                        first_defined(broker_status_reason, extra.get("status_reason"), row.get("note"), reason, status)
+                    ),
                     ts_ms=status_ts_ms,
                     symbol=event_symbol,
                     signal_id=row_signal_id,
                     trade_group_id=trade_group_id,
                     source="ibkr_signals.status",
-                    details={"status": status, "signal_bar_time_ms": ts_ms},
+                    details={
+                        "status": status,
+                        "top_level_status": _lower(row.get("status")),
+                        "signal_bar_time_ms": ts_ms,
+                    },
                 )
             )
         for item in _json_list(extra.get("status_history")):

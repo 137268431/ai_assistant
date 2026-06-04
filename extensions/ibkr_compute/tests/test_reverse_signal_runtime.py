@@ -190,6 +190,57 @@ def _submitted_child_orders(*order_ids, environment="live"):
 
 
 class ReverseSignalRuntimeTests(unittest.TestCase):
+    def test_preflight_treats_tv_direct_filled_statuses_as_closeable_exposure(self):
+        for status in ("filled_position", "filled_repricing_protection", "protection_reprice_failed"):
+            with self.subTest(status=status):
+                reverse = {
+                    "id": f"rev-{status}",
+                    "symbol": "AAPL",
+                    "action_type": "close",
+                    "environment": "live",
+                    "extra": {"origin_signal_id": f"sig-{status}"},
+                }
+                signals = [
+                    {
+                        "id": f"row-{status}",
+                        "signal_id": f"sig-{status}",
+                        "environment": "live",
+                        "symbol": "AAPL",
+                        "status": status,
+                        "extra": {"execution_by_mode": {"live": {"status": status}}},
+                    }
+                ]
+                pb = _FakePB(reverse_rows=[reverse], signal_rows=signals)
+                preflight = ReverseSignalHandler(pb, environment="live")._execution_preflight(reverse, "close")
+
+                self.assertTrue(preflight["ok"])
+                self.assertTrue(preflight["filled_order_or_position_confirmed"])
+
+    def test_preflight_treats_tv_direct_missed_entry_as_terminal_not_closeable(self):
+        reverse = {
+            "id": "rev-missed",
+            "symbol": "AAPL",
+            "action_type": "close",
+            "environment": "live",
+            "extra": {"origin_signal_id": "sig-missed"},
+        }
+        signals = [
+            {
+                "id": "row-missed",
+                "signal_id": "sig-missed",
+                "environment": "live",
+                "symbol": "AAPL",
+                "status": "entry_missed_limit_cap",
+                "extra": {"execution_by_mode": {"live": {"status": "entry_missed_limit_cap"}}},
+            }
+        ]
+        pb = _FakePB(reverse_rows=[reverse], signal_rows=signals)
+        preflight = ReverseSignalHandler(pb, environment="live")._execution_preflight(reverse, "close")
+
+        self.assertFalse(preflight["ok"])
+        self.assertTrue(preflight["origin_execution_terminal"])
+        self.assertEqual("cancelled", preflight["ack_status"])
+
     def test_cancel_pending_bracket_requires_inactive_confirmation_before_ready_reentry(self):
         reverse = {
             "id": "rev-cancel",

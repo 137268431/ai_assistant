@@ -23,6 +23,16 @@ from ibkr_compute.api.market.screener.scoring import (
 READY_REQUIRED_ALIGNED_FLAGS = 2
 READY_LONG_FLAGS = ("EMA多头", "多头背离", "分形↑", "EMA支撑", "趋势多头", "VWAP多头")
 READY_SHORT_FLAGS = ("EMA空头", "空头背离", "分形↓", "EMA压力", "趋势空头", "VWAP空头")
+SUBMITTED_SIGNAL_STATUSES = {"submitted", "submitted_waiting_fill"}
+PROTECTED_ACTIVE_SIGNAL_STATUSES = {"protected_active", "filled_repricing_protection", "filled_position"}
+PROTECTION_INCOMPLETE_SIGNAL_STATUSES = {"protection_incomplete", "protection_reprice_failed"}
+ENTRY_MISSED_SIGNAL_STATUSES = {"entry_missed_limit_cap"}
+NEEDS_ACTION_SIGNAL_STATUSES = (
+    {"awaiting_confirm", "pending"}
+    | SUBMITTED_SIGNAL_STATUSES
+    | PROTECTED_ACTIVE_SIGNAL_STATUSES
+    | PROTECTION_INCOMPLETE_SIGNAL_STATUSES
+)
 
 
 def _format_count(value: Any) -> str:
@@ -199,11 +209,11 @@ def resolve_attention_state(row: dict[str, Any]) -> tuple[str, int]:
         return "awaiting_confirm", 10
     if signal_status == "pending":
         return "pending", 11
-    if signal_status == "submitted":
+    if signal_status in SUBMITTED_SIGNAL_STATUSES:
         return "submitted", 12
-    if signal_status == "protected_active":
+    if signal_status in PROTECTED_ACTIVE_SIGNAL_STATUSES:
         return "protected_active", 13
-    if signal_status == "protection_incomplete":
+    if signal_status in PROTECTION_INCOMPLETE_SIGNAL_STATUSES:
         return "protection_incomplete", 14
     if not row.get("has_signal_today") and row.get("technical_state") == "ready":
         return "ready_no_signal", 20
@@ -215,6 +225,8 @@ def resolve_attention_state(row: dict[str, Any]) -> tuple[str, int]:
         return "expired", 32
     if signal_status == "rejected":
         return "rejected", 33
+    if signal_status in ENTRY_MISSED_SIGNAL_STATUSES:
+        return "entry_missed_limit_cap", 34
     if row.get("technical_state") == "stale":
         return "stale", 40
     return DEFAULT_TECHNICAL_STATE, 25
@@ -235,7 +247,7 @@ def build_workflow_guide(runtime_environment: str, market_date: str) -> dict[str
         "topup_window_et": TOPUP_WINDOW_ET,
         "intraday_refresh_rule": INTRADAY_REFRESH_RULE,
         "topup_behavior": "topup 只新增符合 signal-window context 的 active 标的，不移除已有 active。",
-        "focus_order_rule": "先看 awaiting_confirm / pending / submitted / protected_active / protection_incomplete，再看 ready 未出信号，最后看 executed / stale。",
+        "focus_order_rule": "先看 awaiting_confirm / pending / submitted(含 waiting_fill) / protected_active(含 filled_position) / protection_incomplete(含 reprice_failed)，再看 ready 未出信号，最后看 executed / stale / entry_missed。",
         "primary_view_url": build_primary_view_url(runtime_environment, market_date),
         "ready_definition": build_ready_definition(),
     }
@@ -289,9 +301,9 @@ def build_workflow_meta(row: dict[str, Any]) -> dict[str, Any]:
         push_unique_text(blockers, "等待下单或成交反馈")
         push_unique_text(blockers, row.get("latest_signal_note"))
         next_action = "优先查看 Signals / Orders，确认挂单、成交和风控状态。"
-    elif signal_status == "submitted":
+    elif signal_status in SUBMITTED_SIGNAL_STATUSES:
         stage = "submitted"
-        label = "订单已提交"
+        label = "已提交，等待成交" if signal_status == "submitted_waiting_fill" else "订单已提交"
         summary = (
             f"{row.get('latest_signal_time')} 信号订单已提交到券商，等待成交或订单回报。"
             if row.get("latest_signal_time")
@@ -300,26 +312,43 @@ def build_workflow_meta(row: dict[str, Any]) -> dict[str, Any]:
         push_unique_text(blockers, "等待券商成交或订单状态回报")
         push_unique_text(blockers, row.get("latest_signal_note"))
         next_action = "优先查看 Orders 页，确认 entry / TP / SL 三腿订单状态。"
-    elif signal_status == "protected_active":
+    elif signal_status in PROTECTED_ACTIVE_SIGNAL_STATUSES:
         stage = "protected_active"
-        label = "保护单已生效"
-        summary = (
-            f"{row.get('latest_signal_time')} 入场已成交，止盈/止损保护单已提交。"
-            if row.get("latest_signal_time")
-            else "入场已成交，止盈/止损保护单已提交。"
-        )
-        push_unique_text(blockers, "跟踪保护单与退出状态")
+        if signal_status == "filled_repricing_protection":
+            label = "保护单重定价中"
+            summary = (
+                f"{row.get('latest_signal_time')} 入场已成交，止盈/止损保护单正在按实际成交价重定价。"
+                if row.get("latest_signal_time")
+                else "入场已成交，止盈/止损保护单正在按实际成交价重定价。"
+            )
+            push_unique_text(blockers, "等待保护单重定价完成")
+        elif signal_status == "filled_position":
+            label = "持仓已建立"
+            summary = (
+                f"{row.get('latest_signal_time')} 入场已成交，保护单已按实际成交价对齐。"
+                if row.get("latest_signal_time")
+                else "入场已成交，保护单已按实际成交价对齐。"
+            )
+            push_unique_text(blockers, "跟踪保护单与退出状态")
+        else:
+            label = "保护单已生效"
+            summary = (
+                f"{row.get('latest_signal_time')} 入场已成交，止盈/止损保护单已提交。"
+                if row.get("latest_signal_time")
+                else "入场已成交，止盈/止损保护单已提交。"
+            )
+            push_unique_text(blockers, "跟踪保护单与退出状态")
         push_unique_text(blockers, row.get("latest_signal_note"))
         next_action = "查看 Orders / Account，确认保护单仍在 Submitted 或后续退出状态。"
-    elif signal_status == "protection_incomplete":
+    elif signal_status in PROTECTION_INCOMPLETE_SIGNAL_STATUSES:
         stage = "protection_incomplete"
-        label = "保护单不完整"
+        label = "保护单重定价失败" if signal_status == "protection_reprice_failed" else "保护单不完整"
         summary = (
             f"{row.get('latest_signal_time')} 信号已推进，但止盈/止损保护单未完整生效。"
             if row.get("latest_signal_time")
             else "信号已推进，但止盈/止损保护单未完整生效。"
         )
-        push_unique_text(blockers, "保护单未完整生效")
+        push_unique_text(blockers, "保护单重定价失败" if signal_status == "protection_reprice_failed" else "保护单未完整生效")
         push_unique_text(blockers, row.get("latest_signal_note"))
         next_action = "立即查看 Orders / Account，确认 entry、TP、SL 三腿状态，必要时人工补保护或减仓。"
     elif not row.get("has_signal_today") and row.get("technical_state") == "ready":
@@ -328,6 +357,12 @@ def build_workflow_meta(row: dict[str, Any]) -> dict[str, Any]:
         summary = "技术条件和可操作性已基本满足，但今日还没有触发信号。"
         push_unique_text(blockers, "等待下一次 5m close 触发信号")
         next_action = "盘中按 5m close 继续观察，重点联动当前榜单和 Signals 页。"
+    elif signal_status in ENTRY_MISSED_SIGNAL_STATUSES:
+        stage = "entry_missed_limit_cap"
+        label = "入场未成交"
+        summary = "今日入场因触及限价上限或未成交而错过，当前不再继续推进该信号。"
+        push_unique_text(blockers, row.get("latest_signal_note"))
+        next_action = "复盘入场限价 cap 与实际走势；等待新的 TV 信号或次日重新筛选。"
     elif row.get("technical_state") == "stale":
         stage = "stale"
         label = "数据待刷新"
@@ -404,11 +439,17 @@ def matches_signal_state(row: dict[str, Any], signal_state: str) -> bool:
         return True
     latest_status = normalize_signal_status(row.get("latest_signal_status"))
     if value == "needs_action":
-        return latest_status in {"awaiting_confirm", "pending", "submitted", "protected_active", "protection_incomplete"}
+        return latest_status in NEEDS_ACTION_SIGNAL_STATUSES
     if value == "signaled":
         return bool(row.get("has_signal_today"))
     if value == "no_signal":
         return not bool(row.get("has_signal_today"))
+    if value == "submitted":
+        return latest_status in SUBMITTED_SIGNAL_STATUSES
+    if value == "protected_active":
+        return latest_status in PROTECTED_ACTIVE_SIGNAL_STATUSES
+    if value == "protection_incomplete":
+        return latest_status in PROTECTION_INCOMPLETE_SIGNAL_STATUSES
     return latest_status == value
 
 
@@ -512,7 +553,7 @@ def build_filtered_summary(rows: list[dict[str, Any]]) -> dict[str, int]:
             ready_count += 1
         if row.get("has_signal_today"):
             signaled_count += 1
-        if normalize_signal_status(row.get("latest_signal_status")) in {"awaiting_confirm", "pending", "submitted", "protected_active", "protection_incomplete"}:
+        if normalize_signal_status(row.get("latest_signal_status")) in NEEDS_ACTION_SIGNAL_STATUSES:
             needs_action_count += 1
     return {
         "total": len(rows),

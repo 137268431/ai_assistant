@@ -13,11 +13,15 @@ OPEN_SIGNAL_STATUSES = {
     "awaiting_confirm",
     "pending",
     "submitted",
+    "submitted_waiting_fill",
+    "filled_repricing_protection",
+    "filled_position",
     "protected_active",
     "protection_incomplete",
+    "protection_reprice_failed",
     "executed",
 }
-TERMINAL_SIGNAL_STATUSES = {"closed", "expired", "rejected", "cancelled", "canceled", "dropped"}
+TERMINAL_SIGNAL_STATUSES = {"closed", "expired", "rejected", "entry_missed_limit_cap", "cancelled", "canceled", "dropped"}
 
 
 def _to_text(value: Any) -> str:

@@ -120,6 +120,27 @@ class AuthRecoveryPostLoginTest(unittest.TestCase):
 
         self.assertEqual([], service.scheduled_restarts)
 
+    def test_mark_auth_recovered_clears_active_disconnect_reason(self):
+        service = FakeAuthRecoveryService(startup_active=False)
+        service._set_auth_recovery_state(
+            cycle_id="cycle-1",
+            recovery_phase="silent_probe",
+            recovery_reason="session_expired",
+            last_recovery_source="session_keeper",
+            disconnect_reason_code="local_socket_unreachable",
+            disconnect_reason_label="本地 Gateway Socket 不可达",
+            disconnect_reason_confidence="high",
+            disconnect_reason_evidence={"status_code": 503, "error_codes": [502]},
+        )
+
+        service._mark_auth_recovered(source="auth_probe", reason="session_expired")
+
+        self.assertEqual("recovered", service._auth_recovery_state["recovery_phase"])
+        self.assertEqual("", service._auth_recovery_state["disconnect_reason_code"])
+        self.assertEqual("", service._auth_recovery_state["disconnect_reason_label"])
+        self.assertEqual("", service._auth_recovery_state["disconnect_reason_confidence"])
+        self.assertEqual({}, service._auth_recovery_state["disconnect_reason_evidence"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import time
 from datetime import datetime, timezone
 
@@ -232,67 +233,6 @@ class TradingServiceSignalsMixin:
                     finalized = True
                     continue
 
-                if self._signal_runtime_expired(sig):
-                    service_mod.logger.info(
-                        "Signal expired before runtime readiness/submission: %s %s",
-                        sig.get("symbol"),
-                        sig.get("direction"),
-                    )
-                    self._mark_signal_validation_expired(sig)
-                    self.signal_router.mark_processed(signal_id)
-                    finalized = True
-                    continue
-
-                valid, reason = self.signal_processor.validate_signal(sig)
-                if not valid:
-                    if reason == "signal_expired":
-                        service_mod.logger.info(
-                            "Signal expired before runtime submission: %s %s - %s",
-                            sig.get("symbol"),
-                            sig.get("direction"),
-                            reason,
-                        )
-                        self._mark_signal_validation_expired(sig)
-                        self.signal_router.mark_processed(signal_id)
-                        finalized = True
-                        continue
-                    if (
-                        str(reason or "").startswith("warmup")
-                        or reason in self.READINESS_DEFER_REASONS
-                        or reason in self.CAPACITY_DEFER_REASONS
-                    ):
-                        service_mod.logger.info(
-                            "Signal deferred: %s %s - %s",
-                            sig.get("symbol"),
-                            sig.get("direction"),
-                            reason,
-                        )
-                        if reason in self.CAPACITY_DEFER_REASONS:
-                            self._mark_signal_waiting_for_capacity(sig, self._strategy_capacity_snapshot())
-                        continue
-                    service_mod.logger.info(
-                        "Signal rejected: %s %s - %s",
-                        sig.get("symbol"),
-                        sig.get("direction"),
-                        reason,
-                    )
-                    self._mark_signal_validation_rejected(sig, reason)
-                    self.signal_router.mark_processed(signal_id)
-                    finalized = True
-                    continue
-
-                capacity = self._strategy_capacity_snapshot()
-                if capacity.get("capacity_full"):
-                    service_mod.logger.info(
-                        "Signal waiting for strategy capacity: signal_id=%s symbol=%s used=%s max=%s",
-                        signal_id,
-                        sig.get("symbol"),
-                        capacity.get("strategy_capacity_used"),
-                        capacity.get("max_strategy_open_positions"),
-                    )
-                    self._mark_signal_waiting_for_capacity(sig, capacity)
-                    continue
-
                 direct_tv_entry = self._tv_direct_execution_enabled(sig)
                 if direct_tv_entry:
                     direct_ok, direct_sig, direct_reason = self._prepare_tv_direct_entry_signal(sig)
@@ -308,7 +248,81 @@ class TradingServiceSignalsMixin:
                         finalized = True
                         continue
                     sig = direct_sig
+                    hard_safety_reason = self._tv_direct_hard_safety_reason()
+                    if hard_safety_reason:
+                        service_mod.logger.info(
+                            "TV direct signal blocked by hard safety gate: signal_id=%s symbol=%s reason=%s",
+                            signal_id,
+                            sig.get("symbol"),
+                            hard_safety_reason,
+                        )
+                        self._mark_signal_tv_direct_rejected(sig, hard_safety_reason)
+                        self.signal_router.mark_processed(signal_id)
+                        finalized = True
+                        continue
                 else:
+                    if self._signal_runtime_expired(sig):
+                        service_mod.logger.info(
+                            "Signal expired before runtime readiness/submission: %s %s",
+                            sig.get("symbol"),
+                            sig.get("direction"),
+                        )
+                        self._mark_signal_validation_expired(sig)
+                        self.signal_router.mark_processed(signal_id)
+                        finalized = True
+                        continue
+
+                    valid, reason = self.signal_processor.validate_signal(sig)
+                    if not valid:
+                        if reason == "signal_expired":
+                            service_mod.logger.info(
+                                "Signal expired before runtime submission: %s %s - %s",
+                                sig.get("symbol"),
+                                sig.get("direction"),
+                                reason,
+                            )
+                            self._mark_signal_validation_expired(sig)
+                            self.signal_router.mark_processed(signal_id)
+                            finalized = True
+                            continue
+                        if (
+                            str(reason or "").startswith("warmup")
+                            or reason in self.READINESS_DEFER_REASONS
+                            or reason in self.CAPACITY_DEFER_REASONS
+                        ):
+                            service_mod.logger.info(
+                                "Signal deferred: %s %s - %s",
+                                sig.get("symbol"),
+                                sig.get("direction"),
+                                reason,
+                            )
+                            if reason in self.CAPACITY_DEFER_REASONS:
+                                self._mark_signal_waiting_for_capacity(sig, self._strategy_capacity_snapshot())
+                            continue
+                        service_mod.logger.info(
+                            "Signal rejected: %s %s - %s",
+                            sig.get("symbol"),
+                            sig.get("direction"),
+                            reason,
+                        )
+                        self._mark_signal_validation_rejected(sig, reason)
+                        self.signal_router.mark_processed(signal_id)
+                        finalized = True
+                        continue
+
+                capacity = self._strategy_capacity_snapshot()
+                if capacity.get("capacity_full"):
+                    service_mod.logger.info(
+                        "Signal waiting for strategy capacity: signal_id=%s symbol=%s used=%s max=%s",
+                        signal_id,
+                        sig.get("symbol"),
+                        capacity.get("strategy_capacity_used"),
+                        capacity.get("max_strategy_open_positions"),
+                    )
+                    self._mark_signal_waiting_for_capacity(sig, capacity)
+                    continue
+
+                if not direct_tv_entry:
                     guard_ok, guarded_sig, guard_reason = self._prepare_pre_submit_signal(sig)
                     if not guard_ok:
                         service_mod.logger.warning(
@@ -567,7 +581,7 @@ class TradingServiceSignalsMixin:
                         )
 
                 if result.get("ok"):
-                    if order_flow_manager is not None:
+                    if order_flow_manager is not None and not direct_tv_entry:
                         try:
                             order_flow_manager.mark_filled(
                                 symbol,
@@ -648,9 +662,274 @@ class TradingServiceSignalsMixin:
         except Exception:
             return False
 
+    def _tv_direct_hard_safety_reason(self) -> str:
+        service_mod = _service_mod()
+        if not self._config_bool("ibkr_trading_enabled", True):
+            return "trading_disabled"
+        if str(service_mod.ENVIRONMENT or "").strip().lower() == "live" and not self._config_bool(
+            "ibkr_live_trading_enabled",
+            True,
+        ):
+            return "trading_disabled"
+        lifecycle = getattr(self, "order_lifecycle", None)
+        if bool(getattr(lifecycle, "is_sl_circuit_breaker", False)):
+            return "sl_circuit_breaker"
+        if bool(getattr(lifecycle, "is_position_limit_reached", False)):
+            return "position_limit_reached"
+        return ""
+
     @staticmethod
     def _round_price(value) -> float:
         return round(TradingServiceSignalsMixin._safe_float(value, 0.0), 2)
+
+    @staticmethod
+    def _round_tv_entry_limit(value, direction: str) -> float:
+        price = TradingServiceSignalsMixin._safe_float(value, 0.0)
+        if price <= 0:
+            return 0.0
+        if str(direction or "").strip().lower() == "short":
+            return math.floor(price * 100.0 + 1e-9) / 100.0
+        return math.ceil(price * 100.0 - 1e-9) / 100.0
+
+    @classmethod
+    def _timestamp_from_epoch_value(cls, value):
+        number = cls._safe_float(value, 0.0)
+        if number <= 0:
+            return None
+        if number > 10_000_000_000:
+            number = number / 1000.0
+        try:
+            return datetime.fromtimestamp(number, timezone.utc)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _timestamp_from_text(value, *, assume_et: bool = True):
+        text = str(value or "").strip()
+        if not text:
+            return None
+        normalized = text.replace("Z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(normalized)
+        except Exception:
+            dt = None
+        if dt is None:
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M"):
+                try:
+                    dt = datetime.strptime(text, fmt)
+                    break
+                except Exception:
+                    dt = None
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=ET if assume_et else timezone.utc)
+        return dt.astimezone(timezone.utc)
+
+    def _tv_signal_timestamp(self, sig: dict) -> tuple[datetime | None, str, object]:
+        raw = sig.get("raw") if isinstance(sig.get("raw"), dict) else {}
+        extra = self._signal_extra(sig)
+        epoch_candidates = (
+            ("extra.pine_eval_ms", extra.get("pine_eval_ms")),
+            ("extra.pine_eval_time_ms", extra.get("pine_eval_time_ms")),
+            ("extra.bar_close_ms", extra.get("bar_close_ms")),
+            ("extra.bar_time_ms", extra.get("bar_time_ms")),
+            ("raw.pine_eval_ms", raw.get("pine_eval_ms")),
+            ("raw.pine_eval_time_ms", raw.get("pine_eval_time_ms")),
+            ("raw.bar_close_ms", raw.get("bar_close_ms")),
+            ("raw.bar_time_ms", raw.get("bar_time_ms")),
+            ("signal.bar_time_ms", sig.get("bar_time_ms")),
+        )
+        for source, value in epoch_candidates:
+            dt = self._timestamp_from_epoch_value(value)
+            if dt is not None:
+                return dt, source, value
+
+        text_candidates = (
+            ("extra.pine_eval_time", extra.get("pine_eval_time")),
+            ("extra.signal_time", extra.get("signal_time")),
+            ("raw.us_time", raw.get("us_time")),
+            ("signal.signal_time", sig.get("signal_time")),
+            ("signal.us_time", sig.get("us_time")),
+            ("raw.created", raw.get("created")),
+            ("signal.created", sig.get("created")),
+            ("raw.updated", raw.get("updated")),
+        )
+        for source, value in text_candidates:
+            dt = self._timestamp_from_text(value, assume_et=not source.endswith(".created") and not source.endswith(".updated"))
+            if dt is not None:
+                return dt, source, value
+        return None, "", None
+
+    def _tv_direct_execution_enabled(self, sig: dict) -> bool:
+        if not self._config_bool("tv_primary_direct_execution_enabled", True):
+            return False
+        extra = self._signal_extra(sig)
+        raw = sig.get("raw") if isinstance(sig.get("raw"), dict) else {}
+        source_candidates = (
+            sig.get("source"),
+            extra.get("source"),
+            extra.get("signal_source"),
+            raw.get("source"),
+        )
+        normalized_sources = {str(item or "").strip().lower() for item in source_candidates if str(item or "").strip()}
+        if not (normalized_sources & {"tv", "tradingview", "webhook_tv", "tv_webhook", "signal"}):
+            return False
+        direction = str(sig.get("direction") or "").strip().lower()
+        if direction not in {"long", "short"}:
+            return False
+        event_type = str(extra.get("event_type") or extra.get("tv_event_type") or raw.get("event_type") or "").strip().lower()
+        if event_type and any(token in event_type for token in ("exit", "close", "risk_update", "cancel")):
+            return False
+        return True
+
+    def _prepare_tv_direct_entry_signal(self, sig: dict) -> tuple[bool, dict, str]:
+        reference_entry = self._safe_float(sig.get("entry"), 0.0)
+        reference_stop = self._safe_float(sig.get("stop_loss"), 0.0)
+        reference_target = self._safe_float(sig.get("take_profit"), 0.0)
+        direction = str(sig.get("direction") or "").strip().lower()
+        if reference_entry <= 0 or reference_stop <= 0 or reference_target <= 0 or direction not in {"long", "short"}:
+            return False, sig, "invalid_prices"
+
+        max_age_s = max(1.0, self._config_float("tv_entry_freshness_sec", 120.0))
+        clock_skew_s = max(5.0, self._config_float("tv_entry_clock_skew_sec", 60.0))
+        signal_dt, signal_time_source, raw_signal_time = self._tv_signal_timestamp(sig)
+        now_utc = datetime.now(timezone.utc)
+        if signal_dt is None:
+            extra = self._signal_extra(sig)
+            sig["extra"] = {
+                **extra,
+                "tv_direct_entry": True,
+                "status_reason": "stale_signal",
+                "signal_freshness_source": "missing",
+                "signal_freshness_max_age_s": max_age_s,
+                "tv_direct_rejected_reason": "stale_signal",
+            }
+            return False, sig, "stale_signal"
+
+        signal_age_s = (now_utc - signal_dt).total_seconds()
+        freshness_fields = {
+            "signal_freshness_source": signal_time_source,
+            "signal_freshness_raw_value": raw_signal_time,
+            "signal_freshness_signal_at": signal_dt.isoformat(),
+            "signal_freshness_checked_at": now_utc.isoformat(),
+            "signal_freshness_age_s": round(signal_age_s, 3),
+            "signal_freshness_max_age_s": max_age_s,
+            "signal_clock_skew_threshold_s": clock_skew_s,
+        }
+        if signal_age_s < -clock_skew_s:
+            extra = self._signal_extra(sig)
+            sig["extra"] = {
+                **extra,
+                **freshness_fields,
+                "tv_direct_entry": True,
+                "status_reason": "signal_clock_skew",
+                "tv_direct_rejected_reason": "signal_clock_skew",
+            }
+            return False, sig, "signal_clock_skew"
+        if signal_age_s > max_age_s:
+            extra = self._signal_extra(sig)
+            sig["extra"] = {
+                **extra,
+                **freshness_fields,
+                "tv_direct_entry": True,
+                "status_reason": "stale_signal",
+                "tv_direct_rejected_reason": "stale_signal",
+            }
+            return False, sig, "stale_signal"
+
+        extra = self._signal_extra(sig)
+        cap_bps = self._config_float("tv_entry_limit_cap_bps", 15.0)
+        for source in (sig, extra):
+            for key in ("submitted_limit_cap_bps", "tv_entry_limit_cap_bps", "entry_limit_cap_bps", "limit_cap_bps"):
+                if isinstance(source, dict) and key in source and source.get(key) not in (None, ""):
+                    cap_bps = self._safe_float(source.get(key), cap_bps)
+                    break
+            else:
+                continue
+            break
+        cap_bps = max(0.0, cap_bps)
+        raw_limit = (
+            reference_entry * (1.0 - cap_bps / 10000.0)
+            if direction == "short"
+            else reference_entry * (1.0 + cap_bps / 10000.0)
+        )
+        submitted_limit = self._round_tv_entry_limit(raw_limit, direction)
+        adaptive_enabled = self._config_bool("tv_entry_adaptive_enabled", True)
+        adaptive_priority = self._config_text("tv_entry_adaptive_priority", "Normal").strip() or "Normal"
+        adjusted_sig = copy.deepcopy(sig)
+        adjusted_sig["entry"] = submitted_limit
+        adjusted_sig["extra"] = {
+            **extra,
+            **freshness_fields,
+            "tv_direct_entry": True,
+            "tv_primary_direct_execution": True,
+            "signal_reference_price": reference_entry,
+            "tv_reference_entry": reference_entry,
+            "tv_reference_stop_loss": reference_stop,
+            "tv_reference_take_profit": reference_target,
+            "reference_entry": reference_entry,
+            "reference_stop_loss": reference_stop,
+            "reference_take_profit": reference_target,
+            "reference_protection_only": True,
+            "final_protection_from_fill": True,
+            "submitted_entry_limit_price": submitted_limit,
+            "submitted_limit_cap_price": submitted_limit,
+            "submitted_limit_cap_bps": cap_bps,
+            "submitted_limit_cap_applied": True,
+            "tv_entry_limit_cap_bps": cap_bps,
+            "tv_entry_adaptive_enabled": adaptive_enabled,
+            "tv_entry_adaptive_priority": adaptive_priority,
+            "adaptive_priority": adaptive_priority if adaptive_enabled else "",
+            "entry_order_type": "LMT",
+            "entry_limit_intent": "bounded_marketable",
+            "entry_price_plan": "tv_direct_bounded_limit",
+            "entry_repriced": submitted_limit != self._round_price(reference_entry),
+            "tv_direct_validation_policy": "freshness_only_then_hard_safety",
+            "tv_direct_signal_processor_validation_skipped": True,
+            "original_entry": reference_entry,
+            "original_stop_loss": reference_stop,
+            "original_take_profit": reference_target,
+            "status_reason": "tv_direct_ready",
+        }
+        return True, adjusted_sig, ""
+
+    def _mark_signal_tv_direct_rejected(self, sig: dict, reason: str):
+        service_mod = _service_mod()
+        if not self.pb:
+            return
+        signal_id = str(sig.get("signal_id") or "").strip()
+        if not signal_id:
+            return
+        status_reason = str(reason or "stale_signal").strip() or "stale_signal"
+        status = "expired" if status_reason in {"stale_signal", "signal_expired"} else "rejected"
+        try:
+            record, existing_extra = self._load_signal_record_and_extra(sig)
+            if not record:
+                return
+            signal_extra = sig.get("extra") if isinstance(sig.get("extra"), dict) else self._signal_extra(sig)
+            patch = self._signal_broker_patch(
+                status,
+                status_reason,
+                existing_extra,
+                {
+                    **signal_extra,
+                    "tv_direct_entry": True,
+                    "tv_direct_rejected": True,
+                    "tv_direct_rejected_reason": status_reason,
+                    "tv_direct_rejected_at": self._now_iso(),
+                    "status_reason": status_reason,
+                    "execution_state": "tv_direct_rejected",
+                },
+            )
+            self.pb.update_record("ibkr_signals", record["id"], patch)
+        except Exception as exc:
+            service_mod.logger.error(
+                "Failed to mark TV direct signal rejected: signal_id=%s reason=%s error=%s",
+                signal_id,
+                status_reason,
+                exc,
+            )
 
     def _config_bool(self, key: str, default: bool) -> bool:
         getter = getattr(getattr(self, "config", None), "get_bool_for_environment", None)
@@ -2163,6 +2442,8 @@ class TradingServiceSignalsMixin:
                 except Exception:
                     raw_extra = {}
             signal_extra = raw_extra if isinstance(raw_extra, dict) else {}
+        if bool(signal_extra.get("tv_direct_entry")):
+            order_extra = {**signal_extra, **order_extra}
         exit_policy_fields = {
             key: signal_extra.get(key)
             for key in (
@@ -2217,8 +2498,21 @@ class TradingServiceSignalsMixin:
             else {}
         )
         protection_fields = self._protection_fields(result, diagnostic)
-        signal_status = "submitted" if protection_complete else "protection_incomplete"
-        signal_note = "order_submitted_by_ibkr_compute" if protection_complete else "protection_incomplete"
+        tv_direct_ack = bool(signal_extra.get("tv_direct_entry"))
+        signal_status = (
+            "submitted_waiting_fill"
+            if protection_complete and tv_direct_ack
+            else "submitted"
+            if protection_complete
+            else "protection_incomplete"
+        )
+        signal_note = (
+            "submitted_waiting_fill"
+            if protection_complete and tv_direct_ack
+            else "order_submitted_by_ibkr_compute"
+            if protection_complete
+            else "protection_incomplete"
+        )
 
         child_orders = []
         if tp_unique_id:
@@ -2310,9 +2604,7 @@ class TradingServiceSignalsMixin:
                 "missing_order_ids": list(result.get("missing_order_ids") or []),
                 **protection_fields,
                 "submitted_order_ids": list(result.get("order_ids") or []),
-                "status_reason": "order_submitted_by_ibkr_compute"
-                if protection_complete
-                else "bracket_protection_incomplete",
+                "status_reason": signal_note if protection_complete else "bracket_protection_incomplete",
                 "protection_incomplete_diagnostic": diagnostic,
                 "safety_cancel_recommended": bool(diagnostic.get("cancel_recommended")) if diagnostic else False,
                 **order_extra,

@@ -520,6 +520,273 @@ class TradingServiceRuntimeOpsMixin:
                 return str(value).strip()
         return ""
 
+    def _signal_first_value(self, signal_record: dict[str, Any], *keys: str) -> Any:
+        extra = self._safe_extra((signal_record or {}).get("extra"))
+        for key in keys:
+            if key in (signal_record or {}) and (signal_record or {}).get(key) not in (None, ""):
+                return (signal_record or {}).get(key)
+            if key in extra and extra.get(key) not in (None, ""):
+                return extra.get(key)
+        return ""
+
+    def _parse_reward_risk_ratio(self, value: Any) -> tuple[float, str]:
+        text = str(value or "").strip().lower().replace("rr", "").replace("r", "")
+        if not text:
+            return 0.0, ""
+        for sep in (":", "/"):
+            if sep not in text:
+                continue
+            left, right = text.split(sep, 1)
+            risk = self._coerce_float(left.strip(), 0.0)
+            reward = self._coerce_float(right.strip(), 0.0)
+            if risk > 0 and reward > 0:
+                return reward / risk, "ratio_text"
+        parsed = self._coerce_float(text, 0.0)
+        return (parsed, "numeric") if parsed > 0 else (0.0, "")
+
+    def _entry_fill_tv_reprice_result(
+        self,
+        *,
+        order: dict,
+        signal_record: dict[str, Any],
+        environment: str,
+        actual_fill_price: float,
+        submitted_entry: float,
+        entry_row: dict[str, Any],
+        tp_row: dict[str, Any],
+        sl_row: dict[str, Any],
+        old_tp: float,
+        old_sl: float,
+    ) -> dict[str, Any]:
+        enabled = self._config_bool_for_environment("tv_entry_fill_reprice_enabled", environment, True)
+        signal_extra = self._safe_extra((signal_record or {}).get("extra"))
+        direction = self._signal_text_value(signal_record, "direction").lower()
+        if direction not in {"long", "short"}:
+            side = str((order or {}).get("side") or "").strip().upper()
+            direction = "long" if side == "BUY" else "short" if side == "SELL" else ""
+
+        reference_entry = (
+            self._signal_price_value(signal_record, "reference_entry", "tv_reference_entry", "signal_reference_price", "original_entry")
+            or submitted_entry
+        )
+        reference_stop = self._signal_price_value(
+            signal_record,
+            "reference_stop_loss",
+            "tv_reference_stop_loss",
+            "reference_sl",
+            "original_stop_loss",
+            "initial_stop_loss",
+        )
+        reference_target = self._signal_price_value(
+            signal_record,
+            "reference_take_profit",
+            "tv_reference_take_profit",
+            "reference_tp",
+            "original_take_profit",
+            "initial_take_profit",
+        )
+        risk_per_share = self._signal_price_value(
+            signal_record,
+            "risk_per_share",
+            "risk_r",
+            "initial_risk_r",
+        )
+        risk_source = "risk_per_share" if risk_per_share > 0 else ""
+        atr = self._signal_price_value(signal_record, "atr", "atr_raw", "atrRaw")
+        sl_atr_mult = 0.0
+        if risk_per_share <= 0 and reference_entry > 0 and reference_stop > 0:
+            reference_risk = abs(reference_entry - reference_stop)
+            if atr > 0:
+                sl_atr_mult = reference_risk / atr
+                risk_per_share = atr * sl_atr_mult
+                risk_source = "reference_stop_loss_atr"
+            else:
+                risk_per_share = reference_risk
+                risk_source = "reference_stop_loss"
+        rr_value = self._signal_first_value(
+            signal_record,
+            "reward_risk",
+            "rewardRisk",
+            "rr",
+            "risk_reward",
+        )
+        reward_risk, reward_risk_source = self._parse_reward_risk_ratio(rr_value)
+        if reward_risk <= 0 and reference_entry > 0 and reference_target > 0 and risk_per_share > 0:
+            reward_risk = abs(reference_target - reference_entry) / risk_per_share
+            reward_risk_source = "reference_take_profit"
+
+        delta = actual_fill_price - submitted_entry if actual_fill_price > 0 and submitted_entry > 0 else 0.0
+        directional_slippage = (
+            reference_entry - actual_fill_price if direction == "short" else actual_fill_price - reference_entry
+        ) if reference_entry > 0 and actual_fill_price > 0 else 0.0
+        result: dict[str, Any] = {
+            "ok": True,
+            "enabled": enabled,
+            "attempted": False,
+            "material": False,
+            "method": "tv_fill_based",
+            "reason": "not_material",
+            "actual_fill_price": actual_fill_price,
+            "submitted_entry": submitted_entry,
+            "reference_entry": reference_entry,
+            "reference_stop_loss": reference_stop,
+            "reference_take_profit": reference_target,
+            "delta": delta,
+            "reference_delta": actual_fill_price - reference_entry if reference_entry > 0 and actual_fill_price > 0 else 0.0,
+            "directional_slippage": directional_slippage,
+            "old_stop_loss": old_sl,
+            "old_take_profit": old_tp,
+            "stop_loss": old_sl,
+            "take_profit": old_tp,
+            "risk_per_share": risk_per_share,
+            "reward_risk": reward_risk,
+            "atr": atr,
+            "sl_atr_mult": sl_atr_mult,
+            "stop_loss_source": risk_source,
+            "reward_risk_source": reward_risk_source,
+        }
+        if actual_fill_price <= 0:
+            return {**result, "ok": False, "reason": "missing_actual_fill_price"}
+        if reference_entry <= 0 or direction not in {"long", "short"}:
+            return {**result, "ok": False, "reason": "missing_reference_entry_or_direction"}
+        if not enabled:
+            return {**result, "reason": "disabled"}
+        if risk_per_share <= 0 or reward_risk <= 0:
+            return {**result, "ok": False, "reason": "missing_tv_fill_reprice_inputs"}
+
+        new_sl = round(actual_fill_price + risk_per_share if direction == "short" else actual_fill_price - risk_per_share, 4)
+        new_tp = round(actual_fill_price - (risk_per_share * reward_risk) if direction == "short" else actual_fill_price + (risk_per_share * reward_risk), 4)
+        slippage_bps = directional_slippage / reference_entry * 10000.0 if reference_entry > 0 else 0.0
+        slippage_r = directional_slippage / risk_per_share if risk_per_share > 0 else 0.0
+        sl_order_id = self._order_broker_id(sl_row)
+        tp_order_id = self._order_broker_id(tp_row)
+        requires_modify = (
+            old_sl <= 0
+            or old_tp <= 0
+            or abs(new_sl - old_sl) > 0.0000001
+            or abs(new_tp - old_tp) > 0.0000001
+        )
+        result.update(
+            {
+                "material": bool(requires_modify),
+                "attempted": bool(requires_modify),
+                "reason": "tv_fill_based_repriced" if requires_modify else "already_aligned",
+                "stop_loss": new_sl,
+                "take_profit": new_tp,
+                "final_stop_loss": new_sl,
+                "final_take_profit": new_tp,
+                "slippage_bps": round(slippage_bps, 4),
+                "slippage_r": round(slippage_r, 6),
+                "stop_loss_order_id": sl_order_id,
+                "take_profit_order_id": tp_order_id,
+            }
+        )
+        if new_sl <= 0 or new_tp <= 0:
+            return {**result, "ok": False, "reason": "invalid_final_protection_price"}
+        if not requires_modify:
+            self._update_pb_order_row(
+                entry_row,
+                {"stop_loss": new_sl, "take_profit": new_tp, "sl_price": new_sl, "tp_price": new_tp},
+            )
+            self._update_pb_order_row(sl_row, {"limit_price": new_sl, "stop_loss": new_sl, "sl_price": new_sl})
+            self._update_pb_order_row(tp_row, {"limit_price": new_tp, "take_profit": new_tp, "tp_price": new_tp})
+            return result
+        if not sl_order_id or not tp_order_id:
+            return {**result, "ok": False, "reason": "missing_reprice_order_id"}
+        order_modifier = getattr(self, "order_modifier", None)
+        if not order_modifier:
+            return {**result, "ok": False, "reason": "order_modifier_unavailable"}
+
+        try:
+            sl_modify = order_modifier.update_stop_loss(sl_order_id, new_sl)
+        except Exception as exc:
+            sl_modify = {"ok": False, "error": str(exc), "exception": type(exc).__name__}
+        try:
+            tp_modify = order_modifier.update_take_profit(tp_order_id, new_tp)
+        except Exception as exc:
+            tp_modify = {"ok": False, "error": str(exc), "exception": type(exc).__name__}
+        result["modify_results"] = {
+            "stop_loss": dict(sl_modify or {}),
+            "take_profit": dict(tp_modify or {}),
+        }
+        if not (sl_modify or {}).get("ok") or not (tp_modify or {}).get("ok"):
+            return {**result, "ok": False, "reason": "broker_modify_failed"}
+
+        sl_normalization = ((sl_modify or {}).get("price_normalization") or {}).get("auxPrice") or {}
+        tp_normalization = (
+            ((tp_modify or {}).get("price_normalization") or {}).get("price")
+            or ((tp_modify or {}).get("price_normalization") or {}).get("lmtPrice")
+            or {}
+        )
+        normalized_sl = float(sl_normalization.get("normalized") or 0.0)
+        normalized_tp = float(tp_normalization.get("normalized") or 0.0)
+        if normalized_sl > 0 or normalized_tp > 0:
+            result["price_normalization"] = {
+                "stop_loss": dict(sl_normalization or {}),
+                "take_profit": dict(tp_normalization or {}),
+            }
+        if normalized_sl > 0 and abs(normalized_sl - new_sl) > 0.0000001:
+            result["raw_stop_loss"] = new_sl
+            new_sl = normalized_sl
+            result["stop_loss"] = result["final_stop_loss"] = new_sl
+        if normalized_tp > 0 and abs(normalized_tp - new_tp) > 0.0000001:
+            result["raw_take_profit"] = new_tp
+            new_tp = normalized_tp
+            result["take_profit"] = result["final_take_profit"] = new_tp
+
+        self._update_pb_order_row(
+            entry_row,
+            {"stop_loss": new_sl, "take_profit": new_tp, "sl_price": new_sl, "tp_price": new_tp},
+        )
+        self._update_pb_order_row(sl_row, {"limit_price": new_sl, "stop_loss": new_sl, "sl_price": new_sl})
+        self._update_pb_order_row(tp_row, {"limit_price": new_tp, "take_profit": new_tp, "tp_price": new_tp})
+        return result
+
+    def _sync_signal_lifecycle_ack(
+        self,
+        *,
+        signal_id: str,
+        status: str,
+        note: str,
+        environment: str,
+        extra: dict[str, Any],
+        executed_price: float = 0.0,
+        stop_loss: float = 0.0,
+        take_profit: float = 0.0,
+    ) -> None:
+        ack = getattr(getattr(self, "pb", None), "ack_ibkr_signal", None)
+        if not callable(ack) or not signal_id:
+            return
+        order_extra = {
+            **(extra if isinstance(extra, dict) else {}),
+            "signal_lifecycle_update": True,
+            "force_signal_status_notification": True,
+        }
+        if executed_price > 0:
+            order_extra["actual_fill_price"] = executed_price
+            order_extra["entry_fill_price"] = executed_price
+            order_extra["executed_price"] = executed_price
+        if stop_loss > 0:
+            order_extra["final_stop_loss"] = stop_loss
+        if take_profit > 0:
+            order_extra["final_take_profit"] = take_profit
+        try:
+            ack(
+                signal_id=signal_id,
+                status=status,
+                note=note,
+                order={
+                    "executed_price": executed_price,
+                    "actual_fill_price": executed_price,
+                    "stop_loss": stop_loss,
+                    "take_profit": take_profit,
+                    "extra": order_extra,
+                },
+                environment=environment,
+            )
+        except Exception as exc:
+            _service_mod().logger.debug("Signal lifecycle ack/notification sync failed: signal_id=%s error=%s", signal_id, exc)
+
     def _trade_group_id_for_exit(self, signal_record: dict[str, Any], order: dict[str, Any]) -> str:
         extra = self._safe_extra((signal_record or {}).get("extra"))
         order_extra = order.get("extra") if isinstance(order.get("extra"), dict) else {}
@@ -714,6 +981,20 @@ class TradingServiceRuntimeOpsMixin:
             self._order_price_value(sl_row, "limit_price", "stop_loss", "sl_price", "auxPrice", "price")
             or self._signal_price_value(signal_record, "stop_loss", "sl_price", "initial_stop_loss")
         )
+        signal_extra = self._safe_extra((signal_record or {}).get("extra"))
+        if bool(signal_extra.get("tv_direct_entry") or signal_extra.get("final_protection_from_fill")):
+            return self._entry_fill_tv_reprice_result(
+                order=order,
+                signal_record=signal_record,
+                environment=environment,
+                actual_fill_price=actual_fill_price,
+                submitted_entry=submitted_entry,
+                entry_row=entry_row,
+                tp_row=tp_row,
+                sl_row=sl_row,
+                old_tp=old_tp,
+                old_sl=old_sl,
+            )
         delta = actual_fill_price - submitted_entry if actual_fill_price > 0 and submitted_entry > 0 else 0.0
         threshold = max(min_abs, abs(submitted_entry) * min_bps / 10000.0) if submitted_entry > 0 else min_abs
         result: dict[str, Any] = {
@@ -888,7 +1169,7 @@ class TradingServiceRuntimeOpsMixin:
             )
             if closed_role:
                 return closed_role
-            if current_status == "protected_active":
+            if current_status in {"protected_active", "filled_position"}:
                 return ""
             protection_status = self._signal_protection_status(
                 signal_id=signal_id,
@@ -978,6 +1259,16 @@ class TradingServiceRuntimeOpsMixin:
                         "extra": extra,
                     },
                 )
+                self._sync_signal_lifecycle_ack(
+                    signal_id=signal_id,
+                    status="protection_incomplete",
+                    note="entry_fill_detected_with_incomplete_protection",
+                    environment=broker_environment,
+                    extra=extra,
+                    executed_price=actual_fill_price,
+                    stop_loss=self._signal_price_value(signal_record, "stop_loss", "sl_price"),
+                    take_profit=self._signal_price_value(signal_record, "take_profit", "tp_price"),
+                )
                 return ""
             rebase_result = self._entry_fill_rebase_result(
                 order=order,
@@ -987,10 +1278,13 @@ class TradingServiceRuntimeOpsMixin:
                 trade_group_id=trade_group_id,
                 actual_fill_price=actual_fill_price,
             )
+            tv_fill_based = str(rebase_result.get("method") or "").strip().lower() == "tv_fill_based"
             if not bool(rebase_result.get("ok", True)):
+                failure_status = "protection_reprice_failed" if tv_fill_based else "protection_incomplete"
+                failure_note = "protection_reprice_failed" if tv_fill_based else "protection_rebase_failed"
                 diagnostic = {
-                    "status": "protection_incomplete",
-                    "reason": "protection_rebase_failed",
+                    "status": failure_status,
+                    "reason": failure_note,
                     "signal_id": signal_id,
                     "symbol": symbol,
                     "direction": direction,
@@ -1019,7 +1313,7 @@ class TradingServiceRuntimeOpsMixin:
                                 ],
                                 "bracket_group": trade_group_id,
                             },
-                            reason="protection_rebase_failed",
+                            reason=failure_note,
                         )
                         if isinstance(lifecycle_diagnostic, dict):
                             diagnostic = {**lifecycle_diagnostic, **diagnostic}
@@ -1035,10 +1329,12 @@ class TradingServiceRuntimeOpsMixin:
                     "entry_fill_status": str(order.get("status") or ""),
                     "entry_fill_direction": direction,
                     "entry_fill_symbol": symbol,
-                    "status_reason": "protection_rebase_failed",
+                    "status_reason": failure_note,
                     "protection_complete": False,
                     "protection_incomplete": True,
                     "protection_rebase_result": rebase_result,
+                    "protection_reprice_result": rebase_result if tv_fill_based else {},
+                    "protection_reprice_failed": tv_fill_based,
                     "protection_rebase_failed": diagnostic,
                     "protection_incomplete_diagnostic": diagnostic,
                     "missing_protection_roles": [],
@@ -1054,13 +1350,31 @@ class TradingServiceRuntimeOpsMixin:
                     "ibkr_signals",
                     str(signal_record.get("id")),
                     {
-                        "status": "protection_incomplete",
-                        "note": "protection_rebase_failed",
+                        "status": failure_status,
+                        "note": failure_note,
                         "executed_price": actual_fill_price,
                         "extra": extra,
                     },
                 )
+                self._sync_signal_lifecycle_ack(
+                    signal_id=signal_id,
+                    status=failure_status,
+                    note=failure_note,
+                    environment=broker_environment,
+                    extra=extra,
+                    executed_price=actual_fill_price,
+                    stop_loss=self._coerce_float(rebase_result.get("stop_loss"), 0.0),
+                    take_profit=self._coerce_float(rebase_result.get("take_profit"), 0.0),
+                )
                 return ""
+            success_status = "filled_position" if tv_fill_based else "protected_active"
+            success_note = (
+                "entry_filled_final_protection_repriced"
+                if tv_fill_based and bool(rebase_result.get("attempted"))
+                else "entry_filled_final_protection_aligned"
+                if tv_fill_based
+                else "entry_filled_protection_expected"
+            )
             extra = {
                 **existing_extra,
                 "entry_fill_detected_by": "order_tracker",
@@ -1071,10 +1385,18 @@ class TradingServiceRuntimeOpsMixin:
                 "entry_fill_status": str(order.get("status") or ""),
                 "entry_fill_direction": direction,
                 "entry_fill_symbol": symbol,
-                "status_reason": "entry_filled_protection_expected",
+                "status_reason": success_note,
                 "protection_complete": True,
                 "protection_incomplete": False,
                 "protection_rebase_result": rebase_result,
+                "protection_reprice_result": rebase_result if tv_fill_based else {},
+                "signal_lifecycle_status": success_status,
+                "final_stop_loss": rebase_result.get("final_stop_loss") or rebase_result.get("stop_loss"),
+                "final_take_profit": rebase_result.get("final_take_profit") or rebase_result.get("take_profit"),
+                "entry_slippage_bps": rebase_result.get("slippage_bps", 0.0),
+                "entry_slippage_r": rebase_result.get("slippage_r", 0.0),
+                "slippage_bps": rebase_result.get("slippage_bps", 0.0),
+                "slippage_r": rebase_result.get("slippage_r", 0.0),
                 "missing_protection_roles": [],
                 "protection_order_statuses": dict(protection_status.get("role_statuses") or {}),
                 "protection_live_order_statuses": dict(protection_status.get("live_role_statuses") or {}),
@@ -1088,17 +1410,150 @@ class TradingServiceRuntimeOpsMixin:
                 "ibkr_signals",
                 str(signal_record.get("id")),
                 {
-                    "status": "protected_active",
-                    "note": "entry_filled_protection_expected",
+                    "status": success_status,
+                    "note": success_note,
                     "executed_price": actual_fill_price,
                     "stop_loss": rebase_result.get("stop_loss") or self._signal_price_value(signal_record, "stop_loss", "sl_price"),
                     "take_profit": rebase_result.get("take_profit") or self._signal_price_value(signal_record, "take_profit", "tp_price"),
                     "extra": extra,
                 },
             )
+            self._sync_signal_lifecycle_ack(
+                signal_id=signal_id,
+                status=success_status,
+                note=success_note,
+                environment=broker_environment,
+                extra=extra,
+                executed_price=actual_fill_price,
+                stop_loss=self._coerce_float(rebase_result.get("stop_loss"), 0.0),
+                take_profit=self._coerce_float(rebase_result.get("take_profit"), 0.0),
+            )
         except Exception as exc:
             service_mod.logger.error("Failed to update signal after entry fill: %s", exc)
         return ""
+
+    def _update_signal_after_entry_cancel(self, order: dict, symbol: str) -> bool:
+        service_mod = _service_mod()
+        if not getattr(self, "pb", None):
+            return False
+        broker_environment = str(service_mod.ENVIRONMENT or "paper").strip().lower() or "paper"
+        data_environment = str(service_mod.DATA_ENVIRONMENT or "live").strip().lower() or "live"
+
+        try:
+            pb_order = self._load_pb_order_for_event(order, broker_environment)
+            role = self._normalize_order_role(self._order_role(pb_order or order))
+            if not role:
+                role = self._resolve_order_role_for_fill_event(order, broker_environment)
+            if role and role != "entry":
+                return False
+            if str(order.get("parentId") or order.get("parent_id") or "").strip():
+                return False
+
+            filled_qty = self._coerce_float(
+                self._first_nonempty_order_value(order, "filledQuantity", "filled_qty", "filled", "executedQuantity"),
+                0.0,
+            )
+            fill_price = self._first_positive_order_float(
+                order,
+                "avgPrice",
+                "avgFillPrice",
+                "fill_price",
+                "filled_price",
+                "lastFillPrice",
+                "price",
+            )
+            if filled_qty > 0 or fill_price > 0:
+                return False
+
+            signal_id = self._resolve_signal_id_for_order(order, broker_environment)
+            if not signal_id:
+                return False
+            signal_record = self.pb.get_first_record(
+                "ibkr_signals",
+                filter=(
+                    f'signal_id = "{self._escape_filter_value(signal_id)}" && '
+                    f'environment = "{self._escape_filter_value(data_environment)}"'
+                ),
+            )
+            if not signal_record or not signal_record.get("id"):
+                return False
+            current_status = str(signal_record.get("status") or "").strip().lower()
+            if current_status in {
+                "closed",
+                "expired",
+                "rejected",
+                "entry_missed_limit_cap",
+                "filled_position",
+                "protected_active",
+                "protection_incomplete",
+                "protection_reprice_failed",
+            }:
+                return False
+            existing_extra = self._safe_extra(signal_record.get("extra"))
+            if not bool(existing_extra.get("tv_direct_entry") or existing_extra.get("final_protection_from_fill")):
+                return False
+
+            order_id = str(order.get("broker_order_id") or order.get("order_id") or order.get("orderId") or "").strip()
+            raw_status = str(order.get("status") or order.get("order_status") or "").strip()
+            order_status = raw_status or "Cancelled"
+            missed_at = self._now_iso_for_signal_patch()
+            extra = {
+                **existing_extra,
+                "status_reason": "entry_missed_limit_cap",
+                "entry_missed_limit_cap": True,
+                "entry_missed_reason": "entry_missed_limit_cap",
+                "entry_missed_by": "order_tracker",
+                "entry_missed_at": missed_at,
+                "entry_cancel_status": order_status,
+                "entry_cancel_broker_order_id": order_id,
+                "entry_fill_detected": False,
+                "position_open": False,
+                "protection_complete": False,
+                "protection_incomplete": False,
+                "safety_cancel_recommended": False,
+            }
+            self.pb.update_record(
+                "ibkr_signals",
+                str(signal_record.get("id")),
+                {
+                    "status": "entry_missed_limit_cap",
+                    "note": "entry_missed_limit_cap",
+                    "extra": extra,
+                },
+            )
+            if pb_order:
+                order_extra = self._safe_extra(pb_order.get("extra"))
+                self._update_pb_order_row(
+                    pb_order,
+                    {
+                        "status": order_status,
+                        "relation_status": "entry_missed",
+                        "extra": {
+                            **order_extra,
+                            "entry_missed_limit_cap": True,
+                            "entry_missed_at": missed_at,
+                            "entry_cancel_status": order_status,
+                        },
+                    },
+                )
+            self._sync_signal_lifecycle_ack(
+                signal_id=signal_id,
+                status="entry_missed_limit_cap",
+                note="entry_missed_limit_cap",
+                environment=broker_environment,
+                extra=extra,
+            )
+            self._demote_entry_target_after_signal_close(
+                signal_record=signal_record,
+                signal_id=signal_id,
+                symbol=symbol,
+                environment=data_environment,
+                reason="entry_missed_limit_cap",
+            )
+            return True
+        except Exception as exc:
+            service_mod.logger.error("Failed to mark TV direct entry missed after cancel: %s", exc)
+        return False
 
     def _demote_entry_target_after_signal_close(
         self,
@@ -1505,6 +1960,8 @@ class TradingServiceRuntimeOpsMixin:
         symbol = str(order.get("ticker") or order.get("symbol") or "").strip().upper()
         has_parent = bool(str(order.get("parentId") or order.get("parent_id") or "").strip())
         service_mod.logger.info("Order cancelled: %s", symbol or order.get("ticker"))
+        if symbol and not has_parent:
+            self._update_signal_after_entry_cancel(order, symbol)
         if symbol and not has_parent:
             self.signal_processor.remove_position(symbol)
 

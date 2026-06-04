@@ -306,6 +306,55 @@ class _FakeSignalsService(TradingServiceSignalsMixin):
 
 
 class RuntimeSignalLifecycleTest(unittest.TestCase):
+    def _make_tv_direct_signal(self, service, *, direction="long"):
+        signal = service.pb.signals["sig-row-1"]
+        signal["status"] = "submitted_waiting_fill"
+        signal["direction"] = direction
+        signal["entry"] = 100.15 if direction == "long" else 99.85
+        signal["stop_loss"] = 98.4 if direction == "long" else 101.6
+        signal["take_profit"] = 102.4 if direction == "long" else 97.6
+        signal["extra"] = {
+            "source": "tradingview",
+            "bracket_group": "group_SIG_1",
+            "tv_direct_entry": True,
+            "final_protection_from_fill": True,
+            "reference_entry": 100.0,
+            "reference_stop_loss": 98.4 if direction == "long" else 101.6,
+            "reference_take_profit": 102.4 if direction == "long" else 97.6,
+            "risk_per_share": 1.6,
+            "reward_risk": 1.5,
+            "atr": 1.0,
+        }
+        service.pb.orders[0]["limit_price"] = signal["entry"]
+        service.pb.orders.extend(
+            [
+                {
+                    "id": "order-tp-1",
+                    "unique_id": "tp_SIG_1",
+                    "order_id": "1002",
+                    "broker_order_id": "1002",
+                    "signal_id": "SIG_1",
+                    "trade_group_id": "group_SIG_1",
+                    "role": "take_profit",
+                    "limit_price": signal["take_profit"],
+                    "status": "Submitted",
+                    "environment": "live",
+                },
+                {
+                    "id": "order-sl-1",
+                    "unique_id": "sl_SIG_1",
+                    "order_id": "1003",
+                    "broker_order_id": "1003",
+                    "signal_id": "SIG_1",
+                    "trade_group_id": "group_SIG_1",
+                    "role": "stop_loss",
+                    "limit_price": signal["stop_loss"],
+                    "status": "Submitted",
+                    "environment": "live",
+                },
+            ]
+        )
+
     def test_entry_fill_moves_submitted_signal_to_protected_active(self):
         service = _FakeService()
         service.pb.orders.extend(
@@ -481,6 +530,123 @@ class RuntimeSignalLifecycleTest(unittest.TestCase):
         self.assertEqual(101.4, orders_by_id["order-1"]["fill_price"])
         self.assertAlmostEqual(103.4, orders_by_id["order-sl-1"]["limit_price"])
         self.assertAlmostEqual(96.4, orders_by_id["order-tp-1"]["limit_price"])
+
+    def test_tv_direct_long_entry_fill_reprices_protection_from_actual_fill(self):
+        service = _FakeService()
+        service.order_modifier = _FakeOrderModifier()
+        self._make_tv_direct_signal(service, direction="long")
+
+        service._on_order_fill(
+            {
+                "orderId": "1001",
+                "ticker": "AAPL",
+                "side": "BUY",
+                "orderType": "LMT",
+                "status": "FILLED",
+                "cOID": "entry_SIG_1",
+                "avgPrice": 100.06,
+            }
+        )
+
+        row = service.pb.signals["sig-row-1"]
+        self.assertEqual(row["status"], "filled_position")
+        self.assertEqual(row["note"], "entry_filled_final_protection_repriced")
+        self.assertEqual(row["executed_price"], 100.06)
+        self.assertAlmostEqual(row["stop_loss"], 98.46)
+        self.assertAlmostEqual(row["take_profit"], 102.46)
+        self.assertEqual([("1003", 98.46)], service.order_modifier.stop_updates)
+        self.assertEqual([("1002", 102.46)], service.order_modifier.take_profit_updates)
+        reprice = row["extra"]["protection_reprice_result"]
+        self.assertEqual("tv_fill_based", reprice["method"])
+        self.assertAlmostEqual(1.6, reprice["risk_per_share"])
+        self.assertAlmostEqual(1.5, reprice["reward_risk"])
+        self.assertAlmostEqual(6.0, reprice["slippage_bps"])
+        self.assertAlmostEqual(0.0375, reprice["slippage_r"])
+        self.assertEqual("filled_position", service.pb.acked[-1]["status"])
+
+    def test_tv_direct_short_entry_fill_reprices_protection_from_actual_fill(self):
+        service = _FakeService()
+        service.order_modifier = _FakeOrderModifier()
+        self._make_tv_direct_signal(service, direction="short")
+
+        service._on_order_fill(
+            {
+                "orderId": "1001",
+                "ticker": "AAPL",
+                "side": "SELL",
+                "orderType": "LMT",
+                "status": "FILLED",
+                "cOID": "entry_SIG_1",
+                "avgPrice": 99.94,
+            }
+        )
+
+        row = service.pb.signals["sig-row-1"]
+        self.assertEqual(row["status"], "filled_position")
+        self.assertEqual(row["extra"]["entry_fill_direction"], "short")
+        self.assertAlmostEqual(row["stop_loss"], 101.54)
+        self.assertAlmostEqual(row["take_profit"], 97.54)
+        self.assertEqual([("1003", 101.54)], service.order_modifier.stop_updates)
+        self.assertEqual([("1002", 97.54)], service.order_modifier.take_profit_updates)
+        reprice = row["extra"]["protection_reprice_result"]
+        self.assertEqual("tv_fill_based", reprice["method"])
+        self.assertAlmostEqual(6.0, reprice["slippage_bps"])
+        self.assertAlmostEqual(0.0375, reprice["slippage_r"])
+
+    def test_tv_direct_reprice_failure_marks_protection_reprice_failed(self):
+        service = _FakeService()
+        service.order_modifier = _FakeOrderModifier(fail_role="take_profit")
+        self._make_tv_direct_signal(service, direction="long")
+
+        service._on_order_fill(
+            {
+                "orderId": "1001",
+                "ticker": "AAPL",
+                "side": "BUY",
+                "orderType": "LMT",
+                "status": "FILLED",
+                "cOID": "entry_SIG_1",
+                "avgFillPrice": 100.06,
+            }
+        )
+
+        row = service.pb.signals["sig-row-1"]
+        self.assertEqual(row["status"], "protection_reprice_failed")
+        self.assertEqual(row["note"], "protection_reprice_failed")
+        self.assertTrue(row["extra"]["protection_reprice_failed"])
+        self.assertTrue(row["extra"]["protection_incomplete"])
+        self.assertFalse(row["extra"]["protection_complete"])
+        self.assertEqual("broker_modify_failed", row["extra"]["protection_reprice_result"]["reason"])
+        self.assertEqual("protection_reprice_failed", service.pb.acked[-1]["status"])
+
+    def test_tv_direct_entry_cancel_marks_missed_limit_cap(self):
+        service = _FakeService()
+        self._make_tv_direct_signal(service, direction="long")
+
+        service._on_order_cancel(
+            {
+                "orderId": "1001",
+                "cOID": "entry_SIG_1",
+                "ticker": "AAPL",
+                "status": "Cancelled",
+                "side": "BUY",
+                "orderType": "LMT",
+                "filledQuantity": 0,
+                "avgPrice": 0,
+            }
+        )
+
+        row = service.pb.signals["sig-row-1"]
+        self.assertEqual("entry_missed_limit_cap", row["status"])
+        self.assertEqual("entry_missed_limit_cap", row["note"])
+        self.assertTrue(row["extra"]["entry_missed_limit_cap"])
+        self.assertEqual("Cancelled", row["extra"]["entry_cancel_status"])
+        self.assertFalse(row["extra"]["position_open"])
+        self.assertEqual("entry_missed_limit_cap", service.pb.acked[-1]["status"])
+        self.assertEqual(["AAPL"], service.signal_processor.removed)
+        entry_order = next(item for item in service.pb.orders if item["id"] == "order-1")
+        self.assertEqual("Cancelled", entry_order["status"])
+        self.assertEqual("entry_missed", entry_order["relation_status"])
 
     def test_entry_fill_rebase_failure_marks_protection_incomplete(self):
         service = _FakeService()

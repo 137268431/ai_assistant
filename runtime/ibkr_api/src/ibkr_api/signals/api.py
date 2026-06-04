@@ -122,6 +122,41 @@ def _broker_execution_status(extra: dict[str, Any], broker_mode: str) -> str:
     return str(broker_map.get("status") or "").strip().lower()
 
 
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _lifecycle_status_update_allowed(existing_status: str, incoming_status: str) -> bool:
+    existing = str(existing_status or "").strip().lower()
+    incoming = str(incoming_status or "").strip().lower()
+    if not incoming or incoming == existing:
+        return False
+    allowed_existing = {
+        "submitted",
+        "submitted_waiting_fill",
+        "filled_repricing_protection",
+        "filled_position",
+        "protected_active",
+        "protection_incomplete",
+    }
+    allowed_incoming = {
+        "submitted_waiting_fill",
+        "filled_repricing_protection",
+        "filled_position",
+        "protected_active",
+        "protection_incomplete",
+        "protection_reprice_failed",
+        "entry_missed_limit_cap",
+        "executed",
+        "closed",
+    }
+    return existing in allowed_existing and incoming in allowed_incoming
+
+
 def _copy_present_fields(target: dict[str, Any], *sources: dict[str, Any]) -> dict[str, Any]:
     merged = dict(target if isinstance(target, dict) else {})
     for key in _SIGNAL_ACK_DISPLAY_EXTRA_KEYS:
@@ -461,18 +496,31 @@ def build_signals_ack_response(
             return {"error": "Signal not found"}, 404
 
         existing_extra = ensure_object(signal_record.get("extra"))
+        order_input = ensure_object(payload.get("order"))
+        order_extra = ensure_object(order_input.get("extra"))
         if _signal_consumed_for_broker(signal_record, existing_extra, broker_mode, data_environment):
             broker_status = _broker_execution_status(existing_extra, broker_mode)
-            return {
-                "success": True,
-                "signal_id": signal_id,
-                "status": broker_status,
-                "signal_status": broker_status,
-                "idempotent": True,
-                "broker_mode": broker_mode,
-                "data_environment": data_environment,
-                "source": "ibkr-api",
-            }, 200
+            top_level_status = str((signal_record or {}).get("status") or "").strip().lower()
+            existing_status = broker_status or top_level_status
+            force_lifecycle_update = (
+                _truthy(payload.get("lifecycle_update"))
+                or _truthy(order_input.get("lifecycle_update"))
+                or _truthy(order_extra.get("signal_lifecycle_update"))
+                or _truthy(order_extra.get("force_signal_status_notification"))
+            )
+            if force_lifecycle_update or _lifecycle_status_update_allowed(existing_status, status):
+                pass
+            else:
+                return {
+                    "success": True,
+                    "signal_id": signal_id,
+                    "status": existing_status,
+                    "signal_status": existing_status,
+                    "idempotent": True,
+                    "broker_mode": broker_mode,
+                    "data_environment": data_environment,
+                    "source": "ibkr-api",
+                }, 200
         signal_extra = {
             **existing_extra,
             "last_ack_status": status,
@@ -481,8 +529,6 @@ def build_signals_ack_response(
             "last_ack_broker_mode": broker_mode,
             "last_ack_data_environment": data_environment,
         }
-        order_input = ensure_object(payload.get("order"))
-        order_extra = ensure_object(order_input.get("extra"))
         if "protection_complete" in order_extra:
             signal_extra["protection_complete"] = bool(order_extra.get("protection_complete"))
         if order_extra.get("missing_order_ids") is not None:
@@ -627,6 +673,43 @@ def build_signals_ack_response(
             "extra": signal_extra,
             **_clear_scoped_note_payload(signal_record, broker_mode),
         }
+        if status.lower() in {
+            "filled_repricing_protection",
+            "filled_position",
+            "protected_active",
+            "protection_reprice_failed",
+            "protection_incomplete",
+        }:
+            actual_fill = first_defined(
+                order_extra.get("actual_fill_price"),
+                order_extra.get("entry_fill_price"),
+                order_extra.get("executed_price"),
+                order_input.get("actual_fill_price"),
+                order_input.get("entry_fill_price"),
+                order_input.get("executed_price"),
+                order_input.get("fill_price"),
+                order_input.get("avgPrice"),
+            )
+            final_sl = first_defined(
+                order_extra.get("final_stop_loss"),
+                order_extra.get("protection_final_stop_loss"),
+                order_extra.get("stop_loss"),
+                order_input.get("final_stop_loss"),
+                order_input.get("stop_loss"),
+            )
+            final_tp = first_defined(
+                order_extra.get("final_take_profit"),
+                order_extra.get("protection_final_take_profit"),
+                order_extra.get("take_profit"),
+                order_input.get("final_take_profit"),
+                order_input.get("take_profit"),
+            )
+            if (to_float(actual_fill) or 0.0) > 0:
+                update_payload["executed_price"] = actual_fill
+            if (to_float(final_sl) or 0.0) > 0:
+                update_payload["stop_loss"] = final_sl
+            if (to_float(final_tp) or 0.0) > 0:
+                update_payload["take_profit"] = final_tp
         if broker_mode == data_environment == "live":
             update_payload.update({"status": status, "note": note})
         pb.update_record(

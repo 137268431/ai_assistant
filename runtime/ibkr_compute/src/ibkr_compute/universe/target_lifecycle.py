@@ -9,8 +9,12 @@ ACTIVE_SIGNAL_STATUSES = {
     "awaiting_confirm",
     "pending",
     "submitted",
+    "submitted_waiting_fill",
+    "filled_repricing_protection",
+    "filled_position",
     "protected_active",
     "protection_incomplete",
+    "protection_reprice_failed",
     "executed",
 }
 MANUAL_TARGET_SOURCES = {

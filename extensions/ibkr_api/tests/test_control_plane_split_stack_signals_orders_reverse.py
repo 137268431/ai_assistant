@@ -411,6 +411,70 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
         self.assertEqual(payload["data_environment"], "live")
         self.assertTrue(payload["success"])
 
+    def test_signals_ack_route_allows_forced_lifecycle_update_after_submitted_waiting_fill(self):
+        signal_row = {
+            "id": "sig-row-1",
+            "signal_id": "sig-1",
+            "symbol": "AAPL",
+            "direction": "long",
+            "shares": 10,
+            "entry": 100.15,
+            "stop_loss": 98.4,
+            "take_profit": 102.4,
+            "environment": "live",
+            "status": "submitted_waiting_fill",
+            "extra": {
+                "execution_by_mode": {
+                    "live": {
+                        "status": "submitted_waiting_fill",
+                        "note": "submitted_waiting_fill",
+                    }
+                },
+                "tv_direct_entry": True,
+                "reference_entry": 100.0,
+            },
+        }
+        request_payload = {
+            "environment": "live",
+            "signal_id": "sig-1",
+            "status": "filled_position",
+            "note": "entry_filled_final_protection_repriced",
+            "order": {
+                "executed_price": 100.06,
+                "stop_loss": 98.46,
+                "take_profit": 102.46,
+                "extra": {
+                    "signal_lifecycle_update": True,
+                    "actual_fill_price": 100.06,
+                    "final_stop_loss": 98.46,
+                    "final_take_profit": 102.46,
+                    "slippage_bps": 6.0,
+                    "slippage_r": 0.0375,
+                },
+            },
+        }
+
+        with mock.patch.object(api_app_mod.request, "get_json", return_value=request_payload):
+            with mock.patch.object(api_app_mod.pb, "get_first_record", return_value=signal_row):
+                with mock.patch.object(api_app_mod.pb, "update_record", return_value={"id": "sig-row-1"}) as update_mock:
+                    with mock.patch.object(api_app_mod, "build_order_upsert_response") as upsert_mock:
+                        payload = api_app_mod.custom_ibkr_signals_ack()
+
+        upsert_mock.assert_not_called()
+        update_mock.assert_called_once()
+        patch = update_mock.call_args.args[2]
+        self.assertEqual("filled_position", patch["status"])
+        self.assertEqual("entry_filled_final_protection_repriced", patch["note"])
+        self.assertEqual(100.06, patch["executed_price"])
+        self.assertEqual(98.46, patch["stop_loss"])
+        self.assertEqual(102.46, patch["take_profit"])
+        self.assertEqual("filled_position", patch["extra"]["execution_by_mode"]["live"]["status"])
+        self.assertEqual(100.06, patch["extra"]["actual_fill_price"])
+        self.assertEqual(98.46, patch["extra"]["final_stop_loss"])
+        self.assertEqual(6.0, patch["extra"]["slippage_bps"])
+        self.assertTrue(payload["success"])
+        self.assertEqual("filled_position", payload["signal_status"])
+
     def test_signals_ack_route_records_partial_when_order_upsert_fails(self):
         signal_row = {
             "id": "sig-row-1",

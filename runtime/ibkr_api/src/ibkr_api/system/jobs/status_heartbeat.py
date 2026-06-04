@@ -733,8 +733,13 @@ def _signal_status_label(value: Any) -> str:
         "awaiting_confirm": "待确认",
         "pending": "待执行",
         "submitted": "已提交",
+        "submitted_waiting_fill": "已提交待成交",
         "protected_active": "持仓保护中",
+        "filled_repricing_protection": "保护单重定价中",
+        "filled_position": "持仓已建立",
         "protection_incomplete": "保护不完整",
+        "protection_reprice_failed": "保护重定价失败",
+        "entry_missed_limit_cap": "入场未成交",
         "executed": "已执行",
         "expired": "已过期",
         "rejected": "已拒绝",
@@ -762,12 +767,20 @@ def _target_signal_summary(targets_payload: dict[str, Any]) -> dict[str, str]:
     items = [_as_dict(item) for item in targets_payload.get("items") or [] if isinstance(item, dict)]
     trading_items = [item for item in items if _to_text(item.get("symbol"))]
     expired_items = [item for item in items if _to_text(item.get("latest_signal_status")).lower() == "expired"]
+    missed_items = [item for item in items if _to_text(item.get("latest_signal_status")).lower() == "entry_missed_limit_cap"]
     signaled_items = [item for item in trading_items if bool(item.get("has_signal_today"))]
     action_items = [
         item
         for item in trading_items
         if _to_text(item.get("latest_signal_status")).lower()
-        in {"awaiting_confirm", "pending", "submitted", "protection_incomplete"}
+        in {
+            "awaiting_confirm",
+            "pending",
+            "submitted",
+            "submitted_waiting_fill",
+            "protection_incomplete",
+            "protection_reprice_failed",
+        }
     ]
     return {
         "TV signals": (
@@ -775,7 +788,8 @@ def _target_signal_summary(targets_payload: dict[str, Any]) -> dict[str, str]:
             f"awaiting {_to_int(summary.get('awaiting_confirm_count'), 0)} | "
             f"pending {_to_int(summary.get('pending_count'), 0)} | "
             f"submitted {_to_int(summary.get('submitted_count'), 0)} | "
-            f"expired {len(expired_items)}"
+            f"expired {len(expired_items)} | "
+            f"missed {_to_int(summary.get('entry_missed_count'), len(missed_items))}"
         ),
         "Targets": (
             f"total {_to_int(summary.get('total'), len(trading_items))} | "

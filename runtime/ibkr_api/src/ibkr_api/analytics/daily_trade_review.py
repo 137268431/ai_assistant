@@ -15,7 +15,19 @@ ORDERS_COLLECTION = "orders"
 ENTRY_ROLES = {"entry"}
 PROTECTION_ROLES = {"take_profit", "repair_tp", "tp", "stop_loss", "repair_sl", "sl"}
 EXIT_ROLES = {"take_profit", "repair_tp", "tp", "stop_loss", "repair_sl", "sl", "close", "manual_close", "market_close", "close_order", "reverse_close"}
-FILLED_STATUSES = {"filled", "executed", "closed", "complete", "completed", "partiallyfilled", "partially_filled"}
+FILLED_STATUSES = {
+    "filled",
+    "executed",
+    "closed",
+    "complete",
+    "completed",
+    "partiallyfilled",
+    "partially_filled",
+    "protected_active",
+    "filled_repricing_protection",
+    "filled_position",
+    "protection_reprice_failed",
+}
 
 NormalizeEnvironment = Callable[[Any, str], str]
 EscapeFilterString = Callable[[Any], str]
@@ -312,9 +324,15 @@ def _signal_status_explanation(signal: dict[str, Any]) -> str:
         return f"signal expired at {expired_at}" if expired_at else "signal expired before execution"
     if status in {"rejected", "cancelled", "canceled"}:
         return "signal rejected before order submission"
-    if status in {"closed", "executed", "filled", "complete", "completed"}:
+    if status in {"closed", "executed", "filled", "complete", "completed", "protected_active", "filled_position"}:
         return "signal completed execution lifecycle"
-    if status in {"pending", "confirmed", "submitted"}:
+    if status == "filled_repricing_protection":
+        return "entry filled; protection orders are repricing"
+    if status == "protection_reprice_failed":
+        return "entry filled; protection reprice failed and needs action"
+    if status == "entry_missed_limit_cap":
+        return "entry missed limit cap; signal is terminal"
+    if status in {"pending", "confirmed", "submitted", "submitted_waiting_fill"}:
         return "signal awaiting execution lifecycle update"
     return status
 
