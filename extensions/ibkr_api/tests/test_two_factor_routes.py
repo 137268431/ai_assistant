@@ -244,7 +244,62 @@ class TwoFactorBuildersTest(unittest.TestCase):
         self.assertTrue(second_payload["ok"])
         self.assertEqual(1, len(emit_calls))
         self.assertEqual("IBKR 2FA 完成", emit_calls[0]["title"])
+        detail = emit_calls[0]["detail"]
+        self.assertEqual("已复用现有 IBKR Gateway 认证会话，无需重新 2FA。", detail["恢复结论"])
+        self.assertEqual("auto_restore", detail["恢复原因"])
+        self.assertEqual("ibkr_compute", detail["恢复来源"])
+        self.assertEqual("会话恢复成功。", detail["恢复结果"])
+        self.assertEqual("Browser / Gateway / Backend / Runtime 均已认证", detail["认证确认"])
+        self.assertIn("无需人工操作", detail["当前动作"])
+        self.assertTrue(detail["结果时间"])
+        self.assertNotIn("error", detail)
         self.assertEqual("复用现有认证会话。", second_payload["state"]["last_result"])
+
+    def test_result_builder_preserves_non_auto_restore_terminal_event_detail(self):
+        pb = _FakePB(
+            state_rows=[
+                {
+                    "id": "state-1",
+                    "state_key": "ibkr_2fa",
+                    "environment": "live",
+                    "date": "global",
+                    "data": {
+                        "status": "waiting_confirm",
+                        "message_id": "msg-2",
+                        "reason": "manual_reauth",
+                    },
+                }
+            ]
+        )
+        emit_calls = []
+
+        payload, status_code = build_two_factor_result_response(
+            pb,
+            payload={
+                "environment": "live",
+                "status": "success",
+                "detail": {"foo": "bar"},
+                "last_result": "手动验证成功。",
+                "state_patch": {"reason": "manual_reauth"},
+            },
+            normalize_environment=self.normalize_environment,
+            as_dict=self.as_dict,
+            console_base_url=self.console_base_url,
+            config_value=self.config_value,
+            send_interactive=lambda *args, **kwargs: {"success": True, "message_id": "msg-new"},
+            update_interactive=lambda *args, **kwargs: {"success": True, "message_id": "msg-2"},
+            emit_system_event=lambda **kwargs: emit_calls.append(kwargs) or {"ok": True, "message_id": "evt-1"},
+            merge_startup_steps=self.merge_startup_steps,
+            deliver_startup_progress_card=self.deliver_startup_progress_card,
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(1, len(emit_calls))
+        self.assertEqual(
+            {"status": "success", "foo": "bar", "result": "手动验证成功。", "error": ""},
+            emit_calls[0]["detail"],
+        )
 
     def test_respond_builder_validates_and_records_response_code(self):
         pb = _FakePB(

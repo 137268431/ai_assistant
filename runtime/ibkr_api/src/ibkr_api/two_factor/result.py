@@ -25,7 +25,60 @@ AUTO_RESTORE_SUCCESS_EVENT_DEDUPE_MS = 2 * 60 * 1000
 
 
 def _terminal_success_reason(state: dict[str, Any]) -> str:
-    return str(state.get("reason") or state.get("recovery_reason") or "").strip().lower()
+    reason = str(state.get("reason") or "").strip().lower()
+    recovery_reason = str(state.get("recovery_reason") or "").strip().lower()
+    if reason == "auto_restore" or recovery_reason == "auto_restore":
+        return "auto_restore"
+    return reason or recovery_reason
+
+
+def _yes_no(value: Any) -> str:
+    return "yes" if bool(value) else "no"
+
+
+def _build_auto_restore_success_event_detail(state_data: dict[str, Any]) -> dict[str, Any]:
+    auth_fields = (
+        ("Browser", state_data.get("browser_authenticated")),
+        ("Gateway", state_data.get("gateway_authenticated")),
+        ("Backend", state_data.get("backend_authenticated")),
+        ("Runtime", state_data.get("runtime_authenticated")),
+    )
+    if all(bool(value) for _, value in auth_fields):
+        auth_confirmation = "Browser / Gateway / Backend / Runtime 均已认证"
+    else:
+        auth_confirmation = " | ".join(f"{label}: {_yes_no(value)}" for label, value in auth_fields)
+
+    reason = _terminal_success_reason(state_data) or "auto_restore"
+    source = (
+        str(state_data.get("last_recovery_source") or state_data.get("source") or "ibkr_compute").strip()
+        or "ibkr_compute"
+    )
+    result = str(state_data.get("last_result") or "复用现有认证会话。").strip() or "复用现有认证会话。"
+    detail: dict[str, Any] = {
+        "恢复结论": "已复用现有 IBKR Gateway 认证会话，无需重新 2FA。",
+        "恢复原因": reason,
+        "恢复来源": source,
+        "恢复结果": result,
+        "认证确认": auth_confirmation,
+        "当前动作": (
+            "无需人工操作；系统会继续启动或保持运行，可点击“查看系统状态”确认链路。"
+        ),
+    }
+    result_at = str(state_data.get("result_at") or "").strip()
+    if result_at:
+        detail["结果时间"] = result_at
+    return detail
+
+
+def _build_terminal_system_event_detail(status: str, state_data: dict[str, Any], *, as_dict: AsDict) -> dict[str, Any]:
+    if status == "success" and _terminal_success_reason(state_data) == "auto_restore":
+        return _build_auto_restore_success_event_detail(state_data)
+    return {
+        "status": status,
+        **as_dict(state_data.get("detail")),
+        "result": str(state_data.get("last_result") or ""),
+        "error": str(state_data.get("last_error") or ""),
+    }
 
 
 def _should_emit_terminal_system_event(
@@ -152,17 +205,13 @@ def build_two_factor_result_response(
     )
     if callable(emit_system_event) and is_terminal_status(status) and should_emit_system_event:
         try:
+            saved_data = as_dict(saved.get("data"))
             emit_system_event(
                 event_type="status_change" if status == "success" else "alert",
                 level="info" if status == "success" else ("warning" if status == "timeout" else "error"),
                 source="ibkr_compute",
                 title="IBKR 2FA 完成" if status == "success" else ("IBKR 2FA 超时" if status == "timeout" else "IBKR 2FA 失败"),
-                detail={
-                    "status": status,
-                    **as_dict((saved.get("data") or {}).get("detail")),
-                    "result": str((saved.get("data") or {}).get("last_result") or ""),
-                    "error": str((saved.get("data") or {}).get("last_error") or ""),
-                },
+                detail=_build_terminal_system_event_detail(status, saved_data, as_dict=as_dict),
                 environment=environment,
             )
         except Exception:
