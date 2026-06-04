@@ -23,11 +23,9 @@ FILLED_STATUSES = {
     "completed",
     "partiallyfilled",
     "partially_filled",
-    "protected_active",
-    "filled_repricing_protection",
-    "filled_position",
-    "protection_reprice_failed",
 }
+POSITIVE_DECISIONS = {"selected", "active", "accepted", "candidate"}
+NEGATIVE_DECISIONS = {"rejected", "not_selected", "deferred", "error", "blocked"}
 
 NormalizeEnvironment = Callable[[Any, str], str]
 EscapeFilterString = Callable[[Any], str]
@@ -143,15 +141,18 @@ def _role(row: dict[str, Any]) -> str:
     extra = _as_object(row.get("extra"))
     raw = _lower(row.get("role") or extra.get("role") or row.get("order_type") or extra.get("order_type"))
     raw = raw.replace("-", "_").replace(" ", "_")
+    unique_id = _lower(row.get("unique_id") or extra.get("unique_id") or row.get("coid") or extra.get("coid"))
     if raw in {"entry", "entry_order"}:
         return "entry"
     if raw in {"takeprofit", "take_profit", "repair_tp", "tp"}:
         return "take_profit"
     if raw in {"stoploss", "stop_loss", "repair_sl", "sl", "stop"}:
         return "stop_loss"
-    if raw in {"close", "manual_close", "market_close", "close_order", "reverse_close"}:
+    if raw in {"close", "manual_close", "market_close", "close_order", "reverse_close", "marketclose"}:
         return "close"
-    if _lower(row.get("unique_id") or extra.get("unique_id")).startswith("close_"):
+    if unique_id.startswith("entry_"):
+        return "entry"
+    if unique_id.startswith(("close_", "manual_close_", "market_close_")):
         return "close"
     return raw or "unknown"
 
@@ -223,7 +224,7 @@ def _event_time_ms(row: dict[str, Any]) -> int:
         value = _to_int(row.get(field), 0)
         if value > 0:
             return value
-    return 0
+    return _parse_time_text_ms(_event_time_text(row))
 
 
 def _event_time_text(row: dict[str, Any]) -> str:
@@ -431,8 +432,32 @@ def _build_not_selected_reasons(decisions: list[dict[str, Any]]) -> list[dict[st
     return [
         _build_decision_summary(decision)
         for decision in decisions
-        if _lower(decision.get("decision")) in {"rejected", "not_selected", "deferred", "error"}
+        if _lower(decision.get("decision")) in NEGATIVE_DECISIONS
     ]
+
+
+def _latest_decision_with_values(decisions: list[dict[str, Any]], values: set[str]) -> dict[str, Any]:
+    for decision in reversed(decisions):
+        if _lower(decision.get("decision")) in values:
+            return decision
+    return {}
+
+
+def _positive_selection_decision(target: dict[str, Any] | None, decisions: list[dict[str, Any]]) -> dict[str, Any]:
+    positive = _latest_decision_with_values(decisions, POSITIVE_DECISIONS)
+    if positive:
+        return positive
+    return decisions[-1] if target and decisions else {}
+
+
+def _positive_selection_reason(target: dict[str, Any] | None, positive_decision: dict[str, Any]) -> str:
+    target_extra = _as_object((target or {}).get("extra"))
+    active_summary = _as_object(target_extra.get("active_reason_summary"))
+    return (
+        _text((target or {}).get("scan_reason"))
+        or _text(active_summary.get("scan_reason"))
+        or _decision_reason(positive_decision)
+    )
 
 
 def _build_selection_summary(
@@ -443,14 +468,18 @@ def _build_selection_summary(
     selection_reason: str,
 ) -> dict[str, Any]:
     latest_decision = decisions[-1] if decisions else {}
+    positive_decision = _positive_selection_decision(target, decisions)
     target_extra = _as_object((target or {}).get("extra"))
     decision_counts = Counter(_lower(row.get("decision")) or "unknown" for row in decisions)
     return {
-        "selected": bool(target) or _lower(selection_decision) == "selected",
+        "selected": bool(target) or _lower(selection_decision) in POSITIVE_DECISIONS,
         "decision": selection_decision,
         "latest_decision": _text(latest_decision.get("decision")),
         "reason_code": _decision_reason_code(latest_decision),
         "reason_text": selection_reason,
+        "selected_reason": selection_reason,
+        "positive_decision": _text(positive_decision.get("decision")),
+        "positive_reason_code": _decision_reason_code(positive_decision),
         "source": _decision_source(latest_decision) or _text(target_extra.get("source")),
         "rank": _to_int(latest_decision.get("rank"), 0),
         "created": _text(latest_decision.get("created")) or _text((target or {}).get("created")),
@@ -583,9 +612,9 @@ def _build_issue_flags(
     if target:
         extra = _as_object(target.get("extra"))
         source = _lower(extra.get("source"))
-        raw_status = _lower(target.get("raw_status") or target.get("status"))
-        status = _lower(target.get("status"))
-        if raw_status == "active" and status == "candidate" and source in {"intraday_window_admission", "daily_scan"}:
+        stored_status = _lower(target.get("stored_target_status") or target.get("raw_status") or target.get("status"))
+        status = _lower(target.get("target_status") or target.get("status"))
+        if stored_status == "active" and status == "candidate" and source in {"intraday_window_admission", "daily_scan"}:
             flags.append({"code": "active_status_policy_mismatch", "severity": "high", "message": "active target was downgraded to candidate by status policy"})
     if not signals and order_summary["entry_filled"]:
         flags.append({"code": "entry_without_signal", "severity": "high", "message": "entry filled but no same-day signal was found"})
@@ -594,6 +623,17 @@ def _build_issue_flags(
 
 def _target_item_by_symbol(items: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return {_upper(item.get("symbol")): dict(item) for item in items if isinstance(item, dict) and _upper(item.get("symbol"))}
+
+
+def _event_sort_ms(event: dict[str, Any]) -> int:
+    direct = _to_int(event.get("ts_ms"), 0)
+    if direct > 0:
+        return direct
+    for field in ("time", "us_time", "created", "updated", "trade_time", "fill_time"):
+        parsed = _parse_time_text_ms(event.get(field))
+        if parsed > 0:
+            return parsed
+    return 0
 
 
 def _build_events(
@@ -664,13 +704,21 @@ def _build_events(
                 "signal_id": _text(order.get("signal_id")),
             }
         )
-    events.sort(key=lambda item: (_to_int(item.get("ts_ms"), 0), _text(item.get("time")), _text(item.get("type"))))
+    events.sort(key=lambda item: (_event_sort_ms(item), _text(item.get("time")), _text(item.get("type"))))
     return events
 
 
-def _infer_review_status(*, target: dict[str, Any] | None, decisions: list[dict[str, Any]], signals: list[dict[str, Any]], orders: list[dict[str, Any]], issues: list[dict[str, Any]]) -> str:
-    if issues:
-        return "problem"
+def _target_is_active(target: dict[str, Any] | None) -> bool:
+    if not target:
+        return False
+    target_extra = _as_object(target.get("extra"))
+    status = _lower(target.get("target_status") or target.get("status"))
+    if status:
+        return status == "active"
+    return _truthy(target_extra.get("active_gate_passed")) or _truthy(target_extra.get("context_gate_passed"))
+
+
+def _infer_lifecycle_status(*, target: dict[str, Any] | None, decisions: list[dict[str, Any]], signals: list[dict[str, Any]], orders: list[dict[str, Any]]) -> str:
     order_summary = _summarize_orders(orders)
     if order_summary["exit_filled"]:
         return "closed"
@@ -678,26 +726,44 @@ def _infer_review_status(*, target: dict[str, Any] | None, decisions: list[dict[
         return "open"
     if signals:
         return "signaled"
+    if _target_is_active(target):
+        return "active"
     if target:
         return "selected"
     decision_values = {_lower(row.get("decision")) for row in decisions}
-    if decision_values & {"rejected", "not_selected", "deferred", "error"}:
+    if decision_values & NEGATIVE_DECISIONS:
         return "not_selected"
     return "unknown"
+
+
+def _build_tab_flags(lifecycle_status: str, issues: list[dict[str, Any]]) -> list[str]:
+    flags: list[str] = []
+    if lifecycle_status == "active":
+        flags.extend(["active", "selected"])
+    elif lifecycle_status in {"selected", "signaled"}:
+        flags.append("selected")
+    elif lifecycle_status in {"open", "closed"}:
+        flags.append("traded")
+    elif lifecycle_status == "not_selected":
+        flags.append("not_selected")
+    if issues:
+        flags.append("problem")
+    return flags
 
 
 def _matches_status_filter(row: dict[str, Any], status_filter: str) -> bool:
     if not status_filter or status_filter == "all":
         return True
-    status = _lower(row.get("review_status"))
-    if status_filter == status:
+    status = _lower(row.get("lifecycle_status") or row.get("review_status"))
+    flags = set(_as_list(row.get("tab_flags")))
+    if status_filter == status or status_filter in flags:
         return True
     if status_filter == "traded":
-        return bool((row.get("order_summary") or {}).get("entry_filled"))
+        return bool((row.get("order_summary") or {}).get("entry_filled")) or status in {"open", "closed"}
     if status_filter == "selected":
-        return bool(row.get("target")) or _lower(row.get("selection_decision")) == "selected"
+        return "selected" in flags or bool(row.get("target")) or _lower(row.get("selection_decision")) in POSITIVE_DECISIONS
     if status_filter == "not_selected":
-        return status == "not_selected"
+        return "not_selected" in flags or status == "not_selected"
     if status_filter == "problem":
         return bool(row.get("issue_flags"))
     return True
@@ -754,12 +820,6 @@ def build_daily_trade_review_response(
             orders.extend(batch)
             if order_error:
                 warnings.append({"code": "orders_read_failed", "message": order_error})
-    elif symbol_filter:
-        order_filter = f'environment = "{broker_escaped}" && symbol = "{escape_filter_string(symbol_filter)}"'
-        orders, order_error = _load_records(pb, ORDERS_COLLECTION, filter_expr=order_filter, sort="us_time", max_pages=20)
-        if order_error:
-            warnings.append({"code": "orders_read_failed", "message": order_error})
-
     day_order_filter = (
         f'environment = "{broker_escaped}" && '
         f'((us_time >= "{date_escaped} 00:00:00" && us_time < "{next_date_escaped} 00:00:00") || '
@@ -862,6 +922,7 @@ def build_daily_trade_review_response(
         symbol_signals = signals_by_symbol.get(symbol, [])
         symbol_orders = orders_grouped.get(symbol, [])
         latest_decision = symbol_decisions[-1] if symbol_decisions else {}
+        positive_decision = _positive_selection_decision(target, symbol_decisions)
         issues = _build_issue_flags(
             symbol=symbol,
             target=target,
@@ -870,20 +931,27 @@ def build_daily_trade_review_response(
             broker_mode=broker_mode,
         )
         order_summary = _summarize_orders(symbol_orders)
-        selection_decision = _text(latest_decision.get("decision")) or ("selected" if target else "")
-        selection_reason = _text((target or {}).get("scan_reason")) or _decision_reason(latest_decision)
-        review_status = _infer_review_status(
+        if target:
+            selection_decision = _text(positive_decision.get("decision")) or "selected"
+        else:
+            selection_decision = _text(latest_decision.get("decision"))
+        selection_reason = _positive_selection_reason(target, positive_decision)
+        lifecycle_status = _infer_lifecycle_status(
             target=target,
             decisions=symbol_decisions,
             signals=symbol_signals,
             orders=symbol_orders,
-            issues=issues,
         )
+        tab_flags = _build_tab_flags(lifecycle_status, issues)
         row = {
             "symbol": symbol,
-            "review_status": review_status,
+            "review_status": lifecycle_status,
+            "lifecycle_status": lifecycle_status,
+            "tab_flags": tab_flags,
+            "has_problem": bool(issues),
             "selection_decision": selection_decision,
             "selection_reason": selection_reason,
+            "selected_reason": selection_reason,
             "selection_summary": _build_selection_summary(
                 target=target,
                 decisions=symbol_decisions,
@@ -925,14 +993,17 @@ def build_daily_trade_review_response(
             items.append(row)
 
     items.sort(key=lambda item: (0 if item.get("issue_flags") else 1, item.get("review_status") != "not_selected", item.get("symbol")))
-    truncated = len(items) > limit
-    items = items[:limit]
+    matched_items = list(items)
+    truncated = len(matched_items) > limit
+    items = matched_items[:limit]
 
-    status_counts = Counter(_text(row.get("review_status")) or "unknown" for row in items)
-    issue_count = sum(1 for row in items if row.get("issue_flags"))
-    selected_count = sum(1 for row in items if row.get("target") or _lower(row.get("selection_decision")) == "selected")
-    not_selected_count = sum(1 for row in items if row.get("review_status") == "not_selected")
-    traded_count = sum(1 for row in items if (row.get("order_summary") or {}).get("entry_filled"))
+    status_counts = Counter(_text(row.get("lifecycle_status") or row.get("review_status")) or "unknown" for row in matched_items)
+    tab_counts = Counter(flag for row in matched_items for flag in _as_list(row.get("tab_flags")))
+    tab_counts["all"] = len(matched_items)
+    issue_count = int(tab_counts.get("problem", 0))
+    selected_count = int(tab_counts.get("selected", 0))
+    not_selected_count = int(tab_counts.get("not_selected", 0))
+    traded_count = int(tab_counts.get("traded", 0))
 
     legacy_rejection_coverage, legacy_rejection_summary, legacy_rejection_examples = _legacy_rejection_coverage(today_targets)
     coverage = {
@@ -976,6 +1047,7 @@ def build_daily_trade_review_response(
         "summary": {
             "symbols": len(symbol_set),
             "returned": len(items),
+            "matched": len(matched_items),
             "truncated": truncated,
             "selected_count": selected_count,
             "not_selected_count": not_selected_count,
@@ -985,6 +1057,7 @@ def build_daily_trade_review_response(
             "signal_count": len(signals),
             "order_count": len(orders),
             "status_counts": dict(status_counts),
+            "tab_counts": dict(tab_counts),
             "today_targets": today_targets.get("summary") or {},
             "daily_signals": daily_signals.get("summary") or {},
         },

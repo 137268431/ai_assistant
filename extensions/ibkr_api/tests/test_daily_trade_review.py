@@ -57,6 +57,13 @@ class _FakePB:
         if date_match and collection in {"ibkr_targets", "ibkr_signals"}:
             token = date_match.group(1)
             rows = [row for row in rows if row.get("date") == token or str(row.get("us_time") or "").startswith(token)]
+        range_match = re.search(r'(?:us_time|created) >= "(\d{4}-\d{2}-\d{2}) 00:00:00"', text)
+        if range_match and collection == "orders":
+            token = range_match.group(1)
+            rows = [
+                row for row in rows
+                if str(row.get("us_time") or "").startswith(token) or str(row.get("created") or "").startswith(token)
+            ]
         market_date_match = re.search(r'market_date = "(\d{4}-\d{2}-\d{2})"', text)
         if market_date_match:
             token = market_date_match.group(1)
@@ -125,6 +132,28 @@ class DailyTradeReviewTest(unittest.TestCase):
                         ]
                     },
                 },
+                {
+                    "decision_key": "live|2026-05-21|daily_scan|early_expansion_seed|GOOG|selected",
+                    "environment": "live",
+                    "market_date": "2026-05-21",
+                    "source": "daily_scan",
+                    "symbol": "GOOG",
+                    "decision": "selected",
+                    "reason_code": "selected_active",
+                    "reason_text": "positive scan reason",
+                    "created": "2026-05-21 08:47:00",
+                },
+                {
+                    "decision_key": "live|2026-05-21|daily_scan|early_expansion_seed|GOOG|blocked",
+                    "environment": "live",
+                    "market_date": "2026-05-21",
+                    "source": "daily_scan",
+                    "symbol": "GOOG",
+                    "decision": "blocked",
+                    "reason_code": "duplicate_target",
+                    "reason_text": "already exists",
+                    "created": "2026-05-21 08:48:00",
+                },
             ],
             "ibkr_targets": [
                 {
@@ -137,7 +166,29 @@ class DailyTradeReviewTest(unittest.TestCase):
                     "score": 88,
                     "scan_reason": "trend + context gate",
                     "extra": {"source": "daily_scan", "active_gate_passed": True, "context_gate_passed": True},
-                }
+                },
+                {
+                    "id": "target-goog",
+                    "environment": "live",
+                    "date": "2026-05-21",
+                    "symbol": "GOOG",
+                    "status": "active",
+                    "direction_bias": "long",
+                    "score": 87,
+                    "scan_reason": "positive target reason",
+                    "extra": {"source": "daily_scan", "active_gate_passed": True, "context_gate_passed": True},
+                },
+                {
+                    "id": "target-intc",
+                    "environment": "live",
+                    "date": "2026-05-21",
+                    "symbol": "INTC",
+                    "status": "active",
+                    "direction_bias": "long",
+                    "score": 83,
+                    "scan_reason": "intraday context only",
+                    "extra": {"source": "intraday_window_admission", "context_gate_passed": True},
+                },
             ],
             "ibkr_signals": [
                 {
@@ -187,6 +238,15 @@ class DailyTradeReviewTest(unittest.TestCase):
                     "expired_at": "2026-05-21T14:15:27Z",
                     "us_time": "2026-05-21 10:15:00",
                 },
+                {
+                    "signal_id": "sig-meta",
+                    "environment": "live",
+                    "date": "2026-05-21",
+                    "symbol": "META",
+                    "direction": "long",
+                    "status": "protected_active",
+                    "us_time": "2026-05-21 10:30:00",
+                },
             ],
             "orders": [
                 {"id": "entry-aapl", "signal_id": "sig-aapl", "environment": "paper", "symbol": "AAPL", "role": "entry", "status": "Filled", "fill_price": 100, "filled_qty": 10, "us_time": "2026-05-21 09:36:00"},
@@ -194,6 +254,9 @@ class DailyTradeReviewTest(unittest.TestCase):
                 {"id": "entry-tsla", "signal_id": "sig-tsla", "environment": "paper", "symbol": "TSLA", "role": "entry", "status": "Filled", "fill_price": 200, "filled_qty": 3, "us_time": "2026-05-21 09:41:00"},
                 {"id": "entry-nflx", "signal_id": "sig-nflx", "environment": "paper", "symbol": "NFLX", "role": "entry", "status": "Closed", "reason": "order_flow_adverse_delta_exit", "us_time": "2026-05-21 10:01:00"},
                 {"id": "close-nflx", "environment": "paper", "symbol": "NFLX", "role": "close", "status": "Filled", "us_time": "2026-05-21 10:01:05"},
+                {"id": "entry-meta", "signal_id": "sig-meta", "environment": "paper", "symbol": "META", "role": "entry", "status": "Filled", "filled_qty": 5, "us_time": "2026-05-21 10:31:00"},
+                {"id": "tp-meta", "signal_id": "sig-meta", "environment": "paper", "symbol": "META", "role": "take_profit", "status": "protected_active", "us_time": "2026-05-21 10:31:05"},
+                {"id": "sl-meta", "signal_id": "sig-meta", "environment": "paper", "symbol": "META", "role": "stop_loss", "status": "Submitted", "us_time": "2026-05-21 10:31:05"},
             ],
         }
         payload, status = build_daily_trade_review_response(
@@ -213,7 +276,7 @@ class DailyTradeReviewTest(unittest.TestCase):
         self.assertIn("target_decisions", {item["id"] for item in payload["integrations"]})
         by_symbol = {item["symbol"]: item for item in payload["items"]}
         self.assertTrue(payload["coverage"]["target_decisions"]["exists"])
-        self.assertEqual(2, payload["coverage"]["target_decisions"]["rows"])
+        self.assertEqual(4, payload["coverage"]["target_decisions"]["rows"])
         self.assertEqual("selected", by_symbol["AAPL"]["selection_decision"])
         self.assertTrue(by_symbol["AAPL"]["selection_summary"]["selected"])
         self.assertEqual("selected", by_symbol["AAPL"]["selection_summary"]["decision"])
@@ -236,13 +299,72 @@ class DailyTradeReviewTest(unittest.TestCase):
         self.assertEqual("2026-05-21T14:15:27Z", amd_signal["expired_at"])
         self.assertEqual(int(datetime.fromisoformat("2026-05-21T14:15:27+00:00").timestamp() * 1000), amd_signal["expired_at_ms"])
         self.assertEqual("signal_timeout", amd_signal["status_explanation"])
-        self.assertEqual("problem", by_symbol["TSLA"]["review_status"])
+        self.assertEqual("open", by_symbol["TSLA"]["review_status"])
+        self.assertEqual("open", by_symbol["TSLA"]["lifecycle_status"])
+        self.assertIn("traded", by_symbol["TSLA"]["tab_flags"])
+        self.assertIn("problem", by_symbol["TSLA"]["tab_flags"])
+        self.assertTrue(by_symbol["TSLA"]["has_problem"])
         self.assertEqual("rejected_signal_has_orders", by_symbol["TSLA"]["issue_flags"][0]["code"])
         self.assertTrue(by_symbol["AAPL"].get("events"))
         self.assertEqual(1, by_symbol["NFLX"]["order_summary"]["entry_filled"])
         self.assertFalse(by_symbol["NFLX"]["issue_flags"])
         nflx_reasons = [event.get("reason") for event in by_symbol["NFLX"].get("events", []) if event.get("role") == "close"]
         self.assertEqual(["order_flow_adverse_delta_exit"], nflx_reasons)
+        self.assertEqual("open", by_symbol["META"]["review_status"])
+        self.assertEqual(2, by_symbol["META"]["order_summary"]["protection_orders"])
+        self.assertEqual(0, by_symbol["META"]["order_summary"]["exit_filled"])
+        self.assertFalse(by_symbol["META"]["issue_flags"])
+        self.assertEqual("selected", by_symbol["GOOG"]["selection_decision"])
+        self.assertEqual("positive target reason", by_symbol["GOOG"]["selection_reason"])
+        self.assertEqual("positive target reason", by_symbol["GOOG"]["selection_summary"]["selected_reason"])
+        self.assertEqual(["blocked"], [reason["decision"] for reason in by_symbol["GOOG"]["not_selected_reasons"]])
+        self.assertIn("active_status_policy_mismatch", {flag["code"] for flag in by_symbol["INTC"]["issue_flags"]})
+        self.assertIn("selected", by_symbol["INTC"]["tab_flags"])
+        self.assertIn("problem", by_symbol["INTC"]["tab_flags"])
+        self.assertGreaterEqual(payload["summary"]["tab_counts"]["traded"], 4)
+        self.assertGreaterEqual(payload["summary"]["tab_counts"]["problem"], 2)
+
+    def test_symbol_filter_uses_same_day_orders_only(self):
+        records = {
+            "orders": [
+                {"id": "old-ibm", "environment": "paper", "symbol": "IBM", "role": "entry", "status": "Filled", "filled_qty": 1, "us_time": "2026-05-20 11:00:00"},
+                {"id": "day-ibm", "environment": "paper", "symbol": "IBM", "role": "entry", "status": "Filled", "filled_qty": 2, "us_time": "2026-05-21 11:00:00"},
+            ],
+        }
+        payload, status = build_daily_trade_review_response(
+            _FakePB(records),
+            params={"market_date": "2026-05-21", "broker_mode": "paper", "data_environment": "live", "symbol": "IBM", "include_events": "1"},
+            normalize_environment=_normalize_environment,
+            escape_filter_string=_escape_filter_string,
+            time_strings=lambda: {"date": "2026-05-21"},
+        )
+        self.assertEqual(200, status)
+        self.assertEqual(["IBM"], [item["symbol"] for item in payload["items"]])
+        item = payload["items"][0]
+        self.assertEqual(1, item["order_summary"]["total"])
+        self.assertEqual(["day-ibm"], [event["order_id"] for event in item["events"] if event["type"] == "order"])
+
+    def test_summary_counts_use_full_matched_rows_before_limit(self):
+        records = {
+            "ibkr_target_decisions": [
+                {"environment": "live", "market_date": "2026-05-21", "symbol": "AAA", "decision": "rejected", "reason_text": "no setup"},
+                {"environment": "live", "market_date": "2026-05-21", "symbol": "BBB", "decision": "blocked", "reason_text": "blocked gate"},
+            ],
+        }
+        payload, status = build_daily_trade_review_response(
+            _FakePB(records),
+            params={"market_date": "2026-05-21", "broker_mode": "paper", "data_environment": "live", "limit": "1"},
+            normalize_environment=_normalize_environment,
+            escape_filter_string=_escape_filter_string,
+            time_strings=lambda: {"date": "2026-05-21"},
+        )
+        self.assertEqual(200, status)
+        self.assertTrue(payload["summary"]["truncated"])
+        self.assertEqual(1, payload["summary"]["returned"])
+        self.assertEqual(2, payload["summary"]["matched"])
+        self.assertEqual(2, payload["summary"]["tab_counts"]["all"])
+        self.assertEqual(2, payload["summary"]["not_selected_count"])
+        self.assertEqual(2, payload["summary"]["tab_counts"]["not_selected"])
 
     def test_registers_daily_trade_review_route(self):
         app = _FakeApp()
@@ -269,6 +391,8 @@ class DailyTradeReviewTest(unittest.TestCase):
         for token in (
             "daily-trade-review",
             "issue_flags",
+            "lifecycle_status",
+            "tab_flags",
             "lifecycle_url",
             "not_selected_reasons",
             "{ id: 'traded', label: '已交易' }",

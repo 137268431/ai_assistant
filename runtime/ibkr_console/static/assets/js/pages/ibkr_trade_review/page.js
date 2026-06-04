@@ -338,9 +338,10 @@
     const daily = summary.daily_signals || {};
     const realized = daily.realized || {};
     const filterCopy = `${payload.market_date || '--'} · ${payload.broker_mode || '--'} / ${payload.data_environment || '--'}`;
+    const matchedCopy = `matched ${summary.matched ?? summary.returned ?? 0} / total ${summary.symbols || 0}`;
     const cards = [
       ['日期', payload.market_date || '--', filterCopy],
-      ['返回数', summary.returned, summary.truncated ? `已截断 / total ${summary.symbols || 0}` : `total ${summary.symbols || 0}`],
+      ['返回数', summary.returned, summary.truncated ? `已截断 / ${matchedCopy}` : matchedCopy],
       ['已选标', summary.selected_count, 'active / candidate target'],
       ['未选/拒绝', summary.not_selected_count, '完整账本来自 ibkr_target_decisions'],
       ['已成交', summary.traded_count, 'entry filled symbols'],
@@ -363,20 +364,41 @@
   }
 
   function isProblemItem(item) {
-    return Boolean((item.issue_flags || []).length);
+    if (typeof item?.has_problem === 'boolean') return item.has_problem;
+    return Boolean((item?.issue_flags || []).length);
   }
 
   function orderSummary(item) {
     return asObject(item?.order_summary);
   }
 
+  function normalizedTabFlags(item) {
+    return asList(item?.tab_flags).map((flag) => lowerText(flag)).filter(Boolean);
+  }
+
+  function hasBackendTabFlags(item) {
+    return Array.isArray(item?.tab_flags);
+  }
+
+  function itemHasTab(item, tab) {
+    return normalizedTabFlags(item).includes(tab);
+  }
+
+  function lifecycleStatus(item) {
+    const status = lowerText(item?.lifecycle_status || item?.review_status);
+    if (status === 'problem' && isProblemItem(item)) return '';
+    return status;
+  }
+
   function isClosedItem(item) {
+    if (item?.lifecycle_status) return lifecycleStatus(item) === 'closed';
     const order = orderSummary(item);
     const status = lowerText(item?.review_status);
     return status === 'closed' || Number(order.exit_filled || 0) > 0;
   }
 
   function isTradedItem(item) {
+    if (hasBackendTabFlags(item)) return itemHasTab(item, 'traded');
     const order = orderSummary(item);
     const status = lowerText(item?.review_status);
     return isClosedItem(item)
@@ -392,6 +414,7 @@
   }
 
   function isActiveTarget(item) {
+    if (hasBackendTabFlags(item)) return itemHasTab(item, 'active');
     if (isProblemItem(item) || isTradedItem(item)) return false;
     const target = asObject(item.target);
     const targetExtra = asObject(target.extra);
@@ -401,6 +424,7 @@
   }
 
   function isSelectedItem(item) {
+    if (hasBackendTabFlags(item)) return itemHasTab(item, 'selected');
     if (isProblemItem(item) || isTradedItem(item)) return false;
     const selection = asObject(item.selection_summary);
     const target = asObject(item.target);
@@ -416,6 +440,7 @@
   }
 
   function isNotSelectedItem(item) {
+    if (hasBackendTabFlags(item)) return itemHasTab(item, 'not_selected');
     if (isProblemItem(item) || isTradedItem(item) || isSelectedItem(item)) return false;
     const selection = asObject(item.selection_summary);
     const decision = lowerText(item.selection_decision || item.decision || selection.decision || selection.latest_decision);
@@ -428,7 +453,7 @@
   function matchesSymbolTab(item, tab = state.symbolTab) {
     if (tab === 'active') return isActiveTarget(item);
     if (tab === 'selected') return isSelectedItem(item);
-    if (tab === 'traded') return isTradedItem(item) && !isProblemItem(item);
+    if (tab === 'traded') return isTradedItem(item);
     if (tab === 'not_selected') return isNotSelectedItem(item);
     if (tab === 'problem') return isProblemItem(item);
     return true;
@@ -438,7 +463,15 @@
     const node = $('symbolStatusTabs');
     if (!node) return;
     const rows = allReviewItems();
-    const counts = {
+    const summaryCounts = asObject(state.payload?.summary?.tab_counts);
+    const counts = Object.keys(summaryCounts).length ? {
+      all: Number(summaryCounts.all ?? state.payload?.summary?.matched ?? state.payload?.summary?.symbols ?? rows.length),
+      active: Number(summaryCounts.active || 0),
+      selected: Number(summaryCounts.selected || 0),
+      traded: Number(summaryCounts.traded || 0),
+      not_selected: Number(summaryCounts.not_selected || 0),
+      problem: Number(summaryCounts.problem || 0)
+    } : {
       all: rows.length,
       active: rows.filter((item) => matchesSymbolTab(item, 'active')).length,
       selected: rows.filter((item) => matchesSymbolTab(item, 'selected')).length,
@@ -476,42 +509,50 @@
     const rows = allReviewItems().filter((item) => matchesSymbolTab(item));
     const needle = state.search.trim().toLowerCase();
     if (!needle) return rows;
-    return rows.filter((item) => {
-      const haystack = [
-        item.symbol,
-        item.review_status,
-        item.selection_reason,
-        item.selection_summary?.reason_text,
-        item.selection_summary?.reason_code,
-        item.signal_summary?.status_explanation,
-        ...(item.not_selected_reasons || []).map((reason) => `${reason.code} ${reason.text} ${reason.reason_code || ''}`),
-        ...(item.issue_flags || []).map((flag) => `${flag.code} ${flag.message}`)
-      ].join(' ').toLowerCase();
-      return haystack.includes(needle);
-    });
+    return rows.filter((item) => matchesLocalSearch(item, needle));
+  }
+
+  function matchesLocalSearch(item, needle = state.search.trim().toLowerCase()) {
+    if (!needle) return true;
+    const haystack = [
+      item.symbol,
+      item.lifecycle_status,
+      item.review_status,
+      item.selection_reason,
+      item.selected_reason,
+      item.selection_summary?.reason_text,
+      item.selection_summary?.selected_reason,
+      item.selection_summary?.reason_code,
+      item.signal_summary?.status_explanation,
+      ...(item.not_selected_reasons || []).map((reason) => `${reason.code} ${reason.text} ${reason.reason_code || ''}`),
+      ...(item.issue_flags || []).map((flag) => `${flag.code} ${flag.message}`)
+    ].join(' ').toLowerCase();
+    return haystack.includes(needle);
   }
 
   function reviewStatusLabel(item) {
-    const key = lowerText(item?.review_status);
-    if (isProblemItem(item)) return '链路异常';
+    const key = lifecycleStatus(item) || lowerText(item?.review_status);
     if (isClosedItem(item)) return '已闭环';
     if (isTradedItem(item)) return '已开仓';
+    if (key === 'active') return '激活';
     if (key === 'not_selected') return '未选/拒绝';
     if (key === 'selected') return '已选标';
     if (key === 'signaled') return '已出信号';
+    if (isProblemItem(item)) return '链路异常';
     return firstText(item?.review_status, 'unknown');
   }
 
   function toneForStatus(status, item = null) {
-    if (item && isProblemItem(item)) return 'danger';
     if (item && isClosedItem(item)) return 'closed';
     if (item && isTradedItem(item)) return 'traded';
-    const key = String(status || '').toLowerCase();
+    const key = item ? lifecycleStatus(item) : String(status || '').toLowerCase();
+    if (key === 'active') return 'done';
     if (key === 'problem') return 'danger';
     if (key === 'not_selected') return 'muted';
     if (key === 'closed') return 'closed';
     if (key === 'open') return 'traded';
-    if (key === 'open' || key === 'signaled') return 'warn';
+    if (key === 'signaled') return 'warn';
+    if (item && isProblemItem(item)) return 'danger';
     return 'info';
   }
 
@@ -593,6 +634,8 @@
   }
 
   function selectedReason(item) {
+    const selectedContext = isSelectedItem(item) || isTradedItem(item) || ['active', 'selected', 'signaled', 'open', 'closed'].includes(lifecycleStatus(item));
+    if (!selectedContext) return '';
     const target = asObject(item.target);
     const extra = asObject(target.extra);
     const activeSummary = asObject(extra.active_reason_summary);
@@ -602,11 +645,12 @@
       ...asList(item.target_decisions),
       ...asList(item.selection_decisions)
     ]
-      .find((decision) => ['selected', 'active', 'accepted'].includes(lowerText(asObject(decision).decision)));
+      .find((decision) => ['selected', 'active', 'accepted', 'candidate'].includes(lowerText(asObject(decision).decision)));
     return firstText(
-      item.selection_reason,
       item.selected_reason,
+      item.selection_reason,
       item.why_selected,
+      selection.selected_reason,
       selection.reason_text,
       target.scan_reason,
       activeSummary.scan_reason,
@@ -664,20 +708,13 @@
   }
 
   function selectionSummary(item) {
-    const status = lowerText(item.review_status);
+    const status = lifecycleStatus(item) || lowerText(item.review_status);
     const selection = lowerText(item.selection_decision || item.decision);
     const target = asObject(item.target);
     const targetStatus = lowerText(target.status || item.target_status || item.status);
     const hasTarget = Boolean(item.target) || ['active', 'candidate', 'selected'].includes(targetStatus);
     const selected = hasTarget || ['selected', 'active', 'candidate', 'accepted'].includes(selection) || ['selected', 'signaled', 'open', 'closed'].includes(status);
     const rejected = ['rejected', 'not_selected', 'deferred', 'error', 'blocked'].includes(selection) || status === 'not_selected';
-    if (status === 'problem') {
-      return {
-        label: hasTarget ? '已选但异常' : '链路异常',
-        tone: 'danger',
-        copy: (item.issue_flags || [])[0]?.message || '执行链路存在 issue_flags'
-      };
-    }
     if (isClosedItem(item)) {
       return {
         label: '已闭环',
@@ -692,12 +729,26 @@
         copy: `${tradeSummary(item) || '已有 entry 成交'}；${selectedReason(item) || '来自今日信号/订单链路'}`
       };
     }
+    if (status === 'signaled') {
+      const signal = signalSummary(item);
+      return { label: '已出信号', tone: 'info', copy: signal.reason || selectedReason(item) || '今日已有 signal 记录，尚未看到 entry 成交' };
+    }
+    if (status === 'active' || isActiveTarget(item)) {
+      return { label: '激活', tone: 'done', copy: selectedReason(item) || '进入今日 active 标的池' };
+    }
     if (selected) {
       return { label: '已选标', tone: 'done', copy: selectedReason(item) || '进入今日候选/active 标的池' };
     }
     if (rejected) {
       const reasons = collectNotSelectedReasons(item);
       return { label: '未选/拒绝', tone: 'muted', copy: reasons[0]?.text || '选标账本标记为 rejected/not_selected' };
+    }
+    if (isProblemItem(item)) {
+      return {
+        label: hasTarget ? '已选但异常' : '链路异常',
+        tone: 'danger',
+        copy: (item.issue_flags || [])[0]?.message || '执行链路存在 issue_flags'
+      };
     }
     return { label: '无明确结论', tone: 'warn', copy: '旧 payload 未提供 selection_decision / target 记录' };
   }
@@ -859,11 +910,12 @@
     const signal = signalSummary(item);
     const order = asObject(item.order_summary);
     const realized = asObject(item.realized);
+    const missingProtection = (item.issue_flags || []).some((flag) => flag.code === 'entry_filled_without_protection');
     const steps = [
       { label: '选标', value: selection.label, tone: selection.tone, copy: selection.copy },
       { label: '信号', value: signal.total ? (signal.status || 'generated') : '无信号', tone: signal.total ? 'info' : 'muted', copy: signal.total ? `${signal.time} · ${signal.reason || '无原因字段'}` : '没有 same-day signal' },
       { label: '入场', value: Number(order.entry_filled || 0) ? 'filled' : (Number(order.total || 0) ? 'order seen' : '无订单'), tone: Number(order.entry_filled || 0) ? 'done' : 'muted', copy: `entry ${order.entry_filled || 0} / orders ${order.total || 0}` },
-      { label: '保护', value: Number(order.protection_orders || 0) ? 'TP/SL seen' : '无保护单', tone: Number(order.protection_orders || 0) ? 'warn' : 'muted', copy: `protection ${order.protection_orders || 0}` },
+      { label: '保护', value: Number(order.protection_orders || 0) ? 'TP/SL seen' : '无保护单', tone: missingProtection ? 'danger' : (Number(order.protection_orders || 0) ? 'done' : 'muted'), copy: `protection ${order.protection_orders || 0}` },
       { label: '退出', value: Number(order.exit_filled || 0) ? 'closed' : '未平仓/无退出', tone: Number(order.exit_filled || 0) ? 'done' : 'muted', copy: `exit ${order.exit_filled || 0} · PnL ${formatNumber(realized.net_pnl || 0, 2)}` }
     ];
     return `
@@ -915,7 +967,8 @@
   }
 
   function renderIssues() {
-    const rows = filteredItems().filter((item) => (item.issue_flags || []).length);
+    const needle = state.search.trim().toLowerCase();
+    const rows = allReviewItems().filter((item) => (item.issue_flags || []).length && matchesLocalSearch(item, needle));
     const warnings = state.payload?.warnings || [];
     const warningHtml = warnings.length ? warnings.map((warning) => `
       <article class="issue-card warn"><strong>${escapeHtml(warning.code || 'warning')}</strong><p>${escapeHtml(warning.message || '')}</p></article>

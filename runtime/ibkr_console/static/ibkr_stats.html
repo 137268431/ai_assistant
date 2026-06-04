@@ -69,14 +69,6 @@
                     <div class="stat-value" id="avgRR">-</div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-label">盈利次数</div>
-                    <div class="stat-value positive" id="wins">-</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">亏损次数</div>
-                    <div class="stat-value negative" id="losses">-</div>
-                </div>
-                <div class="stat-card">
                     <div class="stat-label">总信号数</div>
                     <div class="stat-value" id="totalSignals">-</div>
                 </div>
@@ -99,13 +91,6 @@
                     <div class="realized-pnl-copy">统计口径：IBKR 已实现净盈亏，扣除佣金后按日期与标的聚合。</div>
                 </div>
                 <div class="realized-pnl-meta" id="realizedPnlMeta">等待加载...</div>
-            </div>
-            <div class="stats-grid realized-pnl-grid" id="realizedPnlCards">
-                <div class="stat-card realized-pnl-card">
-                    <div class="stat-label">NET PNL</div>
-                    <div class="stat-value realized-pnl-value">--</div>
-                    <div class="realized-pnl-card-copy">等待加载</div>
-                </div>
             </div>
             <div class="chart-grid realized-pnl-chart-grid">
                 <div class="chart-container realized-pnl-chart-card">
@@ -212,20 +197,10 @@
                 <div>
                     <div class="history-analytics-kicker">PERFORMANCE TIMELINE</div>
                     <div class="section-title history-analytics-title">历史统计趋势</div>
-                    <div class="history-analytics-copy">沿用当前日期范围，汇总收益、每日盈亏、信号与订单累计节奏。</div>
+                    <div class="history-analytics-copy">沿用当前日期范围，查看信号与订单累计节奏；盈亏趋势统一在上方实际平仓盈亏中展示。</div>
                 </div>
             </div>
             <div class="chart-grid history-chart-grid">
-                <div class="chart-container">
-                    <div class="chart-title">收益曲线</div>
-                    <div class="chart-canvas-wrap"><canvas id="pnlChart"></canvas></div>
-                </div>
-
-                <div class="chart-container">
-                    <div class="chart-title">每日盈亏明细</div>
-                    <div class="chart-canvas-wrap"><canvas id="dailyChart"></canvas></div>
-                </div>
-
                 <div class="chart-container">
                     <div class="chart-title">信号曲线 (累计信号数)</div>
                     <div class="chart-canvas-wrap"><canvas id="signalChart"></canvas></div>
@@ -286,8 +261,6 @@
         let customStartDate = null;
         let customEndDate = null;
         let currentEnvironment = getCurrentRuntimeEnvironment();
-        let pnlChart = null;
-        let dailyChart = null;
         let signalChart = null;
         let orderChart = null;
         let signalRuleChart = null;
@@ -610,6 +583,13 @@
             return text || '--';
         }
 
+        function getStatsDataScope() {
+            return {
+                brokerMode: typeof getConsoleBrokerMode === 'function' ? getConsoleBrokerMode() : getCurrentBrokerMode(),
+                dataEnvironment: typeof getSharedDataEnvironment === 'function' ? getSharedDataEnvironment() : currentEnvironment,
+            };
+        }
+
         function normalizeStatsKey(value) {
             return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
         }
@@ -689,23 +669,19 @@
             return labels;
         }
 
-        async function fetchSignalAnalysisPayload(path, force = false) {
+        async function fetchStatsAnalyticsPayload(path, { force = false, tag = 'analytics' } = {}) {
+            const cacheOptions = {
+                profile: 'tradingList',
+                ttlMs: 30000,
+                swrMs: 30000,
+                force,
+                tags: ['stats', tag, currentEnvironment]
+            };
             if (typeof cachedPageJson === 'function') {
-                return cachedPageJson(path, { retryAttempts: 3, retryDelayMs: 500 }, {
-                    profile: 'tradingList',
-                    ttlMs: 30000,
-                    swrMs: 30000,
-                    force,
-                    tags: ['stats', 'daily-signal-analytics', currentEnvironment]
-                });
+                return cachedPageJson(path, { retryAttempts: 3, retryDelayMs: 500 }, cacheOptions);
             }
             if (typeof cachedCustomJson === 'function') {
-                return cachedCustomJson(path, '', {}, {
-                    ttlMs: 30000,
-                    swrMs: 30000,
-                    force,
-                    tags: ['stats', 'daily-signal-analytics', currentEnvironment]
-                });
+                return cachedCustomJson(path, '', {}, cacheOptions);
             }
             const token = getToken();
             const headers = {};
@@ -724,8 +700,7 @@
             const range = startDateText && endDateText
                 ? { startDateText, endDateText }
                 : resolveStatsRange();
-            const brokerMode = typeof getConsoleBrokerMode === 'function' ? getConsoleBrokerMode() : getCurrentBrokerMode();
-            const dataEnvironment = typeof getSharedDataEnvironment === 'function' ? getSharedDataEnvironment() : currentEnvironment;
+            const { brokerMode, dataEnvironment } = getStatsDataScope();
             const path = `/api/custom/ibkr/analytics/daily-signals${buildStatsQuery({
                 start_date: range.startDateText,
                 end_date: range.endDateText,
@@ -733,7 +708,7 @@
                 data_environment: dataEnvironment
             })}`;
             try {
-                const payload = await fetchSignalAnalysisPayload(path, force);
+                const payload = await fetchStatsAnalyticsPayload(path, { force, tag: 'daily-signal-analytics' });
                 cachedSignalAnalytics = payload;
                 renderSignalAnalysis(payload);
                 return payload;
@@ -753,21 +728,25 @@
             if (table) table.innerHTML = `<tr><td colspan="10" class="loading">${escapeStatsHtml(message)}</td></tr>`;
         }
 
-        function renderSignalAnalysisMeta({ startDate, endDate, brokerMode, dataEnvironment, ordered, total }) {
-            const meta = document.getElementById('signalAnalysisMeta');
-            if (!meta) return;
-            const isSingleDay = startDate && endDate && startDate === endDate;
-            meta.innerHTML = [
-                [isSingleDay ? 'date' : 'range', isSingleDay ? startDate : `${startDate || '--'} ~ ${endDate || '--'}`],
-                ['broker', getEnvironmentLabel(brokerMode)],
-                ['data', getEnvironmentLabel(dataEnvironment)],
-                ['ordered', `${ordered}/${total}`],
-            ].map(([label, value]) => `
-                <span class="signal-analysis-meta-pill">
+        function renderStatsMetaPills(pills, pillClass) {
+            return (Array.isArray(pills) ? pills : []).map(([label, value]) => `
+                <span class="${escapeStatsHtml(pillClass)}">
                     <span>${escapeStatsHtml(label)}</span>
                     <strong>${escapeStatsHtml(String(value || '--'))}</strong>
                 </span>
             `).join('');
+        }
+
+        function renderSignalAnalysisMeta({ startDate, endDate, brokerMode, dataEnvironment, ordered, total }) {
+            const meta = document.getElementById('signalAnalysisMeta');
+            if (!meta) return;
+            const isSingleDay = startDate && endDate && startDate === endDate;
+            meta.innerHTML = renderStatsMetaPills([
+                [isSingleDay ? 'date' : 'range', isSingleDay ? startDate : `${startDate || '--'} ~ ${endDate || '--'}`],
+                ['broker', getEnvironmentLabel(brokerMode)],
+                ['data', getEnvironmentLabel(dataEnvironment)],
+                ['ordered', `${ordered}/${total}`],
+            ], 'signal-analysis-meta-pill');
         }
 
         function renderAnalysisCard({ label, value, copy = '', valueClass = '', cardClass = '', title = '' }) {
@@ -790,10 +769,9 @@
             const startDate = payload?.start_date || payload?.date || range.startDateText;
             const endDate = payload?.end_date || payload?.date || range.endDateText;
             const linkDate = endDate || startDate || getCurrentEtDateString();
-            const brokerMode = payload?.broker_mode || (typeof getConsoleBrokerMode === 'function' ? getConsoleBrokerMode() : 'paper');
-            const dataEnvironment = payload?.data_environment || currentEnvironment;
-            const netPnl = Number(realized.net_pnl || 0);
-            const netPnlTone = valueToneClass(netPnl);
+            const scope = getStatsDataScope();
+            const brokerMode = payload?.broker_mode || scope.brokerMode || 'paper';
+            const dataEnvironment = payload?.data_environment || scope.dataEnvironment;
             const ratioReason = realized.profit_loss_ratio_reason ? ` · ${realized.profit_loss_ratio_reason}` : '';
             renderSignalAnalysisMeta({
                 startDate,
@@ -808,7 +786,6 @@
             document.getElementById('signalAnalysisSignalsLink').href = signalUrl;
             document.getElementById('signalAnalysisOrdersLink').href = orderUrl;
             document.getElementById('signalAnalysisCards').innerHTML = [
-                renderAnalysisCard({ label: 'SIGNALS', value: formatStatsNumber(summary.total_signals || 0), copy: `${formatStatsNumber(summary.unique_symbols || 0)} symbols` }),
                 renderAnalysisCard({
                     label: 'TOP RULE',
                     value: topRule.key || '--',
@@ -817,12 +794,10 @@
                     valueClass: 'is-rule-name',
                     title: topRule.key || '--'
                 }),
+                renderAnalysisCard({ label: 'SYMBOLS', value: formatStatsNumber(summary.unique_symbols || 0), copy: `${formatStatsNumber(summary.total_signals || 0)} signals in scope` }),
                 renderAnalysisCard({ label: 'AVG RR', value: formatStatsRatio(summary.avg_rr), copy: `median ${formatStatsRatio(summary.median_rr)}` }),
                 renderAnalysisCard({ label: 'PLAN RR', value: formatStatsRatio(summary.planned_portfolio_rr), copy: `valid ${summary.planned_valid_count || 0} · mismatch ${summary.rr_mismatch_count || 0}` }),
-                renderAnalysisCard({ label: 'NET PNL', value: formatStatsMoney(netPnl), copy: `${realized.count || 0} closed`, valueClass: netPnlTone, cardClass: netPnlTone ? `tone-${netPnlTone}` : '' }),
-                renderAnalysisCard({ label: 'WIN / LOSS', value: `${realized.wins || 0}/${realized.losses || 0}`, copy: `${realized.flat || 0} flat` }),
                 renderAnalysisCard({ label: 'P/L RATIO', value: formatStatsRatio(realized.profit_loss_ratio), copy: ratioReason || 'avg win / avg loss' }),
-                renderAnalysisCard({ label: 'PROFIT FACTOR', value: formatStatsRatio(realized.profit_factor), copy: `${formatStatsMoney(realized.gross_profit || 0)} / ${formatStatsMoney(realized.gross_loss || 0)}` }),
             ].join('');
             renderSignalAnalysisCharts(payload);
             renderSignalAnalysisTable(payload);
@@ -928,47 +903,10 @@
         const REALIZED_LOSS_COUNT_FIELDS = ['loss_count', 'losses', 'losing_trades'];
         const REALIZED_FLAT_COUNT_FIELDS = ['flat_count', 'flats', 'breakeven_count'];
 
-        async function fetchRealizedPnlPayload(path, force = false) {
-            const cacheOptions = {
-                profile: 'tradingList',
-                ttlMs: 30000,
-                swrMs: 30000,
-                force,
-                tags: ['stats', 'realized-pnl-summary', currentEnvironment]
-            };
-            if (typeof cachedPageJson === 'function') {
-                return cachedPageJson(path, { retryAttempts: 3, retryDelayMs: 500 }, cacheOptions);
-            }
-            if (typeof cachedCustomJson === 'function') {
-                return cachedCustomJson(path, '', {}, cacheOptions);
-            }
-            const token = getToken();
-            const headers = {};
-            if (token) headers.Authorization = `Bearer ${token}`;
-            const response = await fetchWithRetry(`${BASE_URL}${path}`, { method: 'GET', headers }, { attempts: 3, retryDelayMs: 500 });
-            if (response.status === 401 || response.status === 403) {
-                handleAuthError();
-                throw new Error('Authentication failed');
-            }
-            const payload = await response.json();
-            if (!response.ok || payload?.ok === false) throw new Error(payload?.error || payload?.message || `Request failed (${response.status})`);
-            return payload;
-        }
-
         function renderRealizedPnlLoading(startDateText, endDateText) {
             const meta = document.getElementById('realizedPnlMeta');
-            const cards = document.getElementById('realizedPnlCards');
             const table = document.getElementById('realizedSymbolTable');
             if (meta) meta.textContent = `加载 ${startDateText || '--'} ~ ${endDateText || '--'} 已实现净盈亏...`;
-            if (cards && !cachedRealizedPnlAnalytics) {
-                cards.innerHTML = `
-                    <div class="stat-card realized-pnl-card">
-                        <div class="stat-label">NET PNL</div>
-                        <div class="stat-value realized-pnl-value">--</div>
-                        <div class="realized-pnl-card-copy">等待汇总</div>
-                    </div>
-                `;
-            }
             if (table && !cachedRealizedPnlAnalytics) {
                 table.innerHTML = '<tr><td colspan="10" class="loading">等待加载...</td></tr>';
             }
@@ -986,18 +924,8 @@
         function renderRealizedPnlError(message) {
             const safeMessage = escapeStatsHtml(message || '未知错误');
             const meta = document.getElementById('realizedPnlMeta');
-            const cards = document.getElementById('realizedPnlCards');
             const table = document.getElementById('realizedSymbolTable');
             if (meta) meta.textContent = `已实现盈亏加载失败：${message || '未知错误'}`;
-            if (cards) {
-                cards.innerHTML = `
-                    <div class="stat-card realized-pnl-card realized-pnl-error-card">
-                        <div class="stat-label">ERROR</div>
-                        <div class="stat-value negative realized-pnl-value">失败</div>
-                        <div class="realized-pnl-card-copy">${safeMessage}</div>
-                    </div>
-                `;
-            }
             if (table) table.innerHTML = `<tr><td colspan="10" class="loading">${safeMessage}</td></tr>`;
             destroyRealizedPnlCharts();
         }
@@ -1207,24 +1135,13 @@
             return formatStatsRatio(value);
         }
 
-        function renderRealizedPnlCard({ label, value, copy = '', valueClass = '', cardClass = '', title = '' }) {
-            const className = ['stat-card', 'realized-pnl-card', cardClass].filter(Boolean).join(' ');
-            const valueClassName = ['stat-value', 'realized-pnl-value', valueClass].filter(Boolean).join(' ');
-            return `
-                <div class="${escapeStatsHtml(className)}">
-                    <div class="stat-label">${escapeStatsHtml(label)}</div>
-                    <div class="${escapeStatsHtml(valueClassName)}" title="${escapeStatsHtml(title || value || '')}">${escapeStatsHtml(String(value))}</div>
-                    <div class="realized-pnl-card-copy">${escapeStatsHtml(copy)}</div>
-                </div>
-            `;
-        }
-
         function renderRealizedPnlMeta(normalized) {
             const meta = document.getElementById('realizedPnlMeta');
             if (!meta) return;
             const summary = normalized.summary || {};
-            const brokerMode = normalized.payload?.broker_mode || (typeof getConsoleBrokerMode === 'function' ? getConsoleBrokerMode() : getCurrentBrokerMode());
-            const dataEnvironment = normalized.payload?.data_environment || (typeof getSharedDataEnvironment === 'function' ? getSharedDataEnvironment() : currentEnvironment);
+            const scope = getStatsDataScope();
+            const brokerMode = normalized.payload?.broker_mode || scope.brokerMode;
+            const dataEnvironment = normalized.payload?.data_environment || scope.dataEnvironment;
             const pills = [
                 ['range', `${normalized.startDateText} ~ ${normalized.endDateText}`],
                 ['broker', getEnvironmentLabel(brokerMode)],
@@ -1232,67 +1149,7 @@
                 ['basis', normalized.dataInsufficient ? 'strict / data insufficient' : 'strict net after commission'],
                 ['source', realizedSourceLabel(summary.source)],
             ];
-            meta.innerHTML = pills.map(([label, value]) => `
-                <span class="realized-pnl-meta-pill">
-                    <span>${escapeStatsHtml(label)}</span>
-                    <strong>${escapeStatsHtml(String(value || '--'))}</strong>
-                </span>
-            `).join('');
-        }
-
-        function renderRealizedPnlCards(normalized) {
-            const cards = document.getElementById('realizedPnlCards');
-            if (!cards) return;
-            const summary = normalized.summary || {};
-            if (normalized.dataInsufficient) {
-                const issueCount = Number(summary.missingCount || 0) + Number(summary.fillMissingCount || 0) + Number(summary.commissionMissingCount || 0) + Number(summary.ibkrMismatchCount || 0);
-                cards.innerHTML = [
-                    renderRealizedPnlCard({
-                        label: 'NET PNL',
-                        value: '--',
-                        copy: 'IBKR execution fills 不足',
-                        valueClass: 'negative',
-                        cardClass: 'tone-negative',
-                    }),
-                    renderRealizedPnlCard({ label: 'GROSS PNL', value: '--', copy: 'strict mode only' }),
-                    renderRealizedPnlCard({ label: 'COMMISSION', value: '--', copy: 'requires commissionReport' }),
-                    renderRealizedPnlCard({ label: 'CLOSED', value: '--', copy: 'no complete fill chain' }),
-                    renderRealizedPnlCard({ label: 'WIN RATE', value: '--', copy: 'not computed from orders' }),
-                    renderRealizedPnlCard({ label: 'AVG TRADE', value: '--', copy: summary.insufficientReason || 'data insufficient' }),
-                    renderRealizedPnlCard({ label: 'PROFIT FACTOR', value: '--', copy: realizedSourceLabel(summary.source) }),
-                    renderRealizedPnlCard({
-                        label: 'QUALITY',
-                        value: issueCount ? formatStatsNumber(issueCount) : 'DATA',
-                        copy: 'missing verified fills/fees',
-                        valueClass: 'negative',
-                    }),
-                ].join('');
-                return;
-            }
-            const netTone = valueToneClass(summary.netPnl);
-            const lossAbs = Math.abs(Number(summary.lossAmount || 0));
-            const qualityIssues = Number(summary.missingCount || 0) + Number(summary.fillMissingCount || 0) + Number(summary.commissionMissingCount || 0) + Number(summary.ibkrMismatchCount || 0);
-            cards.innerHTML = [
-                renderRealizedPnlCard({
-                    label: 'NET PNL',
-                    value: formatStatsMoney(summary.netPnl),
-                    copy: 'realized after commission',
-                    valueClass: netTone,
-                    cardClass: netTone ? `tone-${netTone}` : '',
-                }),
-                renderRealizedPnlCard({ label: 'GROSS PNL', value: formatStatsMoney(summary.grossPnl), copy: 'before commission', valueClass: valueToneClass(summary.grossPnl) }),
-                renderRealizedPnlCard({ label: 'COMMISSION', value: formatStatsMoney(summary.commission), copy: 'entry + exit fees' }),
-                renderRealizedPnlCard({ label: 'CLOSED', value: formatStatsNumber(summary.exitCount), copy: `${formatStatsNumber(summary.winCount)}W / ${formatStatsNumber(summary.lossCount)}L / ${formatStatsNumber(summary.flatCount)}F` }),
-                renderRealizedPnlCard({ label: 'WIN RATE', value: formatStatsPct(summary.winRate), copy: 'wins / closed exits' }),
-                renderRealizedPnlCard({ label: 'AVG TRADE', value: formatStatsMoney(summary.avgPnl), copy: 'net per closed trade', valueClass: valueToneClass(summary.avgPnl) }),
-                renderRealizedPnlCard({ label: 'PROFIT FACTOR', value: formatStatsFactor(summary.profitFactor), copy: `${formatStatsMoney(summary.profitAmount)} / ${formatStatsMoney(lossAbs)}` }),
-                renderRealizedPnlCard({
-                    label: 'QUALITY',
-                    value: qualityIssues ? formatStatsNumber(qualityIssues) : 'OK',
-                    copy: `missing ${formatStatsNumber(summary.missingCount)} · mismatch ${formatStatsNumber(summary.ibkrMismatchCount)}`,
-                    valueClass: qualityIssues ? 'negative' : 'positive',
-                }),
-            ].join('');
+            meta.innerHTML = renderStatsMetaPills(pills, 'realized-pnl-meta-pill');
         }
 
         function selectTopBottomSymbolRows(symbolRows) {
@@ -1488,7 +1345,6 @@
         function renderRealizedPnlAnalytics(payload, startDateText, endDateText) {
             const normalized = normalizeRealizedPnlPayload(payload || {}, startDateText, endDateText);
             renderRealizedPnlMeta(normalized);
-            renderRealizedPnlCards(normalized);
             renderRealizedPnlCharts(normalized);
             renderRealizedPnlTable(normalized, { resetPage: true });
             return normalized;
@@ -1497,8 +1353,7 @@
         async function loadRealizedPnlAnalytics({ startDateText, endDateText, force = false } = {}) {
             const safeEnd = endDateText || getCurrentEtDateString();
             const safeStart = startDateText || safeEnd;
-            const brokerMode = typeof getConsoleBrokerMode === 'function' ? getConsoleBrokerMode() : getCurrentBrokerMode();
-            const dataEnvironment = typeof getSharedDataEnvironment === 'function' ? getSharedDataEnvironment() : currentEnvironment;
+            const { brokerMode, dataEnvironment } = getStatsDataScope();
             const path = `/api/custom/ibkr/analytics/realized-pnl-summary${buildStatsQuery({
                 start_date: safeStart,
                 end_date: safeEnd,
@@ -1511,7 +1366,7 @@
             })}`;
             renderRealizedPnlLoading(safeStart, safeEnd);
             try {
-                const payload = await fetchRealizedPnlPayload(path, force);
+                const payload = await fetchStatsAnalyticsPayload(path, { force, tag: 'realized-pnl-summary' });
                 const normalized = renderRealizedPnlAnalytics(payload, safeStart, safeEnd);
                 cachedRealizedPnlAnalytics = { payload, normalized, startDateText: safeStart, endDateText: safeEnd };
                 return normalized;
@@ -1538,8 +1393,7 @@
                 const endTimeMs = rangeBounds.endMs;
                 const startDate = new Date(startTimeMs);
                 const endDate = new Date(Math.max(startTimeMs, endTimeMs - 1));
-                const brokerMode = typeof getConsoleBrokerMode === 'function' ? getConsoleBrokerMode() : getCurrentBrokerMode();
-                const dataEnvironment = typeof getSharedDataEnvironment === 'function' ? getSharedDataEnvironment() : currentEnvironment;
+                const { brokerMode, dataEnvironment } = getStatsDataScope();
                 const orderFilter = `environment = "${escapeQueryValue(brokerMode)}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`;
                 const signalFilter = `environment = "${escapeQueryValue(dataEnvironment)}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`;
                 const realizedPnlPromise = loadRealizedPnlAnalytics({
@@ -1584,7 +1438,7 @@
                 const realizedPnlSummary = realizedPnlAnalytics?.summary || null;
                 const stats = calculateStats(orders, realizedPnlAnalytics);
                 renderStats(stats, ibkr_signals, realizedPnlAnalytics);
-                renderCharts(orders, ibkr_signals, startDate, endDate, realizedPnlAnalytics);
+                renderCharts(orders, ibkr_signals, startDate, endDate);
                 renderTradesTable(realizedPnlAnalytics);
 
                 // Cache for resize redraw (no network requests on scroll).
@@ -1629,8 +1483,6 @@
                 totalCommission: realized?.dataInsufficient ? null : summary.commission,
                 winRate: realized?.dataInsufficient ? null : summary.winRate,
                 avgRR: realized?.dataInsufficient ? null : summary.profitFactor,
-                wins: realized?.dataInsufficient ? null : summary.winCount,
-                losses: realized?.dataInsufficient ? null : summary.lossCount,
                 dataInsufficient: Boolean(realized?.dataInsufficient),
             };
         }
@@ -1651,8 +1503,6 @@
 
             document.getElementById('winRate').textContent = stats.winRate === null ? '--' : formatStatsPct(stats.winRate);
             document.getElementById('avgRR').textContent = stats.avgRR === null ? '--' : formatStatsFactor(stats.avgRR);
-            document.getElementById('wins').textContent = stats.wins === null ? '--' : formatStatsNumber(stats.wins);
-            document.getElementById('losses').textContent = stats.losses === null ? '--' : formatStatsNumber(stats.losses);
 
             // 信号统计
             document.getElementById('totalSignals').textContent = ibkr_signals.length;
@@ -1662,9 +1512,7 @@
             document.getElementById('signalsShort').textContent = signalsShort;
         }
 
-        function renderCharts(orders, ibkr_signals, startDate, endDate, realized = null) {
-            const dailyPnL = {};
-
+        function renderCharts(orders, ibkr_signals, startDate, endDate) {
             // 每日信号统计（区分多空）
             const dailySignalsLong = {};
             const dailySignalsShort = {};
@@ -1685,12 +1533,6 @@
                 }
             });
 
-            if (!realized?.dataInsufficient) {
-                (realized?.dailyRows || []).forEach((row) => {
-                    if (row?.date) dailyPnL[row.date] = Number(row.netPnl || 0);
-                });
-            }
-
             ibkr_signals.forEach(signal => {
                 const date = signal.created.split(' ')[0];
                 const direction = signal.direction;
@@ -1708,52 +1550,6 @@
                 labels.push(getCurrentEtDateString(currentDate));
                 currentDate.setTime(currentDate.getTime() + 24 * 60 * 60 * 1000);
             }
-
-            // 收益曲线
-            let cumulative = 0;
-            const pnlData = labels.map(dateStr => {
-                cumulative += (dailyPnL[dateStr] || 0);
-                return cumulative;
-            });
-
-            const ctx = document.getElementById('pnlChart').getContext('2d');
-            if (pnlChart) pnlChart.destroy();
-
-            pnlChart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: labels,
-                    datasets: [{
-                        label: '累计盈亏 ($)',
-                        data: pnlData,
-                        borderColor: '#3b82f6',
-                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                        tension: 0.4,
-                        fill: true
-                    }]
-                },
-                options: buildChartOptions()
-            });
-
-            // 每日盈亏柱状图（严格使用 IBKR execution fills，不从订单价格推算）
-            const dailyData = labels.map(date => dailyPnL[date] || 0);
-            const barColors = dailyData.map(pnl => pnl >= 0 ? '#10b981' : '#ef4444');
-
-            const ctx2 = document.getElementById('dailyChart').getContext('2d');
-            if (dailyChart) dailyChart.destroy();
-
-            dailyChart = new Chart(ctx2, {
-                type: 'bar',
-                data: {
-                    labels: labels,
-                    datasets: [{
-                        label: '每日盈亏 ($)',
-                        data: dailyData,
-                        backgroundColor: barColors
-                    }]
-                },
-                options: buildChartOptions()
-            });
 
             // 信号曲线（区分多空）
             let cumLong = 0, cumShort = 0;
@@ -1989,7 +1785,7 @@
 
                 setChartHeights();
                 if (cachedOrders && cachedSignals && cachedStartDate && cachedEndDate) {
-                    renderCharts(cachedOrders, cachedSignals, cachedStartDate, cachedEndDate, cachedRealizedPnlAnalytics?.normalized);
+                    renderCharts(cachedOrders, cachedSignals, cachedStartDate, cachedEndDate);
                 }
                 if (cachedSignalAnalytics) {
                     renderSignalAnalysisCharts(cachedSignalAnalytics);
@@ -2004,7 +1800,7 @@
             const brokerMode = typeof normalizeBrokerMode === 'function'
                 ? normalizeBrokerMode(environment, getCurrentBrokerMode())
                 : environment;
-            const dataEnvironment = typeof getSharedDataEnvironment === 'function' ? getSharedDataEnvironment() : currentEnvironment;
+            const { dataEnvironment } = getStatsDataScope();
             location.href = buildPageUrl('/ibkr_stats.html', {}, { environment: dataEnvironment, brokerMode, dataEnvironment });
         };
     </script>

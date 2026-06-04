@@ -436,12 +436,14 @@
             pointer-events: none;
         }
 
-        .realized-pnl-panel > * {
+        .realized-pnl-panel > *,
+        .signal-analysis-panel > * {
             position: relative;
             z-index: 1;
         }
 
-        .realized-pnl-head {
+        .realized-pnl-head,
+        .signal-analysis-head {
             display: flex;
             justify-content: space-between;
             align-items: flex-start;
@@ -449,7 +451,8 @@
             margin-bottom: 12px;
         }
 
-        .realized-pnl-title-block {
+        .realized-pnl-title-block,
+        .signal-analysis-title-block {
             min-width: 0;
         }
 
@@ -464,7 +467,8 @@
             text-transform: uppercase;
         }
 
-        .realized-pnl-title {
+        .realized-pnl-title,
+        .signal-analysis-title {
             margin-bottom: 6px;
             font-size: clamp(18px, 1.8vw, 24px);
             letter-spacing: -0.04em;
@@ -472,7 +476,6 @@
 
         .realized-pnl-copy,
         .realized-pnl-meta,
-        .realized-pnl-card-copy,
         .realized-pnl-chart-copy,
         .realized-symbol-sub {
             color: #a9b7c2;
@@ -480,94 +483,50 @@
             line-height: 1.5;
         }
 
-        .realized-pnl-meta {
+        .realized-pnl-meta,
+        .signal-analysis-meta {
             display: flex;
             flex-wrap: wrap;
-            justify-content: flex-end;
             gap: 7px;
-            max-width: 620px;
             font-family: var(--font-mono);
         }
 
-        .realized-pnl-meta-pill {
+        .realized-pnl-meta {
+            justify-content: flex-end;
+            max-width: 620px;
+        }
+
+        .realized-pnl-meta-pill,
+        .signal-analysis-meta-pill {
             display: inline-flex;
             align-items: center;
             gap: 7px;
             min-height: 28px;
             padding: 5px 9px;
-            border: 1px solid rgba(246, 173, 85, 0.16);
             border-radius: 999px;
             background: rgba(2, 8, 18, 0.46);
         }
 
-        .realized-pnl-meta-pill span {
-            color: rgba(169, 183, 194, 0.78);
+        .realized-pnl-meta-pill {
+            border: 1px solid rgba(246, 173, 85, 0.16);
+        }
+
+        .realized-pnl-meta-pill span,
+        .signal-analysis-meta-pill span {
             font-size: 9px;
             letter-spacing: 1px;
             text-transform: uppercase;
         }
 
-        .realized-pnl-meta-pill strong {
+        .realized-pnl-meta-pill span {
+            color: rgba(169, 183, 194, 0.78);
+        }
+
+        .realized-pnl-meta-pill strong,
+        .signal-analysis-meta-pill strong {
             color: var(--text);
             font-size: 10.5px;
             font-weight: 800;
-        }
-
-        .realized-pnl-grid {
-            grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
-            gap: 10px;
-            padding-bottom: 12px;
-        }
-
-        .realized-pnl-card {
-            position: relative;
-            overflow: hidden;
-            min-height: 102px;
-            padding: 14px;
-            border: 1px solid rgba(246, 173, 85, 0.14);
-            background:
-                linear-gradient(180deg, rgba(24, 27, 20, 0.92), rgba(6, 13, 20, 0.90));
-            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
-        }
-
-        .realized-pnl-card::after {
-            content: '';
-            position: absolute;
-            inset: 0 auto 0 0;
-            width: 3px;
-            background: linear-gradient(180deg, rgba(246, 173, 85, 0.92), rgba(79, 209, 197, 0.18));
-            opacity: 0.82;
-        }
-
-        .realized-pnl-card.tone-positive::after {
-            background: linear-gradient(180deg, rgba(72, 187, 120, 0.95), rgba(72, 187, 120, 0.12));
-        }
-
-        .realized-pnl-card.tone-negative::after {
-            background: linear-gradient(180deg, rgba(252, 129, 129, 0.95), rgba(252, 129, 129, 0.12));
-        }
-
-        .realized-pnl-card .stat-label {
-            color: rgba(169, 183, 194, 0.88);
-            font-size: 10px;
-            font-weight: 800;
-            letter-spacing: 1.2px;
-        }
-
-        .realized-pnl-value {
-            margin-top: 6px;
-            font-size: clamp(22px, 2.1vw, 30px);
-            line-height: 1.02;
-            letter-spacing: -0.04em;
-        }
-
-        .realized-pnl-card-copy {
-            margin-top: 7px;
-            font-family: var(--font-mono);
-        }
-
-        .realized-pnl-error-card {
-            grid-column: 1 / -1;
         }
 
         .realized-pnl-chart-grid {
@@ -587,7 +546,8 @@
             grid-column: 1 / -1;
         }
 
-        .realized-pnl-chart-head {
+        .realized-pnl-chart-head,
+        .signal-chart-head {
             display: flex;
             justify-content: space-between;
             align-items: flex-start;
@@ -595,7 +555,8 @@
             margin-bottom: 10px;
         }
 
-        .realized-pnl-chart-head .chart-title {
+        .realized-pnl-chart-head .chart-title,
+        .signal-chart-head .chart-title {
             margin-bottom: 0;
             font-size: 13px;
             letter-spacing: -0.01em;
@@ -707,23 +668,6 @@
             pointer-events: none;
         }
 
-        .signal-analysis-panel > * {
-            position: relative;
-            z-index: 1;
-        }
-
-        .signal-analysis-head {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            gap: 16px;
-            margin-bottom: 12px;
-        }
-
-        .signal-analysis-title-block {
-            min-width: 0;
-        }
-
         .signal-analysis-kicker {
             color: var(--accent);
             font-family: var(--font-mono);
@@ -735,12 +679,6 @@
             text-transform: uppercase;
         }
 
-        .signal-analysis-title {
-            margin-bottom: 6px;
-            font-size: clamp(18px, 1.8vw, 24px);
-            letter-spacing: -0.04em;
-        }
-
         .signal-analysis-copy,
         .signal-analysis-meta,
         .signal-analysis-card-copy {
@@ -750,35 +688,15 @@
         }
 
         .signal-analysis-meta {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 7px;
             margin: 0 0 12px;
-            font-family: var(--font-mono);
         }
 
         .signal-analysis-meta-pill {
-            display: inline-flex;
-            align-items: center;
-            gap: 7px;
-            min-height: 28px;
-            padding: 5px 9px;
             border: 1px solid rgba(147, 197, 253, 0.13);
-            border-radius: 999px;
-            background: rgba(2, 8, 18, 0.46);
         }
 
         .signal-analysis-meta-pill span {
             color: rgba(159, 176, 195, 0.78);
-            font-size: 9px;
-            letter-spacing: 1px;
-            text-transform: uppercase;
-        }
-
-        .signal-analysis-meta-pill strong {
-            color: var(--text);
-            font-size: 10.5px;
-            font-weight: 800;
         }
 
         .signal-analysis-tools {
@@ -849,14 +767,6 @@
             grid-column: span 2;
         }
 
-        .signal-analysis-card.tone-positive::after {
-            background: linear-gradient(180deg, rgba(72, 187, 120, 0.95), rgba(72, 187, 120, 0.12));
-        }
-
-        .signal-analysis-card.tone-negative::after {
-            background: linear-gradient(180deg, rgba(252, 129, 129, 0.95), rgba(252, 129, 129, 0.12));
-        }
-
         .signal-analysis-card .stat-label {
             color: rgba(159, 176, 195, 0.86);
             font-size: 10px;
@@ -897,20 +807,6 @@
             border: 1px solid rgba(147, 197, 253, 0.14);
             background:
                 linear-gradient(180deg, rgba(8, 20, 32, 0.92), rgba(4, 10, 20, 0.90));
-        }
-
-        .signal-chart-head {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            gap: 10px;
-            margin-bottom: 10px;
-        }
-
-        .signal-chart-head .chart-title {
-            margin-bottom: 0;
-            font-size: 13px;
-            letter-spacing: -0.01em;
         }
 
         .signal-chart-copy {
@@ -1110,10 +1006,6 @@
                 max-width: none;
             }
 
-            .realized-pnl-grid {
-                grid-template-columns: repeat(2, minmax(0, 1fr));
-            }
-
             .realized-pnl-chart-grid {
                 grid-template-columns: 1fr;
                 gap: 8px;
@@ -1212,10 +1104,6 @@
             .trades-detail-panel {
                 padding: 9px;
                 border-radius: 16px;
-            }
-
-            .realized-pnl-grid {
-                grid-template-columns: 1fr;
             }
 
             .signal-analysis-panel {
