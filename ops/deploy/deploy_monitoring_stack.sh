@@ -143,7 +143,7 @@ if [[ "$NO_RESTART" -eq 1 ]]; then
   SKIP_RELOAD=1
 fi
 
-MONITORING_SERVICES=(prometheus.service node-exporter.service grafana-server.service)
+MONITORING_SERVICES=(prometheus.service node-exporter.service grafana-server.service feishu-alert-relay.service)
 
 if [[ "$STATUS_ONLY" -eq 1 ]]; then
   ssh "$REMOTE_HOST" \
@@ -158,7 +158,7 @@ if [[ "$STATUS_ONLY" -eq 1 ]]; then
 set -euo pipefail
 printf 'remote_root=%s\n' "$MONITORING_REMOTE_ROOT"
 printf '%s\n' '--- services ---'
-for service in prometheus.service node-exporter.service grafana-server.service "$CADDY_SERVICE"; do
+for service in prometheus.service node-exporter.service grafana-server.service feishu-alert-relay.service "$CADDY_SERVICE"; do
   systemctl show "$service" --property=Id,ActiveState,SubState,MainPID,UnitFileState --no-pager || true
   printf '%s\n' '---'
 done
@@ -168,10 +168,15 @@ for path in \
   "$MONITORING_REMOTE_ROOT/grafana/grafana.ini" \
   "$MONITORING_REMOTE_ROOT/grafana/provisioning/datasources/prometheus.yml" \
   "$MONITORING_REMOTE_ROOT/grafana/provisioning/dashboards/dashboards.yml" \
+  "$MONITORING_REMOTE_ROOT/grafana/provisioning/alerting/contact-points.yml" \
+  "$MONITORING_REMOTE_ROOT/grafana/provisioning/alerting/notification-policies.yml" \
+  "$MONITORING_REMOTE_ROOT/grafana/provisioning/alerting/rules.json" \
   "$MONITORING_REMOTE_ROOT/grafana/dashboards/quant-monitoring-overview.json" \
+  "$MONITORING_REMOTE_ROOT/feishu_alert_relay.py" \
   "$SYSTEMD_DIR/prometheus.service" \
   "$SYSTEMD_DIR/node-exporter.service" \
   "$SYSTEMD_DIR/grafana-server.service" \
+  "$SYSTEMD_DIR/feishu-alert-relay.service" \
   "$CADDY_SITE_FILE" \
   "$CADDY_AUTH_FILE" \
   "$GRAFANA_ENV_FILE"; do
@@ -183,7 +188,7 @@ for path in \
 done
 printf '%s\n' '--- listening-ports ---'
 if command -v ss >/dev/null 2>&1; then
-  ss -ltnp 2>/dev/null | awk 'NR == 1 || /:3000|:9090|:9100/' || true
+  ss -ltnp 2>/dev/null | awk 'NR == 1 || /:3000|:9090|:9100|:9812/' || true
 else
   printf 'ss=missing\n'
 fi
@@ -193,6 +198,7 @@ fi
 
 [[ -d "$LOCAL_MONITORING_ROOT/prometheus" ]] || deploy_die "Missing local Prometheus config directory: $LOCAL_MONITORING_ROOT/prometheus"
 [[ -d "$LOCAL_MONITORING_ROOT/grafana" ]] || deploy_die "Missing local Grafana config directory: $LOCAL_MONITORING_ROOT/grafana"
+[[ -f "$LOCAL_MONITORING_ROOT/feishu_alert_relay.py" ]] || deploy_die "Missing local Feishu alert relay: $LOCAL_MONITORING_ROOT/feishu_alert_relay.py"
 for service in "${MONITORING_SERVICES[@]}"; do
   [[ -f "$LOCAL_MONITORING_ROOT/systemd/$service" ]] || deploy_die "Missing local systemd unit: $LOCAL_MONITORING_ROOT/systemd/$service"
 done
@@ -206,6 +212,7 @@ deploy_log "  host: $REMOTE_HOST"
 deploy_log "  remote root: $MONITORING_REMOTE_ROOT"
 deploy_log "  prometheus config: ${LOCAL_MONITORING_ROOT#$AI_ASSISTANT_ROOT/}/prometheus -> $MONITORING_REMOTE_ROOT/prometheus"
 deploy_log "  grafana config: ${LOCAL_MONITORING_ROOT#$AI_ASSISTANT_ROOT/}/grafana -> $MONITORING_REMOTE_ROOT/grafana"
+deploy_log "  feishu relay: ${LOCAL_MONITORING_ROOT#$AI_ASSISTANT_ROOT/}/feishu_alert_relay.py -> $MONITORING_REMOTE_ROOT/feishu_alert_relay.py"
 deploy_log "  systemd units: ${MONITORING_SERVICES[*]} -> $SYSTEMD_DIR"
 deploy_log "  restart monitoring services: $([[ "$NO_RESTART" -eq 1 ]] && printf 'no' || printf 'yes')"
 deploy_log "  caddy site: $([[ "$SKIP_CADDY" -eq 1 ]] && printf 'skipped' || printf '%s -> %s' "${LOCAL_CADDY_TEMPLATE_PATH#$AI_ASSISTANT_ROOT/}" "$CADDY_SITE_FILE")"
@@ -244,6 +251,7 @@ fi
 ensure_remote_dir "$MONITORING_REMOTE_ROOT"
 sync_dir_scope "$LOCAL_MONITORING_ROOT/prometheus" "$MONITORING_REMOTE_ROOT/prometheus"
 sync_dir_scope "$LOCAL_MONITORING_ROOT/grafana" "$MONITORING_REMOTE_ROOT/grafana"
+sync_file_rsync "$LOCAL_MONITORING_ROOT/feishu_alert_relay.py" "$MONITORING_REMOTE_ROOT/feishu_alert_relay.py"
 for service in "${MONITORING_SERVICES[@]}"; do
   sync_file_rsync "$LOCAL_MONITORING_ROOT/systemd/$service" "$SYSTEMD_DIR/$service"
 done
@@ -329,7 +337,8 @@ chown -R prometheus:prometheus /var/lib/prometheus
 if id grafana >/dev/null 2>&1; then
   chown -R grafana:grafana /var/lib/grafana /var/log/grafana
 fi
-chmod 0644 "$SYSTEMD_DIR/prometheus.service" "$SYSTEMD_DIR/node-exporter.service" "$SYSTEMD_DIR/grafana-server.service"
+chmod 0644 "$SYSTEMD_DIR/prometheus.service" "$SYSTEMD_DIR/node-exporter.service" "$SYSTEMD_DIR/grafana-server.service" "$SYSTEMD_DIR/feishu-alert-relay.service"
+chmod 0755 "$MONITORING_REMOTE_ROOT/feishu_alert_relay.py"
 
 if [[ "$SKIP_CADDY" != "1" ]]; then
   install -d -m 0755 "$CADDY_CONF_DIR"
@@ -355,8 +364,9 @@ if [[ "$SKIP_CHECKS" != "1" ]]; then
   fi
   "$MONITORING_REMOTE_ROOT/bin/promtool" check config "$MONITORING_REMOTE_ROOT/prometheus/prometheus.yml"
   if command -v systemd-analyze >/dev/null 2>&1; then
-    systemd-analyze verify "$SYSTEMD_DIR/prometheus.service" "$SYSTEMD_DIR/node-exporter.service" "$SYSTEMD_DIR/grafana-server.service"
+    systemd-analyze verify "$SYSTEMD_DIR/prometheus.service" "$SYSTEMD_DIR/node-exporter.service" "$SYSTEMD_DIR/grafana-server.service" "$SYSTEMD_DIR/feishu-alert-relay.service"
   fi
+  PYTHONPATH=/opt/ibkr_api/src python3 "$MONITORING_REMOTE_ROOT/feishu_alert_relay.py" --help >/dev/null
   if [[ "$SKIP_CADDY" != "1" && -x "$(command -v caddy 2>/dev/null || true)" ]]; then
     caddy validate --config "$CADDY_MAIN_PATH"
   elif [[ "$SKIP_CADDY" != "1" ]]; then
@@ -367,8 +377,8 @@ fi
 
 systemctl daemon-reload
 if [[ "$NO_RESTART" != "1" ]]; then
-  systemctl enable prometheus.service node-exporter.service grafana-server.service >/dev/null
-  systemctl restart prometheus.service node-exporter.service grafana-server.service
+  systemctl enable prometheus.service node-exporter.service grafana-server.service feishu-alert-relay.service >/dev/null
+  systemctl restart prometheus.service node-exporter.service grafana-server.service feishu-alert-relay.service
 fi
 
 if [[ "$SKIP_CADDY" != "1" && "$SKIP_RELOAD" != "1" ]]; then

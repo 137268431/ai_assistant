@@ -17,6 +17,7 @@ DEFAULT_REMOTE_PYTHON = os.environ.get("MONITORING_REMOTE_PYTHON", "python3")
 DEFAULT_PROMETHEUS_URL = os.environ.get("MONITORING_PROMETHEUS_URL", "http://127.0.0.1:9090")
 DEFAULT_NODE_EXPORTER_URL = os.environ.get("MONITORING_NODE_EXPORTER_URL", "http://127.0.0.1:9100")
 DEFAULT_GRAFANA_URL = os.environ.get("MONITORING_GRAFANA_URL", "http://127.0.0.1:3000")
+DEFAULT_FEISHU_RELAY_URL = os.environ.get("MONITORING_FEISHU_RELAY_URL", "http://127.0.0.1:9812")
 DEFAULT_PUBLIC_URL = os.environ.get("MONITORING_PUBLIC_BASE_URL", "https://quant-monitor.lzw-glory.top")
 DEFAULT_MONITORING_REMOTE_ROOT = os.environ.get("MONITORING_REMOTE_ROOT", "/opt/monitoring").rstrip("/")
 DEFAULT_CADDY_SITE_FILE = os.environ.get("MONITORING_CADDY_SITE_FILE", "/etc/caddy/conf.d/quant-monitor.lzw-glory.top.caddy")
@@ -106,14 +107,16 @@ def join_url(base, suffix):
 prometheus_url = config["prometheus_url"].rstrip("/")
 node_exporter_url = config["node_exporter_url"].rstrip("/")
 grafana_url = config["grafana_url"].rstrip("/")
+feishu_relay_url = config["feishu_relay_url"].rstrip("/")
 remote_root = config["remote_root"].rstrip("/")
 
-services = {name: systemctl_show(name) for name in ["prometheus.service", "node-exporter.service", "grafana-server.service"]}
+services = {name: systemctl_show(name) for name in ["prometheus.service", "node-exporter.service", "grafana-server.service", "feishu-alert-relay.service"]}
 endpoints = {
     "prometheus_ready": fetch_url(join_url(prometheus_url, "/-/ready"), timeout=config["timeout"]),
     "prometheus_targets": fetch_url(join_url(prometheus_url, "/api/v1/targets?state=active"), timeout=config["timeout"], max_body=1048576),
     "node_exporter_metrics": fetch_url(join_url(node_exporter_url, "/metrics"), timeout=config["timeout"]),
     "grafana_health": fetch_url(join_url(grafana_url, "/api/health"), timeout=config["timeout"]),
+    "feishu_alert_relay_health": fetch_url(join_url(feishu_relay_url, "/health"), timeout=config["timeout"]),
 }
 
 required_files = [
@@ -121,10 +124,15 @@ required_files = [
     remote_root + "/grafana/grafana.ini",
     remote_root + "/grafana/provisioning/datasources/prometheus.yml",
     remote_root + "/grafana/provisioning/dashboards/dashboards.yml",
+    remote_root + "/grafana/provisioning/alerting/contact-points.yml",
+    remote_root + "/grafana/provisioning/alerting/notification-policies.yml",
+    remote_root + "/grafana/provisioning/alerting/rules.json",
     remote_root + "/grafana/dashboards/quant-monitoring-overview.json",
+    remote_root + "/feishu_alert_relay.py",
     "/etc/systemd/system/prometheus.service",
     "/etc/systemd/system/node-exporter.service",
     "/etc/systemd/system/grafana-server.service",
+    "/etc/systemd/system/feishu-alert-relay.service",
     config["grafana_env_file"],
 ]
 if config.get("check_caddy", True):
@@ -158,6 +166,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prometheus-url", default=DEFAULT_PROMETHEUS_URL)
     parser.add_argument("--node-exporter-url", default=DEFAULT_NODE_EXPORTER_URL)
     parser.add_argument("--grafana-url", default=DEFAULT_GRAFANA_URL)
+    parser.add_argument("--feishu-relay-url", default=DEFAULT_FEISHU_RELAY_URL)
     parser.add_argument("--public-url", default=DEFAULT_PUBLIC_URL)
     parser.add_argument("--caddy-site-file", default=DEFAULT_CADDY_SITE_FILE)
     parser.add_argument("--caddy-auth-file", default=DEFAULT_CADDY_AUTH_FILE)
@@ -194,6 +203,7 @@ def remote_config(args: argparse.Namespace) -> dict[str, Any]:
         "prometheus_url": args.prometheus_url,
         "node_exporter_url": args.node_exporter_url,
         "grafana_url": args.grafana_url,
+        "feishu_relay_url": args.feishu_relay_url,
         "caddy_site_file": args.caddy_site_file,
         "caddy_auth_file": args.caddy_auth_file,
         "grafana_env_file": args.grafana_env_file,
@@ -259,13 +269,13 @@ def fetch_public_url(url: str, timeout: int) -> dict[str, Any]:
 def evaluate(payload: dict[str, Any], args: argparse.Namespace) -> list[str]:
     failures: list[str] = []
     services = payload.get("services") or {}
-    for service_name in ["prometheus.service", "node-exporter.service", "grafana-server.service"]:
+    for service_name in ["prometheus.service", "node-exporter.service", "grafana-server.service", "feishu-alert-relay.service"]:
         service_payload = services.get(service_name) or {}
         if not service_payload.get("active"):
             failures.append(f"service_inactive:{service_name}:{service_payload.get('ActiveState') or 'unknown'}")
 
     endpoints = payload.get("endpoints") or {}
-    for endpoint_name in ["prometheus_ready", "node_exporter_metrics", "grafana_health"]:
+    for endpoint_name in ["prometheus_ready", "node_exporter_metrics", "grafana_health", "feishu_alert_relay_health"]:
         endpoint_payload = endpoints.get(endpoint_name) or {}
         if not endpoint_payload.get("ok"):
             status = endpoint_payload.get("status_code") or endpoint_payload.get("error") or "unknown"

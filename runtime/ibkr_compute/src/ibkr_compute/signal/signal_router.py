@@ -172,27 +172,54 @@ class SignalRouter:
         return "unknown"
 
     def mark_processed(self, signal_id: str):
+        started = time.perf_counter()
         text = str(signal_id or "").strip()
         if not text:
             return
         self._inflight_ids.discard(text)
         self._processed_ids.add(text)
-        record_signal_event(environment=self.environment, stage="mark_processed", result="ok", reason_code="processed")
+        record_signal_event(
+            environment=self.environment,
+            stage="mark_processed",
+            result="ok",
+            reason_code="processed",
+            duration_s=time.perf_counter() - started,
+        )
 
     def claim_signal(self, signal_id: str) -> bool:
+        started = time.perf_counter()
         text = str(signal_id or "").strip()
         if not text or text in self._processed_ids or text in self._inflight_ids:
-            record_signal_event(environment=self.environment, stage="claim", result="duplicate", reason_code="already_seen")
+            record_signal_event(
+                environment=self.environment,
+                stage="claim",
+                result="duplicate",
+                reason_code="already_seen",
+                duration_s=time.perf_counter() - started,
+            )
             return False
         self._inflight_ids.add(text)
-        record_signal_event(environment=self.environment, stage="claim", result="claimed", reason_code="ok")
+        record_signal_event(
+            environment=self.environment,
+            stage="claim",
+            result="claimed",
+            reason_code="ok",
+            duration_s=time.perf_counter() - started,
+        )
         return True
 
     def release_signal(self, signal_id: str):
+        started = time.perf_counter()
         text = str(signal_id or "").strip()
         if text:
             self._inflight_ids.discard(text)
-            record_signal_event(environment=self.environment, stage="release", result="ok", reason_code="released")
+            record_signal_event(
+                environment=self.environment,
+                stage="release",
+                result="ok",
+                reason_code="released",
+                duration_s=time.perf_counter() - started,
+            )
 
     def forget_processed(self, signal_ids):
         for signal_id in (signal_ids or []):

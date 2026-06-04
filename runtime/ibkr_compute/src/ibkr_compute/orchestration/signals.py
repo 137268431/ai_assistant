@@ -245,6 +245,7 @@ class TradingServiceSignalsMixin:
                 continue
 
             finalized = False
+            signal_process_started = time.perf_counter()
             try:
                 if self._is_fixed_position_signal(sig):
                     self._mark_signal_fixed_position_blocked(sig)
@@ -538,6 +539,7 @@ class TradingServiceSignalsMixin:
                             order_flow_err,
                         )
 
+                submission_started = time.perf_counter()
                 if direct_tv_entry:
                     direct_submitter = getattr(self.order_placer, "place_bracket_order", None)
                     if not callable(direct_submitter):
@@ -606,6 +608,7 @@ class TradingServiceSignalsMixin:
                             settings=harvest_settings,
                         )
 
+                submission_duration = time.perf_counter() - submission_started
                 if result.get("ok"):
                     record_signal_event(
                         environment=service_mod.ENVIRONMENT,
@@ -613,6 +616,7 @@ class TradingServiceSignalsMixin:
                         signal_source=str(sig.get("source") or "unknown"),
                         result="ok",
                         reason_code=str(result.get("order_family_type") or "submitted"),
+                        duration_s=submission_duration,
                     )
                     if order_flow_manager is not None and not direct_tv_entry:
                         try:
@@ -674,6 +678,7 @@ class TradingServiceSignalsMixin:
                         signal_source=str(sig.get("source") or "unknown"),
                         result="error",
                         reason_code="protection_incomplete" if result.get("protection_incomplete") else "submit_failed",
+                        duration_s=submission_duration,
                     )
                     self._mark_signal_submit_failed(sig, result)
 
@@ -682,6 +687,14 @@ class TradingServiceSignalsMixin:
             finally:
                 if not finalized:
                     self.signal_router.release_signal(signal_id)
+                record_signal_event(
+                    environment=service_mod.ENVIRONMENT,
+                    stage="signal_process",
+                    signal_source=str(sig.get("source") or "unknown"),
+                    result="finalized" if finalized else "deferred",
+                    reason_code="processed" if finalized else "released",
+                    duration_s=time.perf_counter() - signal_process_started,
+                )
 
     @staticmethod
     def _safe_float(value, default: float = 0.0) -> float:

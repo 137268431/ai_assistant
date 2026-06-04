@@ -7,12 +7,14 @@ from __future__ import annotations
 import logging
 import os
 import json
+import time
 from datetime import datetime
 from ibkr_compute.core.broker_mode import normalize_broker_mode, resolve_market_data_mode
 from ibkr_compute.core.time_utils import ET
 from typing import Any, Dict, List
 
 from ibkr_compute.broker import BrokerAdapter
+from ibkr_compute.observability.prometheus import record_order_event
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +71,58 @@ class OrderPlacer:
             return str(resolve_market_data_mode(None) or "live").strip().lower() or "live"
         except Exception:
             return "live"
+
+    def _record_bracket_order_metrics(
+        self,
+        *,
+        result: Dict[str, Any],
+        order_family_type: str,
+        duration_s: float,
+    ) -> None:
+        payload = dict(result or {})
+        family = str(order_family_type or payload.get("order_family_type") or "bracket_oco").strip() or "bracket_oco"
+        missing_roles = {
+            str(role or "").strip()
+            for role in (payload.get("missing_protection_roles") or [])
+            if str(role or "").strip()
+        }
+        result_ok = bool(payload.get("ok"))
+        protection_incomplete = bool(payload.get("protection_incomplete")) or (
+            "protection_complete" in payload and not bool(payload.get("protection_complete"))
+        )
+        reason = str(payload.get("error") or payload.get("reason") or "ok")
+        bracket_result = "ok" if result_ok and not protection_incomplete else "incomplete" if result_ok else "error"
+        record_order_event(
+            environment=self.environment,
+            operation="place_bracket",
+            order_family_type=family,
+            result=bracket_result,
+            reason_code="protection_incomplete" if protection_incomplete and result_ok else reason,
+            duration_s=duration_s,
+        )
+        role_results = [
+            ("place_entry", "entry"),
+            ("place_take_profit", "take_profit"),
+            ("place_stop_loss", "stop_loss"),
+        ]
+        for operation, role in role_results:
+            if role in missing_roles:
+                role_result = "missing"
+                role_reason = "protection_missing"
+            elif role != "entry" and protection_incomplete:
+                role_result = "unconfirmed"
+                role_reason = "protection_incomplete"
+            else:
+                role_result = "ok" if result_ok else "error"
+                role_reason = reason
+            record_order_event(
+                environment=self.environment,
+                operation=operation,
+                order_family_type=role,
+                result=role_result,
+                reason_code=role_reason,
+                duration_s=duration_s,
+            )
 
     def _signal_lookup_environments(self) -> List[str]:
         candidates: List[str] = []
@@ -215,6 +269,7 @@ class OrderPlacer:
         entry_algo_strategy: str = "",
         entry_adaptive_priority: str = "",
     ) -> Dict[str, Any]:
+        started = time.perf_counter()
         acct_id = self.get_active_account_id(use_paper)
         order_extra_payload = dict(order_extra or {})
         resolved_trade_group_id = self._resolve_origin_trade_group_id(
@@ -257,6 +312,11 @@ class OrderPlacer:
             order_family_type=resolved_family_type,
             entry_algo_strategy=str(entry_algo_strategy or ""),
             entry_adaptive_priority=str(entry_adaptive_priority or ""),
+        )
+        self._record_bracket_order_metrics(
+            result=result,
+            order_family_type=result.get("order_family_type") or resolved_family_type,
+            duration_s=time.perf_counter() - started,
         )
         if result.get("ok"):
             self._order_count += 1

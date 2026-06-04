@@ -1,0 +1,1303 @@
+{
+  "apiVersion": 1,
+  "groups": [
+    {
+      "orgId": 1,
+      "name": "quant-monitor-alerts",
+      "folder": "Quant Monitoring",
+      "interval": "1m",
+      "rules": [
+        {
+          "uid": "ibkr_service_down",
+          "title": "IBKRServiceTargetDown",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "up{stack=\"ibkr\"} == 0",
+                "hide": false,
+                "instant": true,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": false,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0.5
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "A"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "hide": false,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B",
+                "type": "classic_conditions"
+              }
+            }
+          ],
+          "dashboardUid": "quant-monitoring-overview",
+          "noDataState": "Alerting",
+          "execErrState": "Error",
+          "for": "2m",
+          "annotations": {
+            "summary": "IBKR 服务不可采集",
+            "description": "Prometheus 持续无法采集 IBKR 服务；来源标签包含 service/job/instance。"
+          },
+          "labels": {
+            "severity": "critical",
+            "alert_source": "grafana"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "gateway_socket_down",
+          "title": "GatewaySocketNotListening",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "ibkr_gateway_socket_listening == 0",
+                "hide": false,
+                "instant": true,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": false,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0.5
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "A"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "hide": false,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B",
+                "type": "classic_conditions"
+              }
+            }
+          ],
+          "dashboardUid": "quant-monitoring-overview",
+          "noDataState": "Alerting",
+          "execErrState": "Error",
+          "for": "2m",
+          "annotations": {
+            "summary": "Gateway API socket 未监听",
+            "description": "Gateway socket 不可用会直接影响 IB API 请求。"
+          },
+          "labels": {
+            "severity": "critical",
+            "alert_source": "grafana"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "broker_not_ready",
+          "title": "BrokerNotReadyOrDisconnected",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "(ibkr_broker_connected == 0) or (ibkr_broker_ready == 0)",
+                "hide": false,
+                "instant": true,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": false,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0.5
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "A"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "hide": false,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B",
+                "type": "classic_conditions"
+              }
+            }
+          ],
+          "dashboardUid": "quant-monitoring-overview",
+          "noDataState": "Alerting",
+          "execErrState": "Error",
+          "for": "2m",
+          "annotations": {
+            "summary": "Broker 未连接或未就绪",
+            "description": "Broker connected/ready 任一为 0，会影响下单、查单和行情请求。"
+          },
+          "labels": {
+            "severity": "critical",
+            "alert_source": "grafana"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "disk_space_critical",
+          "title": "DiskSpaceCritical",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "100 * node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay\", mountpoint=~\"/|/var|/opt\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|overlay\", mountpoint=~\"/|/var|/opt\"} < 8",
+                "hide": false,
+                "instant": true,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": false,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0.5
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "A"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "hide": false,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B",
+                "type": "classic_conditions"
+              }
+            }
+          ],
+          "dashboardUid": "quant-monitoring-overview",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "5m",
+          "annotations": {
+            "summary": "关键磁盘剩余空间低于 8%",
+            "description": "磁盘空间不足可能导致 Prometheus、Grafana、PocketBase 或日志写入失败。"
+          },
+          "labels": {
+            "severity": "critical",
+            "alert_source": "grafana"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "disk_space_low",
+          "title": "DiskSpaceLow",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 900,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "100 * node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay\", mountpoint=~\"/|/var|/opt\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|overlay\", mountpoint=~\"/|/var|/opt\"} < 15",
+                "hide": false,
+                "instant": true,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": false,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0.5
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "A"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "hide": false,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B",
+                "type": "classic_conditions"
+              }
+            }
+          ],
+          "dashboardUid": "quant-monitoring-overview",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "10m",
+          "annotations": {
+            "summary": "关键磁盘剩余空间低于 15%",
+            "description": "需要关注磁盘增长趋势。"
+          },
+          "labels": {
+            "severity": "warning",
+            "alert_source": "grafana"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "http_5xx_high",
+          "title": "HTTPServer5xxHigh",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "(sum by (service, route) (rate(ibkr_http_server_requests_total{status_class=\"5xx\"}[5m])) / clamp_min(sum by (service, route) (rate(ibkr_http_server_requests_total[5m])), 0.001) > 0.05) and (sum by (service, route) (increase(ibkr_http_server_requests_total[5m])) > 20)",
+                "hide": false,
+                "instant": true,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": false,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0.5
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "A"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "hide": false,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B",
+                "type": "classic_conditions"
+              }
+            }
+          ],
+          "dashboardUid": "quant-monitoring-overview",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "5m",
+          "annotations": {
+            "summary": "入口 HTTP 5xx 比例升高",
+            "description": "使用 5xx 比例 + 最小请求量判断，避免低流量误报。"
+          },
+          "labels": {
+            "severity": "warning",
+            "alert_source": "grafana"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "http_p95_high",
+          "title": "HTTPServerP95LatencyHigh",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "histogram_quantile(0.95, sum by (le, service, route) (rate(ibkr_http_server_request_duration_seconds_bucket[5m]))) > 2",
+                "hide": false,
+                "instant": true,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": false,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0.5
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "A"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "hide": false,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B",
+                "type": "classic_conditions"
+              }
+            }
+          ],
+          "dashboardUid": "quant-monitoring-overview",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "5m",
+          "annotations": {
+            "summary": "入口 HTTP p95 延迟高",
+            "description": "入口请求 p95 超过 2 秒，可能是服务卡住或依赖变慢。"
+          },
+          "labels": {
+            "severity": "warning",
+            "alert_source": "grafana"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "outbound_failure_high",
+          "title": "OutboundDependencyFailures",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "(sum by (service, target_service, route) (rate(ibkr_http_client_requests_total{outcome!=\"success\"}[5m])) / clamp_min(sum by (service, target_service, route) (rate(ibkr_http_client_requests_total[5m])), 0.001) > 0.05) and (sum by (service, target_service, route) (increase(ibkr_http_client_requests_total[5m])) > 20)",
+                "hide": false,
+                "instant": true,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": false,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0.5
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "A"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "hide": false,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B",
+                "type": "classic_conditions"
+              }
+            }
+          ],
+          "dashboardUid": "quant-monitoring-overview",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "5m",
+          "annotations": {
+            "summary": "出站依赖失败率升高",
+            "description": "服务调用 PocketBase、Grafana 或外部接口失败率异常。"
+          },
+          "labels": {
+            "severity": "warning",
+            "alert_source": "grafana"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "broker_errors_high",
+          "title": "BrokerIBErrorsHigh",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "sum by (service, environment, client_role, ib_error_code, severity) (increase(ibkr_broker_error_total[5m])) > 3",
+                "hide": false,
+                "instant": true,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": false,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0.5
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "A"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "hide": false,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B",
+                "type": "classic_conditions"
+              }
+            }
+          ],
+          "dashboardUid": "quant-monitoring-overview",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "2m",
+          "annotations": {
+            "summary": "IB Broker 错误增多",
+            "description": "5 分钟 IB error 个数超过阈值，来源包含 client_role/ib_error_code。"
+          },
+          "labels": {
+            "severity": "warning",
+            "alert_source": "grafana"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "broker_pending_high",
+          "title": "BrokerPendingRequestsHigh",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "sum by (service, environment, client_role, request_kind) (ibkr_broker_pending_requests) > 20",
+                "hide": false,
+                "instant": true,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": false,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0.5
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "A"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "hide": false,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B",
+                "type": "classic_conditions"
+              }
+            }
+          ],
+          "dashboardUid": "quant-monitoring-overview",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "3m",
+          "annotations": {
+            "summary": "Broker pending 请求积压",
+            "description": "待执行 Broker 请求过多，可能导致 Gateway 被打挂或请求超时。"
+          },
+          "labels": {
+            "severity": "warning",
+            "alert_source": "grafana"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "order_failures_high",
+          "title": "OrderCommandFailuresHigh",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "sum by (service, environment, operation, order_family_type, result, reason_code) (increase(ibkr_order_events_total{result!~\"ok|synced|seen\"}[5m])) > 0",
+                "hide": false,
+                "instant": true,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": false,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0.5
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "A"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "hide": false,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B",
+                "type": "classic_conditions"
+              }
+            }
+          ],
+          "dashboardUid": "quant-monitoring-overview",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "2m",
+          "annotations": {
+            "summary": "订单命令失败或未确认",
+            "description": "下单、取消、修改、止盈/止损保护单等订单命令出现失败或未确认。"
+          },
+          "labels": {
+            "severity": "warning",
+            "alert_source": "grafana"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "order_latency_high",
+          "title": "OrderOperationP95LatencyHigh",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "histogram_quantile(0.95, sum by (le, service, environment, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket[5m]))) > 2",
+                "hide": false,
+                "instant": true,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": false,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0.5
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "A"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "hide": false,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B",
+                "type": "classic_conditions"
+              }
+            }
+          ],
+          "dashboardUid": "quant-monitoring-overview",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "5m",
+          "annotations": {
+            "summary": "订单操作 p95 延迟高",
+            "description": "下单、取消、修改或追踪链路变慢。"
+          },
+          "labels": {
+            "severity": "warning",
+            "alert_source": "grafana"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "host_mem_high",
+          "title": "HostMemoryHigh",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 900,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 90",
+                "hide": false,
+                "instant": true,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": false,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0.5
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "A"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "hide": false,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B",
+                "type": "classic_conditions"
+              }
+            }
+          ],
+          "dashboardUid": "quant-monitoring-overview",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "10m",
+          "annotations": {
+            "summary": "主机内存使用率高",
+            "description": "内存使用率持续超过 90%。"
+          },
+          "labels": {
+            "severity": "warning",
+            "alert_source": "grafana"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "host_cpu_high",
+          "title": "HostCPUHigh",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 900,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "100 - (avg by(instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100) > 85",
+                "hide": false,
+                "instant": true,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": false,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0.5
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "A"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "hide": false,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B",
+                "type": "classic_conditions"
+              }
+            }
+          ],
+          "dashboardUid": "quant-monitoring-overview",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "10m",
+          "annotations": {
+            "summary": "主机 CPU 使用率高",
+            "description": "CPU 使用率持续超过 85%。"
+          },
+          "labels": {
+            "severity": "warning",
+            "alert_source": "grafana"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "monitoring_target_down",
+          "title": "MonitoringTargetDown",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "up{stack=\"monitoring\"} == 0",
+                "hide": false,
+                "instant": true,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": false,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0.5
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "A"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "hide": false,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B",
+                "type": "classic_conditions"
+              }
+            }
+          ],
+          "dashboardUid": "quant-monitoring-overview",
+          "noDataState": "Alerting",
+          "execErrState": "Error",
+          "for": "3m",
+          "annotations": {
+            "summary": "监控组件不可采集",
+            "description": "Prometheus、Grafana、node_exporter 或 Feishu relay 采集异常。"
+          },
+          "labels": {
+            "severity": "warning",
+            "alert_source": "grafana"
+          },
+          "isPaused": false
+        }
+      ]
+    }
+  ]
+}

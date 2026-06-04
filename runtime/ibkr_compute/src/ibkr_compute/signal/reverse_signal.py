@@ -1424,6 +1424,11 @@ class ReverseSignalHandler:
             cancel_ids = []
         else:
             cancel_ids = related_order_ids
+        role_by_order_id = {
+            self._order_id(order): self._child_order_role(order)
+            for order in active_pb_orders
+            if self._order_id(order)
+        }
 
         detail["cancel_old_order"] = "no_active_orders" if related_order_ids and not cancel_ids else "started"
         detail["cancel_target"] = {
@@ -1442,7 +1447,9 @@ class ReverseSignalHandler:
         cancel_errors = []
         if cancel_ids:
             for oid in cancel_ids:
-                result = self.order_modifier.cancel_order(oid)
+                role = role_by_order_id.get(str(oid), "") or "unknown"
+                operation = f"cancel_{role}" if role in {"take_profit", "stop_loss"} else "cancel_order"
+                result = self.order_modifier.cancel_order(oid, operation=operation, order_family_type=role)
                 item = {"order_id": str(oid), **dict(result or {})}
                 cancel_results.append(item)
                 if not result.get("ok"):

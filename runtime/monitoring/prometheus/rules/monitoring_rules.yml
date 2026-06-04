@@ -3,9 +3,139 @@ groups:
     rules:
       - alert: MonitoringTargetDown
         expr: up{stack="monitoring"} == 0
-        for: 2m
+        for: 3m
         labels:
           severity: warning
         annotations:
           summary: "Monitoring target {{ $labels.job }} is down"
-          description: "Prometheus cannot scrape {{ $labels.instance }} for more than two minutes."
+          description: "Prometheus cannot scrape {{ $labels.instance }} for more than three minutes."
+
+  - name: ibkr-critical-path
+    rules:
+      - alert: IBKRServiceTargetDown
+        expr: up{stack="ibkr"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "IBKR service {{ $labels.service }} is down"
+          description: "Prometheus cannot scrape {{ $labels.instance }}."
+
+      - alert: GatewaySocketNotListening
+        expr: ibkr_gateway_socket_listening == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "IB Gateway socket is not listening"
+          description: "Gateway source={{ $labels.source }} host={{ $labels.host }} port={{ $labels.port }} environment={{ $labels.environment }}."
+
+      - alert: BrokerNotReadyOrDisconnected
+        expr: (ibkr_broker_connected == 0) or (ibkr_broker_ready == 0)
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "IB broker is disconnected or not ready"
+          description: "service={{ $labels.service }} environment={{ $labels.environment }} client_role={{ $labels.client_role }}."
+
+      - alert: DiskSpaceCritical
+        expr: 100 * node_filesystem_avail_bytes{fstype!~"tmpfs|overlay", mountpoint=~"/|/var|/opt"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay", mountpoint=~"/|/var|/opt"} < 8
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Disk free space is below 8%"
+          description: "instance={{ $labels.instance }} mountpoint={{ $labels.mountpoint }}."
+
+  - name: ibkr-warning-path
+    rules:
+      - alert: DiskSpaceLow
+        expr: 100 * node_filesystem_avail_bytes{fstype!~"tmpfs|overlay", mountpoint=~"/|/var|/opt"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay", mountpoint=~"/|/var|/opt"} < 15
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk free space is below 15%"
+          description: "instance={{ $labels.instance }} mountpoint={{ $labels.mountpoint }}."
+
+      - alert: HTTPServer5xxHigh
+        expr: (sum by (service, route) (rate(ibkr_http_server_requests_total{status_class="5xx"}[5m])) / clamp_min(sum by (service, route) (rate(ibkr_http_server_requests_total[5m])), 0.001) > 0.05) and (sum by (service, route) (increase(ibkr_http_server_requests_total[5m])) > 20)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Inbound HTTP 5xx ratio is high"
+          description: "service={{ $labels.service }} route={{ $labels.route }}."
+
+      - alert: HTTPServerP95LatencyHigh
+        expr: histogram_quantile(0.95, sum by (le, service, route) (rate(ibkr_http_server_request_duration_seconds_bucket[5m]))) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Inbound HTTP p95 latency is high"
+          description: "service={{ $labels.service }} route={{ $labels.route }}."
+
+      - alert: OutboundDependencyFailures
+        expr: (sum by (service, target_service, route) (rate(ibkr_http_client_requests_total{outcome!="success"}[5m])) / clamp_min(sum by (service, target_service, route) (rate(ibkr_http_client_requests_total[5m])), 0.001) > 0.05) and (sum by (service, target_service, route) (increase(ibkr_http_client_requests_total[5m])) > 20)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Outbound dependency failure ratio is high"
+          description: "service={{ $labels.service }} target={{ $labels.target_service }} route={{ $labels.route }}."
+
+      - alert: BrokerIBErrorsHigh
+        expr: sum by (service, environment, client_role, ib_error_code, severity) (increase(ibkr_broker_error_total[5m])) > 3
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "IB broker errors increased"
+          description: "client_role={{ $labels.client_role }} ib_error_code={{ $labels.ib_error_code }} severity={{ $labels.severity }}."
+
+      - alert: BrokerPendingRequestsHigh
+        expr: sum by (service, environment, client_role, request_kind) (ibkr_broker_pending_requests) > 20
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Broker pending requests are high"
+          description: "client_role={{ $labels.client_role }} request_kind={{ $labels.request_kind }}."
+
+      - alert: OrderCommandFailuresHigh
+        expr: sum by (service, environment, operation, order_family_type, result, reason_code) (increase(ibkr_order_events_total{result!~"ok|synced|seen"}[5m])) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Order command failed or was unconfirmed"
+          description: "operation={{ $labels.operation }} family={{ $labels.order_family_type }} result={{ $labels.result }} reason={{ $labels.reason_code }}."
+
+      - alert: OrderOperationP95LatencyHigh
+        expr: histogram_quantile(0.95, sum by (le, service, environment, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket[5m]))) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Order operation p95 latency is high"
+          description: "operation={{ $labels.operation }} result={{ $labels.result }}."
+
+      - alert: HostMemoryHigh
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 90
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Host memory usage is high"
+          description: "instance={{ $labels.instance }}."
+
+      - alert: HostCPUHigh
+        expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Host CPU usage is high"
+          description: "instance={{ $labels.instance }}."

@@ -1,0 +1,24 @@
+[Unit]
+Description=Quant Monitoring Feishu Alert Relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=prometheus
+Group=prometheus
+Environment=PYTHONPATH=/opt/ibkr_api/src
+Environment=GRAFANA_PUBLIC_URL=https://quant-monitor.lzw-glory.top
+EnvironmentFile=-/etc/monitoring/feishu-alert-relay.env
+ExecStart=/usr/bin/python3 /opt/monitoring/feishu_alert_relay.py --listen 127.0.0.1:9812
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

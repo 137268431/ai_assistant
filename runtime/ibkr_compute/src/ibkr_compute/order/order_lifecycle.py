@@ -1080,7 +1080,15 @@ class OrderLifecycle:
             broker_id = self._order_broker_id(row)
             if not broker_id:
                 continue
-            result = self.order_modifier.cancel_order(broker_id) if self.order_modifier else {"ok": False, "error": "order_modifier_unavailable"}
+            result = (
+                self.order_modifier.cancel_order(
+                    broker_id,
+                    operation=f"cancel_{role}",
+                    order_family_type=role,
+                )
+                if self.order_modifier
+                else {"ok": False, "error": "order_modifier_unavailable"}
+            )
             if not result.get("ok") and not self._cancel_result_looks_closed(result):
                 item = {"order_id": broker_id, "role": role, "error": result.get("error") or "cancel_failed", "result": dict(result or {})}
                 if self._cancel_result_is_pending(result):
@@ -1869,7 +1877,15 @@ class OrderLifecycle:
             broker_id = self._order_broker_id(row)
             if not broker_id:
                 continue
-            result = self.order_modifier.cancel_order(broker_id) if self.order_modifier else {"ok": False, "error": "order_modifier_unavailable"}
+            result = (
+                self.order_modifier.cancel_order(
+                    broker_id,
+                    operation=f"cancel_{role}",
+                    order_family_type=role,
+                )
+                if self.order_modifier
+                else {"ok": False, "error": "order_modifier_unavailable"}
+            )
             if not result.get("ok") and not self._cancel_result_looks_closed(result):
                 errors.append({"order_id": broker_id, "role": role, "error": result.get("error") or "cancel_failed"})
                 continue
@@ -2065,7 +2081,11 @@ class OrderLifecycle:
         broker_id = self._order_broker_id(target_row)
         if not broker_id or not self.order_modifier:
             return False
-        result = self.order_modifier.cancel_order(broker_id)
+        result = self.order_modifier.cancel_order(
+            broker_id,
+            operation="cancel_take_profit",
+            order_family_type="take_profit",
+        )
         if not result.get("ok") and not self._cancel_result_looks_closed(result):
             logger.warning("Partial harvest stale target cancel failed: %s order=%s error=%s", symbol, broker_id, result.get("error"))
             return False
