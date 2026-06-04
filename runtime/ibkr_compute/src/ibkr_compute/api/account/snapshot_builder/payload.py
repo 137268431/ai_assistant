@@ -17,7 +17,9 @@ from ibkr_compute.api.account.live import (
 from ibkr_compute.api.runtime.common import _coerce_float
 from ibkr_compute.api.account.snapshot_builder.context import (
     build_snapshot_context,
+    get_snapshot_refresh_lock,
     load_cached_snapshot,
+    mark_cached_snapshot_refresh_error,
     store_cached_snapshot,
 )
 from ibkr_compute.api.account.snapshot_builder.fetch import fetch_snapshot_sources
@@ -273,18 +275,58 @@ def _build_ibkr_account_buying_power_snapshot(service) -> dict:
     return payload
 
 
-def _build_ibkr_account_snapshot(service, *, include_pnl: bool = True) -> dict:
-    context = build_snapshot_context(service, include_pnl=include_pnl)
-    api_app = context["api_app"]
-    cached = load_cached_snapshot(api_app, context["cache_key"])
-    if cached:
-        return cached
+def _stale_snapshot_after_error(payload: dict, error: str) -> dict:
+    result = dict(payload or {})
+    result["ok"] = bool(result.get("ok", True))
+    result["stale"] = True
+    result["cache_state"] = "stale_after_error"
+    result["refresh_error"] = str(error or "").strip() or "account_snapshot_refresh_failed"
+    errors = result.get("errors") if isinstance(result.get("errors"), dict) else {}
+    result["errors"] = {**errors, "refresh": result["refresh_error"]}
+    return result
 
+
+def _account_snapshot_error_payload(context: dict, error: str) -> dict:
+    message = str(error or "").strip() or "account_snapshot_unavailable"
+    service_status = context["service_status"] if isinstance(context.get("service_status"), dict) else {}
+    return {
+        "ok": False,
+        "environment": context["runtime_environment"],
+        "account_id": context["account_id"],
+        "service_running": False,
+        "service_starting": False,
+        "session_authenticated": bool((service_status.get("session") or {}).get("authenticated")),
+        "gateway_running": bool((service_status.get("gateway") or {}).get("running")),
+        "websocket_ready": bool((service_status.get("websocket") or {}).get("ready")),
+        "summary": {},
+        "buying_power_guard": {"available": False, "state": "unavailable", "reason": "account_snapshot_unavailable"},
+        "summary_raw": {},
+        "pnl_raw": {},
+        "include_pnl": bool(context.get("include_pnl")),
+        "positions": None,
+        "orders": None,
+        "live_open_orders": None,
+        "live_order_coverage": {},
+        "recovery_diagnostics": {},
+        "counts": {},
+        "errors": {"summary": message, "positions": message, "orders": message, "refresh": message},
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "cache_state": "empty_error",
+        "stale": False,
+        "refresh_error": message,
+    }
+
+
+def _build_fresh_ibkr_account_snapshot_payload(service, context: dict) -> dict:
+    api_app = context["api_app"]
     snapshot_sources = fetch_snapshot_sources(
         service,
         context["account_id"],
         include_pnl=context["include_pnl"],
     )
+    source_errors = snapshot_sources.get("errors") if isinstance(snapshot_sources.get("errors"), dict) else {}
+    if source_errors.get("positions") and not bool(snapshot_sources.get("positions_loaded")):
+        raise RuntimeError(str(source_errors.get("positions") or "account_positions_unavailable"))
     fallback_ids = load_pb_fallback_order_ids(api_app, service)
     merged_orders_raw, live_open_payload = recover_live_open_orders(
         api_app,
@@ -333,8 +375,50 @@ def _build_ibkr_account_snapshot(service, *, include_pnl: bool = True) -> dict:
         "errors": snapshot_sources["errors"],
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
-    store_cached_snapshot(api_app, context["cache_key"], payload)
     return payload
 
 
-__all__ = ["_build_ibkr_account_buying_power_snapshot", "_build_ibkr_account_snapshot"]
+def refresh_account_snapshot_cache(service, *, include_pnl: bool = False) -> dict:
+    return _build_ibkr_account_snapshot(service, include_pnl=include_pnl, force_refresh=True, allow_stale=True)
+
+
+def _build_ibkr_account_snapshot(
+    service,
+    *,
+    include_pnl: bool = True,
+    force_refresh: bool = False,
+    allow_stale: bool = True,
+) -> dict:
+    context = build_snapshot_context(service, include_pnl=include_pnl)
+    api_app = context["api_app"]
+    cache_key = context["cache_key"]
+    if not force_refresh:
+        cached = load_cached_snapshot(api_app, cache_key, allow_stale=allow_stale)
+        if cached:
+            return cached
+
+    refresh_lock = get_snapshot_refresh_lock(api_app, cache_key)
+    with refresh_lock:
+        if not force_refresh:
+            cached = load_cached_snapshot(api_app, cache_key, allow_stale=allow_stale)
+            if cached:
+                return cached
+        try:
+            payload = _build_fresh_ibkr_account_snapshot_payload(service, context)
+        except Exception as exc:
+            error = str(exc) or "account_snapshot_refresh_failed"
+            mark_cached_snapshot_refresh_error(api_app, cache_key, error)
+            cached = load_cached_snapshot(api_app, cache_key, allow_stale=True)
+            if cached:
+                return _stale_snapshot_after_error(cached, error)
+            return _account_snapshot_error_payload(context, error)
+
+        store_cached_snapshot(api_app, cache_key, payload)
+        return load_cached_snapshot(api_app, cache_key, allow_stale=False) or payload
+
+
+__all__ = [
+    "_build_ibkr_account_buying_power_snapshot",
+    "_build_ibkr_account_snapshot",
+    "refresh_account_snapshot_cache",
+]

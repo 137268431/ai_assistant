@@ -498,6 +498,7 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(payload["signal_results"][0]["signal_id"], "sig-1")
         self.assertEqual(updated_cards[0][0], "sig-msg-1")
         self.assertIn("挂单超时自动取消", updated_cards[0][1]["elements"][0]["content"])
+        self.assertIn("**订单有效期**: 30 分钟", updated_cards[0][1]["elements"][0]["content"])
 
     def test_order_expiry_matches_split_group_aliases_and_cleans_up_closed_broker_rows(self):
         pb = _OrderExpiryPB()

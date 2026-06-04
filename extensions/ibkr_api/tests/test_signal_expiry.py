@@ -62,6 +62,7 @@ class SignalExpiryBuildersTest(unittest.TestCase):
         self.signal_chat_id_fn = lambda environment: f"signal-chat-{environment}"
 
     def test_signal_expiry_marks_stale_signal_expired(self):
+        updated_cards = []
         pb = _FakePB(
             signal_rows=[
                 {
@@ -84,7 +85,7 @@ class SignalExpiryBuildersTest(unittest.TestCase):
             escape_filter_string=self.escape_filter_string,
             config_value=lambda key, default, environment: "30",
             send_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "msg-new"},
-            update_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "msg-old"},
+            update_interactive=lambda message_id, card, environment: updated_cards.append((message_id, card, environment)) or {"success": True, "message_id": "msg-old"},
             signal_chat_id_fn=self.signal_chat_id_fn,
             console_base_url="https://console.example.com",
         )
@@ -95,9 +96,13 @@ class SignalExpiryBuildersTest(unittest.TestCase):
         row = pb.signals["sig-row-1"]
         self.assertEqual(row["status"], "expired")
         self.assertEqual(row["extra"]["expired_by"], "signal_expiry_check")
+        self.assertEqual(row["extra"]["expired_reason"], "signal_expired")
+        self.assertEqual(row["extra"]["status_reason"], "signal_expired")
         self.assertEqual(row["extra"]["expiry_reference"], "bar_time_ms")
+        self.assertEqual(row["extra"]["signal_validity_minutes"], 30)
         self.assertEqual(row["extra"]["feishu_signal_message_id"], "msg-old")
         self.assertEqual(row["extra"]["feishu_signal_notify_last_action"], "expired")
+        self.assertIn("**信号有效期**: 30 分钟", updated_cards[0][1]["elements"][0]["content"])
 
     def test_signal_expiry_marks_paper_broker_expired_without_live_top_level_status(self):
         sent_cards = []
@@ -143,7 +148,40 @@ class SignalExpiryBuildersTest(unittest.TestCase):
         content = sent_cards[0]["elements"][0]["content"]
         self.assertIn("**状态**: 已过期", content)
         self.assertIn("**原因**: signal_expired", content)
+        self.assertIn("**信号有效期**: 30 分钟", content)
         self.assertNotIn("paper:history_repair_pending", content)
+
+    def test_signal_expiry_skips_broker_cancelled_signal(self):
+        pb = _FakePB(
+            signal_rows=[
+                {
+                    "id": "sig-row-1",
+                    "signal_id": "sig-1",
+                    "environment": "live",
+                    "symbol": "AAPL",
+                    "status": "pending",
+                    "bar_time_ms": 1713797700000,
+                    "extra": {"execution_by_mode": {"paper": {"status": "cancelled"}}},
+                }
+            ]
+        )
+
+        payload, status_code = build_signal_expiry_response(
+            pb,
+            payload={"broker_mode": "paper", "market_data_mode": "live"},
+            normalize_environment=self.normalize_environment,
+            escape_filter_string=self.escape_filter_string,
+            config_value=lambda key, default, environment: "30",
+            send_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "msg-new"},
+            update_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "msg-old"},
+            signal_chat_id_fn=self.signal_chat_id_fn,
+            console_base_url="https://console.example.com",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["expired_count"], 0)
+        self.assertEqual(pb.updated, [])
 
     def test_signal_expiry_repairs_signal_to_submitted_when_orders_exist(self):
         pb = _FakePB(

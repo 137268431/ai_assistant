@@ -17,9 +17,10 @@ from ibkr_api.order_values import escape_filter_string, to_text
 
 
 class _FakePB:
-    def __init__(self, order_rows, detail_rows=None):
+    def __init__(self, order_rows, detail_rows=None, signal_rows=None):
         self.orders = {str(row["id"]): copy.deepcopy(row) for row in order_rows}
         self.order_details = [copy.deepcopy(row) for row in (detail_rows or [])]
+        self.signals = {str(row["id"]): copy.deepcopy(row) for row in (signal_rows or [])}
         self.updated = []
         self.created = []
 
@@ -28,13 +29,24 @@ class _FakePB:
             return [copy.deepcopy(row) for row in self._filter_orders(filter)]
         if collection == "ibkr_order_details":
             return [copy.deepcopy(row) for row in self._filter_order_details(filter)]
+        if collection == "ibkr_signals":
+            return [copy.deepcopy(row) for row in self._filter_signals(filter)]
         return []
 
+    def get_first_record(self, collection, filter=None, sort=None):
+        rows = self.get_records(collection, filter=filter, sort=sort, per_page=1, page=1)
+        return rows[0] if rows else None
+
     def update_record(self, collection, record_id, patch):
-        assert collection == "orders"
-        current = copy.deepcopy(self.orders[str(record_id)])
+        if collection == "orders":
+            store = self.orders
+        elif collection == "ibkr_signals":
+            store = self.signals
+        else:
+            raise AssertionError(collection)
+        current = copy.deepcopy(store[str(record_id)])
         current.update(copy.deepcopy(patch))
-        self.orders[str(record_id)] = current
+        store[str(record_id)] = current
         self.updated.append((collection, str(record_id), copy.deepcopy(patch)))
         return copy.deepcopy(current)
 
@@ -73,6 +85,17 @@ class _FakePB:
             if order_id and to_text(row.get("order_id")) != order_id:
                 continue
             rows.append(row)
+        return rows
+
+    def _filter_signals(self, filter_value):
+        values = set(self._filter_values(filter_value))
+        environment = self._filter_environment(filter_value)
+        rows = []
+        for row in self.signals.values():
+            if environment and to_text(row.get("environment")) != environment:
+                continue
+            if not values or to_text(row.get("id")) in values or to_text(row.get("signal_id")) in values:
+                rows.append(row)
         return rows
 
     @staticmethod
@@ -181,6 +204,105 @@ class OrderGroupActionsTest(unittest.TestCase):
         self.assertTrue(all(row["extra"]["action"] == "cancel" for row in created_details))
         self.assertTrue(all(row["extra"]["source"] == "orders/cancel_group" for row in created_details))
         self.assertEqual(created_details[0]["extra"]["previous_status"], "Submitted")
+
+    def test_cancel_group_syncs_unfilled_entry_signal_to_cancelled(self):
+        pb = _FakePB(
+            [
+                {
+                    "id": "order-1",
+                    "unique_id": "sig-1_entry",
+                    "symbol": "AAPL",
+                    "environment": "live",
+                    "status": "Submitted",
+                    "role": "entry",
+                    "order_type": "Entry",
+                    "order_id": "101",
+                    "broker_order_id": "101",
+                    "trade_group_id": "sig-1_entry",
+                    "entry_order_unique_id": "sig-1_entry",
+                    "direction": "long",
+                    "quantity": 10,
+                    "filled_qty": 0,
+                    "signal_id": "sig-1",
+                    "extra": {"environment": "live", "role": "entry", "trade_group_id": "sig-1_entry"},
+                }
+            ],
+            signal_rows=[
+                {
+                    "id": "sig-row-1",
+                    "signal_id": "sig-1",
+                    "environment": "live",
+                    "symbol": "AAPL",
+                    "status": "submitted",
+                    "note": "order_submitted",
+                    "extra": {"execution_by_mode": {"live": {"status": "submitted"}}},
+                }
+            ],
+        )
+
+        payload, status_code = build_order_cancel_group_response(
+            pb,
+            payload={"id": "sig-1_entry", "environment": "live"},
+            normalize_environment=lambda value, default: to_text(value or default) or default,
+            escape_filter_string=escape_filter_string,
+            cancel_broker_order=lambda *_args, **_kwargs: {"ok": True},
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["signal_result"]["status"], "cancelled")
+        signal = pb.signals["sig-row-1"]
+        self.assertEqual(signal["status"], "cancelled")
+        self.assertEqual(signal["note"], "manual_order_cancelled")
+        self.assertEqual(signal["extra"]["status_reason"], "order_cancelled_by_user")
+        self.assertEqual(signal["extra"]["cancelled_order_ids"], ["101"])
+        self.assertEqual(signal["extra"]["execution_by_mode"]["live"]["status"], "cancelled")
+
+    def test_cancel_group_repairs_signal_when_entry_order_already_cancelled(self):
+        pb = _FakePB(
+            [
+                {
+                    "id": "order-1",
+                    "unique_id": "sig-1_entry",
+                    "symbol": "AAPL",
+                    "environment": "live",
+                    "status": "Canceled",
+                    "role": "entry",
+                    "order_type": "Entry",
+                    "order_id": "101",
+                    "broker_order_id": "101",
+                    "trade_group_id": "sig-1_entry",
+                    "entry_order_unique_id": "sig-1_entry",
+                    "quantity": 10,
+                    "filled_qty": 0,
+                    "signal_id": "sig-1",
+                    "extra": {"environment": "live", "role": "entry", "trade_group_id": "sig-1_entry"},
+                }
+            ],
+            signal_rows=[
+                {
+                    "id": "sig-row-1",
+                    "signal_id": "sig-1",
+                    "environment": "live",
+                    "symbol": "AAPL",
+                    "status": "submitted",
+                    "extra": {"execution_by_mode": {"live": {"status": "submitted"}}},
+                }
+            ],
+        )
+
+        payload, status_code = build_order_cancel_group_response(
+            pb,
+            payload={"id": "sig-1_entry", "environment": "live"},
+            normalize_environment=lambda value, default: to_text(value or default) or default,
+            escape_filter_string=escape_filter_string,
+            cancel_broker_order=lambda *_args, **_kwargs: {"ok": True},
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["warning"])
+        self.assertEqual(payload["signal_result"]["status"], "cancelled")
+        self.assertEqual(pb.signals["sig-row-1"]["status"], "cancelled")
 
     def test_cancel_group_rejects_child_order_target(self):
         pb = _FakePB(

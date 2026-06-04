@@ -29,6 +29,8 @@ _SIGNAL_STATUS_META = {
     "signal_clock_skew": {"emoji": "⏱️", "text": "信号时钟偏差", "template": "orange"},
     "stale_signal/signal_clock_skew": {"emoji": "⏱️", "text": "信号陈旧/时钟偏差", "template": "orange"},
     "executed": {"emoji": "🚀", "text": "已执行", "template": "blue"},
+    "cancelled": {"emoji": "🚫", "text": "已取消", "template": "grey"},
+    "canceled": {"emoji": "🚫", "text": "已取消", "template": "grey"},
     "rejected": {"emoji": "❌", "text": "已拒绝", "template": "red"},
     "expired": {"emoji": "⏰", "text": "已过期", "template": "grey"},
     "closed": {"emoji": "🧾", "text": "已平仓", "template": "grey"},
@@ -48,6 +50,8 @@ _SIGNAL_CONSUMED_STATUSES = {
     "signal_clock_skew",
     "stale_signal/signal_clock_skew",
     "executed",
+    "cancelled",
+    "canceled",
     "rejected",
     "expired",
     "closed",
@@ -749,6 +753,122 @@ def _record_or_extra_value(record_or_data: Any, *fields: str) -> Any:
     return ""
 
 
+def _text_items(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [to_text(item) for item in value if to_text(item)]
+    text = to_text(value)
+    return [text] if text else []
+
+
+def _cancel_failure_order_ids(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return _text_items(value)
+    order_ids: list[str] = []
+    for item in value:
+        if isinstance(item, dict):
+            text = to_text(
+                first_defined(
+                    item.get("order_id"),
+                    item.get("broker_order_id"),
+                    item.get("ib_order_id"),
+                    item.get("unique_id"),
+                    item.get("id"),
+                )
+            )
+        else:
+            text = to_text(item)
+        if text:
+            order_ids.append(text)
+    return order_ids
+
+
+def _signal_cancel_expiry_lines(record_or_data: Any, *, status: str, status_reason: str) -> list[str]:
+    status_key = to_text(status).lower()
+    lines: list[str] = []
+
+    cancelled_order_ids = _text_items(_record_or_extra_value(record_or_data, "cancelled_order_ids"))
+    cancel_failures = _record_or_extra_value(record_or_data, "cancel_order_failures")
+    cancel_failure_ids = _cancel_failure_order_ids(cancel_failures)
+    has_cancel_context = status_key in {"cancelled", "canceled"} or bool(
+        _record_or_extra_value(
+            record_or_data,
+            "cancel_reason",
+            "cancel_requested_at",
+            "cancelled_at",
+            "cancelled_by",
+            "cancel_requested_by",
+        )
+        or cancelled_order_ids
+        or cancel_failure_ids
+    )
+    if has_cancel_context:
+        cancel_reason = to_text(
+            _record_or_extra_value(record_or_data, "cancel_reason", "cancelled_reason", "cancellation_reason")
+        ) or (status_reason if status_key in {"cancelled", "canceled"} else "")
+        cancelled_at = to_text(_record_or_extra_value(record_or_data, "cancelled_at", "canceled_at"))
+        requested_at = to_text(_record_or_extra_value(record_or_data, "cancel_requested_at"))
+        cancelled_by = to_text(_record_or_extra_value(record_or_data, "cancelled_by", "canceled_by"))
+        requested_by = to_text(_record_or_extra_value(record_or_data, "cancel_requested_by"))
+        if cancel_reason:
+            lines.append(f"**取消原因**: {cancel_reason}")
+        if cancelled_at:
+            lines.append(f"**取消时间**: {cancelled_at}")
+        elif requested_at:
+            lines.append(f"**取消请求时间**: {requested_at}")
+        if cancelled_by:
+            lines.append(f"**取消人**: {cancelled_by}")
+        elif requested_by:
+            lines.append(f"**取消请求人**: {requested_by}")
+        if cancelled_order_ids:
+            lines.append(f"**已撤订单**: {', '.join(cancelled_order_ids)}")
+        if cancel_failure_ids:
+            lines.append(f"**撤单失败**: {len(cancel_failure_ids)}（{', '.join(cancel_failure_ids)}）")
+        elif isinstance(cancel_failures, list) and cancel_failures:
+            lines.append(f"**撤单失败数**: {len(cancel_failures)}")
+
+    has_expiry_context = status_key == "expired" or bool(
+        _record_or_extra_value(
+            record_or_data,
+            "expired_at",
+            "expired_by",
+            "expired_reason",
+            "expiry_reason",
+            "expiry_reference",
+            "signal_validity_minutes",
+            "validity_minutes",
+            "order_expiry_validity_minutes",
+            "order_validity_minutes",
+            "order_expiry_cutoff_ms",
+            "order_expiry_cutoff",
+        )
+    )
+    if has_expiry_context:
+        expired_reason = to_text(_record_or_extra_value(record_or_data, "expired_reason", "expiry_reason")) or (
+            status_reason if status_key == "expired" else ""
+        )
+        expired_at = to_text(_record_or_extra_value(record_or_data, "expired_at", "validation_expired_at"))
+        expired_by = to_text(_record_or_extra_value(record_or_data, "expired_by"))
+        signal_validity_minutes = to_text(_record_or_extra_value(record_or_data, "signal_validity_minutes", "validity_minutes"))
+        order_validity_minutes = to_text(_record_or_extra_value(record_or_data, "order_expiry_validity_minutes", "order_validity_minutes"))
+        order_cutoff = to_text(_record_or_extra_value(record_or_data, "order_expiry_cutoff", "order_expiry_cutoff_ms"))
+        expiry_reference = to_text(_record_or_extra_value(record_or_data, "expiry_reference"))
+        if expired_reason:
+            lines.append(f"**过期原因**: {expired_reason}")
+        if signal_validity_minutes:
+            lines.append(f"**信号有效期**: {signal_validity_minutes} 分钟")
+        if order_validity_minutes:
+            lines.append(f"**订单有效期**: {order_validity_minutes} 分钟")
+        if order_cutoff:
+            lines.append(f"**订单截止**: {order_cutoff}")
+        if expired_at:
+            lines.append(f"**过期时间**: {expired_at}")
+        if expired_by or expiry_reference:
+            parts = [part for part in (expired_by, expiry_reference) if part]
+            lines.append(f"**过期来源**: {' · '.join(parts)}")
+
+    return lines
+
+
 def _record_date(record_or_data: Any) -> str:
     explicit = to_text(_record_or_extra_value(record_or_data, "date", "market_date", "trade_date", "backtest_date"))
     if explicit:
@@ -1017,6 +1137,7 @@ def build_signal_notification_card(record_or_data: Any, *, console_base_url: str
         body_lines.append(f"**原因**: {reason}")
     if status_reason:
         body_lines.append(f"**状态原因**: {status_reason}")
+    body_lines.extend(_signal_cancel_expiry_lines(record_or_data, status=status, status_reason=status_reason))
     body_lines.append(f"**时间**: {to_text(record_value(record_or_data, 'us_time') or '-')}")
 
     elements: list[dict[str, Any]] = [
@@ -1190,10 +1311,7 @@ def build_signal_status_card(record_or_data: Any, *, message: str = "", console_
     status_reason = _status_reason(record_or_data)
     if status_reason:
         body_lines.append(f"**原因**: {status_reason}")
-    if extra.get("cancelled_order_ids"):
-        body_lines.append(f"**已撤订单**: {', '.join(to_text(item) for item in extra.get('cancelled_order_ids') if to_text(item))}")
-    if extra.get("cancel_order_failures"):
-        body_lines.append(f"**撤单失败数**: {len(extra.get('cancel_order_failures') or [])}")
+    body_lines.extend(_signal_cancel_expiry_lines(record_or_data, status=status, status_reason=status_reason))
     body_lines.append(f"**时间**: {to_text(record_value(record_or_data, 'us_time') or '-')}")
 
     elements: list[dict[str, Any]] = [

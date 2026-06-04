@@ -770,11 +770,26 @@ class TradingServiceRuntimeOpsMixin:
             order_extra["final_stop_loss"] = stop_loss
         if take_profit > 0:
             order_extra["final_take_profit"] = take_profit
+        ack_status = str(status or "").strip()
+        ack_note = str(note or "").strip()
+        status_key = ack_status.lower()
+        reason_key = str(order_extra.get("status_reason") or "").strip().lower()
+        entry_cancelled_before_fill = (
+            status_key == "entry_missed_limit_cap"
+            or reason_key == "entry_missed_limit_cap"
+            or bool(order_extra.get("entry_missed_limit_cap"))
+        )
+        if entry_cancelled_before_fill:
+            ack_status = "cancelled"
+            ack_note = "cancelled"
+            order_extra.setdefault("status_reason", "entry_missed_limit_cap")
+            order_extra["entry_missed_limit_cap"] = True
+            order_extra.setdefault("entry_missed_reason", "entry_missed_limit_cap")
         try:
             ack(
                 signal_id=signal_id,
-                status=status,
-                note=note,
+                status=ack_status,
+                note=ack_note,
                 order={
                     "executed_price": executed_price,
                     "actual_fill_price": executed_price,
@@ -1480,6 +1495,8 @@ class TradingServiceRuntimeOpsMixin:
             current_status = str(signal_record.get("status") or "").strip().lower()
             if current_status in {
                 "closed",
+                "cancelled",
+                "canceled",
                 "expired",
                 "rejected",
                 "entry_missed_limit_cap",
@@ -1516,8 +1533,8 @@ class TradingServiceRuntimeOpsMixin:
                 "ibkr_signals",
                 str(signal_record.get("id")),
                 {
-                    "status": "entry_missed_limit_cap",
-                    "note": "entry_missed_limit_cap",
+                    "status": "cancelled",
+                    "note": "cancelled",
                     "extra": extra,
                 },
             )
@@ -1538,8 +1555,8 @@ class TradingServiceRuntimeOpsMixin:
                 )
             self._sync_signal_lifecycle_ack(
                 signal_id=signal_id,
-                status="entry_missed_limit_cap",
-                note="entry_missed_limit_cap",
+                status="cancelled",
+                note="cancelled",
                 environment=broker_environment,
                 extra=extra,
             )
@@ -2073,6 +2090,8 @@ class TradingServiceRuntimeOpsMixin:
         self._warmup_wakeup.set()
         self._compute_queue.put(None)
 
+        if self._account_snapshot_thread:
+            self._account_snapshot_thread.join(timeout=5)
         if self._signal_thread:
             self._signal_thread.join(timeout=10)
         if self._subscription_thread:

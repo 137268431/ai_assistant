@@ -99,7 +99,17 @@ class _HomePB:
         return True
 
 
-def _runtime_account_request(*, positions=None, live_open_orders=None, live_order_groups=None, counts=None, status_code=200, error=""):
+def _runtime_account_request(
+    *,
+    positions=None,
+    live_open_orders=None,
+    live_order_groups=None,
+    counts=None,
+    status_code=200,
+    error="",
+    payload_extra=None,
+    ok=None,
+):
     def fake_request(method, base_url, path, params=None, timeout=0, **kwargs):
         position_rows = list(positions or [])
         live_rows = list(live_open_orders or [])
@@ -111,16 +121,17 @@ def _runtime_account_request(*, positions=None, live_open_orders=None, live_orde
             **(counts or {}),
         }
         return {
-            "ok": status_code < 400,
+            "ok": (status_code < 400) if ok is None else bool(ok),
             "status_code": status_code,
             "payload": {
-                "ok": status_code < 400,
+                "ok": (status_code < 400) if ok is None else bool(ok),
                 "environment": "paper",
                 "account_id": "DU123",
                 "positions": position_rows,
                 "live_open_orders": live_rows,
                 "live_order_groups": list(live_order_groups or []),
                 "counts": resolved_counts,
+                **(payload_extra or {}),
                 **({"error": error} if error else {}),
             },
             "error": error,
@@ -218,6 +229,7 @@ class HomeOverviewApiTest(unittest.TestCase):
                     "executed": 0,
                     "closed": 0,
                     "expired": 0,
+                    "cancelled": 0,
                     "rejected": 1,
                 },
                 "terminal_count": 1,
@@ -416,6 +428,59 @@ class HomeOverviewApiTest(unittest.TestCase):
         self.assertEqual(live_orders["total_groups"], 1)
         self.assertEqual(live_orders["cancelable_groups"], 1)
         self.assertEqual(live_orders["editable_groups"], 1)
+
+    def test_dashboard_marks_stale_runtime_account_snapshot_available(self):
+        payload, status = build_home_dashboard_response(
+            _HomePB({"ibkr_signals": [], "ibkr_reverse_signals": [], "orders": [], "ibkr_execution_fills": []}),
+            payload={"broker_mode": "paper", "market_data_mode": "live", "market_date": "2026-04-23"},
+            time_strings=lambda: {"date": "2026-04-23"},
+            request_json_request=_runtime_account_request(
+                positions=[],
+                live_open_orders=[],
+                payload_extra={
+                    "stale": True,
+                    "cache_state": "stale_after_error",
+                    "cache_age_s": 42.0,
+                    "refresh_error": "account_snapshot_timeout",
+                    "fetched_at": "2026-04-23T13:40:00+00:00",
+                },
+            ),
+            runtime_base_url="http://runtime.local",
+        )
+
+        self.assertEqual(status, 200)
+        positions = payload["summary"]["positions"]
+        live_orders = payload["summary"]["live_orders"]
+        self.assertTrue(positions["available"])
+        self.assertTrue(positions["empty_confirmed"])
+        self.assertTrue(positions["stale"])
+        self.assertEqual("stale_after_error", positions["cache_state"])
+        self.assertEqual("account_snapshot_timeout", positions["degraded_reason"])
+        self.assertTrue(live_orders["available"])
+        self.assertTrue(live_orders["stale"])
+        self.assertEqual(0, live_orders["total_groups"])
+
+    def test_dashboard_reports_runtime_account_timeout_explicitly(self):
+        def timeout_request(method, base_url, path, params=None, timeout=0, **kwargs):
+            return {
+                "ok": False,
+                "status_code": 0,
+                "payload": {},
+                "error": "HTTPConnectionPool(host='runtime'): Read timed out.",
+                "timeout_s": timeout,
+            }
+
+        payload, status = build_home_dashboard_response(
+            _HomePB({"ibkr_signals": [], "ibkr_reverse_signals": [], "orders": [], "ibkr_execution_fills": []}),
+            payload={"broker_mode": "paper", "market_data_mode": "live", "market_date": "2026-04-23"},
+            time_strings=lambda: {"date": "2026-04-23"},
+            request_json_request=timeout_request,
+            runtime_base_url="http://runtime.local",
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual("runtime_account_timeout", payload["summary"]["positions"]["error"])
+        self.assertEqual("runtime_account_timeout", payload["summary"]["live_orders"]["error"])
 
     def test_market_payload_merges_config_watchlist_quotes_and_daily_fallback(self):
         rows = {

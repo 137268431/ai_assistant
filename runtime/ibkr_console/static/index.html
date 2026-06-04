@@ -53,7 +53,7 @@
                             </div>
                             <div class="home-stat-label">今日信号</div>
                             <div class="home-stat-subline home-stat-detail" id="todaySignalsStatusSummary">待确认 - / 待执行 - / 挂单 -</div>
-                            <div class="home-stat-foot" id="todaySignalsFoot">成交保护 - / 已平仓 - / 终止 -</div>
+                            <div class="home-stat-foot" id="todaySignalsFoot">成交保护 - / 已平仓 - / 已取消 - / 终止合计 -</div>
                         </a>
 
                         <a id="reverseSignalsLink" href="/ibkr_execution_actions.html" class="home-stat-card" data-tone="neutral">
@@ -647,7 +647,7 @@
             document.getElementById('todayTargetsSdLower').textContent = formatNumber(sdLowerCount, 0);
             document.getElementById('todayTargetsFoot').textContent = `执行中 / CANDIDATE · 目标ACTIVE ${formatNumber(targetActiveCount, 0)} · ${sdIntervalLabel}`;
             document.getElementById('targetsSummaryLink').href = targetUrl;
-            document.getElementById('targetsSummaryLink').title = `执行中 ${formatNumber(executionActiveCount, 0)}；目标池 ACTIVE ${formatNumber(targetActiveCount, 0)}；Candidate ${formatNumber(targetCandidateCount, 0)}。执行中按今日 open signal 统计，已终止/已平仓不再占用首页主数字。`;
+            document.getElementById('targetsSummaryLink').title = `执行中 ${formatNumber(executionActiveCount, 0)}；目标池 ACTIVE ${formatNumber(targetActiveCount, 0)}；Candidate ${formatNumber(targetCandidateCount, 0)}。执行中按今日 open signal 统计，已取消/已终止/已平仓不再占用首页主数字。`;
             setCardTone('targetsSummaryLink', executionActiveCount > 0 ? 'long' : (targetCandidateCount > 0 || targetActiveCount > 0 ? 'candidate' : 'neutral'));
             renderOverviewMeta(marketDate);
         }
@@ -1045,11 +1045,18 @@
             const liveOrderCancelableGroupCount = liveOrdersAvailable ? Number(liveOrders.cancelable_groups ?? liveOrders.cancelable ?? 0) : 0;
             const liveOrderEditableGroupCount = liveOrdersAvailable ? Number(liveOrders.editable_groups ?? liveOrders.editable ?? 0) : 0;
             const positionTotal = Number(positions.total || 0);
+            const snapshotSuffix = (snapshot = {}) => {
+                if (!snapshot || snapshot.stale !== true) return '';
+                const age = Number(snapshot.cache_age_s || 0);
+                const ageText = Number.isFinite(age) && age > 0 ? ` · ${formatNumber(age, 0)}s 前` : '';
+                return ` · 最近快照${ageText}，可能滞后`;
+            };
             const setText = (id, value) => {
                 const el = document.getElementById(id);
                 if (el) el.textContent = value;
             };
             const count = (source, key) => Number(source?.[key] || 0);
+            const countAny = (source, keys) => keys.reduce((total, key) => total + count(source, key), 0);
 
             document.getElementById('todaySignalsLong').textContent = formatNumber(signals.long || 0, 0);
             document.getElementById('todaySignalsShort').textContent = formatNumber(signals.short || 0, 0);
@@ -1057,11 +1064,12 @@
                 'todaySignalsStatusSummary',
                 `待确认 ${formatNumber(count(signalStatusCounts, 'awaiting_confirm'), 0)} / 待执行 ${formatNumber(count(signalStatusCounts, 'pending'), 0)} / 挂单 ${formatNumber(count(signalStatusCounts, 'submitted'), 0)}`
             );
-            const signalTerminalRaw = signals.terminal_count ?? (count(signalStatusCounts, 'expired') + count(signalStatusCounts, 'rejected'));
+            const signalCancelledCount = countAny(signalStatusCounts, ['cancelled', 'canceled', 'entry_missed_limit_cap', 'entry_missed']);
+            const signalTerminalRaw = signals.terminal_count ?? (count(signalStatusCounts, 'expired') + count(signalStatusCounts, 'rejected') + signalCancelledCount);
             const signalTerminalCount = Number(signalTerminalRaw || 0);
             setText(
                 'todaySignalsFoot',
-                `成交保护 ${formatNumber(count(signalStatusCounts, 'protected_active'), 0)} / 已平仓 ${formatNumber(count(signalStatusCounts, 'closed'), 0)} / 终止 ${formatNumber(signalTerminalCount, 0)}`
+                `成交保护 ${formatNumber(count(signalStatusCounts, 'protected_active'), 0)} / 已平仓 ${formatNumber(count(signalStatusCounts, 'closed'), 0)} / 已取消 ${formatNumber(signalCancelledCount, 0)} / 终止合计 ${formatNumber(signalTerminalCount, 0)}`
             );
             document.getElementById('reverseSignalsPending').textContent = formatNumber(pendingActions, 0);
             const actionSegments = [
@@ -1086,7 +1094,7 @@
             setText(
                 'todayOrdersFoot',
                 liveOrdersAvailable
-                    ? `当前挂单组 ${formatNumber(liveOrderGroupCount, 0)} · 订单腿 Entry ${formatNumber(liveOrders.entry || 0, 0)} / TP ${formatNumber(liveOrders.take_profit || 0, 0)} / SL ${formatNumber(liveOrders.stop_loss || 0, 0)} · 可取消组 ${formatNumber(liveOrderCancelableGroupCount, 0)} · 可改单组 ${formatNumber(liveOrderEditableGroupCount, 0)}`
+                    ? `当前挂单组 ${formatNumber(liveOrderGroupCount, 0)} · 订单腿 Entry ${formatNumber(liveOrders.entry || 0, 0)} / TP ${formatNumber(liveOrders.take_profit || 0, 0)} / SL ${formatNumber(liveOrders.stop_loss || 0, 0)} · 可取消组 ${formatNumber(liveOrderCancelableGroupCount, 0)} · 可改单组 ${formatNumber(liveOrderEditableGroupCount, 0)}${snapshotSuffix(liveOrders)}`
                     : `当前挂单组接口不可用${liveOrders.error ? ` · ${liveOrders.error}` : ''}`
             );
             document.getElementById('ordersLink').title = liveOrdersAvailable
@@ -1103,13 +1111,13 @@
             setText(
                 'positionsLiveOrdersSummary',
                 liveOrdersAvailable
-                    ? `当前挂单组 ${formatNumber(liveOrderGroupCount, 0)} · 订单腿 Entry ${formatNumber(liveOrders.entry || 0, 0)} / TP ${formatNumber(liveOrders.take_profit || 0, 0)} / SL ${formatNumber(liveOrders.stop_loss || 0, 0)}`
+                    ? `当前挂单组 ${formatNumber(liveOrderGroupCount, 0)} · 订单腿 Entry ${formatNumber(liveOrders.entry || 0, 0)} / TP ${formatNumber(liveOrders.take_profit || 0, 0)} / SL ${formatNumber(liveOrders.stop_loss || 0, 0)}${snapshotSuffix(liveOrders)}`
                     : `当前挂单组接口不可用${liveOrders.error ? ` · ${liveOrders.error}` : ''}`
             );
             setText(
                 'positionsFoot',
                 positionsAvailable
-                    ? (positionTotal > 0 ? 'Gateway 真实持仓快照' : 'Gateway 已确认无实际持仓')
+                    ? `${positions.stale === true ? (positionTotal > 0 ? 'Gateway 最近持仓快照' : 'Gateway 最近快照显示无实际持仓') : (positionTotal > 0 ? 'Gateway 真实持仓快照' : 'Gateway 已确认无实际持仓')}${snapshotSuffix(positions)}`
                     : `Gateway 持仓暂不可用${positions.error ? ` · ${positions.error}` : ''}`
             );
             document.getElementById('positionsLink').title = positionsAvailable

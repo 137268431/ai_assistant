@@ -380,6 +380,8 @@ def _base_event(
             event["changed_at_ms"] = change_ts_ms
             event["changed_at_us"] = format_et_datetime(change_ts_ms)
             event["changed_at_cn"] = format_cn_time(change_ts_ms)
+    elif _safe_text(change_summary):
+        event["change_summary"] = _safe_text(change_summary)
     return {key: value for key, value in event.items() if value is not None}
 
 
@@ -399,7 +401,7 @@ def _format_change_value(value: Any) -> str:
 
 
 def _build_change(field: str, label: str, before: Any, after: Any) -> dict[str, Any]:
-    if not _is_present(before) and not _is_present(after):
+    if not _is_present(before) or not _is_present(after):
         return {}
     if _safe_text(before) == _safe_text(after):
         return {}
@@ -514,6 +516,60 @@ def _protective_change_specs() -> list[tuple[str, str, tuple[str, ...], tuple[st
             ("new_tp", "take_profit", "tp_price", "target_price"),
         ),
     ]
+
+
+def _change_values_equal(left: Any, right: Any) -> bool:
+    if _safe_text(left) == _safe_text(right):
+        return True
+    left_number = to_float(left)
+    right_number = to_float(right)
+    if left_number is not None and right_number is not None:
+        return abs(left_number - right_number) < 1e-9
+    return False
+
+
+def _stable_protective_values_from_sources(
+    sources: list[dict[str, Any]],
+    changes: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    changed_fields = {_safe_text(change.get("field")) for change in changes or [] if isinstance(change, dict)}
+    stable_values: list[dict[str, Any]] = []
+    for field, label, before_keys, after_keys in _protective_change_specs():
+        if field in changed_fields:
+            continue
+        before = _first_present_from_sources(sources, before_keys)
+        after = _first_present_from_sources(sources, after_keys)
+        if not _is_present(before):
+            continue
+        if _is_present(after) and not _change_values_equal(before, after):
+            continue
+        value = after if _is_present(after) else before
+        stable_values.append(
+            {
+                "field": field,
+                "label": label,
+                "value": value,
+                "value_text": _format_change_value(value),
+            }
+        )
+    return stable_values
+
+
+def _format_protective_change_summary(
+    sources: list[dict[str, Any]],
+    changes: list[dict[str, Any]],
+) -> str:
+    parts = []
+    if changes:
+        parts.extend(_format_change_summary(changes).split(" / "))
+    for item in _stable_protective_values_from_sources(sources, changes):
+        label = _safe_text(item.get("label") or item.get("field"))
+        value = _safe_text(item.get("value_text"))
+        if label and value:
+            parts.append(f"{label} {value}")
+        if len(parts) >= 3:
+            break
+    return " / ".join(part for part in parts if part)
 
 
 def _event_sort_key(event: dict[str, Any]) -> tuple[int, int, str]:
@@ -1405,6 +1461,12 @@ def _build_live_events(
             protection_open_qty_by_role["take_profit"] += quantity if _is_open_status(status) else 0.0
             event_type = "take_profit_modified" if role == "repair_tp" or extra.get("old_tp") or extra.get("new_tp") else "take_profit_created"
             price_changes = _order_price_changes(row, extra, role, limit_price) if event_type.endswith("modified") else []
+            price_change_sources = [
+                extra,
+                row,
+                {"tp_price": limit_price, "take_profit": limit_price} if limit_price > 0 else {},
+            ]
+            price_change_summary = _format_protective_change_summary(price_change_sources, price_changes) if event_type.endswith("modified") else ""
             event_ts_ms = ts_ms if event_type.endswith("modified") else submission_ts_ms
             event_state = ("active" if _is_open_status(status) else "done") if event_type.endswith("modified") else submission_state
             events.append(
@@ -1427,6 +1489,7 @@ def _build_live_events(
                     source="orders",
                     details={"status": initial_status, "current_status": status, "quantity": quantity, "tp_price": limit_price, **({"old_tp": extra.get("old_tp"), "new_tp": extra.get("new_tp")} if extra else {})},
                     changes=price_changes,
+                    change_summary=price_change_summary,
                 )
             )
         elif role in {"stop_loss", "repair_sl"}:
@@ -1434,6 +1497,12 @@ def _build_live_events(
             protection_open_qty_by_role["stop_loss"] += quantity if _is_open_status(status) else 0.0
             event_type = "stop_loss_modified" if role == "repair_sl" or extra.get("old_sl") or extra.get("new_sl") else "stop_loss_created"
             price_changes = _order_price_changes(row, extra, role, limit_price) if event_type.endswith("modified") else []
+            price_change_sources = [
+                extra,
+                row,
+                {"sl_price": limit_price, "stop_loss": limit_price, "stop_price": limit_price} if limit_price > 0 else {},
+            ]
+            price_change_summary = _format_protective_change_summary(price_change_sources, price_changes) if event_type.endswith("modified") else ""
             event_ts_ms = ts_ms if event_type.endswith("modified") else submission_ts_ms
             event_state = ("active" if _is_open_status(status) else "done") if event_type.endswith("modified") else submission_state
             events.append(
@@ -1456,6 +1525,7 @@ def _build_live_events(
                     source="orders",
                     details={"status": initial_status, "current_status": status, "quantity": quantity, "sl_price": limit_price, **({"old_sl": extra.get("old_sl"), "new_sl": extra.get("new_sl")} if extra else {})},
                     changes=price_changes,
+                    change_summary=price_change_summary,
                 )
             )
         else:
@@ -1848,7 +1918,8 @@ def _build_live_events(
         elif action in {"close", "cancel", "reverse_close"}:
             event_type = "exit_reverse"
             stage = "exit"
-        changes = _price_changes_from_sources([extra, row], _protective_change_specs())
+        change_sources = [extra, row]
+        changes = _price_changes_from_sources(change_sources, _protective_change_specs())
         events.append(
             _base_event(
                 event_type,
@@ -1863,6 +1934,7 @@ def _build_live_events(
                 source="ibkr_reverse_signals",
                 details={"action_type": action, "old_sl": extra.get("old_sl"), "new_sl": extra.get("new_sl"), "old_tp": extra.get("old_tp"), "new_tp": extra.get("new_tp")},
                 changes=changes,
+                change_summary=_format_protective_change_summary(change_sources, changes),
             )
         )
 
@@ -1971,7 +2043,8 @@ def _normalize_backtest_event(row: dict[str, Any], *, run_id: str, symbol_filter
             stage = "interrupt"
     fill_event = any(token in _lower(event_type) for token in ("fill", "opened", "closed", "trade"))
     row_details = _json_object(row.get("details")) if not isinstance(row.get("details"), dict) else dict(row.get("details") or {})
-    changes = _price_changes_from_sources([row, row_details], _protective_change_specs())
+    change_sources = [row, row_details]
+    changes = _price_changes_from_sources(change_sources, _protective_change_specs())
     return _base_event(
         event_type,
         stage=stage,
@@ -1988,6 +2061,7 @@ def _normalize_backtest_event(row: dict[str, Any], *, run_id: str, symbol_filter
         source="ibkr_backtest_runs.metrics.backtest_audit",
         details={"run_id": run_id, "backtest_simulated": fill_event, **row_details},
         changes=changes,
+        change_summary=_format_protective_change_summary(change_sources, changes),
     )
 
 
@@ -2108,7 +2182,8 @@ def _build_backtest_fallback_events(pb: Any, *, run_id: str, symbol: str = "", d
         extra = _json_object(row.get("extra"))
         action = _lower(first_defined(row.get("action_type"), row.get("status")))
         stage = "risk_adjustment" if action.startswith("adjust") else "exit" if action in {"close", "cancel"} else "interrupt"
-        changes = _price_changes_from_sources([extra, row], _protective_change_specs())
+        change_sources = [extra, row]
+        changes = _price_changes_from_sources(change_sources, _protective_change_specs())
         events.append(
             _base_event(
                 "reverse_action",
@@ -2123,6 +2198,7 @@ def _build_backtest_fallback_events(pb: Any, *, run_id: str, symbol: str = "", d
                 source="ibkr_backtest_reverse_signals",
                 details={"run_id": run_id, "action_type": action, **extra},
                 changes=changes,
+                change_summary=_format_protective_change_summary(change_sources, changes),
             )
         )
     return events, warnings

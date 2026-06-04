@@ -88,6 +88,7 @@ class TradingServiceSupportMixin:
 
     def _runtime_background_thread_specs(self) -> list[tuple[str, str, object]]:
         specs: list[tuple[str, str, object]] = [
+            ("_account_snapshot_thread", "account-snapshot-refresh", self._account_snapshot_refresh_loop),
             ("_signal_thread", "signal-loop", self._signal_loop),
             ("_subscription_thread", "target-refresh", self._subscription_refresh_loop),
         ]

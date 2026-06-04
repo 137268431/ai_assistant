@@ -197,7 +197,9 @@
         }
 
         function normalizeActionFilter(value) {
-            const group = normalizeActionGroup(value);
+            const raw = String(value || '').trim();
+            if (!raw) return 'all';
+            const group = normalizeActionGroup(raw);
             return ['all', 'close', 'cancel', 'adjust', 'other'].includes(group) ? group : 'all';
         }
 

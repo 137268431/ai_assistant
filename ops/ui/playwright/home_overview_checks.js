@@ -121,7 +121,7 @@ async function collectHomeOverviewIssues(page, mobile = false) {
     if (signalsStatus && (!signalsStatusText.includes('待确认') || !signalsStatusText.includes('待执行') || !signalsStatusText.includes('挂单'))) {
       issues.push(`signals_status_summary_text:${signalsStatusText || 'empty'}`);
     }
-    if (signalsFoot && (!signalsFootText.includes('成交保护') || !signalsFootText.includes('已平仓') || !signalsFootText.includes('终止'))) {
+    if (signalsFoot && (!signalsFootText.includes('成交保护') || !signalsFootText.includes('已平仓') || !signalsFootText.includes('已取消') || !signalsFootText.includes('终止'))) {
       issues.push(`signals_foot_text:${signalsFootText || 'empty'}`);
     }
     if (ordersStatus && (!ordersStatusText.includes('已成交') || !ordersStatusText.includes('挂单') || !ordersStatusText.includes('已取消'))) {

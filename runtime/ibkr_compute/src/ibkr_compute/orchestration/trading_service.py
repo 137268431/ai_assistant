@@ -60,6 +60,7 @@ from ibkr_compute.order.order_tracker import OrderTracker
 from ibkr_compute.order.order_modifier import OrderModifier
 from ibkr_compute.order.order_lifecycle import OrderLifecycle
 from ibkr_compute.order_flow import OrderFlowManager
+from ibkr_compute.orchestration.account_snapshot_refresh import TradingServiceAccountSnapshotRefreshMixin
 from ibkr_compute.orchestration.auth_recovery import TradingServiceAuthRecoveryMixin
 from ibkr_compute.orchestration.integrity import TradingServiceIntegrityMixin
 from ibkr_compute.orchestration.lifecycle import TradingServiceLifecycleMixin
@@ -206,6 +207,7 @@ def normalize_watchlist_symbol_role(value, default: str = WATCHLIST_SYMBOL_ROLE_
 
 class IBKRTradingService(
     TradingServiceSupportMixin,
+    TradingServiceAccountSnapshotRefreshMixin,
     TradingServiceAuthRecoveryMixin,
     TradingServiceLifecycleMixin,
     TradingServiceStartupMixin,
@@ -345,6 +347,7 @@ class IBKRTradingService(
         self._starting = False
         self._state_lock = threading.Lock()
         self._signal_thread = None
+        self._account_snapshot_thread = None
         self._subscription_thread = None
         self._active_repair_thread = None
         self._watchlist_backfill_thread = None

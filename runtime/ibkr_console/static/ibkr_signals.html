@@ -9,7 +9,7 @@
     <script>document.write(getCommonStyles());</script>
     <script>document.write('<style>' + getIndicatorModalStyles() + '</style>');</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-    <link rel="stylesheet" href="/assets/css/pages/ibkr_signals/page.css?v=20260603-signals-no-stats-link-v1">
+    <link rel="stylesheet" href="/assets/css/pages/ibkr_signals/page.css?v=20260604-signal-price-lifecycle-v1">
 </head>
 <body>
     <div id="contextBar"></div>
@@ -44,6 +44,7 @@
             <button class="status-tab" data-status="executed" onclick="selectStatus('executed', this)">已执行<span class="tab-count" data-status="executed">(<span class="count-value">0</span>)</span></button>
             <button class="status-tab" data-status="closed" onclick="selectStatus('closed', this)">已平仓<span class="tab-count" data-status="closed">(<span class="count-value">0</span>)</span></button>
             <button class="status-tab" data-status="expired" onclick="selectStatus('expired', this)">已过期<span class="tab-count" data-status="expired">(<span class="count-value">0</span>)</span></button>
+            <button class="status-tab" data-status="cancelled" onclick="selectStatus('cancelled', this)">已取消<span class="tab-count" data-status="cancelled">(<span class="count-value">0</span>)</span></button>
             <button class="status-tab" data-status="rejected" onclick="selectStatus('rejected', this)">已拒绝<span class="tab-count" data-status="rejected">(<span class="count-value">0</span>)</span></button>
         </div>
 
@@ -66,6 +67,7 @@
         let allSignals = [];
         let signalTabCountRecords = [];
         let signalIndicatorsMap = {}; // { signalRecordId: tv webhook context }
+        let tvWebhookEventsMap = {};  // { tv_event_id: tv_webhook_events row }
         let reverseSignalsMap = {};   // { symbol: [reverseSignals] }
         let currentDate = getCurrentEtDateString();
         let rangeStartDate = null;
@@ -574,8 +576,83 @@
             return `${text.slice(0, Math.max(0, maxLength - 3))}...`;
         }
 
-        function formatSignalStatusLabel(status = currentStatus) {
+        const SIGNAL_STATUS_FILTERS = [
+            'awaiting_confirm',
+            'pending',
+            'submitted',
+            'protected_active',
+            'protection_incomplete',
+            'executed',
+            'closed',
+            'expired',
+            'cancelled',
+            'rejected',
+        ];
+        const TERMINAL_SIGNAL_STATUS_KEYS = new Set([
+            'closed',
+            'expired',
+            'cancelled',
+            'entry_missed_limit_cap',
+            'rejected',
+            'blocked',
+            'validation_rejected',
+            'submit_failed',
+        ]);
+        const EXPIRY_REASON_STATUS_KEYS = new Set(['signal_expired', 'order_expired', 'confirm_too_late']);
+        const CANCELLATION_REASON_STATUS_KEYS = new Set([
+            'cancelled',
+            'manual_cancelled',
+            'manual_canceled',
+            'user_cancelled',
+            'user_canceled',
+            'order_cancelled',
+            'order_canceled',
+        ]);
+        const SIGNAL_STATUS_BUCKET_MAP = {
+            submitted_waiting_fill: 'submitted',
+            filled_repricing_protection: 'protected_active',
+            filled_position: 'protected_active',
+            protection_reprice_failed: 'protection_incomplete',
+            entry_missed_limit_cap: 'cancelled',
+        };
+
+        function normalizeSignalStatus(status) {
             const key = String(status || '').trim().toLowerCase();
+            if (key === 'canceled') return 'cancelled';
+            return key;
+        }
+
+        function normalizeStatusReasonCode(reason) {
+            return String(reason || '').trim().toLowerCase();
+        }
+
+        function getSignalStatusBucket(status) {
+            const key = normalizeSignalStatus(status);
+            if (CANCELLATION_REASON_STATUS_KEYS.has(key)) return 'cancelled';
+            return SIGNAL_STATUS_BUCKET_MAP[key] || key;
+        }
+
+        function statusMatchesFilter(status, filterStatus = currentStatus) {
+            const filterKey = normalizeSignalStatus(filterStatus);
+            if (!filterKey || filterKey === 'all') return true;
+            return getSignalStatusBucket(status) === getSignalStatusBucket(filterKey);
+        }
+
+        function isCancellationSignalStatus(status) {
+            return getSignalStatusBucket(status) === 'cancelled';
+        }
+
+        function normalizeTerminalSignalStatusCandidate(value) {
+            const key = normalizeSignalStatus(value);
+            if (!key) return '';
+            if (key === 'entry_missed_limit_cap') return key;
+            if (CANCELLATION_REASON_STATUS_KEYS.has(key)) return 'cancelled';
+            if (EXPIRY_REASON_STATUS_KEYS.has(key)) return 'expired';
+            return TERMINAL_SIGNAL_STATUS_KEYS.has(key) ? key : '';
+        }
+
+        function formatSignalStatusLabel(status = currentStatus) {
+            const key = normalizeSignalStatus(status);
             const map = {
                 all: '全部状态',
                 awaiting_confirm: '待确认',
@@ -583,10 +660,19 @@
                 submitted: '已提交/挂单中',
                 protected_active: '持仓保护中',
                 protection_incomplete: '保护异常',
+                submitted_waiting_fill: '已提交/等待成交',
+                filled_repricing_protection: '已成交/保护调价中',
+                filled_position: '持仓保护中',
+                protection_reprice_failed: '保护调价失败',
                 executed: '已执行',
                 closed: '已平仓',
                 expired: '已过期',
+                cancelled: '已取消',
+                entry_missed_limit_cap: '已取消/入场未成交',
                 rejected: '已拒绝',
+                blocked: '已拦截',
+                validation_rejected: '校验拒绝',
+                submit_failed: '提交失败',
             };
             return map[key] || status || '全部状态';
         }
@@ -946,6 +1032,7 @@
             if (latestIndicator) return '已接收';
             const status = getEffectiveSignalStatus(signal);
             if (status === 'expired') return '已过期';
+            if (isCancellationSignalStatus(status)) return formatSignalStatusLabel(status);
             if (['awaiting_confirm', 'pending', 'submitted'].includes(status)) return '等待 TV';
             return '无 TV 上下文';
         }
@@ -987,11 +1074,37 @@
 
         function getEffectiveSignalStatus(signal) {
             const extra = getSignalExtra(signal);
-            const recordStatus = String(signal?.status || '').trim().toLowerCase();
-            const note = String(signal?.note || extra.note || extra.status_reason || '').trim().toLowerCase();
-            if (['closed', 'expired', 'rejected', 'protection_incomplete'].includes(recordStatus)) {
-                return recordStatus;
-            }
+            const modeExecution = getEffectiveSignalExecution(signal);
+            const payload = modeExecution.payload || {};
+            const recordStatus = normalizeSignalStatus(signal?.status);
+            const note = normalizeStatusReasonCode(signal?.note || extra.note || extra.status_reason);
+            const entryMissedStatus = [
+                payload.status_reason,
+                payload.cancel_reason,
+                signal?.status_reason,
+                signal?.cancel_reason,
+                extra.status_reason,
+                extra.cancel_reason,
+                signal?.note,
+                extra.note,
+            ].map(normalizeTerminalSignalStatusCandidate).find((status) => status === 'entry_missed_limit_cap');
+            const recordTerminalStatus = normalizeTerminalSignalStatusCandidate(signal?.status);
+            if (entryMissedStatus && (!recordTerminalStatus || recordTerminalStatus === 'cancelled')) return entryMissedStatus;
+            if (recordTerminalStatus) return recordTerminalStatus;
+            const terminalStatus = [
+                payload.status,
+                payload.status_reason,
+                payload.cancel_reason,
+                extra.status,
+                signal?.status_reason,
+                signal?.cancel_reason,
+                extra.status_reason,
+                extra.cancel_reason,
+                signal?.note,
+                extra.note,
+            ].map(normalizeTerminalSignalStatusCandidate).find(Boolean);
+            if (terminalStatus) return terminalStatus;
+            if (recordStatus === 'protection_incomplete') return recordStatus;
             if (note.startsWith('closed_by_') || note.includes('closed_by_manual_close')) {
                 return 'closed';
             }
@@ -1004,7 +1117,7 @@
                 String(currentBrokerMode || '').toUpperCase(),
             ].filter(Boolean);
             for (const key of envKeys) {
-                const modeStatus = String(byMode[key]?.status || '').trim().toLowerCase();
+                const modeStatus = normalizeSignalStatus(byMode[key]?.status);
                 if (modeStatus) return modeStatus;
             }
             return recordStatus || 'pending';
@@ -1029,7 +1142,7 @@
         }
 
         function humanizeSignalStatusReason(reason) {
-            const code = String(reason || '').trim();
+            const code = normalizeStatusReasonCode(reason);
             const map = {
                 target_direction_mismatch: '方向不匹配：信号方向与当日 active target 方向不一致',
                 target_direction_missing: '缺少目标方向：当日 active target 未提供 long/short direction_bias',
@@ -1038,6 +1151,17 @@
                 outside_trade_window: '当前不在交易窗口内',
                 outside_order_window: '当前不在下单窗口内',
                 signal_expired: '信号已过有效期',
+                order_expired: '订单已超过有效期',
+                confirm_too_late: '确认超时，信号已过有效期',
+                cancelled: '已取消',
+                canceled: '已取消',
+                manual_cancelled: '人工取消',
+                manual_canceled: '人工取消',
+                user_cancelled: '用户取消',
+                user_canceled: '用户取消',
+                order_cancelled: '订单已取消',
+                order_canceled: '订单已取消',
+                entry_missed_limit_cap: '入场限价未成交，已按订单有效期/价格保护取消',
                 sl_circuit_breaker: '止损熔断已触发',
                 position_limit_reached: '持仓数量已达到上限',
                 fixed_position_symbol_blocked: '固定持仓标的禁止自动开仓',
@@ -1062,20 +1186,163 @@
             return map[code] || code.replace(/_/g, ' ');
         }
 
+        function firstNonEmptyValue(...values) {
+            for (const value of values) {
+                if (value === undefined || value === null) continue;
+                if (Array.isArray(value) && value.length === 0) continue;
+                if (typeof value === 'string' && !value.trim()) continue;
+                return value;
+            }
+            return undefined;
+        }
+
+        function getSignalDetailValue(signal, payload, extra, keys) {
+            for (const key of keys) {
+                const value = firstNonEmptyValue(payload?.[key], extra?.[key], signal?.[key]);
+                if (value !== undefined) return value;
+            }
+            return undefined;
+        }
+
+        function parseCompactListValue(value) {
+            if (value === undefined || value === null || value === '') return [];
+            if (Array.isArray(value)) return value.flatMap(parseCompactListValue);
+            if (typeof value === 'string') {
+                const text = value.trim();
+                if (!text) return [];
+                if ((text.startsWith('[') && text.endsWith(']')) || (text.startsWith('{') && text.endsWith('}'))) {
+                    try {
+                        return parseCompactListValue(JSON.parse(text));
+                    } catch (_) {
+                        // Fall through to comma splitting for non-JSON strings.
+                    }
+                }
+                return text.split(',').map((item) => item.trim()).filter(Boolean);
+            }
+            if (typeof value === 'object') {
+                return Object.entries(value).map(([key, detail]) => {
+                    if (detail === undefined || detail === null || detail === '') return key;
+                    if (typeof detail === 'object') {
+                        try {
+                            return `${key}: ${JSON.stringify(detail)}`;
+                        } catch (_) {
+                            return key;
+                        }
+                    }
+                    return `${key}: ${String(detail)}`;
+                }).filter(Boolean);
+            }
+            return [String(value)];
+        }
+
+        function formatCompactListValue(value, limit = 3) {
+            const items = parseCompactListValue(value).map((item) => summarizeHeaderValue(item, 36));
+            if (!items.length) return '';
+            const shown = items.slice(0, limit).join(', ');
+            return items.length > limit ? `${shown} +${items.length - limit}` : shown;
+        }
+
+        function formatValidityMinutes(minutes) {
+            const num = toFiniteNumber(minutes);
+            if (num === null || num <= 0) return '--';
+            return Number.isInteger(num) ? `${num}m` : `${num.toFixed(1)}m`;
+        }
+
+        function formatTerminalTimestamp(ms, fallback = '不可计算') {
+            return ms > 0 ? formatBarTimeMsToET(ms) : fallback;
+        }
+
+        function getSignalDetailTimestampMs(signal, payload, extra, keys) {
+            const values = [];
+            keys.forEach((key) => {
+                values.push(payload?.[key], extra?.[key], signal?.[key]);
+            });
+            return firstTimestampMs(...values);
+        }
+
+        function buildSignalTerminalDetailItems(signal, status, payload, extra) {
+            const signalValidity = firstPositiveNumber(
+                getSignalDetailValue(signal, payload, extra, ['signal_validity_minutes']),
+                signalValidityMinutes
+            );
+            const orderValidity = firstPositiveNumber(
+                getSignalDetailValue(signal, payload, extra, ['order_expiry_validity_minutes', 'order_validity_minutes'])
+            );
+            const closeTimeMs = getSignalCloseTimeMs(signal);
+            const explicitSignalCutoffMs = getSignalDetailTimestampMs(signal, payload, extra, [
+                'signal_expiry_cutoff_ms',
+                'signal_expiry_cutoff',
+                'signal_valid_until_ms',
+                'signal_valid_until',
+            ]);
+            const signalCutoffMs = explicitSignalCutoffMs || (
+                closeTimeMs > 0 && signalValidity
+                    ? closeTimeMs + signalValidity * 60 * 1000
+                    : 0
+            );
+            const orderCutoffMs = getSignalDetailTimestampMs(signal, payload, extra, [
+                'order_expiry_cutoff_ms',
+                'order_expiry_cutoff',
+                'order_valid_until_ms',
+                'order_valid_until',
+            ]);
+            const expiredAtMs = getSignalDetailTimestampMs(signal, payload, extra, ['expired_at_ms', 'expired_at']);
+            const cancelledAtMs = getSignalDetailTimestampMs(signal, payload, extra, [
+                'cancelled_at_ms',
+                'cancelled_at',
+                'canceled_at_ms',
+                'canceled_at',
+            ]);
+            const cancelledOrderIds = getSignalDetailValue(signal, payload, extra, [
+                'cancelled_order_ids',
+                'canceled_order_ids',
+            ]);
+            const cancelFailures = getSignalDetailValue(signal, payload, extra, ['cancel_order_failures']);
+            const details = [
+                `信号有效期=${formatValidityMinutes(signalValidity)} / 截止=${formatTerminalTimestamp(signalCutoffMs)}`,
+                `订单有效期=${formatValidityMinutes(orderValidity)} / 截止=${formatTerminalTimestamp(orderCutoffMs)}`,
+            ];
+            if (status === 'expired') {
+                details.push(`expired_at=${formatTerminalTimestamp(expiredAtMs, '未记录')}`);
+            }
+            if (isCancellationSignalStatus(status)) {
+                details.push(`cancelled_at=${formatTerminalTimestamp(cancelledAtMs, '未记录')}`);
+                const orderIdsText = formatCompactListValue(cancelledOrderIds);
+                details.push(`取消订单=${orderIdsText || '未记录'}`);
+                const failureText = formatCompactListValue(cancelFailures, 2);
+                if (failureText) details.push(`取消失败=${failureText}`);
+            }
+            return details;
+        }
+
         function getSignalExecutionReason(signal) {
             const extra = getSignalExtra(signal);
             const modeExecution = getEffectiveSignalExecution(signal);
             const payload = modeExecution.payload || {};
+            const status = getEffectiveSignalStatus(signal);
+            const isCancelled = isCancellationSignalStatus(status);
+            const statusReasonCode = firstNonEmptyValue(payload.status_reason, extra.status_reason, signal?.status_reason, signal?.note);
+            const cancelReasonCode = firstNonEmptyValue(payload.cancel_reason, extra.cancel_reason, signal?.cancel_reason);
+            const statusReasonHuman = firstNonEmptyValue(payload.status_reason_human, extra.status_reason_human, signal?.status_reason_human);
+            const cancelReasonHuman = firstNonEmptyValue(payload.cancel_reason_human, extra.cancel_reason_human, signal?.cancel_reason_human);
             const code = String(
-                payload.status_reason
+                (status === 'entry_missed_limit_cap' ? firstNonEmptyValue(statusReasonCode, cancelReasonCode, 'entry_missed_limit_cap') : '')
+                || (isCancelled ? cancelReasonCode : '')
+                || payload.status_reason
                 || extra.rejection_reason_code
+                || signal?.rejection_reason_code
                 || extra.status_reason
+                || signal?.status_reason
                 || signal?.note
+                || (status === 'entry_missed_limit_cap' ? 'entry_missed_limit_cap' : '')
                 || ''
             ).trim();
             const human = String(
-                payload.status_reason_human
+                (status === 'entry_missed_limit_cap' ? firstNonEmptyValue(statusReasonHuman, cancelReasonHuman) : '')
+                || (isCancelled ? cancelReasonHuman : '')
+                || statusReasonHuman
                 || extra.rejection_reason_human
+                || signal?.rejection_reason_human
                 || humanizeSignalStatusReason(code)
                 || ''
             ).trim();
@@ -1083,7 +1350,7 @@
                 brokerMode: modeExecution.key || String(currentBrokerMode || '').trim(),
                 code,
                 human,
-                rejectedBy: String(extra.rejected_by || '').trim(),
+                rejectedBy: String(firstNonEmptyValue(payload.rejected_by, extra.rejected_by, payload.cancelled_by, extra.cancelled_by, payload.canceled_by, extra.canceled_by) || '').trim(),
                 targetDirection: String(extra.target_direction_at_validation || '').trim(),
                 signalDirection: String(extra.signal_direction_at_validation || signal?.direction || '').trim(),
             };
@@ -1091,11 +1358,19 @@
 
         function buildSignalRejectionPanel(signal) {
             const status = getEffectiveSignalStatus(signal);
-            const terminalStatuses = new Set(['rejected', 'expired', 'blocked', 'validation_rejected', 'submit_failed']);
-            if (!terminalStatuses.has(status)) return '';
+            const normalizedStatus = normalizeSignalStatus(status);
+            if (!TERMINAL_SIGNAL_STATUS_KEYS.has(normalizedStatus) || normalizedStatus === 'closed') return '';
             const reason = getSignalExecutionReason(signal);
-            const title = status === 'expired' ? '执行终止原因' : '拒绝原因';
-            const summary = reason.human || formatSignalStatusLabel(status);
+            const isCancelled = isCancellationSignalStatus(status);
+            const isExpired = normalizedStatus === 'expired';
+            const title = isCancelled ? '取消原因' : (isExpired ? '执行终止原因' : '拒绝原因');
+            const icon = isCancelled ? '🛑' : (isExpired ? '⏱️' : '🚫');
+            const panelTone = isCancelled ? 'cancelled' : (isExpired ? 'expired' : 'rejected');
+            const summary = reason.human
+                || (isCancelled ? '未提供取消原因' : (isExpired ? '未提供过期原因' : formatSignalStatusLabel(status)));
+            const extra = getSignalExtra(signal);
+            const modeExecution = getEffectiveSignalExecution(signal);
+            const payload = modeExecution.payload || {};
             const detailItems = [
                 reason.code ? `code=${reason.code}` : '',
                 reason.brokerMode ? `broker=${reason.brokerMode}` : '',
@@ -1103,20 +1378,30 @@
                 reason.signalDirection ? `signal=${reason.signalDirection}` : '',
                 reason.targetDirection ? `target=${reason.targetDirection}` : '',
             ].filter(Boolean);
+            const terminalDetailItems = (isCancelled || isExpired)
+                ? buildSignalTerminalDetailItems(signal, normalizedStatus, payload, extra)
+                : [];
             return `
-                <div class="signal-rejection-panel">
+                <div class="signal-rejection-panel ${panelTone}">
                     <div class="signal-rejection-head">
-                        <strong>🚫 ${escapeHtml(title)}</strong>
+                        <strong>${icon} ${escapeHtml(title)}</strong>
                         <span>${escapeHtml(formatSignalStatusLabel(status))}</span>
                     </div>
                     <div class="signal-rejection-summary">${escapeHtml(summary)}</div>
                     ${detailItems.length ? `<div class="signal-rejection-detail">${escapeHtml(detailItems.join(' · '))}</div>` : ''}
+                    ${terminalDetailItems.length ? `
+                    <div class="signal-terminal-detail">
+                        ${terminalDetailItems.map((item) => `<span>${escapeHtml(item)}</span>`).join('')}
+                    </div>
+                    ` : ''}
                 </div>
             `;
         }
 
         function getStatusClassName(status) {
-            return String(status || 'pending').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '_') || 'pending';
+            const key = getSignalStatusBucket(status) || 'pending';
+            if (isCancellationSignalStatus(key)) return 'cancelled';
+            return key.replace(/[^a-z0-9_-]+/g, '_') || 'pending';
         }
 
         function shouldShowSignalNote(note) {
@@ -1128,6 +1413,11 @@
                 'confirm_too_late',
                 'order_expired',
                 'manual_rejected',
+                'cancelled',
+                'canceled',
+                'manual_cancelled',
+                'manual_canceled',
+                'entry_missed_limit_cap',
             ]);
             if (internalNotes.has(normalized)) return false;
             if (/^(paper|live):history_repair_pending$/.test(normalized)) return false;
@@ -1178,10 +1468,10 @@
         function normalizePnlOrderRole(order) {
             const role = getOrderText(order, 'role', 'order_type').toLowerCase();
             const uniqueId = getOrderText(order, 'unique_id', 'cOID', 'coid', 'orderRef', 'order_ref').toLowerCase();
-            if (['tp', 'takeprofit', 'take_profit', 'profit_target', 'target'].includes(role) || uniqueId.startsWith('tp_')) return 'take_profit';
+            if (['tp', 'takeprofit', 'take_profit', 'profit_target', 'target', 'repair_tp'].includes(role) || uniqueId.startsWith('tp_')) return 'take_profit';
             if (['sl', 'stop', 'stoploss', 'stop_loss', 'repair_sl'].includes(role) || uniqueId.startsWith('sl_')) return 'stop_loss';
             if (['entry', 'main', 'parent'].includes(role) || uniqueId.startsWith('entry_')) return 'entry';
-            if (role.includes('close') || uniqueId.startsWith('close_')) return 'close';
+            if (['close', 'manual_close', 'market_close', 'reverse_close'].includes(role) || role.includes('close') || uniqueId.startsWith('close_')) return 'close';
             return role;
         }
 
@@ -1190,7 +1480,10 @@
             const filledQty = firstPositiveNumber(
                 getOrderNumber(order, 'actual_filled_qty', 'filled_qty', 'filledQuantity')
             );
-            return ['filled', 'executed', 'closed'].includes(status) || filledQty !== null;
+            const fillPrice = firstPositiveNumber(
+                getOrderNumber(order, 'fill_price', 'filled_price', 'avgPrice', 'avgFillPrice', 'lastFillPrice')
+            );
+            return ['filled', 'executed'].includes(status) || filledQty !== null || fillPrice !== null;
         }
 
         function orderSortTime(order) {
@@ -1304,12 +1597,22 @@
         function resolveSignalDisplayTakeProfitPrice(signal, relatedOrders = []) {
             const extra = getSignalExtra(signal);
             const tpOrder = latestRelatedOrderByRole(relatedOrders, ['take_profit']);
+            const rebase = parseSignalObject(extra.protection_rebase_result);
+            const reprice = parseSignalObject(extra.protection_reprice_result);
             return firstPositiveNumber(
                 getOrderNumber(tpOrder, 'limit_price', 'tp_price', 'price', 'lmtPrice'),
+                extra.final_take_profit,
+                extra.final_tp,
+                extra.protection_final_take_profit,
+                rebase.final_take_profit,
+                rebase.take_profit,
+                reprice.final_take_profit,
+                reprice.take_profit,
                 extra.take_profit_order_price,
                 extra.order_flow_take_profit,
                 extra.submitted_take_profit,
                 extra.initial_take_profit,
+                extra.original_take_profit,
                 signal?.take_profit,
                 extra.take_profit
             );
@@ -1318,12 +1621,22 @@
         function resolveSignalDisplayStopLossPrice(signal, relatedOrders = []) {
             const extra = getSignalExtra(signal);
             const slOrder = latestRelatedOrderByRole(relatedOrders, ['stop_loss']);
+            const rebase = parseSignalObject(extra.protection_rebase_result);
+            const reprice = parseSignalObject(extra.protection_reprice_result);
             return firstPositiveNumber(
                 getOrderNumber(slOrder, 'sl_price', 'limit_price', 'stop_price', 'auxPrice', 'price'),
+                extra.final_stop_loss,
+                extra.final_sl,
+                extra.protection_final_stop_loss,
+                rebase.final_stop_loss,
+                rebase.stop_loss,
+                reprice.final_stop_loss,
+                reprice.stop_loss,
                 extra.stop_loss_order_price,
                 extra.order_flow_stop_loss,
                 extra.submitted_stop_loss,
                 extra.initial_stop_loss,
+                extra.original_stop_loss,
                 signal?.stop_loss,
                 extra.stop_loss
             );
@@ -1497,6 +1810,415 @@
                 `;
             }
             return '';
+        }
+
+        function parseSignalObject(value) {
+            if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+            if (typeof value !== 'string' || !value.trim()) return {};
+            try {
+                const parsed = JSON.parse(value);
+                return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+            } catch (_) {
+                return {};
+            }
+        }
+
+        function parseSignalList(value) {
+            if (Array.isArray(value)) return value;
+            if (value === undefined || value === null || value === '') return [];
+            if (typeof value === 'string') {
+                const text = value.trim();
+                if (!text) return [];
+                if (text.startsWith('[') || text.startsWith('{')) {
+                    try {
+                        const parsed = JSON.parse(text);
+                        return parseSignalList(parsed);
+                    } catch (_) {
+                        // Continue with compact text splitting below.
+                    }
+                }
+                return text.split(/[,\n;]+/).map((item) => item.trim()).filter(Boolean);
+            }
+            if (typeof value === 'object') {
+                return Object.entries(value).map(([key, detail]) => (
+                    detail && typeof detail === 'object' ? { name: key, ...detail } : { name: key, value: detail }
+                ));
+            }
+            return [value];
+        }
+
+        function resolveSignalPlannedEntryPrice(signal) {
+            const extra = getSignalExtra(signal);
+            const snapshot = parseSignalObject(extra.tv_snapshot);
+            const reference = parseSignalObject(extra.tv_reference);
+            const referencePrices = parseSignalObject(extra.tv_reference_prices);
+            const referencePlan = parseSignalObject(extra.tv_reference_plan);
+            return firstPositiveNumber(
+                extra.tv_reference_entry,
+                extra.tv_reference_entry_price,
+                extra.reference_entry,
+                extra.reference_entry_price,
+                extra.tv_entry,
+                extra.planned_entry,
+                extra.original_entry,
+                extra.initial_entry,
+                extra.entry_price,
+                reference.entry,
+                reference.entry_price,
+                reference.limit_price,
+                referencePrices.entry,
+                referencePlan.entry,
+                snapshot.entry,
+                snapshot.entry_price,
+                signal?.limit_price,
+                signal?.entry,
+                extra.entry
+            );
+        }
+
+        function resolveSignalPlannedTakeProfitPrice(signal) {
+            const extra = getSignalExtra(signal);
+            const snapshot = parseSignalObject(extra.tv_snapshot);
+            const reference = parseSignalObject(extra.tv_reference);
+            const referencePrices = parseSignalObject(extra.tv_reference_prices);
+            const referencePlan = parseSignalObject(extra.tv_reference_plan);
+            return firstPositiveNumber(
+                extra.tv_reference_take_profit,
+                extra.tv_reference_tp,
+                extra.reference_take_profit,
+                extra.reference_tp,
+                extra.tv_take_profit,
+                extra.original_take_profit,
+                extra.initial_take_profit,
+                reference.take_profit,
+                reference.tp,
+                referencePrices.take_profit,
+                referencePrices.tp,
+                referencePlan.take_profit,
+                referencePlan.tp,
+                snapshot.take_profit,
+                snapshot.tp,
+                signal?.take_profit,
+                extra.take_profit
+            );
+        }
+
+        function resolveSignalPlannedStopLossPrice(signal) {
+            const extra = getSignalExtra(signal);
+            const snapshot = parseSignalObject(extra.tv_snapshot);
+            const reference = parseSignalObject(extra.tv_reference);
+            const referencePrices = parseSignalObject(extra.tv_reference_prices);
+            const referencePlan = parseSignalObject(extra.tv_reference_plan);
+            return firstPositiveNumber(
+                extra.tv_reference_stop_loss,
+                extra.tv_reference_sl,
+                extra.reference_stop_loss,
+                extra.reference_sl,
+                extra.tv_stop_loss,
+                extra.original_stop_loss,
+                extra.initial_stop_loss,
+                reference.stop_loss,
+                reference.sl,
+                referencePrices.stop_loss,
+                referencePrices.sl,
+                referencePlan.stop_loss,
+                referencePlan.sl,
+                snapshot.stop_loss,
+                snapshot.sl,
+                signal?.stop_loss,
+                extra.stop_loss
+            );
+        }
+
+        function resolveSignalTvClosePrice(signal) {
+            const extra = getSignalExtra(signal);
+            const snapshot = parseSignalObject(extra.tv_snapshot);
+            return firstPositiveNumber(
+                extra.tv_close,
+                extra.close,
+                extra.bar_close,
+                extra.signal_close,
+                snapshot.close,
+                snapshot.tv_close,
+                snapshot.bar_close
+            );
+        }
+
+        function resolveSignalSubmittedLimitCapPrice(signal, relatedOrders = []) {
+            const extra = getSignalExtra(signal);
+            const rebase = parseSignalObject(extra.protection_rebase_result);
+            return firstPositiveNumber(
+                extra.submitted_limit_cap_price,
+                extra.entry_limit_cap_price,
+                extra.limit_cap_price,
+                extra.bounded_limit_price,
+                rebase.submitted_entry,
+                extra.submitted_entry_limit_price,
+                extra.entry_limit_price,
+                signal?.limit_price
+            );
+        }
+
+        function buildActualEntryFillModel(signal, relatedOrders = []) {
+            const extra = getSignalExtra(signal);
+            const entryOrder = findEntryOrderForPnl(relatedOrders) || latestRelatedOrderByRole(relatedOrders, ['entry']);
+            const price = firstPositiveNumber(
+                getOrderNumber(entryOrder, 'fill_price', 'filled_price', 'avgPrice', 'avgFillPrice', 'avg_fill_price', 'lastFillPrice'),
+                signal?.executed_price,
+                extra.actual_fill_price,
+                extra.entry_fill_price,
+                extra.executed_price,
+                parseSignalObject(extra.protection_rebase_result).actual_fill_price
+            );
+            const quantity = firstPositiveNumber(
+                getOrderNumber(entryOrder, 'actual_filled_qty', 'filled_qty', 'filledQuantity', 'quantity'),
+                extra.exit_fill_quantity,
+                extra.filled_qty,
+                signal?.shares,
+                extra.shares,
+                extra.quantity
+            );
+            const status = getOrderText(entryOrder, 'status', 'order_status');
+            const orderId = getOrderText(entryOrder, 'broker_order_id', 'order_id', 'unique_id');
+            return {
+                price,
+                quantity,
+                status,
+                orderId,
+                hasOrder: Boolean(entryOrder),
+                filled: price !== null || isFilledOrderStatus(entryOrder) || ['protected_active', 'filled_position', 'closed'].includes(getSignalStatusBucket(getEffectiveSignalStatus(signal))),
+                source: price !== null ? '成交回填' : (entryOrder ? '等待成交' : '未提交'),
+            };
+        }
+
+        function formatEntryFillHtml(model) {
+            if (model?.price) {
+                const detail = [
+                    model.status || 'Filled',
+                    model.quantity ? `${formatNumber(model.quantity, 0)}股` : '',
+                ].filter(Boolean).join(' · ');
+                return `${escapeHtml(formatPrice(model.price))}${detail ? `<span class="price-source-hint">${escapeHtml(detail)}</span>` : ''}`;
+            }
+            const text = model?.hasOrder ? '等待成交' : '未提交';
+            const detail = model?.status || model?.source || '';
+            return `${escapeHtml(text)}${detail ? `<span class="price-source-hint">${escapeHtml(detail)}</span>` : ''}`;
+        }
+
+        function computeTargetPnl(direction, entryPrice, exitPrice, quantity) {
+            return computeDirectionalPnl(direction, entryPrice, exitPrice, quantity);
+        }
+
+        function normalizeLossMoney(value) {
+            const num = toFiniteNumber(value);
+            if (num === null) return null;
+            return num > 0 ? -num : num;
+        }
+
+        function buildTvExpectedPnlModel(signal) {
+            const extra = getSignalExtra(signal);
+            const entry = resolveSignalPlannedEntryPrice(signal);
+            const takeProfit = resolveSignalPlannedTakeProfitPrice(signal);
+            const stopLoss = resolveSignalPlannedStopLossPrice(signal);
+            const quantity = firstPositiveNumber(signal?.shares, extra.shares, extra.quantity);
+            const grossProfit = computeTargetPnl(signal?.direction || extra.direction, entry, takeProfit, quantity);
+            const grossLoss = computeTargetPnl(signal?.direction || extra.direction, entry, stopLoss, quantity);
+            const explicitProfit = firstFiniteNumber(
+                extra.expected_net_profit,
+                extra.profit_space_expected_net_profit,
+                extra.expected_profit,
+                extra.target_profit,
+                extra.max_profit
+            );
+            const explicitLoss = normalizeLossMoney(firstFiniteNumber(
+                extra.expected_net_loss,
+                extra.expected_loss,
+                extra.max_loss,
+                extra.risk_amount,
+                extra.loss_amount,
+                extra.planned_loss
+            ));
+            const profit = explicitProfit !== null ? explicitProfit : grossProfit;
+            const loss = explicitLoss !== null ? explicitLoss : grossLoss;
+            if (profit === null && loss === null) return null;
+            return {
+                label: 'TV预计',
+                profit,
+                loss,
+                source: explicitProfit !== null ? 'TV净收益字段' : '按TV价估算',
+                detail: [
+                    entry ? `Entry ${formatPrice(entry)}` : '',
+                    takeProfit ? `TP ${formatPrice(takeProfit)}` : '',
+                    stopLoss ? `SL ${formatPrice(stopLoss)}` : '',
+                    quantity ? `${formatNumber(quantity, 0)}股` : '',
+                    firstFiniteNumber(extra.expected_net_roi_pct, extra.net_roi_pct, extra.profit_space_net_roi_pct) !== null
+                        ? `ROI ${formatNumber(firstFiniteNumber(extra.expected_net_roi_pct, extra.net_roi_pct, extra.profit_space_net_roi_pct), 2)}%`
+                        : '',
+                ].filter(Boolean).join(' · '),
+            };
+        }
+
+        function buildOrderExpectedPnlModel(signal, relatedOrders = []) {
+            const actualEntry = buildActualEntryFillModel(signal, relatedOrders);
+            const entryOrder = findEntryOrderForPnl(relatedOrders) || latestRelatedOrderByRole(relatedOrders, ['entry']);
+            if (!actualEntry.hasOrder && !actualEntry.price) return null;
+            const entry = firstPositiveNumber(
+                actualEntry.price,
+                getOrderNumber(entryOrder, 'limit_price', 'price', 'lmtPrice'),
+                resolveSignalSubmittedLimitCapPrice(signal, relatedOrders)
+            );
+            const takeProfit = resolveSignalDisplayTakeProfitPrice(signal, relatedOrders);
+            const stopLoss = resolveSignalDisplayStopLossPrice(signal, relatedOrders);
+            const quantity = firstPositiveNumber(
+                actualEntry.quantity,
+                getOrderNumber(entryOrder, 'quantity', 'filled_qty', 'filledQuantity'),
+                signal?.shares
+            );
+            const profit = computeTargetPnl(signal?.direction, entry, takeProfit, quantity);
+            const loss = computeTargetPnl(signal?.direction, entry, stopLoss, quantity);
+            if (profit === null && loss === null) return null;
+            return {
+                label: actualEntry.price ? '订单预计' : '挂单预计',
+                profit,
+                loss,
+                source: actualEntry.price ? '按成交开仓价' : '按订单限价',
+                detail: [
+                    entry ? `Entry ${formatPrice(entry)}` : '',
+                    takeProfit ? `TP ${formatPrice(takeProfit)}` : '',
+                    stopLoss ? `SL ${formatPrice(stopLoss)}` : '',
+                    quantity ? `${formatNumber(quantity, 0)}股` : '',
+                ].filter(Boolean).join(' · '),
+            };
+        }
+
+        function pnlDisplayValue(value, fallback = '数据缺失') {
+            const num = toFiniteNumber(value);
+            return num === null ? fallback : formatSignedMoney(num);
+        }
+
+        function buildExpectedPnlCardHtml(model) {
+            if (!model) {
+                return `
+                    <div class="expected-pnl-card muted">
+                        <div class="signal-label">预计盈亏</div>
+                        <div class="expected-pnl-empty">数据缺失</div>
+                    </div>
+                `;
+            }
+            return `
+                <div class="expected-pnl-card">
+                    <div class="expected-pnl-card-head">
+                        <span>${escapeHtml(model.label)}</span>
+                        <em>${escapeHtml(model.source || '')}</em>
+                    </div>
+                    <div class="expected-pnl-values">
+                        <span class="positive">盈利 ${escapeHtml(pnlDisplayValue(model.profit))}</span>
+                        <span class="negative">亏损 ${escapeHtml(pnlDisplayValue(model.loss))}</span>
+                    </div>
+                    ${model.detail ? `<div class="signal-pnl-detail">${escapeHtml(model.detail)}</div>` : ''}
+                </div>
+            `;
+        }
+
+        function buildSignalExpectedPnlPanelHtml(tvModel, orderModel) {
+            if (!tvModel && !orderModel) return '';
+            return `
+                <div class="signal-expected-pnl-panel">
+                    ${buildExpectedPnlCardHtml(tvModel)}
+                    ${orderModel ? buildExpectedPnlCardHtml(orderModel) : `
+                    <div class="expected-pnl-card muted">
+                        <div class="expected-pnl-card-head"><span>订单预计</span><em>等待订单</em></div>
+                        <div class="expected-pnl-empty">订单提交/成交后重算</div>
+                    </div>
+                    `}
+                </div>
+            `;
+        }
+
+        function normalizeOrderStatusText(order) {
+            return getOrderText(order, 'status', 'order_status').trim();
+        }
+
+        function isWorkingOrder(order) {
+            const status = normalizeOrderStatusText(order).toLowerCase();
+            return PROTECTION_WORKING_STATUSES.has(status);
+        }
+
+        function orderStatusLabel(order, fallback = '等待') {
+            const status = normalizeOrderStatusText(order);
+            return status || fallback;
+        }
+
+        function compactOrderLabel(order) {
+            const id = getOrderText(order, 'broker_order_id', 'order_id', 'unique_id');
+            return id ? `#${summarizeHeaderValue(id, 18)}` : '';
+        }
+
+        function buildLifecycleStep(label, state, detail) {
+            return `
+                <div class="signal-lifecycle-step ${escapeHtml(state || 'pending')}">
+                    <span class="lifecycle-dot"></span>
+                    <div>
+                        <strong>${escapeHtml(label)}</strong>
+                        <em>${escapeHtml(detail || '')}</em>
+                    </div>
+                </div>
+            `;
+        }
+
+        function buildSignalLifecycleStripHtml(signal, relatedOrders = [], closedPnl = null) {
+            const status = getEffectiveSignalStatus(signal);
+            const bucket = getSignalStatusBucket(status);
+            const extra = getSignalExtra(signal);
+            const entryOrder = latestRelatedOrderByRole(relatedOrders, ['entry']);
+            const tpOrder = latestRelatedOrderByRole(relatedOrders, ['take_profit']);
+            const slOrder = latestRelatedOrderByRole(relatedOrders, ['stop_loss']);
+            const exitOrder = findExitOrderForPnl(relatedOrders);
+            const actualEntry = buildActualEntryFillModel(signal, relatedOrders);
+            const hasOrder = Boolean(entryOrder || relatedOrders.length);
+            const entryFilled = actualEntry.filled || ['protected_active', 'closed'].includes(bucket);
+            const protectionComplete = Boolean(extra.protection_complete)
+                || (entryFilled && ['protected_active', 'closed'].includes(bucket))
+                || (entryFilled && ((tpOrder && isWorkingOrder(tpOrder)) || isFilledOrderStatus(tpOrder)) && ((slOrder && isWorkingOrder(slOrder)) || isFilledOrderStatus(slOrder)));
+            const protectionIncomplete = bucket === 'protection_incomplete' || Boolean(extra.protection_incomplete);
+            const isClosed = bucket === 'closed' || Boolean(exitOrder);
+            const isCancelled = isCancellationSignalStatus(status) || status === 'entry_missed_limit_cap';
+            const isTerminalBeforeFill = (isCancelled || bucket === 'expired' || bucket === 'rejected') && !entryFilled;
+            const missingRoles = safeList(extra.missing_protection_roles).join(', ');
+            const signalTime = formatEventTime(getSignalCloseTimeMs(signal) || getRecordBarOpenMs(signal));
+            const confirmDone = !['awaiting_confirm'].includes(bucket) && !['expired', 'rejected'].includes(bucket) && !isCancelled;
+            const steps = [
+                buildLifecycleStep('TV信号', 'done', signalTime),
+                buildLifecycleStep(
+                    '确认',
+                    bucket === 'awaiting_confirm' ? 'active' : (confirmDone ? 'done' : 'alert'),
+                    bucket === 'awaiting_confirm' ? '等待人工确认' : formatSignalStatusLabel(status)
+                ),
+                buildLifecycleStep(
+                    '订单提交',
+                    hasOrder ? 'done' : (['pending', 'submitted'].includes(bucket) ? 'active' : (isTerminalBeforeFill ? 'skipped' : 'pending')),
+                    hasOrder ? `${orderStatusLabel(entryOrder, '已创建')} ${compactOrderLabel(entryOrder)}` : '等待订单'
+                ),
+                buildLifecycleStep(
+                    'Entry成交',
+                    entryFilled ? 'done' : (isTerminalBeforeFill ? 'skipped' : (hasOrder ? 'active' : 'pending')),
+                    entryFilled && actualEntry.price ? `${formatPrice(actualEntry.price)} ${actualEntry.quantity ? `/ ${formatNumber(actualEntry.quantity, 0)}股` : ''}` : (isCancelled ? formatSignalStatusLabel(status) : '等待成交')
+                ),
+                buildLifecycleStep(
+                    'TP/SL保护',
+                    isTerminalBeforeFill ? 'skipped' : (protectionIncomplete ? 'alert' : (protectionComplete ? 'done' : (entryFilled ? 'active' : 'pending'))),
+                    protectionIncomplete
+                        ? `保护缺失/未确认${missingRoles ? `: ${missingRoles}` : ''}`
+                        : (isTerminalBeforeFill ? '未进入保护' : (protectionComplete ? `TP ${orderStatusLabel(tpOrder, 'ok')} · SL ${orderStatusLabel(slOrder, 'ok')}` : '等待保护确认'))
+                ),
+                buildLifecycleStep(
+                    '退出/实际盈亏',
+                    isClosed ? 'done' : (isTerminalBeforeFill ? 'skipped' : 'pending'),
+                    isClosed
+                        ? `${exitOrder ? roleLabelForPnl(normalizePnlOrderRole(exitOrder)) : '已平仓'} ${closedPnl ? pnlDisplayValue(closedPnl.value) : ''}`.trim()
+                        : (isTerminalBeforeFill ? '未开仓/无退出' : '持仓后等待退出')
+                ),
+            ];
+            return `<div class="signal-lifecycle-strip">${steps.join('')}</div>`;
         }
 
         function averageLatency(signals, getter) {
@@ -1877,6 +2599,7 @@
                     allSignals = Array.isArray(result?.items) ? result.items : [];
                 }
                 signalIndicatorsMap = {};
+                tvWebhookEventsMap = {};
                 reverseSignalsMap = {};
                 ordersMap = {};
                 await loadSignalRealtimeQuotes(allSignals.map((signal) => signal.symbol), { force }).catch((error) => {
@@ -1906,8 +2629,11 @@
                         console.error('加载延迟摘要失败:', error);
                     });
 
-                // TV webhook 上下文从信号 extra 后台补齐，不阻塞首屏。
-                loadSignalIndicatorsForSignals(allSignals, { replace: true, requestId })
+                // TV webhook 上下文从信号 extra / tv_webhook_events 后台补齐，不阻塞首屏。
+                Promise.all([
+                    loadSignalIndicatorsForSignals(allSignals, { replace: true, requestId }),
+                    loadTvWebhookEventsForSignals(allSignals, { replace: true, force, requestId }),
+                ])
                     .then(() => {
                         if (requestId !== currentSignalsRequestId) return;
                         renderSignals();
@@ -1988,6 +2714,57 @@
             signalIndicatorsMap = nextMap;
         }
 
+        function getTvEventIdForSignal(signal) {
+            const extra = getSignalExtra(signal);
+            const snapshot = parseSignalObject(extra.tv_snapshot);
+            return String(
+                extra.tv_event_id
+                || extra.event_id
+                || signal?.tv_event_id
+                || snapshot.tv_event_id
+                || snapshot.event_id
+                || ''
+            ).trim();
+        }
+
+        function getTvWebhookEventForSignal(signal, extra = getSignalExtra(signal)) {
+            const eventId = getTvEventIdForSignal(signal);
+            if (!eventId) return null;
+            return tvWebhookEventsMap[eventId] || null;
+        }
+
+        async function loadTvWebhookEventsForSignals(signals, { replace = false, force = false, requestId = 0 } = {}) {
+            const records = Array.isArray(signals) ? signals : [];
+            if (replace) {
+                tvWebhookEventsMap = {};
+            }
+            const eventIds = [...new Set(records.map(getTvEventIdForSignal).filter(Boolean))];
+            if (!eventIds.length) return;
+            if (requestId && requestId !== currentSignalsRequestId) return;
+
+            const nextMap = replace ? {} : { ...tvWebhookEventsMap };
+            for (const idChunk of chunkArray(eventIds, 10)) {
+                if (requestId && requestId !== currentSignalsRequestId) return;
+                const idFilter = idChunk
+                    .map((id) => `(event_id = "${escapeFilterValue(id)}" || id = "${escapeFilterValue(id)}")`)
+                    .join(' || ');
+                const rows = await fetchCollectionFullList('tv_webhook_events', {
+                    filter: `environment = "${currentEnvironment}" && (${idFilter})`,
+                    sort: '-created',
+                    fields: 'id,event_id,status,error_msg,route_target,route_record_id,extra,payload',
+                    maxPages: 2,
+                    force,
+                });
+                rows.forEach((row) => {
+                    const keys = [row?.event_id, row?.id].map((value) => String(value || '').trim()).filter(Boolean);
+                    keys.forEach((key) => {
+                        nextMap[key] = row;
+                    });
+                });
+            }
+            tvWebhookEventsMap = nextMap;
+        }
+
         // 加载执行动作映射（按 symbol 分组）
         async function loadReverseSignalsMap() {
             reverseSignalsMap = {};
@@ -2009,8 +2786,6 @@
             const earliestTime = Object.values(latestSignalTimeBySymbol).reduce((min, time) => {
                 return new Date(time) < new Date(min) ? time : min;
             }, '');
-
-            const { startTimeMs, endTimeMs } = getSignalTimeRange();
 
             try {
                 const latestBySymbol = {};
@@ -2073,7 +2848,7 @@
                 for (const idChunk of chunkArray(signalIds, 8)) {
                     const idFilter = idChunk.map(id => `signal_id = "${escapeFilterValue(id)}"`).join(' || ');
                     const rows = await fetchCollectionFullList('orders', {
-                        filter: `environment = "${currentBrokerMode}" && (${idFilter}) && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                        filter: `environment = "${currentBrokerMode}" && (${idFilter})`,
                         sort: '-bar_time_ms,-created',
                         maxPages: 6,
                         force
@@ -2084,7 +2859,7 @@
                 for (const groupChunk of chunkArray(tradeGroupIds, 8)) {
                     const groupFilter = groupChunk.map(id => `trade_group_id = "${escapeFilterValue(id)}"`).join(' || ');
                     const rows = await fetchCollectionFullList('orders', {
-                        filter: `environment = "${currentBrokerMode}" && (${groupFilter}) && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                        filter: `environment = "${currentBrokerMode}" && (${groupFilter})`,
                         sort: '-bar_time_ms,-created',
                         maxPages: 6,
                         force
@@ -2122,7 +2897,7 @@
 
         // 更新状态标签的数量显示（通过API查询真实count）
         async function updateStatusTabCounts() {
-            const statuses = ['awaiting_confirm', 'pending', 'submitted', 'protected_active', 'protection_incomplete', 'executed', 'closed', 'expired', 'rejected'];
+            const statuses = SIGNAL_STATUS_FILTERS;
             const counts = {};
 
             try {
@@ -2136,16 +2911,20 @@
                         return;
                     }
                     counts['all']++;
-                    const status = getEffectiveSignalStatus(signal);
+                    const status = getSignalStatusBucket(getEffectiveSignalStatus(signal));
                     if (counts[status] !== undefined) counts[status]++;
                 });
             } catch (e) {
                 console.error('updateStatusTabCounts failed:', e);
                 // 降级：显示当前已加载的
-                counts['all'] = allSignals.length;
+                counts['all'] = 0;
                 statuses.forEach(s => counts[s] = 0);
                 allSignals.forEach(signal => {
-                    const st = getEffectiveSignalStatus(signal);
+                    if (currentDirection !== 'all' && signal.direction !== currentDirection) {
+                        return;
+                    }
+                    counts['all']++;
+                    const st = getSignalStatusBucket(getEffectiveSignalStatus(signal));
                     if (counts[st] !== undefined) counts[st]++;
                 });
             }
@@ -2176,7 +2955,7 @@
                     counts[dir] = 0;
                 });
                 records.forEach(signal => {
-                    if (currentStatus !== 'all' && getEffectiveSignalStatus(signal) !== currentStatus) {
+                    if (currentStatus !== 'all' && !statusMatchesFilter(getEffectiveSignalStatus(signal), currentStatus)) {
                         return;
                     }
                     counts['all']++;
@@ -2186,9 +2965,13 @@
             } catch (e) {
                 console.error('updateDirectionTabCounts failed:', e);
                 // 降级：显示当前已加载的
-                counts['all'] = allSignals.length;
+                counts['all'] = 0;
                 directions.forEach(d => counts[d] = 0);
                 allSignals.forEach(signal => {
+                    if (currentStatus !== 'all' && !statusMatchesFilter(getEffectiveSignalStatus(signal), currentStatus)) {
+                        return;
+                    }
+                    counts['all']++;
                     const dir = signal.direction || 'long';
                     if (counts[dir] !== undefined) counts[dir]++;
                 });
@@ -2206,7 +2989,7 @@
         function getFilteredSignals() {
             let filtered = allSignals;
             if (currentStatus !== 'all') {
-                filtered = filtered.filter(s => getEffectiveSignalStatus(s) === currentStatus);
+                filtered = filtered.filter(s => statusMatchesFilter(getEffectiveSignalStatus(s), currentStatus));
             }
             if (currentDirection !== 'all') {
                 filtered = filtered.filter(s => s.direction === currentDirection);
@@ -2370,7 +3153,10 @@
                 renderLatencySummary();
                 renderSignals();
                 updateLoadMoreButton();
-                loadSignalIndicatorsForSignals(newSignals, { replace: false, requestId })
+                Promise.all([
+                    loadSignalIndicatorsForSignals(newSignals, { replace: false, requestId }),
+                    loadTvWebhookEventsForSignals(newSignals, { replace: false, requestId }),
+                ])
                     .then(() => {
                         if (requestId !== currentSignalsRequestId) return;
                         renderSignals();
@@ -2723,7 +3509,7 @@
         }
 
         function buildProtectionIncompletePanel(signal) {
-            if (getEffectiveSignalStatus(signal) !== 'protection_incomplete') return '';
+            if (getSignalStatusBucket(getEffectiveSignalStatus(signal)) !== 'protection_incomplete') return '';
             const extra = getSignalExtra(signal);
             const diagnostic = safeObject(extra.protection_incomplete_diagnostic);
             const pbStatuses = normalizeProtectionStatusMap(extra.protection_order_statuses || diagnostic.protection_order_statuses);
@@ -2796,6 +3582,200 @@
             `;
         }
 
+        function firstNonEmptyText(...values) {
+            for (const value of values) {
+                if (value === undefined || value === null) continue;
+                const text = String(value).trim();
+                if (text) return text;
+            }
+            return '';
+        }
+
+        function collectTvPayloadErrors(signal, extra, mtf) {
+            const tvEvent = getTvWebhookEventForSignal(signal, extra) || {};
+            const brokerLastError = parseSignalObject(extra.broker_last_error);
+            const statusReason = firstNonEmptyText(
+                extra.status_reason,
+                signal?.status_reason,
+                signal?.note
+            );
+            const profitReason = firstNonEmptyText(extra.profit_space_filter_reason);
+            const mtfBlock = firstNonEmptyText(extra.mtf_block_reason, mtf?.block_reason);
+            const candidates = [
+                ['tv_event', tvEvent.error_msg],
+                ['tv_event_status', String(tvEvent.status || '').toLowerCase() && !['routed', 'ok', 'success'].includes(String(tvEvent.status || '').toLowerCase()) ? tvEvent.status : ''],
+                ['error_msg', signal?.error_msg || extra.error_msg],
+                ['error', extra.error || signal?.error],
+                ['tv_error', extra.tv_error || extra.webhook_error || extra.route_error],
+                ['validation', extra.validation_error || extra.rejection_reason_human || extra.rejection_reason_code],
+                ['submit', extra.submit_failed_error || extra.submit_failed_entry_error],
+                ['broker', brokerLastError.message || brokerLastError.error],
+                ['quote', extra.quote_acquire_error || extra.entry_guard_error],
+                ['mtf', mtfBlock && mtfBlock !== 'none' ? mtfBlock : ''],
+                ['profit_gate', profitReason && !['pass', 'disabled'].includes(profitReason) ? profitReason : ''],
+                ['status', statusReason && !['order_submitted_by_ibkr_compute', 'submitted_waiting_fill'].includes(statusReason) ? statusReason : ''],
+            ];
+            const seen = new Set();
+            return candidates
+                .map(([label, value]) => [label, String(value || '').trim()])
+                .filter(([, value]) => value)
+                .filter(([label, value]) => {
+                    const key = `${label}:${value}`;
+                    if (seen.has(key)) return false;
+                    seen.add(key);
+                    return true;
+                })
+                .map(([label, value]) => ({ label, value }));
+        }
+
+        function booleanFromConditionValue(value) {
+            if (value === true || value === false) return value;
+            const text = String(value ?? '').trim().toLowerCase();
+            if (['true', 'pass', 'passed', 'ok', 'yes', 'y', '1', 'met', 'triggered'].includes(text)) return true;
+            if (['false', 'fail', 'failed', 'no', 'n', '0', 'missing', 'blocked'].includes(text)) return false;
+            return null;
+        }
+
+        function normalizeConditionEntry(item, index = 0) {
+            if (item === undefined || item === null || item === '') return null;
+            if (typeof item === 'string') {
+                return { name: item, passed: true, actual: '', threshold: '', source: 'triggered_signals' };
+            }
+            if (typeof item !== 'object') {
+                const passed = booleanFromConditionValue(item);
+                return { name: `condition_${index + 1}`, passed, actual: String(item), threshold: '', source: '' };
+            }
+            const detail = safeObject(item);
+            const name = firstNonEmptyText(
+                detail.name,
+                detail.label,
+                detail.title,
+                detail.condition,
+                detail.key,
+                detail.id,
+                `condition_${index + 1}`
+            );
+            const passed = booleanFromConditionValue(firstNonEmptyValue(
+                detail.passed,
+                detail.pass,
+                detail.ok,
+                detail.met,
+                detail.triggered,
+                detail.status,
+                detail.result
+            ));
+            const actual = firstNonEmptyText(detail.actual, detail.value, detail.current, detail.score, detail.observed);
+            const threshold = firstNonEmptyText(detail.threshold, detail.required, detail.min, detail.max, detail.target, detail.expected);
+            const source = firstNonEmptyText(detail.source, detail.field, detail.group);
+            return { name, passed, actual, threshold, source };
+        }
+
+        function conditionSourceList(signal, extra, mtf) {
+            const snapshot = parseSignalObject(extra.tv_snapshot);
+            const candidates = [
+                extra.signal_conditions,
+                extra.signal_condition_details,
+                extra.condition_results,
+                extra.entry_conditions,
+                extra.conditions,
+                extra.setup_conditions,
+                extra.signal_components,
+                extra.trigger_checks,
+                extra.filter_checks,
+                extra.triggered_signals,
+                signal?.triggered_signals,
+                snapshot.signal_conditions,
+                snapshot.condition_results,
+                snapshot.trigger_checks,
+                snapshot.filter_checks,
+                snapshot.triggered_signals,
+                mtf?.conditions,
+            ];
+            for (const candidate of candidates) {
+                const list = parseSignalList(candidate).map(normalizeConditionEntry).filter(Boolean);
+                if (list.length) return list;
+            }
+            return [];
+        }
+
+        function conditionCountSummary(signal, extra, conditions) {
+            const snapshot = parseSignalObject(extra.tv_snapshot);
+            const summaryText = firstNonEmptyText(
+                extra.signal_condition_summary,
+                extra.conditions_summary,
+                extra.signal_summary,
+                signal?.signal,
+                signal?.reason
+            );
+            const match = summaryText.match(/(\d+)\s*(?:\/|of)\s*(\d+)/i);
+            const passedFromFields = firstFiniteNumber(
+                extra.signal_conditions_passed,
+                extra.conditions_passed,
+                extra.passed_conditions,
+                extra.passed_count,
+                extra.signal_passed_count,
+                snapshot.signal_conditions_passed,
+                snapshot.conditions_passed,
+                snapshot.passed_count
+            );
+            const totalFromFields = firstFiniteNumber(
+                extra.signal_conditions_total,
+                extra.conditions_total,
+                extra.total_conditions,
+                extra.total_count,
+                extra.signal_total_count,
+                snapshot.signal_conditions_total,
+                snapshot.conditions_total,
+                snapshot.total_count
+            );
+            const passed = passedFromFields !== null
+                ? passedFromFields
+                : (match ? Number(match[1]) : conditions.filter((item) => item.passed === true).length);
+            const total = totalFromFields !== null
+                ? totalFromFields
+                : (match ? Number(match[2]) : conditions.length);
+            return {
+                passed: Number.isFinite(Number(passed)) ? Number(passed) : 0,
+                total: Number.isFinite(Number(total)) ? Number(total) : 0,
+                fromText: summaryText,
+            };
+        }
+
+        function buildTvConditionDetailsHtml(signal, extra, mtf) {
+            const conditions = conditionSourceList(signal, extra, mtf);
+            const summary = conditionCountSummary(signal, extra, conditions);
+            if (!conditions.length && !summary.total) return '';
+            const headline = summary.total
+                ? `信号条件 ${summary.passed}/${summary.total} 已满足`
+                : '信号条件明细';
+            const missingDetail = !conditions.length && summary.total
+                ? '<div class="tv-condition-missing">只有汇总计数，payload 未提供每个条件的明细。</div>'
+                : '';
+            const rows = conditions.map((item) => {
+                const state = item.passed === true ? 'pass' : (item.passed === false ? 'fail' : 'missing');
+                const statusText = item.passed === true ? '通过' : (item.passed === false ? '失败' : '缺数据');
+                const meta = [
+                    item.actual ? `actual=${item.actual}` : '',
+                    item.threshold ? `threshold=${item.threshold}` : '',
+                    item.source ? `source=${item.source}` : '',
+                ].filter(Boolean).join(' · ');
+                return `
+                    <div class="tv-condition-row ${state}">
+                        <span>${escapeHtml(statusText)}</span>
+                        <strong>${escapeHtml(item.name)}</strong>
+                        ${meta ? `<em>${escapeHtml(meta)}</em>` : ''}
+                    </div>
+                `;
+            }).join('');
+            return `
+                <div class="tv-condition-panel">
+                    <div class="tv-condition-title">${escapeHtml(headline)}</div>
+                    ${missingDetail}
+                    ${rows}
+                </div>
+            `;
+        }
+
         function renderSignals() {
             const container = document.getElementById('signalsContainer');
             const filtered = filterSignals();
@@ -2860,6 +3840,8 @@
                 const sourceText = String(extra.signal_source || extra.source || signal?.source || '').toLowerCase();
                 const hasTvContext = sourceText.includes('tradingview') || sourceText === 'tv' || Boolean(extra.tv_event_id || extra.event_type || extra.position_id || extra.tv_snapshot);
                 if (!hasTvContext) return '';
+                const tvErrors = collectTvPayloadErrors(signal, extra, mtf);
+                const conditionHtml = buildTvConditionDetailsHtml(signal, extra, mtf);
                 const items = [
                     ['event', extra.event_type || extra.tv_event_type || 'entry'],
                     ['script', signal.script_tag || extra.script_tag],
@@ -2871,18 +3853,25 @@
                     ['mtf_block', mtfBlockReason && mtfBlockReason !== 'none' ? mtfBlockReason : ''],
                     ['profit_space', profitSummary],
                     ['profit_gate', profitGate],
+                    ['tv_error', tvErrors.length ? `${tvErrors[0].label}: ${tvErrors[0].value}${tvErrors.length > 1 ? ` +${tvErrors.length - 1}` : ''}` : ''],
                     ['position', extra.position_id],
                     ['tv_event_id', extra.tv_event_id],
                 ].filter(([, value]) => String(value || '').trim());
-                if (!items.length) return '';
+                if (!items.length && !conditionHtml) return '';
                 return `
                     <div class="tv-execution-context" aria-label="TradingView execution context">
                         <div class="tv-execution-kicker">TradingView payload context</div>
                         <div class="tv-execution-chips">
                             ${items.map(([label, value]) => `
-                                <span class="tv-execution-chip"><b>${escapeHtml(label)}</b>${escapeHtml(String(value))}</span>
+                                <span class="tv-execution-chip${label === 'tv_error' ? ' warning' : ''}"><b>${escapeHtml(label)}</b>${escapeHtml(String(value))}</span>
                             `).join('')}
                         </div>
+                        ${tvErrors.length ? `
+                        <div class="tv-error-list">
+                            ${tvErrors.map((item) => `<span><b>${escapeHtml(item.label)}</b>${escapeHtml(item.value)}</span>`).join('')}
+                        </div>
+                        ` : ''}
+                        ${conditionHtml}
                     </div>
                 `;
             }
@@ -2902,8 +3891,12 @@
                 const signalExtra = getSignalExtra(signal);
                 const relatedOrders = getRelatedOrdersForSignal(signal);
 
-                // 计算开仓金额；有真实订单时优先展示订单最新 Entry/TP/SL，避免信号原始价和订单修改后价格不一致。
-                const entryPrice = resolveSignalDisplayEntryPrice(signal, relatedOrders) || signal.entry || 0;
+                // 计划价、下单价、成交价分开展示，避免把 TV 计划与订单事实混在一起。
+                const plannedEntryPrice = resolveSignalPlannedEntryPrice(signal) || signal.entry || 0;
+                const submittedLimitCapPrice = resolveSignalSubmittedLimitCapPrice(signal, relatedOrders);
+                const tvClosePrice = resolveSignalTvClosePrice(signal);
+                const actualEntryFill = buildActualEntryFillModel(signal, relatedOrders);
+                const entryPrice = actualEntryFill.price || resolveSignalDisplayEntryPrice(signal, relatedOrders) || submittedLimitCapPrice || plannedEntryPrice || 0;
                 const shares = signal.shares || 0;
 
                 // 计算预计盈亏
@@ -2932,29 +3925,38 @@
                 const isSelected = isSameSignalId(signal.signal_id, selectedSignalId);
                 const isDetailActive = isSameSignalId(signal.signal_id, detailSignalId);
                 const selectedStyle = isSelected ? 'border-color:rgba(59,130,246,0.85);box-shadow:0 0 0 1px rgba(59,130,246,0.35),0 20px 50px rgba(59,130,246,0.18);' : '';
-                const entryText = formatSignalPrice(entryPrice);
-                const currentPriceText = formatCurrentPrice(latestIndicator, signal);
+                const plannedEntryText = formatSignalPrice(plannedEntryPrice);
+                const submittedLimitCapText = formatSignalPrice(submittedLimitCapPrice, '未提供');
+                const tvCloseText = formatSignalPrice(tvClosePrice, '未提供');
+                const actualEntryHtml = formatEntryFillHtml(actualEntryFill);
                 const takeProfitBaseText = formatSignalPrice(takeProfit);
                 const stopLossBaseText = formatSignalPrice(stopLoss);
                 const rrText = signal.rr || '数据缺失';
                 const sharesAmountText = `${formatQuantityLabel(signal.shares)} / ${formatPositionSizeLabel(entryPrice, signal.shares)}`;
                 const signalIdText = signal.signal_id || '数据缺失';
                 const usTimeText = signal.us_time || '等待数据';
-                const expectedProfitText = hasTradePrices ? formatPrice(expectedProfit) : '数据缺失';
-                const expectedLossText = hasTradePrices ? formatPrice(expectedLoss) : '数据缺失';
-                const takeProfitHtml = hasTradePrices && effectiveStatus !== 'closed'
-                    ? formatTargetPriceWithPnlHtml(takeProfitBaseText, formatSignedMoney(expectedProfit), 'positive')
+                const tvExpectedPnl = buildTvExpectedPnlModel(signal);
+                const orderExpectedPnl = buildOrderExpectedPnlModel(signal, relatedOrders);
+                const inlineExpectedProfit = firstFiniteNumber(orderExpectedPnl?.profit, tvExpectedPnl?.profit, hasTradePrices ? expectedProfit : null);
+                const inlineExpectedLoss = firstFiniteNumber(orderExpectedPnl?.loss, tvExpectedPnl?.loss, hasTradePrices ? -Math.abs(expectedLoss) : null);
+                const expectedProfitText = inlineExpectedProfit !== null ? formatPrice(Math.abs(inlineExpectedProfit)) : '数据缺失';
+                const expectedLossText = inlineExpectedLoss !== null ? formatPrice(Math.abs(inlineExpectedLoss)) : '数据缺失';
+                const takeProfitHtml = inlineExpectedProfit !== null && effectiveStatus !== 'closed'
+                    ? formatTargetPriceWithPnlHtml(takeProfitBaseText, formatSignedMoney(inlineExpectedProfit), 'positive')
                     : escapeHtml(takeProfitBaseText);
-                const stopLossHtml = hasTradePrices && effectiveStatus !== 'closed'
-                    ? formatTargetPriceWithPnlHtml(stopLossBaseText, `-${formatPrice(Math.abs(expectedLoss))}`, 'negative')
+                const stopLossHtml = inlineExpectedLoss !== null && effectiveStatus !== 'closed'
+                    ? formatTargetPriceWithPnlHtml(stopLossBaseText, formatSignedMoney(inlineExpectedLoss), 'negative')
                     : escapeHtml(stopLossBaseText);
                 const closedPnl = buildClosedSignalPnl(signal, latestIndicator, relatedOrders);
                 const pnlPanelHtml = buildSignalPnlPanelHtml(signal, closedPnl, expectedProfitText, expectedLossText);
+                const expectedPnlPanelHtml = buildSignalExpectedPnlPanelHtml(tvExpectedPnl, orderExpectedPnl);
+                const lifecycleStripHtml = buildSignalLifecycleStripHtml(signal, relatedOrders, closedPnl);
                 const indicatorStateText = getIndicatorEmptyState(signal, latestIndicator);
                 const directionText = String(signal.direction || 'unknown').toUpperCase();
                 const signalIdLiteral = escapeHtml(toJsStringLiteral(signal.signal_id || ''));
                 const recordIdLiteral = escapeHtml(toJsStringLiteral(signal.id || ''));
-                const isProtectionIncomplete = effectiveStatus === 'protection_incomplete';
+                const isProtectionIncomplete = getSignalStatusBucket(effectiveStatus) === 'protection_incomplete';
+                const isCancellationTerminal = isCancellationSignalStatus(effectiveStatus);
                 const mergePanelHtml = buildSignalMergePanel(signal);
                 const rejectionPanelHtml = buildSignalRejectionPanel(signal);
                 const protectionAlertHtml = buildProtectionIncompletePanel(signal);
@@ -2963,7 +3965,7 @@
                 const tvExecutionContextHtml = buildTvExecutionContextHtml(signal);
 
                 return `
-                    <div class="signal-card${isSelected ? ' selected' : ''}${isProtectionIncomplete ? ' protection-incomplete' : ''}" data-signal-id="${escapeHtml(signal.signal_id || '')}" style="${selectedStyle}">
+                    <div class="signal-card${isSelected ? ' selected' : ''}${isProtectionIncomplete ? ' protection-incomplete' : ''}${isCancellationTerminal ? ' cancellation-terminal' : ''}" data-signal-id="${escapeHtml(signal.signal_id || '')}" style="${selectedStyle}">
                         <div class="signal-header">
                             <div style="display:flex;flex-direction:column;gap:4px;">
                                 <div class="signal-title">
@@ -2990,8 +3992,20 @@
                                 <div class="signal-value" style="font-size:12px;font-family:'JetBrains Mono',monospace;cursor:pointer;" onclick='selectSignalCard(${signalIdLiteral})'>${escapeHtml(signalIdText)}</div>
                             </div>
                             <div class="signal-item">
-                                <div class="signal-label">Entry / 当前价</div>
-                                <div class="signal-value">${escapeHtml(entryText)} / ${escapeHtml(currentPriceText)}</div>
+                                <div class="signal-label">计划入场价</div>
+                                <div class="signal-value">${escapeHtml(plannedEntryText)}</div>
+                            </div>
+                            <div class="signal-item">
+                                <div class="signal-label">最大允许限价</div>
+                                <div class="signal-value">${escapeHtml(submittedLimitCapText)}</div>
+                            </div>
+                            <div class="signal-item">
+                                <div class="signal-label">TV Close</div>
+                                <div class="signal-value">${escapeHtml(tvCloseText)}</div>
+                            </div>
+                            <div class="signal-item">
+                                <div class="signal-label">${signal.direction === 'short' ? '卖空开仓价' : '买入开仓价'}</div>
+                                <div class="signal-value">${actualEntryHtml}</div>
                             </div>
                             <div class="signal-item">
                                 <div class="signal-label">Take Profit</div>
@@ -3019,6 +4033,8 @@
                             </div>
                         </div>
 
+                        ${lifecycleStripHtml}
+                        ${expectedPnlPanelHtml}
                         ${tvExecutionContextHtml}
                         ${shouldShowSignalNote(signal.note) ? `<div class="signal-note signal-note-highlight"><strong>📋 备注:</strong> ${escapeHtml(signal.note)}</div>` : ''}
                         ${signal.reason ? `<div class="signal-note"><strong>📊 原因:</strong> ${escapeHtml(signal.reason)}</div>` : ''}

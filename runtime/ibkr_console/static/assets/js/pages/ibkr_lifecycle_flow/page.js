@@ -159,7 +159,7 @@
     signal_generated: '信号生成',
     signal_pending: '信号待确认',
     signal_pending_confirmation: '信号待确认',
-    signal_confirmed: '信号确认',
+    signal_confirmed: '信号已通过',
     signal_rejected: '信号拒绝',
     signal_expired: '信号过期',
     signal_blocked: '信号阻塞',
@@ -229,6 +229,8 @@
     'alert',
     'expired',
     'pending',
+    'confirmed',
+    'approved',
     'submitted',
     'filled',
     'closed',
@@ -321,6 +323,7 @@
     const mapped = labelForEventType(eventType);
     const rawLabel = normalizeText(firstNonEmpty(source.label, source.title, source.name));
     const genericLabel = rawLabel.toLowerCase().replace(/[-_]+/g, ' ');
+    if (eventType === 'signal_confirmed' && mapped) return mapped;
     if (mapped && (!rawLabel || GENERIC_LABELS.has(genericLabel) || rawLabel.toLowerCase() === eventType)) {
       return mapped;
     }
@@ -545,6 +548,16 @@
     return String(value);
   }
 
+  function changeValuesEqual(left, right) {
+    if (String(left ?? '') === String(right ?? '')) return true;
+    const leftNumber = Number(left);
+    const rightNumber = Number(right);
+    if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
+      return Math.abs(leftNumber - rightNumber) < 1e-9;
+    }
+    return false;
+  }
+
   function firstValueFromRoots(roots, keys) {
     for (const root of roots) {
       if (!root || typeof root !== 'object') continue;
@@ -562,7 +575,8 @@
     const before = firstNonEmpty(data.before, data.old, data.previous, data.from);
     const after = firstNonEmpty(data.after, data.new, data.current, data.to);
     if (!label || (!isPresent(before) && !isPresent(after))) return null;
-    if (String(before ?? '') === String(after ?? '')) return null;
+    if (!isPresent(before) || !isPresent(after)) return null;
+    if (changeValuesEqual(before, after)) return null;
     return {
       field,
       label,
@@ -618,6 +632,56 @@
       .filter(Boolean);
   }
 
+  function stableProtectiveValueItems(record, changes = []) {
+    const data = asObject(record?.data);
+    const roots = [
+      record,
+      data,
+      asObject(record?.details),
+      asObject(data.details),
+      asObject(record?.extra),
+      asObject(data.extra)
+    ];
+    const changedFields = new Set((changes || []).map((item) => item.field).filter(Boolean));
+    const specs = [
+      {
+        field: 'stop_loss',
+        label: 'SL',
+        before: ['old_sl', 'old_stop_loss', 'previous_sl', 'previous_stop_loss', 'before_sl'],
+        after: ['new_sl', 'stop_loss', 'sl_price', 'stop_price']
+      },
+      {
+        field: 'take_profit',
+        label: 'TP',
+        before: ['old_tp', 'old_take_profit', 'previous_tp', 'previous_take_profit', 'before_tp'],
+        after: ['new_tp', 'take_profit', 'tp_price', 'target_price']
+      }
+    ];
+    return specs.map((spec) => {
+      if (changedFields.has(spec.field)) return null;
+      const before = firstValueFromRoots(roots, spec.before);
+      const after = firstValueFromRoots(roots, spec.after);
+      if (!isPresent(before)) return null;
+      if (isPresent(after) && !changeValuesEqual(before, after)) return null;
+      const value = isPresent(after) ? after : before;
+      return {
+        field: spec.field,
+        label: spec.label,
+        value,
+        valueText: formatChangeValue(value)
+      };
+    }).filter(Boolean);
+  }
+
+  function changeSummaryFromItems(record) {
+    const changes = collectChangeItems(record || {});
+    const changedParts = changes.slice(0, 3).map((item) => `${item.label} ${item.beforeText} -> ${item.afterText}`);
+    const stableParts = stableProtectiveValueItems(record || {}, changes)
+      .slice(0, Math.max(0, 3 - changedParts.length))
+      .map((item) => `${item.label} ${item.valueText}`);
+    return [...changedParts, ...stableParts].join(' / ');
+  }
+
   function collectChangeItems(record) {
     const data = asObject(record?.data);
     const roots = [record, data, asObject(record?.details), asObject(data.details), asObject(record?.extra), asObject(data.extra)];
@@ -640,11 +704,8 @@
       asObject(record?.details).change_summary,
       asObject(data.details).change_summary
     ));
-    if (explicit) return explicit;
-    const changes = collectChangeItems(record || {});
-    return changes.slice(0, 3)
-      .map((item) => `${item.label} ${item.beforeText} -> ${item.afterText}`)
-      .join(' / ');
+    if (explicit && !/->\s*--/.test(explicit)) return explicit;
+    return changeSummaryFromItems(record || {}) || explicit;
   }
 
   function collectPriceCandidates(record) {
@@ -914,12 +975,14 @@
     const source = normalizeText(firstNonEmpty(data.source, data.from, data.source_id, data.sourceId, data.src));
     const target = normalizeText(firstNonEmpty(data.target, data.to, data.target_id, data.targetId, data.dst));
     if (!source || !target || !nodeIdSet.has(source) || !nodeIdSet.has(target)) return null;
+    const edgeType = normalizeText(firstNonEmpty(data.edge_type, data.relation, data.type, data.kind, data.reason, data.raw?.inferred ? 'auto' : ''));
     const rawLabel = normalizeText(firstNonEmpty(data.label, data.title, data.type, data.reason));
     const label = ['next', 'sequence', 'auto'].includes(rawLabel.toLowerCase()) ? '' : rawLabel;
     return {
       id: normalizeText(firstNonEmpty(data.id, data.edge_id, `${source}__${target}__${index}`)),
       source,
       target,
+      type: edgeType || (data.raw?.inferred ? 'auto' : ''),
       label,
       status: normalizeStatus(firstNonEmpty(data.status, data.state, data.outcome)),
       raw: data.__raw || raw,
@@ -1003,10 +1066,63 @@
       id: `${nodes[index].id}__${node.id}__auto`,
       source: nodes[index].id,
       target: node.id,
+      type: 'auto',
       label: '',
       status: 'ok',
       raw: { inferred: true }
     }));
+  }
+
+  function timeBucketKey(item) {
+    const text = normalizeTimeValue(item?.time || item?.ts_ms || item?.bar_time_ms || '');
+    if (!text) return '';
+    const parsed = Date.parse(text);
+    if (!Number.isFinite(parsed)) return '';
+    return String(Math.floor(parsed / 1000));
+  }
+
+  function assignTimeBuckets(nodes) {
+    const groups = new Map();
+    nodes.forEach((node, index) => {
+      const key = timeBucketKey(node);
+      const bucketKey = key || `node:${index}:${node.id}`;
+      if (!groups.has(bucketKey)) {
+        groups.set(bucketKey, {
+          key: bucketKey,
+          timeKey: key,
+          firstIndex: index,
+          nodes: []
+        });
+      }
+      groups.get(bucketKey).nodes.push(node);
+    });
+
+    const orderedGroups = Array.from(groups.values()).sort((left, right) => {
+      const leftTime = left.timeKey ? Number(left.timeKey) : Number.POSITIVE_INFINITY;
+      const rightTime = right.timeKey ? Number(right.timeKey) : Number.POSITIVE_INFINITY;
+      if (leftTime !== rightTime) return leftTime - rightTime;
+      return left.firstIndex - right.firstIndex;
+    });
+
+    const assigned = new Map();
+    orderedGroups.forEach((group, bucketIndex) => {
+      const groupNodes = group.nodes.slice().sort((left, right) => {
+        const stageDiff = stageRank(left.stage) - stageRank(right.stage);
+        if (stageDiff) return stageDiff;
+        return compareByTimeOrStage(left, right);
+      });
+      groupNodes.forEach((node, slot) => {
+        assigned.set(node.id, {
+          ...node,
+          timeBucket: group.key,
+          timeBucketIndex: bucketIndex,
+          timeBucketSize: groupNodes.length,
+          timeBucketSlot: slot,
+          hasRealTimeBucket: Boolean(group.timeKey)
+        });
+      });
+    });
+    return nodes.map((node) => assigned.get(node.id) || node);
   }
 
   function normalizeWarnings(payload, nodes) {
@@ -1173,6 +1289,7 @@
       nodes = filteredNodes;
       edges = edges.filter((edge) => filteredIds.has(edge.source) && filteredIds.has(edge.target));
     }
+    nodes = assignTimeBuckets(nodes);
 
     const warnings = normalizeWarnings(root, nodes);
     const current = normalizeCurrent(root, nodes, events);
@@ -1577,6 +1694,7 @@
   }
 
   function cytoscapeElements(model) {
+    const nodeById = new Map(model.nodes.map((node) => [node.id, node]));
     const nodes = model.nodes.map((node) => ({
       group: 'nodes',
       data: {
@@ -1590,7 +1708,10 @@
         fillSource: node.fillSource,
         priceKind: node.priceFacts?.priceKind || '',
         changeSummary: node.changeSummary || '',
-        rank: node.rank
+        rank: node.rank,
+        timeBucket: node.timeBucket || '',
+        timeBucketIndex: Number.isFinite(node.timeBucketIndex) ? node.timeBucketIndex : 0,
+        timeBucketSlot: Number.isFinite(node.timeBucketSlot) ? node.timeBucketSlot : 0
       },
       classes: [
         `type-${safeClassToken(node.type)}`,
@@ -1600,17 +1721,65 @@
         `fill-${safeClassToken(node.fillSource)}`
       ].join(' ')
     }));
-    const edges = model.edges.map((edge) => ({
+    const edges = model.edges.filter((edge) => shouldRenderGraphEdge(edge, nodeById)).map((edge) => ({
       group: 'edges',
       data: {
         id: edge.id,
         source: edge.source,
         target: edge.target,
+        type: edge.type || '',
         label: edge.label || ''
       },
       classes: [`status-${safeClassToken(edge.status)}`].join(' ')
     }));
     return [...nodes, ...edges];
+  }
+
+  function isSequentialEdge(edge) {
+    const type = String(edge?.type || edge?.label || '').trim().toLowerCase();
+    return !type || ['next', 'sequence', 'auto'].includes(type);
+  }
+
+  function shouldRenderGraphEdge(edge, nodeById) {
+    const source = nodeById.get(edge.source);
+    const target = nodeById.get(edge.target);
+    if (!source || !target) return false;
+    if (
+      source.hasRealTimeBucket
+      && target.hasRealTimeBucket
+      && source.timeBucket
+      && source.timeBucket === target.timeBucket
+      && isSequentialEdge(edge)
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  function hasSharedTimeBuckets(model) {
+    const counts = new Map();
+    (model?.nodes || []).forEach((node) => {
+      if (!node.hasRealTimeBucket || !node.timeBucket) return;
+      counts.set(node.timeBucket, (counts.get(node.timeBucket) || 0) + 1);
+    });
+    return Array.from(counts.values()).some((count) => count > 1);
+  }
+
+  function timeBucketPresetPositions(model) {
+    const mobile = window.innerWidth < 760;
+    const bucketGap = mobile ? 150 : 300;
+    const slotGap = mobile ? 230 : 130;
+    const positions = {};
+    (model?.nodes || []).forEach((node) => {
+      const bucketIndex = Number.isFinite(node.timeBucketIndex) ? node.timeBucketIndex : 0;
+      const bucketSize = Number.isFinite(node.timeBucketSize) ? node.timeBucketSize : 1;
+      const slot = Number.isFinite(node.timeBucketSlot) ? node.timeBucketSlot : 0;
+      const offset = (slot - (bucketSize - 1) / 2) * slotGap;
+      positions[node.id] = mobile
+        ? { x: offset, y: bucketIndex * bucketGap }
+        : { x: bucketIndex * bucketGap, y: offset };
+    });
+    return positions;
   }
 
   function laneToneStyleItems() {
@@ -1697,7 +1866,17 @@
     const useDagre = Boolean(window.cytoscape && window.dagre);
     const nodeCount = Array.isArray(state.model?.nodes) ? state.model.nodes.length : 0;
     const maxFitZoom = nodeCount <= 4 ? 0.78 : 1.12;
-    const options = useDagre
+    const useTimeBuckets = hasSharedTimeBuckets(state.model);
+    const options = useTimeBuckets
+      ? {
+          name: 'preset',
+          positions: timeBucketPresetPositions(state.model),
+          padding: 48,
+          animate: true,
+          animationDuration: 450,
+          fit: true
+        }
+      : useDagre
       ? {
           name: 'dagre',
           rankDir: window.innerWidth < 760 ? 'TB' : 'LR',
@@ -1768,7 +1947,11 @@
 
     graphEl.hidden = false;
     timelineEl.hidden = true;
-    if ($('graphModeInfo')) $('graphModeInfo').textContent = window.dagre ? 'Cytoscape DAG + dagre' : 'Cytoscape fallback layout';
+    if ($('graphModeInfo')) {
+      $('graphModeInfo').textContent = hasSharedTimeBuckets(model)
+        ? 'Cytoscape time-bucket layout'
+        : (window.dagre ? 'Cytoscape DAG + dagre' : 'Cytoscape fallback layout');
+    }
 
     if (state.cy) {
       state.cy.destroy();

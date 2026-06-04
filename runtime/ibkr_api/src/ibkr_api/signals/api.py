@@ -16,6 +16,8 @@ _BROKER_SIGNAL_FINAL_STATUSES = {
     "filled_repricing_protection",
     "filled_position",
     "protected_active",
+    "cancelled",
+    "canceled",
     "rejected",
     "expired",
     "blocked",

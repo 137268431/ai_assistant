@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from typing import Any, Callable
 
@@ -23,6 +24,7 @@ SIGNAL_STATUS_KEYS = (
     "executed",
     "closed",
     "expired",
+    "cancelled",
     "rejected",
 )
 ORDER_STATUS_KEYS = ("working", "filled", "cancelled", "closed", "other")
@@ -33,7 +35,8 @@ SIGNAL_STATUS_COUNT_BUCKETS = {
     "filled_repricing_protection": "protected_active",
     "filled_position": "protected_active",
     "protection_reprice_failed": "protection_incomplete",
-    "entry_missed_limit_cap": "rejected",
+    "entry_missed_limit_cap": "cancelled",
+    "canceled": "cancelled",
 }
 
 
@@ -140,6 +143,8 @@ def _signal_effective_status(signal: dict[str, Any], broker_mode: str) -> str:
         "protection_incomplete",
         "protection_reprice_failed",
         "entry_missed_limit_cap",
+        "cancelled",
+        "canceled",
     }:
         return record_status
     if note.startswith("closed_by_") or "closed_by_manual_close" in note:
@@ -160,7 +165,7 @@ def _summarize_signals(rows: list[dict[str, Any]], *, broker_mode: str, long_cou
         status = SIGNAL_STATUS_COUNT_BUCKETS.get(raw_status, raw_status)
         if status in status_counts:
             status_counts[status] += 1
-    terminal_count = status_counts["expired"] + status_counts["rejected"]
+    terminal_count = status_counts["expired"] + status_counts["cancelled"] + status_counts["rejected"]
     return {
         "long": long_count,
         "short": short_count,
@@ -334,6 +339,48 @@ def _build_market_time_filter(environment_filter: str, market_date: str, start_m
     )
 
 
+def _runtime_account_timeout_seconds() -> float:
+    try:
+        return max(1.0, float(os.environ.get("IBKR_HOME_ACCOUNT_TIMEOUT_SEC", "15.0") or 15.0))
+    except Exception:
+        return 15.0
+
+
+def _normalize_runtime_account_error(error: Any, *, status_code: int = 0) -> str:
+    text = to_text(error)
+    lowered = text.lower()
+    if "timed out" in lowered or "timeout" in lowered or "read timed out" in lowered:
+        return "runtime_account_timeout"
+    if text:
+        return text
+    if status_code >= 400:
+        return f"runtime_account_http_{status_code}"
+    return text or "runtime_account_request_failed"
+
+
+def _runtime_account_meta(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    meta: dict[str, Any] = {}
+    for key in ("stale", "cache_state", "cache_age_s", "fetched_at", "refresh_error"):
+        if key in payload:
+            meta[key] = payload.get(key)
+    errors = payload.get("errors") if isinstance(payload.get("errors"), dict) else {}
+    if errors.get("refresh") and "refresh_error" not in meta:
+        meta["refresh_error"] = errors.get("refresh")
+    return meta
+
+
+def _attach_runtime_account_meta(summary: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    meta = _runtime_account_meta(payload)
+    if not meta:
+        return summary
+    summary.update(meta)
+    if meta.get("stale"):
+        summary["degraded_reason"] = to_text(meta.get("refresh_error")) or "stale_account_snapshot"
+    return summary
+
+
 def _load_runtime_account_payload(
     *,
     broker_mode: str,
@@ -349,17 +396,23 @@ def _load_runtime_account_payload(
             runtime_base_url,
             "/ibkr/account",
             params=[("broker_mode", broker_mode), ("environment", broker_mode), ("include_pnl", "0")],
-            timeout=8.0,
+            timeout=_runtime_account_timeout_seconds(),
         )
     except Exception as exc:
-        return {}, str(exc) or "runtime_account_request_failed"
+        return {}, _normalize_runtime_account_error(exc)
 
     payload = result.get("payload") if isinstance(result, dict) else {}
     payload = payload if isinstance(payload, dict) else {}
     status_code = to_int(result.get("status_code") if isinstance(result, dict) else 0, 200)
+    if (isinstance(result, dict) and result.get("ok") is False) or status_code <= 0:
+        result_error = result.get("error") if isinstance(result, dict) else ""
+        error = payload.get("error") or result_error
+        return payload, _normalize_runtime_account_error(error, status_code=status_code)
+    if not payload:
+        return {}, "runtime_account_empty_payload"
     if status_code >= 400 or payload.get("ok") is False:
-        error = to_text(payload.get("error") or (result.get("error") if isinstance(result, dict) else "")) or f"runtime_account_http_{status_code}"
-        return payload, error
+        error = to_text(payload.get("error") or (result.get("error") if isinstance(result, dict) else ""))
+        return payload, _normalize_runtime_account_error(error, status_code=status_code)
     return _normalize_runtime_account_payload(payload), ""
 
 
@@ -371,7 +424,12 @@ def _normalize_runtime_account_payload(payload: dict[str, Any]) -> dict[str, Any
     for key in ("payload", "snapshot", "data", "account"):
         nested = payload.get(key)
         if isinstance(nested, dict) and (isinstance(nested.get("positions"), list) or isinstance(nested.get("live_open_orders"), list)):
-            return {**nested, "ok": nested.get("ok", payload.get("ok", True))}
+            parent_meta = {
+                meta_key: payload.get(meta_key)
+                for meta_key in ("stale", "cache_state", "cache_age_s", "fetched_at", "refresh_error", "errors")
+                if meta_key in payload and meta_key not in nested
+            }
+            return {**nested, **parent_meta, "ok": nested.get("ok", payload.get("ok", True))}
     return payload
 
 
@@ -386,12 +444,12 @@ def _summarize_gateway_positions(payload: dict[str, Any], error: str = "") -> di
     }
     if error:
         summary["error"] = error
-        return summary
+        return _attach_runtime_account_meta(summary, payload)
 
     positions = payload.get("positions")
     if not isinstance(positions, list):
         summary["error"] = "runtime_account_positions_unavailable"
-        return summary
+        return _attach_runtime_account_meta(summary, payload)
 
     flat_count = 0
     for position in positions:
@@ -411,7 +469,7 @@ def _summarize_gateway_positions(payload: dict[str, Any], error: str = "") -> di
     summary["flat_count"] = flat_count
     summary["position_rows"] = len(positions)
     summary["account_id"] = to_text(payload.get("account_id") or payload.get("account"))
-    return summary
+    return _attach_runtime_account_meta(summary, payload)
 
 
 def _truthy(value: Any) -> bool:
@@ -585,7 +643,7 @@ def _summarize_live_orders(payload: dict[str, Any], error: str = "") -> dict[str
     }
     if error:
         summary["error"] = error
-        return summary
+        return _attach_runtime_account_meta(summary, payload)
 
     counts = payload.get("counts") if isinstance(payload.get("counts"), dict) else {}
     live_orders = payload.get("live_open_orders")
@@ -597,7 +655,7 @@ def _summarize_live_orders(payload: dict[str, Any], error: str = "") -> dict[str
             summary["available"] = True
             summary["group_detail_available"] = True
             summary["source"] = "runtime_account_groups"
-            return summary
+            return _attach_runtime_account_meta(summary, payload)
         if "open_orders" in counts:
             summary["total"] = to_int(counts.get("open_orders"), 0)
             summary["leg_total"] = summary["total"]
@@ -615,9 +673,9 @@ def _summarize_live_orders(payload: dict[str, Any], error: str = "") -> dict[str
             summary["editable_groups"] = _first_live_order_count(counts, "editable_order_groups", default=summary["editable"])
             summary["available"] = True
             summary["source"] = "runtime_account_counts"
-            return summary
+            return _attach_runtime_account_meta(summary, payload)
         summary["error"] = "runtime_account_live_orders_unavailable"
-        return summary
+        return _attach_runtime_account_meta(summary, payload)
 
     summary["available"] = True
     summary["detail_available"] = True
@@ -637,7 +695,7 @@ def _summarize_live_orders(payload: dict[str, Any], error: str = "") -> dict[str
     summary.update(live_group_summary)
     summary["leg_total"] = len(live_orders)
     summary["group_detail_available"] = True
-    return summary
+    return _attach_runtime_account_meta(summary, payload)
 
 
 def _annotate_pnl_summary(summary: dict[str, Any], *, broker_mode: str) -> dict[str, Any]:

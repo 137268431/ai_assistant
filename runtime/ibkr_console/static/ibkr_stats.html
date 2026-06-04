@@ -83,6 +83,34 @@
             </div>
         </section>
 
+        <section class="signal-latency-panel" id="signal-latency-analysis">
+            <div class="signal-latency-head">
+                <div class="signal-latency-title-block">
+                    <div class="signal-latency-kicker">SIGNAL LATENCY</div>
+                    <div class="section-title signal-latency-title">信号链路耗时</div>
+                    <div class="signal-latency-copy">按当前日期范围统计所有 entry 信号，从 TradingView bar close 到 API、PB 与路由完成的阶段耗时。</div>
+                </div>
+                <div class="signal-latency-meta" id="signalLatencyMeta">等待加载...</div>
+            </div>
+            <div class="stats-grid signal-latency-grid" id="signalLatencyCards"></div>
+            <div class="chart-grid signal-latency-chart-grid">
+                <div class="chart-container signal-latency-chart-card">
+                    <div class="signal-latency-chart-head">
+                        <div class="chart-title">阶段耗时分布</div>
+                        <div class="signal-latency-chart-copy">每个阶段展示 avg / p50 / p95，用 p95 快速定位尾部瓶颈。</div>
+                    </div>
+                    <div class="chart-canvas-wrap signal-latency-chart-wrap"><canvas id="signalLatencyChart"></canvas></div>
+                </div>
+                <div class="chart-container signal-latency-chart-card signal-latency-latest-card">
+                    <div class="signal-latency-chart-head">
+                        <div class="chart-title">最新入场链路</div>
+                        <div class="signal-latency-chart-copy">最近一条 entry webhook 的阶段 trace。</div>
+                    </div>
+                    <div class="signal-latency-latest" id="signalLatencyLatest">等待加载...</div>
+                </div>
+            </div>
+        </section>
+
         <section class="realized-pnl-panel" id="realizedPnlAnalytics">
             <div class="realized-pnl-head">
                 <div class="realized-pnl-title-block">
@@ -263,6 +291,7 @@
         let currentEnvironment = getCurrentRuntimeEnvironment();
         let signalChart = null;
         let orderChart = null;
+        let signalLatencyChart = null;
         let signalRuleChart = null;
         let signalRrChart = null;
         let realizedDailyChart = null;
@@ -279,6 +308,7 @@
         let cachedSignals = null;
         let cachedStartDate = null;
         let cachedEndDate = null;
+        let cachedSignalLatencyAnalytics = null;
         let cachedSignalAnalytics = null;
         let cachedRealizedPnlAnalytics = null;
 
@@ -560,6 +590,34 @@
             return `${num.toFixed(1)}%`;
         }
 
+        function formatStatsLatency(value) {
+            if (value === null || value === undefined || value === '') return '--';
+            const ms = Number(value);
+            if (!Number.isFinite(ms) || ms <= 0) return '--';
+            if (ms < 1000) return `${Math.round(ms)}ms`;
+            const totalSeconds = Math.round(ms / 1000);
+            const minutes = Math.floor(totalSeconds / 60);
+            const seconds = totalSeconds % 60;
+            if (minutes > 0) return `${minutes}m ${seconds}s`;
+            return `${seconds}s`;
+        }
+
+        function signalLatencyTone(key, value) {
+            const ms = Number(value || 0);
+            if (!Number.isFinite(ms) || ms <= 0) return 'muted';
+            const seconds = ms / 1000;
+            const thresholds = {
+                bar_close_to_pine_eval_ms: { ok: 5, warn: 30 },
+                pine_eval_to_api_received_ms: { ok: 5, warn: 15 },
+                api_received_to_pb_created_ms: { ok: 1, warn: 3 },
+                pb_created_to_route_finished_ms: { ok: 1, warn: 5 },
+            };
+            const limit = thresholds[key] || { ok: 5, warn: 15 };
+            if (seconds <= limit.ok) return 'ok';
+            if (seconds <= limit.warn) return 'warn';
+            return 'alert';
+        }
+
         function formatStatsRatio(value, digits = 2) {
             const num = Number(value);
             if (!Number.isFinite(num) || num <= 0) return '--';
@@ -735,6 +793,179 @@
                     <strong>${escapeStatsHtml(String(value || '--'))}</strong>
                 </span>
             `).join('');
+        }
+
+        function renderSignalLatencyLoading(startDateText, endDateText) {
+            const meta = document.getElementById('signalLatencyMeta');
+            const cards = document.getElementById('signalLatencyCards');
+            const latest = document.getElementById('signalLatencyLatest');
+            if (meta) meta.textContent = `加载 ${startDateText || '--'} ~ ${endDateText || '--'} 信号链路耗时...`;
+            if (cards && !cachedSignalLatencyAnalytics) {
+                cards.innerHTML = '<div class="stat-card signal-latency-card muted"><div class="stat-label">LOADING</div><div class="stat-value signal-latency-card-value">--</div><div class="signal-latency-card-copy">等待 tv_webhook_events trace</div></div>';
+            }
+            if (latest && !cachedSignalLatencyAnalytics) latest.textContent = '等待加载...';
+        }
+
+        function destroySignalLatencyChart() {
+            if (signalLatencyChart) signalLatencyChart.destroy();
+            signalLatencyChart = null;
+        }
+
+        function renderSignalLatencyError(message) {
+            const safeMessage = escapeStatsHtml(message || '未知错误');
+            const meta = document.getElementById('signalLatencyMeta');
+            const cards = document.getElementById('signalLatencyCards');
+            const latest = document.getElementById('signalLatencyLatest');
+            if (meta) meta.textContent = `耗时统计加载失败：${message || '未知错误'}`;
+            if (cards) {
+                cards.innerHTML = `<div class="stat-card signal-latency-card alert"><div class="stat-label">ERROR</div><div class="stat-value negative signal-latency-card-value">失败</div><div class="signal-latency-card-copy">${safeMessage}</div></div>`;
+            }
+            if (latest) latest.textContent = safeMessage;
+            destroySignalLatencyChart();
+        }
+
+        async function loadSignalLatencyAnalysis({ startDateText, endDateText, force = false } = {}) {
+            const range = startDateText && endDateText
+                ? { startDateText, endDateText }
+                : resolveStatsRange();
+            const { dataEnvironment } = getStatsDataScope();
+            renderSignalLatencyLoading(range.startDateText, range.endDateText);
+            const path = `/api/custom/ibkr/analytics/signal-latency${buildStatsQuery({
+                start_date: range.startDateText,
+                end_date: range.endDateText,
+                data_environment: dataEnvironment
+            })}`;
+            try {
+                const payload = await fetchStatsAnalyticsPayload(path, { force, tag: 'signal-latency-analytics' });
+                cachedSignalLatencyAnalytics = payload;
+                renderSignalLatencyAnalysis(payload);
+                return payload;
+            } catch (error) {
+                console.error('加载信号链路耗时失败:', error);
+                renderSignalLatencyError(error.message || String(error));
+                return null;
+            }
+        }
+
+        function renderSignalLatencyAnalysis(payload) {
+            const range = resolveStatsRange();
+            const startDate = payload?.start_date || payload?.date || range.startDateText;
+            const endDate = payload?.end_date || payload?.date || range.endDateText;
+            const scope = getStatsDataScope();
+            const dataEnvironment = payload?.data_environment || scope.dataEnvironment;
+            const stageRows = Array.isArray(payload?.stage_rows) ? payload.stage_rows : [];
+            const slowest = payload?.slowest_stage || {};
+            const totalEvents = Number(payload?.total_events || payload?.summary?.total_events || 0);
+            const completeEvents = Number(payload?.complete_events || payload?.summary?.complete_events || 0);
+            const missingTraceCount = Number(payload?.missing_trace_count || payload?.summary?.missing_trace_count || 0);
+            const meta = document.getElementById('signalLatencyMeta');
+            if (meta) {
+                const isSingleDay = startDate && endDate && startDate === endDate;
+                meta.innerHTML = renderStatsMetaPills([
+                    [isSingleDay ? 'date' : 'range', isSingleDay ? startDate : `${startDate || '--'} ~ ${endDate || '--'}`],
+                    ['data', getEnvironmentLabel(dataEnvironment)],
+                    ['events', `${completeEvents}/${totalEvents} complete`],
+                    ['missing', `${missingTraceCount} trace`],
+                    ['slowest', slowest?.label ? `${slowest.label} ${formatStatsLatency(slowest.p95_ms)}` : '--'],
+                ], 'signal-latency-meta-pill');
+            }
+            const cards = document.getElementById('signalLatencyCards');
+            if (cards) {
+                if (!stageRows.length || totalEvents <= 0) {
+                    cards.innerHTML = '<div class="stat-card signal-latency-card muted"><div class="stat-label">NO DATA</div><div class="stat-value signal-latency-card-value">--</div><div class="signal-latency-card-copy">当前范围暂无 entry 信号链路耗时数据</div></div>';
+                } else {
+                    cards.innerHTML = stageRows.map((row) => {
+                        const tone = signalLatencyTone(row.key, row.p95_ms);
+                        return `
+                            <div class="stat-card signal-latency-card ${escapeStatsHtml(tone)}">
+                                <div class="stat-label">${escapeStatsHtml(row.label || row.key || '--')}</div>
+                                <div class="stat-value signal-latency-card-value">${escapeStatsHtml(formatStatsLatency(row.p95_ms))}</div>
+                                <div class="signal-latency-card-copy">p95 · avg ${escapeStatsHtml(formatStatsLatency(row.avg_ms))} · p50 ${escapeStatsHtml(formatStatsLatency(row.p50_ms))} · n ${escapeStatsHtml(String(row.count || 0))}/${escapeStatsHtml(String(totalEvents))}</div>
+                            </div>
+                        `;
+                    }).join('');
+                }
+            }
+            renderSignalLatencyLatest(payload?.latest_event);
+            renderSignalLatencyChart(payload);
+        }
+
+        function renderSignalLatencyLatest(latestEvent) {
+            const latest = document.getElementById('signalLatencyLatest');
+            if (!latest) return;
+            if (!latestEvent) {
+                latest.innerHTML = '<div class="signal-latency-empty">暂无最新 entry webhook</div>';
+                return;
+            }
+            const stages = latestEvent.stages || {};
+            const rows = (Array.isArray(cachedSignalLatencyAnalytics?.stage_rows) ? cachedSignalLatencyAnalytics.stage_rows : [])
+                .map((stage) => {
+                    const value = stages[stage.key];
+                    const tone = signalLatencyTone(stage.key, value);
+                    return `
+                        <div class="signal-latency-latest-row ${escapeStatsHtml(tone)}">
+                            <span>${escapeStatsHtml(stage.label || stage.key)}</span>
+                            <strong>${escapeStatsHtml(formatStatsLatency(value))}</strong>
+                        </div>
+                    `;
+                }).join('');
+            latest.innerHTML = `
+                <div class="signal-latency-latest-symbol">
+                    <strong>${escapeStatsHtml(String(latestEvent.symbol || '--').toUpperCase())}</strong>
+                    <span>${escapeStatsHtml(latestEvent.event_id || latestEvent.id || '--')}</span>
+                </div>
+                <div class="signal-latency-latest-total">
+                    <span>${escapeStatsHtml(latestEvent.status || '--')}</span>
+                    <strong>${escapeStatsHtml(formatStatsLatency(latestEvent.total_ms))}</strong>
+                </div>
+                <div class="signal-latency-latest-rows">${rows}</div>
+            `;
+        }
+
+        function renderSignalLatencyChart(payload) {
+            const ctx = document.getElementById('signalLatencyChart')?.getContext('2d');
+            if (!ctx) return;
+            const rows = Array.isArray(payload?.stage_rows) ? payload.stage_rows : [];
+            if (signalLatencyChart) signalLatencyChart.destroy();
+            signalLatencyChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: rows.map((row) => row.label || row.key || '--'),
+                    datasets: [
+                        {
+                            label: 'avg',
+                            data: rows.map((row) => Number(row.avg_ms || 0)),
+                            backgroundColor: 'rgba(79, 209, 197, 0.52)',
+                            borderColor: 'rgba(129, 230, 217, 0.82)',
+                            borderWidth: 1,
+                            borderRadius: 8,
+                        },
+                        {
+                            label: 'p50',
+                            data: rows.map((row) => Number(row.p50_ms || 0)),
+                            backgroundColor: 'rgba(59, 130, 246, 0.50)',
+                            borderColor: 'rgba(147, 197, 253, 0.82)',
+                            borderWidth: 1,
+                            borderRadius: 8,
+                        },
+                        {
+                            label: 'p95',
+                            data: rows.map((row) => Number(row.p95_ms || 0)),
+                            backgroundColor: 'rgba(246, 173, 85, 0.58)',
+                            borderColor: 'rgba(251, 191, 36, 0.86)',
+                            borderWidth: 1,
+                            borderRadius: 8,
+                        },
+                    ],
+                },
+                options: buildChartOptions({
+                    showLegend: true,
+                    tooltipLabel: '耗时',
+                    tooltipFormatter: formatStatsLatency,
+                    valueTickFormatter: formatStatsLatency,
+                    valueMaxTicks: 6,
+                })
+            });
         }
 
         function renderSignalAnalysisMeta({ startDate, endDate, brokerMode, dataEnvironment, ordered, total }) {
@@ -1396,6 +1627,11 @@
                 const { brokerMode, dataEnvironment } = getStatsDataScope();
                 const orderFilter = `environment = "${escapeQueryValue(brokerMode)}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`;
                 const signalFilter = `environment = "${escapeQueryValue(dataEnvironment)}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`;
+                const signalLatencyPromise = loadSignalLatencyAnalysis({
+                    startDateText,
+                    endDateText,
+                    force: forceAnalytics,
+                });
                 const realizedPnlPromise = loadRealizedPnlAnalytics({
                     startDateText,
                     endDateText,
@@ -1433,6 +1669,7 @@
                     softErrors.push(`ibkr_signals: ${error.message || error}`);
                 }
 
+                const signalLatencyAnalytics = await signalLatencyPromise;
                 const realizedPnlAnalytics = await realizedPnlPromise;
                 await signalAnalysisPromise;
                 const realizedPnlSummary = realizedPnlAnalytics?.summary || null;
@@ -1452,6 +1689,10 @@
                     { label: '范围', value: `${range.label} ${range.displayLabel}` },
                     { label: '订单', value: `${stats.totalOrders} / ${stats.rawOrders} IBKR` },
                     { label: '信号', value: `${ibkr_signals.length} 条` },
+                    {
+                        label: '链路',
+                        value: signalLatencyAnalytics ? `${signalLatencyAnalytics.complete_events || 0}/${signalLatencyAnalytics.total_events || 0} complete` : '--',
+                    },
                     {
                         label: 'PnL',
                         value: realizedPnlAnalytics?.dataInsufficient ? '数据不足' : (realizedPnlSummary ? formatStatsMoney(realizedPnlSummary.netPnl) : '--'),
@@ -1772,7 +2013,7 @@
                 () => loadStats(),
                 {
                     title: '统计页加载中',
-                    copy: '正在同步已实现盈亏、信号、订单、规则分布和平仓统计图表。',
+                    copy: '正在同步信号链路耗时、已实现盈亏、订单、规则分布和平仓统计图表。',
                 }
             );
 
@@ -1786,6 +2027,9 @@
                 setChartHeights();
                 if (cachedOrders && cachedSignals && cachedStartDate && cachedEndDate) {
                     renderCharts(cachedOrders, cachedSignals, cachedStartDate, cachedEndDate);
+                }
+                if (cachedSignalLatencyAnalytics) {
+                    renderSignalLatencyChart(cachedSignalLatencyAnalytics);
                 }
                 if (cachedSignalAnalytics) {
                     renderSignalAnalysisCharts(cachedSignalAnalytics);

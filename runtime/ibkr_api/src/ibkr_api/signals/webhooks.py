@@ -21,6 +21,8 @@ ConfigValue = Callable[[str, str, str], str]
 
 _CONFIRM_STATUS_HINTS = {
     "expired": ("fail", "信号已过期", "该信号超时自动失效，无法操作"),
+    "cancelled": ("fail", "信号已取消", "该信号已被取消，无法确认"),
+    "canceled": ("fail", "信号已取消", "该信号已被取消，无法确认"),
     "rejected": ("fail", "信号已拒绝", "该信号已被拒绝，无法重复操作"),
     "executed": ("ok", "信号已执行", "该信号已执行，无需重复操作"),
     "submitted": ("ok", "订单已提交", "该信号已提交到券商，等待成交或后续订单回报"),
@@ -36,6 +38,8 @@ _CONFIRM_STATUS_HINTS = {
 
 _CANCEL_STATUS_HINTS = {
     "expired": ("fail", "信号已过期", "该信号超时自动失效，无法操作"),
+    "cancelled": ("ok", "信号已取消", "该信号已取消，无需重复取消"),
+    "canceled": ("ok", "信号已取消", "该信号已取消，无需重复取消"),
     "rejected": ("fail", "信号已拒绝", "该信号已被拒绝，无法重复操作"),
     "executed": ("warn", "信号已执行", "信号已执行，无法取消"),
     "submitted": ("warn", "订单已提交", "订单已提交到券商，不能再按信号拒绝取消"),
@@ -138,19 +142,35 @@ def _broker_scoped_execution_patch(
     if not isinstance(broker_payload, dict):
         broker_payload = {}
     execution_by_mode = dict(execution_by_mode)
-    execution_by_mode[broker_mode] = {
+    broker_update = {
         **broker_payload,
         "status": status,
         "note": note,
         "broker_mode": broker_mode,
         "data_environment": data_environment,
+        "market_data_mode": data_environment,
         "status_reason": to_text(extra_update.get("status_reason") or note),
         "updated_at": extra_update.get("confirmed_at")
-        or extra_update.get("rejected_at")
+        or extra_update.get("cancelled_at")
+        or extra_update.get("cancel_requested_at")
         or extra_update.get("expired_at")
+        or extra_update.get("rejected_at")
         or now_iso_utc(),
         "source": "signal_webhook",
     }
+    for key in (
+        "cancel_reason",
+        "cancelled_at",
+        "cancelled_by",
+        "cancel_requested_at",
+        "cancel_requested_by",
+        "cancelled_order_ids",
+        "cancel_order_failures",
+        "cancel_order_failure_count",
+    ):
+        if key in extra_update:
+            broker_update[key] = extra_update[key]
+    execution_by_mode[broker_mode] = broker_update
     extra_patch["execution_by_mode"] = execution_by_mode
     extra_patch["last_runtime_broker_mode"] = broker_mode
     extra_patch["last_runtime_data_environment"] = data_environment
@@ -481,7 +501,7 @@ def build_signal_cancel_webhook_response(
                 cancel_broker_order=cancel_broker_order,
                 notify_order_status=notify_order_status,
                 source="webhook/signal/cancel",
-                reason=f"信号拒绝触发撤单 {to_text(record.get('signal_id') or signal_id)}",
+                reason=f"信号取消触发撤单 {to_text(record.get('signal_id') or signal_id)}",
             )
         else:
             cancel_summary = build_signal_cancel_order_summary(
@@ -491,26 +511,91 @@ def build_signal_cancel_webhook_response(
                 escape_filter_string=escape_filter_string,
                 cancel_broker_order=cancel_broker_order,
                 source="webhook/signal/cancel",
-                reason=f"信号拒绝触发撤单 {to_text(record.get('signal_id') or signal_id)}",
+                reason=f"信号取消触发撤单 {to_text(record.get('signal_id') or signal_id)}",
             )
 
-    failure_count = len(cancel_summary.get("failed_order_ids") or [])
-    rejection_note = "manual_rejected" if cancel_summary.get("ok") else f"manual_rejected_with_cancel_failures:{failure_count}"
-    extra_update = {
-        "rejected_by": "manual",
-        "rejected_at": now_iso_utc(now_provider or clock),
-        "status_reason": "manual_rejected" if cancel_summary.get("ok") else "manual_rejected_with_cancel_failures",
-        "cancel_order_failures": list(cancel_summary.get("failed_order_ids") or []),
-        "cancelled_order_ids": list(cancel_summary.get("cancelled_order_ids") or []),
+    request_payload = payload if isinstance(payload, dict) else {}
+    cancel_time = now_iso_utc(now_provider or clock)
+    cancel_reason = to_text(request_payload.get("cancel_reason") or request_payload.get("reason") or "manual_cancelled")
+    cancelled_by = to_text(
+        request_payload.get("cancelled_by")
+        or request_payload.get("cancelledBy")
+        or request_payload.get("user")
+        or "manual"
+    )
+    cancelled_order_ids = list(cancel_summary.get("cancelled_order_ids") or [])
+    cancel_failures = list(cancel_summary.get("failed_order_ids") or cancel_summary.get("cancel_order_failures") or [])
+    failure_count = len(cancel_failures)
+    base_cancel_extra = {
+        "cancel_reason": cancel_reason,
+        "cancel_order_failures": cancel_failures,
+        "cancel_order_failure_count": failure_count,
+        "cancelled_order_ids": cancelled_order_ids,
+        "cancel_trade_group_id": to_text(cancel_summary.get("trade_group_id")),
+        "cancel_updated_record_ids": list(cancel_summary.get("updated_record_ids") or []),
+        "cancel_detail_record_ids": list(cancel_summary.get("detail_record_ids") or []),
+        "cancel_source": "webhook/signal/cancel",
         "broker_mode": environment,
         "data_environment": data_environment,
+        "market_data_mode": data_environment,
+    }
+
+    if not cancel_summary.get("ok"):
+        failure_status_reason = "manual_cancel_failed"
+        failure_display_count = failure_count or 1
+        extra_update = {
+            **base_cancel_extra,
+            "cancel_requested_by": cancelled_by,
+            "cancel_requested_at": cancel_time,
+            "status_reason": failure_status_reason,
+        }
+        failure_note = f"{failure_status_reason}:{failure_display_count}"
+        update_payload, updated_row = _signal_status_update_payload(
+            record,
+            broker_mode=environment,
+            data_environment=data_environment,
+            status=current_status,
+            note=failure_note,
+            extra_update=extra_update,
+        )
+        updated_record = pb.update_record(
+            "ibkr_signals",
+            str(record.get("id")),
+            update_payload,
+        )
+        updated_row = updated_record if isinstance(updated_record, dict) else updated_row
+        try:
+            _sync_signal_notification(
+                pb,
+                updated_row,
+                action=current_status,
+                message=f"信号取消失败，账户撤单失败 {failure_display_count} 条",
+                notify_signal_status=notify_signal_status,
+                update_signal_card=update_signal_card,
+                console_base_url=console_base_url,
+            )
+        except Exception:
+            pass
+        return _fail_response(
+            "信号取消失败",
+            f"账户撤单失败 {failure_display_count} 条，信号状态保持 {current_status or '--'}",
+            symbol,
+            status_code=500,
+            action="signal_cancel",
+        )
+
+    extra_update = {
+        **base_cancel_extra,
+        "cancelled_by": cancelled_by,
+        "cancelled_at": cancel_time,
+        "status_reason": cancel_reason,
     }
     update_payload, updated_row = _signal_status_update_payload(
         record,
         broker_mode=environment,
         data_environment=data_environment,
-        status="rejected",
-        note=rejection_note,
+        status="cancelled",
+        note=cancel_reason,
         extra_update=extra_update,
     )
     updated_record = pb.update_record(
@@ -523,11 +608,11 @@ def build_signal_cancel_webhook_response(
         _sync_signal_notification(
             pb,
             updated_row,
-            action="rejected",
+            action="cancelled",
             message=(
-                "信号已拒绝，暂不执行"
-                if cancel_summary.get("ok")
-                else f"信号已拒绝，但仍有 {failure_count} 条账户订单撤销失败"
+                f"信号已取消，已撤销 {len(cancelled_order_ids)} 条账户订单"
+                if cancelled_order_ids
+                else "信号已取消，暂不执行"
             ),
             notify_signal_status=notify_signal_status,
             update_signal_card=update_signal_card,
@@ -536,20 +621,12 @@ def build_signal_cancel_webhook_response(
     except Exception:
         pass
 
-    if not cancel_summary.get("ok"):
-        return _fail_response(
-            "信号已拒绝",
-            f"账户撤单失败 {failure_count} 条",
-            symbol,
-            status_code=500,
-            action="signal_cancel",
-        )
     return _page_response(
-        fail_page("信号已拒绝", "拒绝成功", symbol),
+        ok_page("信号已取消", "取消成功", symbol),
         status_code=200,
-        title="信号已拒绝",
-        detail="拒绝成功",
+        title="信号已取消",
+        detail="取消成功",
         symbol=symbol,
-        page_kind="fail",
+        page_kind="ok",
         action="signal_cancel",
     )

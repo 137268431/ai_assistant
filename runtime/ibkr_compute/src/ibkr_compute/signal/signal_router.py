@@ -48,6 +48,8 @@ class SignalRouter:
             "submitted_waiting_fill",
             "filled_repricing_protection",
             "filled_position",
+            "cancelled",
+            "canceled",
             "rejected",
             "expired",
             "blocked",

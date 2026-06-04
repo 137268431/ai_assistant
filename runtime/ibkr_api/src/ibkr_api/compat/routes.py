@@ -39,6 +39,7 @@ NATIVE_CUSTOM_ROUTES = [
     "ibkr/home-market",
     "ibkr/account_snapshot",
     "ibkr/analytics/daily-signals",
+    "ibkr/analytics/signal-latency",
     "ibkr/analytics/daily-trade-review",
     "ibkr/analytics/realized-pnl-summary",
     "ibkr/notify",

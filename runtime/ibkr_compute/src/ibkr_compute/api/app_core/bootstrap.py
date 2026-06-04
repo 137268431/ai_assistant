@@ -144,6 +144,7 @@ def build_runtime_state_bundle() -> dict:
         "compute_lock_manager": ComputeLockManager(),
         "ibkr_account_snapshot_cache": {},
         "ibkr_account_snapshot_cache_lock": threading.Lock(),
+        "ibkr_account_snapshot_refresh_locks": {},
         "host_cpu_snapshot_lock": threading.Lock(),
         "host_cpu_snapshot_cache": None,
         "_start_time": time.time(),
@@ -184,6 +185,10 @@ def build_constant_bundle() -> dict:
         "IBKR_ACCOUNT_SNAPSHOT_TTL_SECONDS": max(
             1.0,
             float(os.environ.get("IBKR_ACCOUNT_SNAPSHOT_TTL_SECONDS", "5.0")),
+        ),
+        "IBKR_ACCOUNT_SNAPSHOT_STALE_SECONDS": max(
+            5.0,
+            float(os.environ.get("IBKR_ACCOUNT_SNAPSHOT_STALE_SECONDS", "180.0")),
         ),
         "COMPUTE_CURSOR_STATE_KEY": "compute_cursors",
         "COMPUTE_CURSOR_STATE_DATE": "global",

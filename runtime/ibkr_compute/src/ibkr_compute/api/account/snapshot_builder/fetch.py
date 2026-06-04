@@ -14,6 +14,7 @@ def fetch_snapshot_sources(service, account_id: str, *, include_pnl: bool = True
     orders_error = ""
     account_snapshot_requested = False
     positions_loaded = False
+    orders_loaded = False
 
     fetchers = {}
     if hasattr(service, "order_lifecycle") and service.order_lifecycle:
@@ -74,6 +75,7 @@ def fetch_snapshot_sources(service, account_id: str, *, include_pnl: bool = True
                         pnl_raw = payload
                 else:
                     orders_raw = value if isinstance(value, list) else []
+                    orders_loaded = isinstance(value, list)
 
     # Fall back to the lightweight socket calls if the richer account download path
     # yields no usable payload. This preserves the pre-existing behavior while
@@ -84,20 +86,22 @@ def fetch_snapshot_sources(service, account_id: str, *, include_pnl: bool = True
                 summary_raw = service.order_lifecycle.get_account_summary(account_id)
                 summary_error = ""
             except Exception as exc:
-                summary_error = str(exc)
+                summary_error = summary_error or str(exc)
         if not positions_loaded:
             try:
                 positions_raw = service.order_lifecycle.get_positions(account_id)
                 positions_loaded = True
                 positions_error = ""
             except Exception as exc:
-                positions_error = str(exc)
+                positions_error = positions_error or str(exc)
 
     return {
         "summary_raw": summary_raw,
         "pnl_raw": pnl_raw,
         "positions_raw": positions_raw,
         "orders_raw": orders_raw,
+        "positions_loaded": positions_loaded,
+        "orders_loaded": orders_loaded,
         "errors": {
             "summary": summary_error,
             "pnl": pnl_error,

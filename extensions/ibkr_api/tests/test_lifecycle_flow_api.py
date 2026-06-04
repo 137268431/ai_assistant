@@ -609,6 +609,66 @@ class LifecycleFlowApiTest(unittest.TestCase):
         self.assertEqual(event["changes"], node["changes"])
         self.assertEqual("SL 95 -> 96.25", node["change_summary"])
 
+    def test_modified_protection_summary_keeps_stable_tp_value(self):
+        payload, status_code = self.build(
+            {
+                "orders": [
+                    {
+                        "symbol": "GNRC",
+                        "signal_id": "sig_bracket_adjust",
+                        "trade_group_id": "tg_bracket_adjust",
+                        "order_id": "4202",
+                        "role": "repair_sl",
+                        "status": "Submitted",
+                        "quantity": 5,
+                        "limit_price": 283.6929,
+                        "sl_price": 283.6929,
+                        "bar_time_ms": 2300,
+                        "extra": {"old_sl": 285.942, "new_sl": 283.6929, "old_tp": 280.587},
+                    }
+                ],
+            },
+            {"symbol": "GNRC", "signal_id": "sig_bracket_adjust", "trade_group_id": "tg_bracket_adjust"},
+        )
+
+        self.assertEqual(status_code, 200)
+        event = next(event for event in payload["events"] if event["event_type"] == "stop_loss_modified")
+        self.assertEqual("SL 285.942 -> 283.6929 / TP 280.587", event["change_summary"])
+        self.assertEqual([("stop_loss", 285.942, 283.6929)], [(item["field"], item["before"], item["after"]) for item in event["changes"]])
+        self.assertNotIn("-> --", event["change_summary"])
+        node = next(node for node in payload["nodes"] if node["type"] == "stop_loss_modified")
+        self.assertEqual("SL 285.942 -> 283.6929 / TP 280.587", node["change_summary"])
+
+    def test_modified_protection_summary_uses_value_only_when_levels_do_not_change(self):
+        payload, status_code = self.build(
+            {
+                "orders": [
+                    {
+                        "symbol": "GNRC",
+                        "signal_id": "sig_bracket_same",
+                        "trade_group_id": "tg_bracket_same",
+                        "order_id": "4203",
+                        "role": "repair_sl",
+                        "status": "Submitted",
+                        "quantity": 5,
+                        "limit_price": 285.942,
+                        "sl_price": 285.942,
+                        "bar_time_ms": 2400,
+                        "extra": {"old_sl": 285.942, "new_sl": 285.942, "old_tp": 280.587, "new_tp": 280.587},
+                    }
+                ],
+            },
+            {"symbol": "GNRC", "signal_id": "sig_bracket_same", "trade_group_id": "tg_bracket_same"},
+        )
+
+        self.assertEqual(status_code, 200)
+        event = next(event for event in payload["events"] if event["event_type"] == "stop_loss_modified")
+        self.assertEqual("SL 285.942 / TP 280.587", event["change_summary"])
+        self.assertEqual([], event.get("changes", []))
+        self.assertNotIn("-> --", event["change_summary"])
+        node = next(node for node in payload["nodes"] if node["type"] == "stop_loss_modified")
+        self.assertEqual("SL 285.942 / TP 280.587", node["change_summary"])
+
     def test_lifecycle_endpoint_marks_active_open_chain(self):
         payload, status_code = self.build(
             {

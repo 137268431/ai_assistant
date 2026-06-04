@@ -47,6 +47,14 @@ def _page_response(body: str, *, status_code: int, title: str, detail: str, symb
     )
 
 
+def _with_result_context(response: tuple[dict[str, Any], int], result: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    payload, status_code = response
+    for key in ("signal_result", "trade_group_id", "cancelled_order_ids", "updated_record_ids", "detail_record_ids"):
+        if key in (result or {}):
+            payload[key] = result.get(key)
+    return payload, status_code
+
+
 def _fail_response(title: str, detail: str, symbol: str = "", *, status_code: int, action: str) -> tuple[dict[str, Any], int]:
     return _page_response(
         fail_page(title, detail, symbol),
@@ -166,12 +174,12 @@ def build_order_cancel_webhook_response(
 
     if bool(result.get("warning")) and int(status_code or 200) < 400:
         title, detail = _warning_page_metadata(result.get("action") or "cancel_group", result.get("message"))
-        return _warn_response(title, detail, symbol, action="cancel_group")
+        return _with_result_context(_warn_response(title, detail, symbol, action="cancel_group"), result)
     if int(status_code or 200) >= 400:
         detail = to_text(result.get("error") or result.get("message") or "订单取消失败")
         title = "订单取消失败" if int(status_code or 200) >= 500 else "订单无法取消"
-        return _fail_response(title, detail, symbol, status_code=int(status_code or 500), action="cancel_group")
-    return _ok_response("订单已取消", "状态已更新", symbol, action="cancel_group")
+        return _with_result_context(_fail_response(title, detail, symbol, status_code=int(status_code or 500), action="cancel_group"), result)
+    return _with_result_context(_ok_response("订单已取消", "状态已更新", symbol, action="cancel_group"), result)
 
 
 def build_order_close_webhook_response(

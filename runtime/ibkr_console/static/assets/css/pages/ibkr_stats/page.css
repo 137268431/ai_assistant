@@ -408,6 +408,284 @@
             flex: 0 0 auto;
         }
 
+        .signal-latency-panel {
+            --signal-latency-border: rgba(79, 209, 197, 0.20);
+            position: relative;
+            overflow: hidden;
+            margin: 0 0 14px;
+            padding: 16px;
+            border: 1px solid var(--signal-latency-border);
+            border-radius: 20px;
+            background:
+                radial-gradient(circle at 10% 0%, rgba(79, 209, 197, 0.22), transparent 34%),
+                radial-gradient(circle at 88% 12%, rgba(246, 173, 85, 0.16), transparent 32%),
+                linear-gradient(145deg, rgba(6, 24, 31, 0.98), rgba(4, 10, 18, 0.96));
+            box-shadow: 0 22px 54px rgba(0, 0, 0, 0.30), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+        }
+
+        .signal-latency-panel::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background:
+                linear-gradient(90deg, rgba(79, 209, 197, 0.055) 0 1px, transparent 1px 28px),
+                linear-gradient(rgba(255, 255, 255, 0.026) 1px, transparent 1px);
+            background-size: 28px 28px, 44px 44px;
+            -webkit-mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.9), transparent 86%);
+            mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.9), transparent 86%);
+            pointer-events: none;
+        }
+
+        .signal-latency-panel > * {
+            position: relative;
+            z-index: 1;
+        }
+
+        .signal-latency-head,
+        .signal-latency-chart-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 14px;
+        }
+
+        .signal-latency-head {
+            margin-bottom: 12px;
+        }
+
+        .signal-latency-title-block {
+            min-width: 0;
+        }
+
+        .signal-latency-kicker {
+            margin-bottom: 7px;
+            color: #81e6d9;
+            font-family: var(--font-mono);
+            font-size: 10px;
+            font-weight: 900;
+            letter-spacing: 1.8px;
+            line-height: 1;
+            text-transform: uppercase;
+        }
+
+        .signal-latency-title {
+            margin-bottom: 6px;
+            font-size: clamp(18px, 1.8vw, 24px);
+            letter-spacing: -0.04em;
+        }
+
+        .signal-latency-copy,
+        .signal-latency-meta,
+        .signal-latency-card-copy,
+        .signal-latency-chart-copy {
+            color: #9fb0c3;
+            font-size: 11.5px;
+            line-height: 1.5;
+        }
+
+        .signal-latency-meta {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            gap: 7px;
+            max-width: 700px;
+            font-family: var(--font-mono);
+        }
+
+        .signal-latency-meta-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            min-height: 28px;
+            padding: 5px 9px;
+            border: 1px solid rgba(79, 209, 197, 0.16);
+            border-radius: 999px;
+            background: rgba(2, 8, 18, 0.46);
+        }
+
+        .signal-latency-meta-pill span {
+            color: rgba(159, 176, 195, 0.78);
+            font-size: 9px;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+
+        .signal-latency-meta-pill strong {
+            color: var(--text);
+            font-size: 10.5px;
+            font-weight: 800;
+        }
+
+        .signal-latency-grid {
+            grid-template-columns: repeat(4, minmax(150px, 1fr));
+            padding-bottom: 12px;
+        }
+
+        .signal-latency-card {
+            position: relative;
+            overflow: hidden;
+            min-height: 96px;
+            border-color: rgba(79, 209, 197, 0.13);
+            background: linear-gradient(180deg, rgba(7, 26, 34, 0.92), rgba(4, 10, 18, 0.88));
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+        }
+
+        .signal-latency-card::after {
+            content: '';
+            position: absolute;
+            inset: 0 0 auto;
+            height: 2px;
+            background: rgba(79, 209, 197, 0.75);
+        }
+
+        .signal-latency-card.warn::after {
+            background: rgba(246, 173, 85, 0.82);
+        }
+
+        .signal-latency-card.alert::after {
+            background: rgba(248, 113, 113, 0.88);
+        }
+
+        .signal-latency-card.muted::after {
+            background: rgba(148, 163, 184, 0.38);
+        }
+
+        .signal-latency-card .stat-label {
+            color: rgba(159, 176, 195, 0.86);
+            font-weight: 900;
+            letter-spacing: 0.9px;
+        }
+
+        .signal-latency-card-value {
+            margin-top: 7px;
+            font-size: clamp(22px, 2.1vw, 30px);
+            line-height: 1.02;
+            letter-spacing: -0.05em;
+        }
+
+        .signal-latency-card.ok .signal-latency-card-value {
+            color: #81e6d9;
+        }
+
+        .signal-latency-card.warn .signal-latency-card-value {
+            color: #f6ad55;
+        }
+
+        .signal-latency-card.alert .signal-latency-card-value {
+            color: #f87171;
+        }
+
+        .signal-latency-card-copy {
+            margin-top: 7px;
+            font-family: var(--font-mono);
+            font-size: 10.5px;
+        }
+
+        .signal-latency-chart-grid {
+            grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr);
+            gap: 12px;
+            padding-bottom: 0;
+        }
+
+        .signal-latency-chart-card {
+            padding: 14px;
+            border: 1px solid rgba(79, 209, 197, 0.14);
+            background: linear-gradient(180deg, rgba(7, 23, 34, 0.94), rgba(4, 10, 18, 0.91));
+        }
+
+        .signal-latency-chart-head {
+            margin-bottom: 10px;
+        }
+
+        .signal-latency-chart-head .chart-title {
+            margin-bottom: 0;
+            font-size: 13px;
+            letter-spacing: -0.01em;
+        }
+
+        .signal-latency-chart-copy {
+            max-width: 360px;
+            color: rgba(159, 176, 195, 0.76);
+            font-size: 10.5px;
+            text-align: right;
+        }
+
+        .signal-latency-latest {
+            display: grid;
+            gap: 10px;
+            min-height: 220px;
+            align-content: start;
+            padding: 12px;
+            border: 1px solid rgba(79, 209, 197, 0.11);
+            border-radius: 14px;
+            background: rgba(2, 8, 18, 0.34);
+        }
+
+        .signal-latency-latest-symbol,
+        .signal-latency-latest-total,
+        .signal-latency-latest-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            font-family: var(--font-mono);
+        }
+
+        .signal-latency-latest-symbol strong {
+            color: #e6fffb;
+            font-size: 18px;
+            letter-spacing: 0.03em;
+        }
+
+        .signal-latency-latest-symbol span,
+        .signal-latency-latest-total span,
+        .signal-latency-latest-row span,
+        .signal-latency-empty {
+            color: rgba(159, 176, 195, 0.78);
+            font-size: 10.5px;
+        }
+
+        .signal-latency-latest-total {
+            min-height: 36px;
+            padding: 8px 10px;
+            border-radius: 12px;
+            background: rgba(79, 209, 197, 0.08);
+        }
+
+        .signal-latency-latest-total strong {
+            color: #81e6d9;
+            font-size: 18px;
+        }
+
+        .signal-latency-latest-rows {
+            display: grid;
+            gap: 7px;
+        }
+
+        .signal-latency-latest-row {
+            padding: 7px 9px;
+            border: 1px solid rgba(148, 163, 184, 0.10);
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.025);
+        }
+
+        .signal-latency-latest-row strong {
+            color: #dbeafe;
+            font-size: 11.5px;
+        }
+
+        .signal-latency-latest-row.ok strong {
+            color: #81e6d9;
+        }
+
+        .signal-latency-latest-row.warn strong {
+            color: #f6ad55;
+        }
+
+        .signal-latency-latest-row.alert strong {
+            color: #f87171;
+        }
+
         .realized-pnl-panel {
             --realized-panel-border: rgba(246, 173, 85, 0.20);
             position: relative;
@@ -991,6 +1269,41 @@
                 margin-left: 0;
             }
 
+            .signal-latency-panel {
+                padding: 10px;
+                margin-bottom: 8px;
+            }
+
+            .signal-latency-head,
+            .signal-latency-chart-head {
+                flex-direction: column;
+                gap: 8px;
+            }
+
+            .signal-latency-meta {
+                justify-content: flex-start;
+                max-width: none;
+            }
+
+            .signal-latency-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 8px;
+            }
+
+            .signal-latency-chart-grid {
+                grid-template-columns: 1fr;
+                gap: 8px;
+            }
+
+            .signal-latency-chart-copy {
+                max-width: none;
+                text-align: left;
+            }
+
+            .signal-latency-latest {
+                min-height: 0;
+            }
+
             .realized-pnl-panel {
                 padding: 10px;
                 margin-bottom: 8px;
@@ -1097,6 +1410,19 @@
             .realized-pnl-panel {
                 padding: 9px;
                 border-radius: 16px;
+            }
+
+            .signal-latency-panel {
+                padding: 9px;
+                border-radius: 16px;
+            }
+
+            .signal-latency-card {
+                min-height: 88px;
+            }
+
+            .signal-latency-card-copy {
+                font-size: 9.5px;
             }
 
             .stats-overview-panel,

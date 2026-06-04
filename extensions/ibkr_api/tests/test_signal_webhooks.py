@@ -13,6 +13,7 @@ if str(SERVICE_SRC_ROOT) not in sys.path:
 os.environ.setdefault("PYTHONHASHSEED", "0")
 
 from ibkr_api.signal_webhooks import build_signal_cancel_webhook_response, build_signal_confirm_webhook_response
+from ibkr_api.signals.notifications import build_signal_status_card
 
 
 class _FakePB:
@@ -359,7 +360,7 @@ class SignalWebhookBuildersTest(unittest.TestCase):
         self.assertEqual(page["title"], "保护单已生效")
         self.assertEqual(pb.updated, [])
 
-    def test_cancel_webhook_rejects_awaiting_confirm_without_canceling_orders(self):
+    def test_cancel_webhook_cancels_awaiting_confirm_without_canceling_orders(self):
         pb = _FakePB(
             [
                 {
@@ -402,14 +403,20 @@ class SignalWebhookBuildersTest(unittest.TestCase):
         )
 
         self.assertEqual(status_code, 200)
-        self.assertEqual(page["page_kind"], "fail")
-        self.assertEqual(page["title"], "信号已拒绝")
-        self.assertIn("拒绝成功", page["body"])
+        self.assertEqual(page["page_kind"], "ok")
+        self.assertEqual(page["title"], "信号已取消")
+        self.assertIn("取消成功", page["body"])
         self.assertEqual(cancel_calls, [])
-        self.assertEqual(pb.signals["sig-row-1"]["status"], "rejected")
-        self.assertEqual(pb.signals["sig-row-1"]["note"], "manual_rejected")
-        self.assertEqual(pb.signals["sig-row-1"]["extra"]["status_reason"], "manual_rejected")
+        self.assertEqual(pb.signals["sig-row-1"]["status"], "cancelled")
+        self.assertEqual(pb.signals["sig-row-1"]["note"], "manual_cancelled")
+        self.assertEqual(pb.signals["sig-row-1"]["extra"]["status_reason"], "manual_cancelled")
+        self.assertEqual(pb.signals["sig-row-1"]["extra"]["cancel_reason"], "manual_cancelled")
+        self.assertEqual(pb.signals["sig-row-1"]["extra"]["cancelled_by"], "manual")
+        self.assertEqual(pb.signals["sig-row-1"]["extra"]["cancelled_at"], "2026-04-23T01:02:03Z")
         self.assertEqual(pb.signals["sig-row-1"]["extra"]["cancelled_order_ids"], [])
+        self.assertEqual(pb.signals["sig-row-1"]["extra"]["cancel_order_failures"], [])
+        self.assertEqual(pb.signals["sig-row-1"]["extra"]["broker_mode"], "live")
+        self.assertEqual(pb.signals["sig-row-1"]["extra"]["data_environment"], "live")
         self.assertEqual(pb.orders["order-1"]["status"], "Submitted")
 
     def test_cancel_webhook_cancels_related_orders_by_signal_id_and_appends_details(self):
@@ -496,11 +503,15 @@ class SignalWebhookBuildersTest(unittest.TestCase):
         )
 
         self.assertEqual(status_code, 200)
-        self.assertEqual(page["page_kind"], "fail")
-        self.assertIn("信号已拒绝", page["body"])
+        self.assertEqual(page["page_kind"], "ok")
+        self.assertIn("信号已取消", page["body"])
         self.assertEqual(cancel_calls, [("live", "101", "webhook/signal/cancel", "sig-1"), ("live", "102", "webhook/signal/cancel", "sig-1")])
-        self.assertEqual(pb.signals["sig-row-1"]["status"], "rejected")
-        self.assertEqual(pb.signals["sig-row-1"]["note"], "manual_rejected")
+        self.assertEqual(pb.signals["sig-row-1"]["status"], "cancelled")
+        self.assertEqual(pb.signals["sig-row-1"]["note"], "manual_cancelled")
+        self.assertEqual(pb.signals["sig-row-1"]["extra"]["status_reason"], "manual_cancelled")
+        self.assertEqual(pb.signals["sig-row-1"]["extra"]["cancel_reason"], "manual_cancelled")
+        self.assertEqual(pb.signals["sig-row-1"]["extra"]["cancelled_by"], "manual")
+        self.assertEqual(pb.signals["sig-row-1"]["extra"]["cancelled_at"], "2026-04-23T01:02:03Z")
         self.assertEqual(pb.signals["sig-row-1"]["extra"]["cancelled_order_ids"], ["101", "102"])
         self.assertEqual(pb.signals["sig-row-1"]["extra"]["cancel_order_failures"], [])
         self.assertEqual(pb.signals["sig-row-1"]["extra"]["feishu_signal_message_id"], "sig-msg-2")
@@ -513,8 +524,8 @@ class SignalWebhookBuildersTest(unittest.TestCase):
         self.assertEqual(len(created_details), 2)
         self.assertEqual([row["extra"]["source"] for row in created_details], ["webhook/signal/cancel", "webhook/signal/cancel"])
         self.assertEqual(len(signal_notify_calls), 1)
-        self.assertEqual(signal_notify_calls[0][0], "rejected")
-        self.assertEqual(signal_notify_calls[0][2]["message"], "信号已拒绝，暂不执行")
+        self.assertEqual(signal_notify_calls[0][0], "cancelled")
+        self.assertEqual(signal_notify_calls[0][2]["message"], "信号已取消，已撤销 2 条账户订单")
         self.assertEqual(len(order_notify_calls), 1)
         self.assertEqual(order_notify_calls[0][0], "canceled")
 
@@ -561,13 +572,80 @@ class SignalWebhookBuildersTest(unittest.TestCase):
 
         self.assertEqual(status_code, 500)
         self.assertEqual(page["page_kind"], "fail")
+        self.assertEqual(page["title"], "信号取消失败")
         self.assertIn("账户撤单失败 1 条", page["body"])
-        self.assertEqual(pb.signals["sig-row-1"]["status"], "rejected")
-        self.assertEqual(pb.signals["sig-row-1"]["note"], "manual_rejected_with_cancel_failures:1")
-        self.assertEqual(pb.signals["sig-row-1"]["extra"]["status_reason"], "manual_rejected_with_cancel_failures")
+        self.assertEqual(pb.signals["sig-row-1"]["status"], "pending")
+        self.assertEqual(pb.signals["sig-row-1"]["note"], "manual_cancel_failed:1")
+        self.assertEqual(pb.signals["sig-row-1"]["extra"]["status_reason"], "manual_cancel_failed")
+        self.assertEqual(pb.signals["sig-row-1"]["extra"]["cancel_reason"], "manual_cancelled")
+        self.assertEqual(pb.signals["sig-row-1"]["extra"]["cancel_requested_by"], "manual")
+        self.assertEqual(pb.signals["sig-row-1"]["extra"]["cancel_requested_at"], "2026-04-23T01:02:03Z")
         self.assertEqual(pb.signals["sig-row-1"]["extra"]["cancel_order_failures"][0]["order_id"], "101")
         self.assertEqual(pb.orders["order-1"]["status"], "Submitted")
         self.assertEqual(pb.created, [])
+
+    def test_signal_status_card_displays_cancelled_alias_and_cancel_details(self):
+        card = build_signal_status_card(
+            {
+                "id": "sig-row-1",
+                "signal_id": "sig-1",
+                "symbol": "AAPL",
+                "direction": "long",
+                "environment": "live",
+                "status": "canceled",
+                "extra": {
+                    "cancel_reason": "broker_cancelled",
+                    "cancelled_by": "broker",
+                    "cancelled_at": "2026-04-23T01:02:03Z",
+                    "cancelled_order_ids": ["101"],
+                    "cancel_order_failures": [{"order_id": "102", "error": "broker_down"}],
+                },
+            },
+            message="订单取消同步",
+            console_base_url="https://console.example.com",
+        )
+        content = card["elements"][0]["content"]
+
+        self.assertIn("已取消", card["header"]["title"]["content"])
+        self.assertIn("**状态**: 已取消", content)
+        self.assertIn("**取消原因**: broker_cancelled", content)
+        self.assertIn("**取消时间**: 2026-04-23T01:02:03Z", content)
+        self.assertIn("**取消人**: broker", content)
+        self.assertIn("**已撤订单**: 101", content)
+        self.assertIn("**撤单失败**: 1（102）", content)
+
+    def test_signal_status_card_displays_expiry_validity_details(self):
+        card = build_signal_status_card(
+            {
+                "id": "sig-row-1",
+                "signal_id": "sig-1",
+                "symbol": "AAPL",
+                "direction": "long",
+                "environment": "live",
+                "status": "expired",
+                "extra": {
+                    "status_reason": "confirm_too_late",
+                    "expired_at": "2026-04-23T01:02:03Z",
+                    "expired_by": "signal_confirm_webhook",
+                    "expiry_reference": "bar_time_ms",
+                    "signal_validity_minutes": 30,
+                    "order_expiry_validity_minutes": 15,
+                    "order_expiry_cutoff_ms": 1776918600000,
+                },
+            },
+            message="确认超时",
+            console_base_url="https://console.example.com",
+        )
+        content = card["elements"][0]["content"]
+
+        self.assertIn("已过期", card["header"]["title"]["content"])
+        self.assertIn("**状态**: 已过期", content)
+        self.assertIn("**过期原因**: confirm_too_late", content)
+        self.assertIn("**信号有效期**: 30 分钟", content)
+        self.assertIn("**订单有效期**: 15 分钟", content)
+        self.assertIn("**订单截止**: 1776918600000", content)
+        self.assertIn("**过期时间**: 2026-04-23T01:02:03Z", content)
+        self.assertIn("**过期来源**: signal_confirm_webhook · bar_time_ms", content)
 
 
 if __name__ == "__main__":

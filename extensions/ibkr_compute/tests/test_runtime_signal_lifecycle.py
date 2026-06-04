@@ -619,7 +619,7 @@ class RuntimeSignalLifecycleTest(unittest.TestCase):
         self.assertEqual("broker_modify_failed", row["extra"]["protection_reprice_result"]["reason"])
         self.assertEqual("protection_reprice_failed", service.pb.acked[-1]["status"])
 
-    def test_tv_direct_entry_cancel_marks_missed_limit_cap(self):
+    def test_tv_direct_entry_cancel_marks_cancelled_with_missed_limit_reason(self):
         service = _FakeService()
         self._make_tv_direct_signal(service, direction="long")
 
@@ -637,12 +637,18 @@ class RuntimeSignalLifecycleTest(unittest.TestCase):
         )
 
         row = service.pb.signals["sig-row-1"]
-        self.assertEqual("entry_missed_limit_cap", row["status"])
-        self.assertEqual("entry_missed_limit_cap", row["note"])
+        self.assertEqual("cancelled", row["status"])
+        self.assertEqual("cancelled", row["note"])
+        self.assertEqual("entry_missed_limit_cap", row["extra"]["status_reason"])
         self.assertTrue(row["extra"]["entry_missed_limit_cap"])
+        self.assertEqual("entry_missed_limit_cap", row["extra"]["entry_missed_reason"])
         self.assertEqual("Cancelled", row["extra"]["entry_cancel_status"])
         self.assertFalse(row["extra"]["position_open"])
-        self.assertEqual("entry_missed_limit_cap", service.pb.acked[-1]["status"])
+        ack = service.pb.acked[-1]
+        self.assertEqual("cancelled", ack["status"])
+        self.assertEqual("cancelled", ack["note"])
+        self.assertEqual("entry_missed_limit_cap", ack["order"]["extra"]["status_reason"])
+        self.assertTrue(ack["order"]["extra"]["entry_missed_limit_cap"])
         self.assertEqual(["AAPL"], service.signal_processor.removed)
         entry_order = next(item for item in service.pb.orders if item["id"] == "order-1")
         self.assertEqual("Cancelled", entry_order["status"])
