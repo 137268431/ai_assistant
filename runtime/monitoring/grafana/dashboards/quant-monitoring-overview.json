@@ -359,7 +359,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, route, status_class) (rate(ibkr_http_server_requests_total{service=~\"$service\"}[$__rate_interval]))",
-          "legendFormat": "{{service}} / {{route}} / {{status_class}}",
+          "legendFormat": "{{service}} | {{route}} | {{status_class}}",
           "range": true,
           "refId": "A"
         }
@@ -454,7 +454,7 @@
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.95, sum by (le, service, route) (rate(ibkr_http_server_request_duration_seconds_bucket{service=~\"$service\"}[$__rate_interval])))",
-          "legendFormat": "{{service}} / {{route}}",
+          "legendFormat": "{{service}} | {{route}}",
           "range": true,
           "refId": "A"
         }
@@ -549,7 +549,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, route) (ibkr_http_server_requests_in_flight{service=~\"$service\"})",
-          "legendFormat": "{{service}} / {{route}}",
+          "legendFormat": "{{service}} | {{route}}",
           "range": true,
           "refId": "A"
         }
@@ -644,7 +644,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, route, exception_class) (rate(ibkr_http_server_exceptions_total{service=~\"$service\"}[$__rate_interval]))",
-          "legendFormat": "{{service}} / {{route}} / {{exception_class}}",
+          "legendFormat": "{{service}} | {{route}} | {{exception_class}}",
           "range": true,
           "refId": "A"
         },
@@ -655,7 +655,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, route) (rate(ibkr_http_server_requests_total{service=~\"$service\", status_class=\"5xx\"}[$__rate_interval]))",
-          "legendFormat": "{{service}} / {{route}} / 5xx",
+          "legendFormat": "{{service}} | {{route}} | 5xx",
           "range": true,
           "refId": "B"
         }
@@ -767,7 +767,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, target_service, route, outcome) (rate(ibkr_http_client_requests_total{service=~\"$service\", target_service=~\"$target_service\"}[$__rate_interval]))",
-          "legendFormat": "{{service}} -> {{target_service}} / {{route}} / {{outcome}}",
+          "legendFormat": "{{service}} -> {{target_service}} | {{route}} | {{outcome}}",
           "range": true,
           "refId": "A"
         }
@@ -862,7 +862,7 @@
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.95, sum by (le, service, target_service, route) (rate(ibkr_http_client_request_duration_seconds_bucket{service=~\"$service\", target_service=~\"$target_service\"}[$__rate_interval])))",
-          "legendFormat": "{{service}} -> {{target_service}} / {{route}}",
+          "legendFormat": "{{service}} -> {{target_service}} | {{route}}",
           "range": true,
           "refId": "A"
         }
@@ -957,7 +957,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, target_service, route) (ibkr_http_client_requests_in_flight{service=~\"$service\", target_service=~\"$target_service\"})",
-          "legendFormat": "{{service}} -> {{target_service}} / {{route}}",
+          "legendFormat": "{{service}} -> {{target_service}} | {{route}}",
           "range": true,
           "refId": "A"
         }
@@ -1052,7 +1052,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, target_service, route, exception_class) (rate(ibkr_http_client_exceptions_total{service=~\"$service\", target_service=~\"$target_service\"}[$__rate_interval]))",
-          "legendFormat": "{{service}} -> {{target_service}} / {{route}} / {{exception_class}}",
+          "legendFormat": "{{service}} -> {{target_service}} | {{route}} | {{exception_class}}",
           "range": true,
           "refId": "A"
         },
@@ -1063,7 +1063,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, target_service, route, status_class) (rate(ibkr_http_client_requests_total{service=~\"$service\", target_service=~\"$target_service\", outcome!=\"success\"}[$__rate_interval]))",
-          "legendFormat": "{{service}} -> {{target_service}} / {{route}} / {{status_class}}",
+          "legendFormat": "{{service}} -> {{target_service}} | {{route}} | {{status_class}}",
           "range": true,
           "refId": "B"
         }
@@ -1175,7 +1175,7 @@
           },
           "editorMode": "code",
           "expr": "max by (service, environment, host, port) (ibkr_gateway_socket_listening{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "{{environment}} / {{host}}:{{port}}",
+          "legendFormat": "{{environment}} | {{host}}:{{port}}",
           "range": true,
           "refId": "A"
         }
@@ -1270,7 +1270,7 @@
           },
           "editorMode": "code",
           "expr": "max by (service, environment) (ibkr_gateway_status_code{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "{{service}} / {{environment}}",
+          "legendFormat": "{{service}} | {{environment}}",
           "range": true,
           "refId": "A"
         }
@@ -1365,7 +1365,7 @@
           },
           "editorMode": "code",
           "expr": "max by (service, environment) (ibkr_gateway_service_running{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "{{service}} / {{environment}}",
+          "legendFormat": "{{service}} | {{environment}}",
           "range": true,
           "refId": "A"
         }
@@ -1460,7 +1460,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, environment, client_role, result, reason_code) (rate(ibkr_broker_connect_attempts_total{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval]))",
-          "legendFormat": "{{client_role}} / {{result}} / {{reason_code}}",
+          "legendFormat": "{{client_role}} | {{result}} | {{reason_code}}",
           "range": true,
           "refId": "A"
         }
@@ -1555,7 +1555,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, environment, client_role, reason_code) (rate(ibkr_broker_disconnect_total{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval]))",
-          "legendFormat": "disconnect / {{client_role}} / {{reason_code}}",
+          "legendFormat": "disconnect | {{client_role}} | {{reason_code}}",
           "range": true,
           "refId": "A"
         },
@@ -1566,7 +1566,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, environment, client_role, ib_error_code, severity) (rate(ibkr_broker_error_total{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval]))",
-          "legendFormat": "error / {{client_role}} / {{ib_error_code}} / {{severity}}",
+          "legendFormat": "error | {{client_role}} | {{ib_error_code}} | {{severity}}",
           "range": true,
           "refId": "B"
         }
@@ -1678,7 +1678,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, environment, client_role, request_kind, result) (rate(ibkr_broker_request_total{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval]))",
-          "legendFormat": "{{client_role}} / {{request_kind}} / {{result}}",
+          "legendFormat": "{{client_role}} | {{request_kind}} | {{result}}",
           "range": true,
           "refId": "A"
         }
@@ -1868,7 +1868,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, environment, client_role, request_kind) (ibkr_broker_pending_requests{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "{{client_role}} / {{request_kind}}",
+          "legendFormat": "{{client_role}} | {{request_kind}}",
           "range": true,
           "refId": "A"
         }
@@ -1963,7 +1963,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (ib_error_code, request_kind, severity) (increase(ibkr_broker_error_total{service=~\"$service\", environment=~\"$environment\"}[$__range]))",
-          "legendFormat": "{{ib_error_code}} / {{request_kind}} / {{severity}}",
+          "legendFormat": "{{ib_error_code}} | {{request_kind}} | {{severity}}",
           "range": true,
           "refId": "A"
         }
@@ -2047,7 +2047,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, environment, source, interval, operation, result) (rate(ibkr_history_events_total{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval]))",
-          "legendFormat": "{{source}} / {{interval}} / {{operation}} / {{result}}",
+          "legendFormat": "{{source}} | {{interval}} | {{operation}} | {{result}}",
           "range": true,
           "refId": "A"
         }
@@ -2142,7 +2142,7 @@
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.95, sum by (le, service, environment, source, interval, operation) (rate(ibkr_history_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval])))",
-          "legendFormat": "{{source}} / {{interval}} / {{operation}}",
+          "legendFormat": "{{source}} | {{interval}} | {{operation}}",
           "range": true,
           "refId": "A"
         }
@@ -2237,7 +2237,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, environment, source) (ibkr_history_active_requests{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "{{service}} / {{source}}",
+          "legendFormat": "{{service}} | {{source}}",
           "range": true,
           "refId": "A"
         }
@@ -2332,7 +2332,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, environment, source, interval, operation) (rate(ibkr_history_rows_total{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval]))",
-          "legendFormat": "{{source}} / {{interval}} / {{operation}}",
+          "legendFormat": "{{source}} | {{interval}} | {{operation}}",
           "range": true,
           "refId": "A"
         }
@@ -2444,7 +2444,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, environment, stage, signal_source, result, reason_code) (rate(ibkr_signal_events_total{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval]))",
-          "legendFormat": "{{stage}} / {{signal_source}} / {{result}} / {{reason_code}}",
+          "legendFormat": "{{stage}} | {{signal_source}} | {{result}} | {{reason_code}}",
           "range": true,
           "refId": "A"
         }
@@ -2539,7 +2539,7 @@
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.95, sum by (le, service, environment, stage, result) (rate(ibkr_signal_stage_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval])))",
-          "legendFormat": "{{stage}} / {{result}}",
+          "legendFormat": "{{stage}} | {{result}}",
           "range": true,
           "refId": "A"
         }
@@ -2634,7 +2634,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (stage, signal_source, result, reason_code) (increase(ibkr_signal_events_total{stage=~\"validation|order_submission|claim|mark_processed\", service=~\"$service\", environment=~\"$environment\"}[$__range]))",
-          "legendFormat": "{{stage}} / {{signal_source}} / {{result}} / {{reason_code}}",
+          "legendFormat": "{{stage}} | {{signal_source}} | {{result}} | {{reason_code}}",
           "range": true,
           "refId": "A"
         }
@@ -2718,7 +2718,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (stage, signal_source, result, reason_code) (rate(ibkr_signal_events_total{stage=~\"reverse_.*\", service=~\"$service\", environment=~\"$environment\"}[$__rate_interval]))",
-          "legendFormat": "{{stage}} / {{signal_source}} / {{result}} / {{reason_code}}",
+          "legendFormat": "{{stage}} | {{signal_source}} | {{result}} | {{reason_code}}",
           "range": true,
           "refId": "A"
         }
@@ -2813,7 +2813,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, environment, operation, order_family_type, result, reason_code) (rate(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval]))",
-          "legendFormat": "{{operation}} / {{order_family_type}} / {{result}} / {{reason_code}}",
+          "legendFormat": "{{operation}} | {{order_family_type}} | {{result}} | {{reason_code}}",
           "range": true,
           "refId": "A"
         }
@@ -2908,7 +2908,7 @@
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.95, sum by (le, service, environment, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval])))",
-          "legendFormat": "{{operation}} / {{result}} / {{service}}",
+          "legendFormat": "{{operation}} | {{result}} | {{service}}",
           "range": true,
           "refId": "A"
         }
@@ -3003,7 +3003,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (operation, order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\"}[$__range]))",
-          "legendFormat": "{{operation}} / {{order_family_type}} / {{result}} / {{reason_code}}",
+          "legendFormat": "{{operation}} | {{order_family_type}} | {{result}} | {{reason_code}}",
           "range": true,
           "refId": "A"
         }
@@ -3285,7 +3285,7 @@
           },
           "editorMode": "code",
           "expr": "100 * node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay\", mountpoint=~\"/|/var|/opt\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|overlay\", mountpoint=~\"/|/var|/opt\"}",
-          "legendFormat": "{{instance}} / {{mountpoint}}",
+          "legendFormat": "{{instance}} | {{mountpoint}}",
           "range": true,
           "refId": "A"
         }
@@ -3380,7 +3380,7 @@
           },
           "editorMode": "code",
           "expr": "node_systemd_unit_state{name=~\"ibkr.*|prometheus.service|node-exporter.service|grafana-server.service|feishu-alert-relay.service|caddy.service\", state=\"active\"}",
-          "legendFormat": "{{name}} / {{state}}",
+          "legendFormat": "{{name}} | {{state}}",
           "range": true,
           "refId": "A"
         }
@@ -3492,7 +3492,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (operation, order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=~\"place_bracket|place_entry|place_take_profit|place_stop_loss|adjust_stop_loss|adjust_take_profit|cancel_order|cancel_take_profit|cancel_stop_loss|modify_manual|ibapi_place|ibapi_cancel|modify|cancel|tracker_update|tracker_poll|tracker_live_orders_fetch|execution_fill|pb_order_sync\"}[$__range]))",
-          "legendFormat": "{{operation}} / {{order_family_type}} / {{result}} / {{reason_code}}",
+          "legendFormat": "{{operation}} | {{order_family_type}} | {{result}} | {{reason_code}}",
           "range": true,
           "refId": "A"
         }
@@ -3559,7 +3559,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (operation, order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=~\"place_take_profit|place_stop_loss|adjust_stop_loss|adjust_take_profit|cancel_take_profit|cancel_stop_loss|modify_manual|modify|cancel|ibapi_place|ibapi_cancel|pb_order_sync\", order_family_type=~\"entry|take_profit|stop_loss|bracket_oco|partial_harvest_bracket|unknown|mixed\"}[$__range]))",
-          "legendFormat": "{{operation}} / {{order_family_type}} / {{result}} / {{reason_code}}",
+          "legendFormat": "{{operation}} | {{order_family_type}} | {{result}} | {{reason_code}}",
           "range": true,
           "refId": "A"
         }
@@ -3626,7 +3626,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (operation, order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", result!~\"ok|synced|seen\"}[5m]))",
-          "legendFormat": "{{operation}} / {{order_family_type}} / {{result}} / {{reason_code}}",
+          "legendFormat": "{{operation}} | {{order_family_type}} | {{result}} | {{reason_code}}",
           "range": true,
           "refId": "A"
         }
@@ -3693,7 +3693,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, environment, client_role, request_kind) (ibkr_broker_pending_requests{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "broker pending / {{client_role}} / {{request_kind}}",
+          "legendFormat": "broker pending | {{client_role}} | {{request_kind}}",
           "range": true,
           "refId": "A"
         },
@@ -3704,7 +3704,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, route) (ibkr_http_server_requests_in_flight{service=~\"$service\"})",
-          "legendFormat": "http in-flight / {{service}} / {{route}}",
+          "legendFormat": "http in-flight | {{service}} | {{route}}",
           "range": true,
           "refId": "B"
         }
@@ -3816,7 +3816,7 @@
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.95, sum by (le, service, environment, stage, result) (rate(ibkr_signal_stage_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval])))",
-          "legendFormat": "{{stage}} / {{result}} / {{service}}",
+          "legendFormat": "{{stage}} | {{result}} | {{service}}",
           "range": true,
           "refId": "A"
         }
@@ -3911,7 +3911,7 @@
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.95, sum by (le, service, environment, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval])))",
-          "legendFormat": "{{operation}} / {{result}} / {{service}}",
+          "legendFormat": "{{operation}} | {{result}} | {{service}}",
           "range": true,
           "refId": "A"
         }
@@ -4006,7 +4006,7 @@
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.95, sum by (le, service, environment, request_kind, result) (rate(ibkr_broker_request_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval])))",
-          "legendFormat": "{{request_kind}} / {{result}} / {{service}}",
+          "legendFormat": "{{request_kind}} | {{result}} | {{service}}",
           "range": true,
           "refId": "A"
         }
@@ -4101,7 +4101,7 @@
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.95, sum by (le, service, environment, source, interval, operation) (rate(ibkr_history_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval])))",
-          "legendFormat": "{{source}} / {{interval}} / {{operation}}",
+          "legendFormat": "{{source}} | {{interval}} | {{operation}}",
           "range": true,
           "refId": "A"
         }
@@ -4213,7 +4213,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, route, status_class) (increase(ibkr_http_server_requests_total{service=~\"$service\"}[5m]))",
-          "legendFormat": "{{service}} / {{route}} / {{status_class}}",
+          "legendFormat": "{{service}} | {{route}} | {{status_class}}",
           "range": true,
           "refId": "A"
         },
@@ -4224,7 +4224,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, route, exception_class) (increase(ibkr_http_server_exceptions_total{service=~\"$service\"}[5m]))",
-          "legendFormat": "{{service}} / {{route}} / {{exception_class}}",
+          "legendFormat": "{{service}} | {{route}} | {{exception_class}}",
           "range": true,
           "refId": "B"
         }
@@ -4291,7 +4291,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, environment, client_role, ib_error_code, severity) (increase(ibkr_broker_error_total{service=~\"$service\", environment=~\"$environment\"}[5m]))",
-          "legendFormat": "{{client_role}} / {{ib_error_code}} / {{severity}}",
+          "legendFormat": "{{client_role}} | {{ib_error_code}} | {{severity}}",
           "range": true,
           "refId": "A"
         },
@@ -4302,7 +4302,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (operation, order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", result!=\"ok\"}[5m]))",
-          "legendFormat": "{{operation}} / {{order_family_type}} / {{result}} / {{reason_code}}",
+          "legendFormat": "{{operation}} | {{order_family_type}} | {{result}} | {{reason_code}}",
           "range": true,
           "refId": "B"
         }
