@@ -11,6 +11,7 @@ SESSION_LABELS_ZH = {
     "afterhours": "盘后",
     "overnight": "夜盘",
 }
+IBKR_CALENDAR_REFRESH_OMITTED = "ibkr_calendar_refresh_omitted"
 
 
 def _to_text(value: Any) -> str:
@@ -33,6 +34,8 @@ def market_calendar_source_label(source: Any, source_error: Any = "") -> str:
         "local_nyse_fallback": "本地 NYSE 兜底日历",
     }.get(source_text, source_text or "unknown")
     error = _to_text(source_error)
+    if error == IBKR_CALENDAR_REFRESH_OMITTED and source_text == "local_nyse_fallback":
+        return f"{label}（IBKR 日历刷新已跳过）"
     return f"{label}（IBKR 拉取失败: {error}）" if error and source_text == "local_nyse_fallback" else label
 
 

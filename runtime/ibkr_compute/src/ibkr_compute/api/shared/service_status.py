@@ -204,6 +204,7 @@ def get_service_status_snapshot(
     default: dict | None = None,
     *,
     refresh_auth: bool = False,
+    refresh_calendar: bool = False,
 ) -> dict:
     fallback = dict(default) if isinstance(default, dict) else {}
     if not service:
@@ -219,8 +220,13 @@ def get_service_status_snapshot(
         signature = None
 
     try:
-        if signature and "refresh_auth" in signature.parameters:
-            payload = status_fn(refresh_auth=refresh_auth)
+        if signature:
+            kwargs = {}
+            if "refresh_auth" in signature.parameters:
+                kwargs["refresh_auth"] = refresh_auth
+            if "refresh_calendar" in signature.parameters:
+                kwargs["refresh_calendar"] = refresh_calendar
+            payload = status_fn(**kwargs) if kwargs else status_fn()
         else:
             payload = status_fn()
     except Exception as exc:

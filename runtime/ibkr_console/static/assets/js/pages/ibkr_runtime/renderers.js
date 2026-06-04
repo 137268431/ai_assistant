@@ -40,7 +40,10 @@
             const sourceLabel = source === 'ibkr_schedule'
                 ? 'IBKR 合约交易时间'
                 : (source === 'local_nyse_fallback' ? '本地 NYSE 兜底日历' : (source || '来源待确认'));
-            lines.push(`来源：${sourceError ? `${sourceLabel}（IBKR 拉取失败: ${sourceError}）` : sourceLabel}`);
+            const sourceErrorLabel = sourceError === 'ibkr_calendar_refresh_omitted'
+                ? 'IBKR 日历刷新已跳过'
+                : `IBKR 拉取失败: ${sourceError}`;
+            lines.push(`来源：${sourceError ? `${sourceLabel}（${sourceErrorLabel}）` : sourceLabel}`);
             if (session?.us_time || session?.cn_time) {
                 lines.push(`当前：${session?.us_time || '--'} ET / ${session?.cn_time || '--'} 北京`);
             }

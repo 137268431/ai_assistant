@@ -30,6 +30,7 @@ from ibkr_api.system.jobs.market_calendar import (
     build_market_calendar_response,
     build_market_calendar_snapshot,
 )
+from ibkr_api.system.jobs.market_session_text import market_calendar_source_label
 from ibkr_api.app_core.route_cache import RouteSWRCache, canonical_cache_key, request_cache_bypass
 
 
@@ -70,6 +71,16 @@ class SystemScanSummaryTest(unittest.TestCase):
         self.assertTrue(matches_open_report_time_window("2026-04-28 09:30:00"))
         self.assertTrue(matches_open_report_time_window("2026-04-28 09:35:00"))
         self.assertFalse(matches_open_report_time_window("2026-04-28 09:40:00"))
+
+    def test_market_calendar_source_label_distinguishes_skipped_refresh(self):
+        self.assertEqual(
+            market_calendar_source_label("local_nyse_fallback", "ibkr_calendar_refresh_omitted"),
+            "本地 NYSE 兜底日历（IBKR 日历刷新已跳过）",
+        )
+        self.assertEqual(
+            market_calendar_source_label("local_nyse_fallback", "gateway_unreachable"),
+            "本地 NYSE 兜底日历（IBKR 拉取失败: gateway_unreachable）",
+        )
 
     def test_market_snapshot_uses_previous_regular_close_when_daily_is_stale(self):
         def fake_load_records(pb, collection, *, base_filter_parts, symbols, sort, max_pages, chunk_size=24):

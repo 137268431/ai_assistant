@@ -83,7 +83,7 @@ def _build_ibkr_monitor_snapshot(service, requested_environment: str | None = No
         except Exception:
             pass
     runtime_status = (
-        get_service_status_snapshot(service)
+        get_service_status_snapshot(service, refresh_calendar=True)
         if service_available and hasattr(service, "status")
         else _build_uninitialized_runtime_status(runtime_environment, service_error)
     )

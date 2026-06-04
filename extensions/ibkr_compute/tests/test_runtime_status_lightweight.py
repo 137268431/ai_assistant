@@ -186,6 +186,23 @@ def test_runtime_status_uses_lightweight_strategy_capacity(monkeypatch):
     assert payload["order_lifecycle"]["max_strategy_open_positions"] == 12
 
 
+def test_service_status_snapshot_can_refresh_calendar_without_auth():
+    from ibkr_compute.api.shared.service_status import get_service_status_snapshot
+
+    calls = {}
+
+    class _ProbeService:
+        def status(self, *, refresh_auth=True, refresh_calendar=False):
+            calls["refresh_auth"] = refresh_auth
+            calls["refresh_calendar"] = refresh_calendar
+            return {"ok": True}
+
+    payload = get_service_status_snapshot(_ProbeService(), refresh_auth=False, refresh_calendar=True)
+
+    assert payload["ok"] is True
+    assert calls == {"refresh_auth": False, "refresh_calendar": True}
+
+
 def test_runtime_status_market_session_can_skip_ibkr_calendar_refresh(monkeypatch):
     ibkr_pkg = types.ModuleType("ibkr_compute")
     ibkr_pkg.__path__ = []
@@ -235,3 +252,134 @@ def test_runtime_status_market_session_can_skip_ibkr_calendar_refresh(monkeypatc
 
     assert payload["kind"] == "regular"
     assert payload["calendar"]["source_error"] == "ibkr_calendar_refresh_omitted"
+
+
+def test_runtime_status_market_session_reuses_valid_ibkr_calendar_cache(monkeypatch):
+    ibkr_pkg = types.ModuleType("ibkr_compute")
+    ibkr_pkg.__path__ = []
+    market_pkg = types.ModuleType("ibkr_compute.market")
+    market_pkg.__path__ = []
+    calendar_mod = types.ModuleType("ibkr_compute.market.calendar")
+    calendar_mod.IBKR_SCHEDULE_SOURCE = "ibkr_schedule"
+    calendar_mod.build_ibkr_calendar_snapshot = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("valid IBKR cache should avoid calendar refresh")
+    )
+    calendar_mod.build_local_nyse_calendar_snapshot = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("valid IBKR cache should avoid local fallback")
+    )
+    calendar_mod.build_market_session_from_calendar = lambda payload, **_kwargs: {
+        "kind": "regular",
+        "source": payload.get("source"),
+    }
+    monkeypatch.setitem(sys.modules, "ibkr_compute", ibkr_pkg)
+    monkeypatch.setitem(sys.modules, "ibkr_compute.market", market_pkg)
+    monkeypatch.setitem(sys.modules, "ibkr_compute.market.calendar", calendar_mod)
+
+    class _Broker:
+        def resolve_contract(self, **_kwargs):
+            raise AssertionError("valid IBKR cache should avoid contract resolution")
+
+    class _CalendarRuntime(TradingServiceRuntimeStatusMixin):
+        broker = _Broker()
+        gateway_manager = _Component({"running": True, "reachable": True})
+        session_keeper = _Session({"authenticated": True})
+        _current_market_date = "2026-06-02"
+        _market_session_calendar_cache = {
+            "signature": ("2026-06-02", "SPY", "SMART", "STK"),
+            "expires_at": 9_999_999_999,
+            "payload": {
+                "ok": True,
+                "source": "ibkr_schedule",
+                "market_date": "2026-06-02",
+                "symbol": "SPY",
+                "exchange": "SMART",
+                "sec_type": "STK",
+            },
+        }
+
+        def _market_calendar_contract_args(self, _service_mod):
+            return {"symbol": "SPY", "exchange": "SMART", "sec_type": "STK"}
+
+    fake_service_mod = types.SimpleNamespace(
+        ET=ZoneInfo("America/New_York"),
+        build_market_session_snapshot=lambda _now: {"kind": "regular", "source": "local_fallback"},
+    )
+
+    payload = _CalendarRuntime()._runtime_market_session_snapshot(
+        fake_service_mod,
+        refresh_ibkr_calendar=True,
+    )
+
+    assert payload["kind"] == "regular"
+    assert payload["source"] == "ibkr_schedule"
+    assert payload["calendar"]["source"] == "ibkr_schedule"
+
+
+def test_runtime_status_market_session_refreshes_expired_calendar_cache(monkeypatch):
+    calls = []
+    ibkr_pkg = types.ModuleType("ibkr_compute")
+    ibkr_pkg.__path__ = []
+    market_pkg = types.ModuleType("ibkr_compute.market")
+    market_pkg.__path__ = []
+    calendar_mod = types.ModuleType("ibkr_compute.market.calendar")
+    calendar_mod.IBKR_SCHEDULE_SOURCE = "ibkr_schedule"
+
+    def _build_ibkr_calendar_snapshot(contract, **kwargs):
+        calls.append({"contract": contract, **kwargs})
+        return {
+            "ok": True,
+            "source": "ibkr_schedule",
+            "market_date": kwargs.get("market_date"),
+            "symbol": kwargs.get("symbol"),
+            "exchange": kwargs.get("exchange"),
+            "sec_type": kwargs.get("sec_type"),
+        }
+
+    calendar_mod.build_ibkr_calendar_snapshot = _build_ibkr_calendar_snapshot
+    calendar_mod.build_local_nyse_calendar_snapshot = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("successful IBKR refresh should avoid local fallback")
+    )
+    calendar_mod.build_market_session_from_calendar = lambda payload, **_kwargs: {
+        "kind": "regular",
+        "source": payload.get("source"),
+    }
+    monkeypatch.setitem(sys.modules, "ibkr_compute", ibkr_pkg)
+    monkeypatch.setitem(sys.modules, "ibkr_compute.market", market_pkg)
+    monkeypatch.setitem(sys.modules, "ibkr_compute.market.calendar", calendar_mod)
+
+    class _Broker:
+        def resolve_contract(self, **kwargs):
+            calls.append({"resolve_contract": kwargs})
+            return {"symbol": kwargs.get("symbol"), "exchange": kwargs.get("exchange")}
+
+    class _CalendarRuntime(TradingServiceRuntimeStatusMixin):
+        broker = _Broker()
+        gateway_manager = _Component({"running": True, "reachable": True})
+        session_keeper = _Session({"authenticated": True})
+        _current_market_date = "2026-06-02"
+        _market_session_calendar_cache = {
+            "signature": ("2026-06-02", "SPY", "SMART", "STK"),
+            "expires_at": 0,
+            "payload": {"ok": True, "source": "ibkr_schedule"},
+        }
+
+        def _market_calendar_contract_args(self, _service_mod):
+            return {"symbol": "SPY", "exchange": "SMART", "sec_type": "STK"}
+
+    fake_service_mod = types.SimpleNamespace(
+        ET=ZoneInfo("America/New_York"),
+        build_market_session_snapshot=lambda _now: {"kind": "regular", "source": "local_fallback"},
+    )
+    runtime = _CalendarRuntime()
+
+    payload = runtime._runtime_market_session_snapshot(fake_service_mod, refresh_ibkr_calendar=True)
+
+    assert payload["source"] == "ibkr_schedule"
+    assert len(calls) == 2
+    assert calls[0]["resolve_contract"] == {"symbol": "SPY", "conid": 0, "exchange": "SMART", "sec_type": "STK"}
+    assert calls[1]["contract"] == {"symbol": "SPY", "exchange": "SMART"}
+    assert calls[1]["market_date"] == "2026-06-02"
+    assert calls[1]["symbol"] == "SPY"
+    assert calls[1]["exchange"] == "SMART"
+    assert calls[1]["sec_type"] == "STK"
+    assert runtime._market_session_calendar_cache["payload"]["source"] == "ibkr_schedule"

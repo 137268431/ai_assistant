@@ -233,8 +233,10 @@ class TradingServiceRuntimeStatusMixin:
             merged["source_error"] = source_error
         return merged
 
-    def status(self, refresh_auth: bool = True) -> dict:
+    def status(self, refresh_auth: bool = True, refresh_calendar: bool | None = None) -> dict:
         service_mod = _service_mod()
+        if refresh_calendar is None:
+            refresh_calendar = refresh_auth
         session_status = self.session_keeper.status()
         if refresh_auth:
             try:
@@ -291,7 +293,7 @@ class TradingServiceRuntimeStatusMixin:
 
         market_session = self._runtime_market_session_snapshot(
             service_mod,
-            refresh_ibkr_calendar=refresh_auth,
+            refresh_ibkr_calendar=bool(refresh_calendar),
         )
         auth_recovery = self._copy_auth_recovery_state()
         official_5m = self._copy_official_5m_state()
