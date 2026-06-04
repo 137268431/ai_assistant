@@ -57,8 +57,8 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertIn("jsonBool(\"target_is_hard\", not runnerMode)", source)
         self.assertIn("jsonBool(\"target_checkpoint_is_exit\", not runnerMode)", source)
         self.assertIn('jsonStr("target_role", runnerMode ? "safety_tp" : "hard_tp")', source)
-        self.assertIn("buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, \"long\", longSetup, longReason, qty, entryPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode", source)
-        self.assertIn("buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, \"short\", shortSetup, shortReason, qty, entryPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode", source)
+        self.assertIn("buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, \"long\", longSetup, longReason, qty, entryPrice, submittedLimitPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode", source)
+        self.assertIn("buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, \"short\", shortSetup, shortReason, qty, entryPrice, submittedLimitPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode", source)
         self.assertIn("jsonRequestedSides(string requestedSides)", source)
         self.assertIn('string requestedSides = stopChanged and targetChanged ? "stop_loss,take_profit" : stopChanged ? "stop_loss" : targetChanged ? "take_profit" : ""', source)
         self.assertIn("float eventNewTarget = targetChanged ? activeTarget : na", source)
@@ -134,14 +134,20 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         source = self.source
 
         self.assertIn('useProfitSpaceFilter = input.bool(true, "Block insufficient profit space", group="05 Risk")', source)
-        self.assertIn('minNetProfitForEntry = input.float(50.0, "Minimum net profit ($)", step=5.0, minval=0.0, group="05 Risk")', source)
-        self.assertIn('minNetRoiPctForEntry = input.float(1.0, "Minimum net ROI (%)", step=0.1, minval=0.0, group="05 Risk")', source)
+        self.assertIn('minNetProfitForEntry = input.float(100.0, "Minimum net profit ($)", step=5.0, minval=0.0, group="05 Risk")', source)
+        self.assertIn('minNetRoiPctForEntry = input.float(2.0, "Minimum net ROI (%)", step=0.1, minval=0.0, group="05 Risk")', source)
+        self.assertIn("float effectiveMinNetProfitForEntry = math.max(minNetProfitForEntry, profitSpaceMinNetProfitFloor)", source)
+        self.assertIn("float effectiveMinNetRoiPctForEntry = math.max(minNetRoiPctForEntry, profitSpaceMinNetRoiPctFloor)", source)
         self.assertIn('maxCostPctOfReward = input.float(15.0, "Maximum cost / reward (%)", step=1.0, minval=0.0, group="05 Risk")', source)
         self.assertIn('minTargetAtrMultipleForEntry = input.float(2.0, "Minimum target distance (x ATR)", step=0.25, minval=0.0, group="05 Risk")', source)
+        self.assertIn('netProfit < effectiveMinNetProfitForEntry ? "net_profit_below_min"', source)
+        self.assertIn('netRoiPct < effectiveMinNetRoiPctForEntry ? "net_roi_below_min"', source)
         self.assertIn("profitSpaceEntryAllowed(float netProfit, float netRoiPct, float costPct, float targetAtrMultiple)", source)
         self.assertIn('blockLongReason := "profit_space_too_small"', source)
         self.assertIn('blockShortReason := "profit_space_too_small"', source)
         self.assertIn('"净利/ROI/成本/ATR空间不够，等更大空间"', source)
+        self.assertIn('"\\n获利空间不足\\n" + profitSpaceSummaryText', source)
+        self.assertIn('"门槛 净利 " + fmtMoney(effectiveMinNetProfitForEntry)', source)
         self.assertIn('profitSpacePayload(direction, qty, entryPrice, targetPrice, targetCheckpoint)', source)
         self.assertIn('jsonNum("entry_notional", entryNotionalValue)', source)
         self.assertIn('jsonNum("expected_net_profit", netProfitValue)', source)
@@ -149,6 +155,8 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertIn('jsonNum("cost_pct_of_reward", costPctValue)', source)
         self.assertIn('jsonNum("target_distance_atr", targetAtrValue)', source)
         self.assertIn('jsonBool("profit_space_entry_allowed", entryAllowedValue)', source)
+        self.assertIn('jsonNum("min_net_profit_for_entry", effectiveMinNetProfitForEntry)', source)
+        self.assertIn('jsonNum("min_net_roi_pct_for_entry", effectiveMinNetRoiPctForEntry)', source)
 
     def test_window_activation_pre_alert_is_non_directional(self):
         source = self.source

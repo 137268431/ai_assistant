@@ -1,0 +1,11 @@
+groups:
+  - name: monitoring-stack
+    rules:
+      - alert: MonitoringTargetDown
+        expr: up{stack="monitoring"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Monitoring target {{ $labels.job }} is down"
+          description: "Prometheus cannot scrape {{ $labels.instance }} for more than two minutes."

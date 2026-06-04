@@ -1,0 +1,30 @@
+# Managed by ai_assistant/ops/deploy/deploy_monitoring_stack.sh
+# The imported file must define the Caddy basic_auth directive. The deploy
+# script renders __MONITORING_CADDY_AUTH_FILE__ to the configured secret path.
+# Example secret content:
+# basic_auth {
+#     admin <caddy-hashed-password>
+# }
+quant-monitor.lzw-glory.top {
+    import __MONITORING_CADDY_AUTH_FILE__
+
+    encode zstd gzip
+
+    reverse_proxy 127.0.0.1:3000 {
+        flush_interval -1
+        header_up X-Real-IP {remote_host}
+        transport http {
+            read_timeout 300s
+            write_timeout 300s
+            dial_timeout 30s
+        }
+    }
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Frame-Options "DENY"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+}

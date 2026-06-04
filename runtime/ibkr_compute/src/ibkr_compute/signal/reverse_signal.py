@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ibkr_compute.core.broker_mode import configured_broker_mode, normalize_broker_mode, resolve_data_environment
 from ibkr_compute.core.time_utils import ET
+from ibkr_compute.observability.prometheus import record_signal_event
 
 logger = logging.getLogger(__name__)
 
@@ -91,12 +92,21 @@ class ReverseSignalHandler:
         self._processed_ids = set()
 
     def check_and_process(self):
+        started = time.perf_counter()
         try:
             records = self.pb_client.get_records(
                 REVERSE_SIGNAL_COLLECTION,
                 filter=f'status = "pending" && environment = "{self.environment}"',
                 sort="-priority,-bar_time_ms",
                 per_page=50,
+            )
+            record_signal_event(
+                environment=self.environment,
+                stage="reverse_poll",
+                signal_source="reverse",
+                result="ok",
+                reason_code="pending_found" if records else "empty",
+                duration_s=time.perf_counter() - started,
             )
 
             for r in records:
@@ -127,6 +137,14 @@ class ReverseSignalHandler:
                     logger.debug("Failed to update execution action status: %s", e)
 
         except Exception as e:
+            record_signal_event(
+                environment=self.environment,
+                stage="reverse_poll",
+                signal_source="reverse",
+                result="error",
+                reason_code=e.__class__.__name__,
+                duration_s=time.perf_counter() - started,
+            )
             logger.error("Reverse signal check failed: %s", e)
 
     @staticmethod
@@ -868,23 +886,40 @@ class ReverseSignalHandler:
             logger.debug("Failed to patch execution action detail: %s", exc)
 
     def _process_reverse(self, signal: dict, action: str) -> Dict[str, Any]:
+        started = time.perf_counter()
         symbol = str(self._signal_value(signal, "symbol") or "").upper()
         logger.info("Processing execution action: %s %s", action, symbol)
 
         detail = self._base_reverse_detail(signal, action)
+
+        def _finish(payload: Dict[str, Any]) -> Dict[str, Any]:
+            ok = bool((payload or {}).get("ok"))
+            reason = str((payload or {}).get("reason") or ("ok" if ok else "blocked"))
+            ack_status = str((payload or {}).get("ack_status") or "")
+            result = "ok" if ok else ("blocked" if ack_status in {"cancelled", "expired"} else "error")
+            record_signal_event(
+                environment=self.environment,
+                stage="reverse_action",
+                signal_source=str(action or "unknown"),
+                result=result,
+                reason_code=reason,
+                duration_s=time.perf_counter() - started,
+            )
+            return payload
+
         if self._has_protection_incomplete(signal):
-            return self._mark_blocked(
+            return _finish(self._mark_blocked(
                 detail,
                 "protection_incomplete",
                 protection_complete=False,
                 safe_action="no_reentry_until_protection_reviewed",
-            )
+            ))
 
         if action in {"close", "cancel", "adjust_sl", "adjust_tp"}:
             preflight = self._execution_preflight(signal, action)
             detail["execution_preflight"] = preflight
             if not preflight.get("ok"):
-                return self._mark_invalidated(
+                return _finish(self._mark_invalidated(
                     detail,
                     str(preflight.get("reason") or "real_order_preflight_failed"),
                     ack_status=str(preflight.get("ack_status") or "expired"),
@@ -899,20 +934,20 @@ class ReverseSignalHandler:
                     order_linkage_status=preflight.get("order_linkage_status"),
                     pb_order_statuses=preflight.get("pb_order_statuses"),
                     gateway_request_blocked=True,
-                )
+                ))
 
         if action == "close":
-            return self._handle_close(signal, detail)
+            return _finish(self._handle_close(signal, detail))
         if action == "cancel":
-            return self._handle_cancel(signal, detail)
+            return _finish(self._handle_cancel(signal, detail))
         if action == "adjust_sl":
-            return self._handle_adjust_sl(signal, detail)
+            return _finish(self._handle_adjust_sl(signal, detail))
         if action == "adjust_tp":
-            return self._handle_adjust_tp(signal, detail)
+            return _finish(self._handle_adjust_tp(signal, detail))
         if action == "adjust_bracket":
-            return self._handle_adjust_bracket(signal, detail)
+            return _finish(self._handle_adjust_bracket(signal, detail))
 
-        return self._mark_blocked(detail, "unsupported_reverse_action", action=action)
+        return _finish(self._mark_blocked(detail, "unsupported_reverse_action", action=action))
 
     def _has_protection_incomplete(self, signal: dict) -> bool:
         extra = self._signal_extra(signal)
@@ -1014,6 +1049,7 @@ class ReverseSignalHandler:
         ]
 
     def _execution_preflight(self, signal: dict, action: str) -> Dict[str, Any]:
+        started = time.perf_counter()
         runtime_environment = normalize_broker_mode(
             self._signal_value(signal, "broker_mode") or self._signal_value(signal, "environment"),
             self.environment,
@@ -1153,6 +1189,14 @@ class ReverseSignalHandler:
 
         if not preflight["ok"]:
             preflight["gateway_request_blocked"] = True
+        record_signal_event(
+            environment=self.environment,
+            stage="reverse_preflight",
+            signal_source=str(action or "unknown"),
+            result="ok" if preflight.get("ok") else "blocked",
+            reason_code=str(preflight.get("reason") or "ok"),
+            duration_s=time.perf_counter() - started,
+        )
         return preflight
 
     def _handle_close(self, signal: dict, detail: Dict[str, Any]) -> Dict[str, Any]:

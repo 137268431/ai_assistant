@@ -57,9 +57,13 @@ ORDER_FLOW_DEFAULTS = {
 
 TV_PRIMARY_DEFAULTS = {
     "ibkr_require_target_direction_alignment": "false",
-    "max_strategy_open_positions": "12",
+    "max_strategy_open_positions": "0",
     "intraday_symbol_daily_entry_limit": "3",
     "position_limit_max": "36",
+    "ibkr_buying_power_guard_paper_source": "config",
+    "ibkr_paper_risk_buying_power_usd": "194388.61",
+    "ibkr_paper_risk_net_liquidation_usd": "61398",
+    "ibkr_paper_risk_default_entry_exposure_usd": "5000",
     "entry_pre_submit_temp_subscription_limit": "8",
     "tv_max_active_targets": "100",
     "tv_max_same_direction_targets": "0",
@@ -179,7 +183,7 @@ def test_tv_primary_defaults_are_widened_and_hardened() -> None:
 
     cfg = Config()
     assert cfg.get_bool("ibkr_require_target_direction_alignment", True) is False
-    assert cfg.get_int("max_strategy_open_positions", 0) == 12
+    assert cfg.get_int("max_strategy_open_positions", 0) == 0
     assert cfg.get_int("intraday_symbol_daily_entry_limit", 0) == 3
     assert cfg.get_int("position_limit_max", 0) == 36
     assert cfg.get_bool("tv_entry_requires_active_target", True) is False

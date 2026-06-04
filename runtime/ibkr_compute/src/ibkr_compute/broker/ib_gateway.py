@@ -4,6 +4,7 @@ import copy
 import hashlib
 import logging
 import math
+import os
 import threading
 import time
 from datetime import datetime, timedelta
@@ -54,6 +55,14 @@ from ibkr_compute.broker.ib_gateway_support import (
     _safe_int,
 )
 from ibkr_compute.core.time_utils import ET
+from ibkr_compute.observability.prometheus import (
+    record_broker_connect,
+    record_broker_disconnect,
+    record_broker_error,
+    record_broker_request,
+    record_order_event,
+    set_broker_pending,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -72,6 +81,20 @@ ACCOUNT_DATA_UNSUBSCRIBED_CODES = {2100}
 ACCOUNT_DATA_CIRCUIT_WINDOW_SECONDS = 120.0
 ACCOUNT_DATA_CIRCUIT_COOLDOWN_SECONDS = 60.0
 ACCOUNT_DATA_CIRCUIT_MIN_FAILURES = 4
+ACCOUNT_DATA_EXPECTED_UNSUBSCRIBE_GRACE_SECONDS = 5.0
+
+
+def _env_float(name: str, default: float, *, minimum: float = 0.0) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)) or default)
+    except Exception:
+        value = float(default)
+    return max(float(minimum), value)
+
+
+ACCOUNT_SUMMARY_CACHE_TTL_SECONDS = _env_float("IBKR_ACCOUNT_SUMMARY_CACHE_TTL_SEC", 15.0, minimum=0.0)
+POSITIONS_CACHE_TTL_SECONDS = _env_float("IBKR_POSITIONS_CACHE_TTL_SEC", 10.0, minimum=0.0)
+OPEN_ORDERS_CACHE_TTL_SECONDS = _env_float("IBKR_OPEN_ORDERS_CACHE_TTL_SEC", 3.0, minimum=0.0)
 
 
 from ibkr_compute.broker.ib_gateway_service import (
@@ -96,6 +119,9 @@ class _IBGatewayApp(EWrapper, EClient):
         self._listener_lock = threading.RLock()
         self._account_updates_lock = threading.RLock()
         self._account_updates_request_lock = threading.Lock()
+        self._account_request_locks: Dict[str, threading.Lock] = {}
+        self._account_request_cache: Dict[tuple, dict[str, Any]] = {}
+        self._account_updates_expected_unsubscribe_until = 0.0
         self._request_seq = 1000
         self._ticker_seq = 50_000
         self._pending_requests: Dict[int, _PendingRequest] = {}
@@ -258,11 +284,58 @@ class _IBGatewayApp(EWrapper, EClient):
             remaining_s = float(snapshot.get("remaining_s") or 0.0)
             raise TimeoutError(f"account_data_circuit_open:{reason}:retry_after_s={round(remaining_s, 1)}")
 
+    def _account_request_lock(self, kind: str) -> threading.Lock:
+        normalized_kind = str(kind or "").strip().lower() or "account_data"
+        with self._state_lock:
+            lock = self._account_request_locks.get(normalized_kind)
+            if lock is None:
+                lock = threading.Lock()
+                self._account_request_locks[normalized_kind] = lock
+            return lock
+
+    def _account_cache_get(self, key: tuple) -> Any:
+        now = time.time()
+        with self._state_lock:
+            entry = self._account_request_cache.get(key)
+            if not entry:
+                return None
+            if float(entry.get("expires_at") or 0.0) <= now:
+                self._account_request_cache.pop(key, None)
+                return None
+            return copy.deepcopy(entry.get("value"))
+
+    def _account_cache_store(self, key: tuple, value: Any, ttl_seconds: float) -> Any:
+        ttl = max(0.0, float(ttl_seconds or 0.0))
+        if ttl <= 0:
+            return value
+        with self._state_lock:
+            self._account_request_cache[key] = {
+                "stored_at": time.time(),
+                "expires_at": time.time() + ttl,
+                "value": copy.deepcopy(value),
+            }
+        return value
+
+    def _mark_expected_account_updates_unsubscribe(self) -> None:
+        with self._state_lock:
+            self._account_updates_expected_unsubscribe_until = max(
+                float(self._account_updates_expected_unsubscribe_until or 0.0),
+                time.time() + ACCOUNT_DATA_EXPECTED_UNSUBSCRIBE_GRACE_SECONDS,
+            )
+
+    def _is_expected_account_updates_unsubscribe_error(self, error_code: int) -> bool:
+        if int(error_code or 0) not in ACCOUNT_DATA_UNSUBSCRIBED_CODES:
+            return False
+        with self._state_lock:
+            return time.time() <= float(self._account_updates_expected_unsubscribe_until or 0.0)
+
     def connect_and_start(self, timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS) -> bool:
         if not IBAPI_AVAILABLE:
             raise RuntimeError(f"ibapi not available: {IBAPI_IMPORT_ERROR}")
+        connect_started = time.perf_counter()
         with self._connect_lock:
             if self._ready and self.isConnected():
+                record_broker_connect(self, result="ok", duration_s=0.0, status_code=200, reason_code="already_ready")
                 return True
             # After a gateway restart, ibapi can remain in a half-open state:
             # isConnected() still reports true, but nextValidId never arrives.
@@ -286,6 +359,13 @@ class _IBGatewayApp(EWrapper, EClient):
                 self._reset_transport_locked(reason="ready_timeout")
             else:
                 self._status_code = 503
+            record_broker_connect(
+                self,
+                result="ok" if ready else ("timeout" if self._status_code == 401 else "error"),
+                duration_s=time.perf_counter() - connect_started,
+                status_code=self._status_code,
+                reason_code="ready" if ready else ("ready_timeout" if self._status_code == 401 else "connect_failed"),
+            )
             return ready
 
     def disconnect_and_stop(self):
@@ -293,6 +373,7 @@ class _IBGatewayApp(EWrapper, EClient):
             try:
                 if self.isConnected():
                     self.disconnect()
+                    record_broker_disconnect(self, source="manual", reason_code="disconnect_and_stop")
             finally:
                 self._ready = False
                 self._ready_event.clear()
@@ -312,6 +393,7 @@ class _IBGatewayApp(EWrapper, EClient):
             self._last_disconnect_at = time.time()
             self._next_order_id = None
             self._order_errors = {}
+        record_broker_disconnect(self, source="callback", reason_code="connection_closed")
 
     def nextValidId(self, orderId: int):  # noqa: N802
         with self._state_lock:
@@ -327,6 +409,15 @@ class _IBGatewayApp(EWrapper, EClient):
             self._last_message_at = time.time()
 
     def error(self, reqId: int, errorCode: int, errorString: str, _advancedOrderRejectJson: str = ""):  # noqa: N802
+        expected_account_unsubscribe = self._is_expected_account_updates_unsubscribe_error(int(errorCode or 0))
+        pending_ctx = self._pending_requests.get(int(reqId or 0))
+        severity = "benign" if int(errorCode or 0) in BENIGN_ERROR_CODES or expected_account_unsubscribe else "warning"
+        record_broker_error(
+            self,
+            ib_error_code=int(errorCode or 0),
+            request_kind=pending_ctx.kind if pending_ctx else "unknown",
+            severity=severity,
+        )
         with self._state_lock:
             self._last_message_at = time.time()
             self._last_error_code = int(errorCode or 0)
@@ -346,7 +437,7 @@ class _IBGatewayApp(EWrapper, EClient):
                 for item in self._recent_errors[-20:]
                 if self._last_error_at - float(item.get("ts", 0) or 0) <= 120
             ]
-            if errorCode not in BENIGN_ERROR_CODES:
+            if errorCode not in BENIGN_ERROR_CODES and not expected_account_unsubscribe:
                 logger.warning("IB Gateway error reqId=%s code=%s message=%s", reqId, errorCode, errorString)
                 if int(errorCode or 0) in ACCOUNT_DATA_UNSUBSCRIBED_CODES:
                     self._record_account_data_issue("account_updates", str(errorString or "account_data_unsubscribed"))
@@ -359,13 +450,15 @@ class _IBGatewayApp(EWrapper, EClient):
                         "advanced_reject_json": str(_advancedOrderRejectJson or ""),
                         "at": _iso_now(),
                     }
+            elif expected_account_unsubscribe:
+                logger.debug("Ignoring expected account update unsubscribe error reqId=%s code=%s", reqId, errorCode)
             if errorCode in {502, 504, 1100, 2110}:
                 self._ready = False
                 self._status_code = 503
                 self._next_order_id = None
                 self._ready_event.clear()
         ctx = self._pending_requests.get(int(reqId or 0))
-        if ctx and errorCode not in BENIGN_ERROR_CODES:
+        if ctx and errorCode not in BENIGN_ERROR_CODES and not expected_account_unsubscribe:
             ctx.error = str(errorString or f"ib_error_{errorCode}")
             ctx.event.set()
 
@@ -419,18 +512,49 @@ class _IBGatewayApp(EWrapper, EClient):
             req_id = self._request_seq
         ctx = _PendingRequest(kind=kind)
         self._pending_requests[req_id] = ctx
+        set_broker_pending(
+            self,
+            request_kind=kind,
+            value=sum(1 for item in self._pending_requests.values() if item.kind == kind),
+        )
         return req_id, ctx
 
     def _await(self, req_id: int, ctx: _PendingRequest, timeout: int) -> list:
+        started = time.perf_counter()
         if not ctx.event.wait(timeout=max(1, int(timeout))):
             self._pending_requests.pop(req_id, None)
+            set_broker_pending(
+                self,
+                request_kind=ctx.kind,
+                value=sum(1 for item in self._pending_requests.values() if item.kind == ctx.kind),
+            )
+            record_broker_request(
+                self,
+                request_kind=ctx.kind,
+                result="timeout",
+                duration_s=time.perf_counter() - started,
+                error_class="TimeoutError",
+            )
             self._record_account_data_issue(ctx.kind, f"{ctx.kind}_timeout")
             raise TimeoutError(f"{ctx.kind}_timeout")
         self._pending_requests.pop(req_id, None)
+        set_broker_pending(
+            self,
+            request_kind=ctx.kind,
+            value=sum(1 for item in self._pending_requests.values() if item.kind == ctx.kind),
+        )
         if ctx.error:
+            record_broker_request(
+                self,
+                request_kind=ctx.kind,
+                result="error",
+                duration_s=time.perf_counter() - started,
+                error_class="RuntimeError",
+            )
             self._record_account_data_issue(ctx.kind, ctx.error)
             raise RuntimeError(ctx.error)
         self._record_account_data_success(ctx.kind)
+        record_broker_request(self, request_kind=ctx.kind, result="ok", duration_s=time.perf_counter() - started)
         return list(ctx.items)
 
     @staticmethod
@@ -1354,34 +1478,80 @@ class _IBGatewayApp(EWrapper, EClient):
         timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS,
         *,
         include_all: bool = False,
+        force: bool = False,
     ) -> List[dict]:
-        self._ensure_ready(timeout, "request_open_orders")
-        self._raise_if_account_data_circuit_open("open_orders_all" if include_all else "open_orders")
-        req_id, ctx = self._next_request("open_orders_all" if include_all else "open_orders")
-        if include_all:
-            self.reqAllOpenOrders()
-        else:
-            self.reqOpenOrders()
-        return self._await(req_id, ctx, timeout)
+        kind = "open_orders_all" if include_all else "open_orders"
+        cache_key = (kind, bool(include_all))
+        if not force:
+            cached = self._account_cache_get(cache_key)
+            if cached is not None:
+                return list(cached or [])
+        with self._account_request_lock(kind):
+            if not force:
+                cached = self._account_cache_get(cache_key)
+                if cached is not None:
+                    return list(cached or [])
+            self._ensure_ready(timeout, "request_open_orders")
+            self._raise_if_account_data_circuit_open(kind)
+            req_id, ctx = self._next_request(kind)
+            if include_all:
+                self.reqAllOpenOrders()
+            else:
+                self.reqOpenOrders()
+            orders = self._await(req_id, ctx, timeout)
+            self._account_cache_store(cache_key, orders, OPEN_ORDERS_CACHE_TTL_SECONDS)
+            return orders
 
     def request_positions(self, timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS) -> List[dict]:
-        self._ensure_ready(timeout, "request_positions")
-        self._raise_if_account_data_circuit_open("positions")
-        req_id, ctx = self._next_request("positions")
-        self._positions = {}
-        self.reqPositions()
-        return self._await(req_id, ctx, timeout)
+        cache_key = ("positions",)
+        cached = self._account_cache_get(cache_key)
+        if cached is not None:
+            return list(cached or [])
+        with self._account_request_lock("positions"):
+            cached = self._account_cache_get(cache_key)
+            if cached is not None:
+                return list(cached or [])
+            self._ensure_ready(timeout, "request_positions")
+            self._raise_if_account_data_circuit_open("positions")
+            req_id, ctx = self._next_request("positions")
+            self._positions = {}
+            try:
+                self.reqPositions()
+                positions = self._await(req_id, ctx, timeout)
+                self._account_cache_store(cache_key, positions, POSITIONS_CACHE_TTL_SECONDS)
+                return positions
+            finally:
+                try:
+                    self.cancelPositions()
+                except Exception:
+                    logger.debug("cancelPositions failed", exc_info=True)
 
     def request_account_summary(self, timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS) -> Dict[str, dict]:
-        self._ensure_ready(timeout, "request_account_summary")
-        self._raise_if_account_data_circuit_open("account_summary")
-        req_id, ctx = self._next_request("account_summary")
-        self.reqAccountSummary(req_id, "All", "NetLiquidation,BuyingPower,AvailableFunds,ExcessLiquidity")
-        items = self._await(req_id, ctx, timeout)
-        if not items:
-            return {}
-        account = self._managed_accounts.split(",", 1)[0].strip() if self._managed_accounts else ""
-        return dict(self._account_summary.get(account) or items[0] or {})
+        cache_key = ("account_summary",)
+        cached = self._account_cache_get(cache_key)
+        if cached is not None:
+            return dict(cached or {})
+        with self._account_request_lock("account_summary"):
+            cached = self._account_cache_get(cache_key)
+            if cached is not None:
+                return dict(cached or {})
+            self._ensure_ready(timeout, "request_account_summary")
+            self._raise_if_account_data_circuit_open("account_summary")
+            req_id, ctx = self._next_request("account_summary")
+            try:
+                self.reqAccountSummary(req_id, "All", "NetLiquidation,BuyingPower,AvailableFunds,ExcessLiquidity")
+                items = self._await(req_id, ctx, timeout)
+                if not items:
+                    return {}
+                account = self._managed_accounts.split(",", 1)[0].strip() if self._managed_accounts else ""
+                summary = dict(self._account_summary.get(account) or items[0] or {})
+                self._account_cache_store(cache_key, summary, ACCOUNT_SUMMARY_CACHE_TTL_SECONDS)
+                return summary
+            finally:
+                try:
+                    self.cancelAccountSummary(req_id)
+                except Exception:
+                    logger.debug("cancelAccountSummary failed for req_id=%s", req_id, exc_info=True)
 
     def request_account_updates(
         self,
@@ -1414,6 +1584,7 @@ class _IBGatewayApp(EWrapper, EClient):
                 }
             finally:
                 try:
+                    self._mark_expected_account_updates_unsubscribe()
                     self.reqAccountUpdates(False, requested_account)
                 except Exception:
                     logger.debug("reqAccountUpdates(False) failed for %s", requested_account, exc_info=True)
@@ -1477,12 +1648,41 @@ class _IBGatewayApp(EWrapper, EClient):
         return items
 
     def place_order(self, contract: Any, order: Any, timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS):
+        started = time.perf_counter()
         self._ensure_ready(timeout, "place_order")
-        self.placeOrder(int(order.orderId), contract, order)
+        order_type = str(getattr(order, "orderType", "") or "unknown")
+        try:
+            self.placeOrder(int(order.orderId), contract, order)
+        except Exception as exc:
+            record_order_event(
+                operation="ibapi_place",
+                order_family_type=order_type,
+                result="error",
+                reason_code=exc.__class__.__name__,
+                duration_s=time.perf_counter() - started,
+            )
+            raise
+        record_order_event(
+            operation="ibapi_place",
+            order_family_type=order_type,
+            result="ok",
+            duration_s=time.perf_counter() - started,
+        )
 
     def cancel_open_order(self, order_id: str, timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS):
+        started = time.perf_counter()
         self._ensure_ready(timeout, "cancel_open_order")
-        self.cancelOrder(int(order_id))
+        try:
+            self.cancelOrder(int(order_id))
+        except Exception as exc:
+            record_order_event(
+                operation="ibapi_cancel",
+                result="error",
+                reason_code=exc.__class__.__name__,
+                duration_s=time.perf_counter() - started,
+            )
+            raise
+        record_order_event(operation="ibapi_cancel", result="ok", duration_s=time.perf_counter() - started)
 
     def get_order_snapshot(self, order_id: str) -> dict:
         return dict(self._open_orders.get(str(order_id)) or {})
@@ -1534,7 +1734,7 @@ class _IBGatewayApp(EWrapper, EClient):
                 }
 
             try:
-                open_orders = self.request_open_orders(timeout=request_timeout)
+                open_orders = self.request_open_orders(timeout=request_timeout, force=True)
             except Exception as exc:
                 logger.debug("await_order_submission reqOpenOrders failed for %s: %s", normalized_order_id, exc)
                 open_orders = []
@@ -1617,7 +1817,7 @@ class _IBGatewayApp(EWrapper, EClient):
                 break
 
             try:
-                open_orders = self.request_open_orders(timeout=request_timeout)
+                open_orders = self.request_open_orders(timeout=request_timeout, force=True)
             except Exception as exc:
                 logger.debug("await_order_submissions reqOpenOrders failed for %s: %s", ",".join(missing_ids), exc)
                 open_orders = []
@@ -2168,21 +2368,41 @@ class BrokerAdapter:
         use_rth: bool = False,
         timeout: int = 30,
     ) -> List[dict]:
+        started = time.perf_counter()
         contract = self.resolve_contract(symbol=symbol, conid=conid, exchange=exchange, sec_type=sec_type)
         if not contract:
+            record_broker_request(
+                self.client,
+                request_kind="historical_bars",
+                result="error",
+                duration_s=time.perf_counter() - started,
+                error_class="contract_not_found",
+            )
             raise RuntimeError(f"contract_not_found:{symbol or conid}")
-        return self.client.request_historical_bars(
-            conid=int(contract.get("conid") or conid),
-            symbol=str(contract.get("symbol") or symbol),
-            exchange=str(contract.get("exchange") or exchange or ""),
-            sec_type=str(contract.get("sec_type") or sec_type or ""),
-            duration=duration,
-            bar_size=bar_size,
-            end_datetime=end_datetime,
-            use_rth=use_rth,
-            timeout=timeout,
-            contract_details=contract,
-        )
+        try:
+            rows = self.client.request_historical_bars(
+                conid=int(contract.get("conid") or conid),
+                symbol=str(contract.get("symbol") or symbol),
+                exchange=str(contract.get("exchange") or exchange or ""),
+                sec_type=str(contract.get("sec_type") or sec_type or ""),
+                duration=duration,
+                bar_size=bar_size,
+                end_datetime=end_datetime,
+                use_rth=use_rth,
+                timeout=timeout,
+                contract_details=contract,
+            )
+        except Exception as exc:
+            record_broker_request(
+                self.client,
+                request_kind="historical_bars",
+                result="error",
+                duration_s=time.perf_counter() - started,
+                error_class=exc.__class__.__name__,
+            )
+            raise
+        record_broker_request(self.client, request_kind="historical_bars", result="ok", duration_s=time.perf_counter() - started)
+        return rows
 
     def request_market_data_snapshot(
         self,
@@ -2364,8 +2584,8 @@ class BrokerAdapter:
     def get_account_pnl(self, account: str = "", model_code: str = "") -> Dict[str, Any]:
         return self.client.request_account_pnl(account=account, model_code=model_code)
 
-    def list_open_orders(self, *, include_all: bool = False) -> List[dict]:
-        return self.client.request_open_orders(include_all=include_all)
+    def list_open_orders(self, *, include_all: bool = False, force: bool = False) -> List[dict]:
+        return self.client.request_open_orders(include_all=include_all, force=force)
 
     def list_recent_fills(self) -> List[dict]:
         return self.client.request_executions()
@@ -2459,6 +2679,7 @@ class BrokerAdapter:
                 open_orders = request_open_orders(
                     timeout=max(1, min(3, int(max(1.0, float(timeout or 0.0))))),
                     include_all=include_all,
+                    force=True,
                 )
             except TypeError:
                 open_orders = request_open_orders(include_all=include_all)
@@ -3105,6 +3326,7 @@ class BrokerAdapter:
         return result
 
     def modify_order(self, order_id: str, updates: dict, account_id: str = "") -> dict:
+        started = time.perf_counter()
         contract, order = self.client.get_order_objects(order_id)
         if not contract or not order:
             try:
@@ -3113,6 +3335,12 @@ class BrokerAdapter:
                 pass
             contract, order = self.client.get_order_objects(order_id)
         if not contract or not order:
+            record_order_event(
+                operation="modify",
+                result="error",
+                reason_code="order_not_found",
+                duration_s=time.perf_counter() - started,
+            )
             return {"ok": False, "error": "order_not_found"}
         price_normalization: dict = {}
         if "price" in updates and updates["price"] is not None:
@@ -3154,6 +3382,12 @@ class BrokerAdapter:
             self.client.clear_order_error(str(order_id))
             self.client.place_order(contract, order)
         except Exception as exc:
+            record_order_event(
+                operation="modify",
+                result="error",
+                reason_code=exc.__class__.__name__,
+                duration_s=time.perf_counter() - started,
+            )
             return {"ok": False, "error": str(exc)}
         entry_result = self.client.await_order_submission(str(order_id), timeout=3.0, poll_interval=0.2)
         if not entry_result.get("ok"):
@@ -3161,6 +3395,12 @@ class BrokerAdapter:
             error_message = str(entry_result.get("error") or "order_submission_failed")
             if order_error.get("code"):
                 error_message = f"{error_message} (code={order_error.get('code')})"
+            record_order_event(
+                operation="modify",
+                result="unconfirmed",
+                reason_code=str(entry_result.get("error") or "order_submission_failed"),
+                duration_s=time.perf_counter() - started,
+            )
             return {"ok": False, "error": error_message, "entry_error": entry_result, "order_id": str(order_id)}
         expected_price = 0.0
         expected_fields: list[str] = []
@@ -3185,6 +3425,12 @@ class BrokerAdapter:
                 poll_interval=0.2,
             )
             if not confirm_result.get("ok"):
+                record_order_event(
+                    operation="modify",
+                    result="unconfirmed",
+                    reason_code=str(confirm_result.get("error") or "order_modify_unconfirmed"),
+                    duration_s=time.perf_counter() - started,
+                )
                 return {
                     "ok": False,
                     "error": str(confirm_result.get("error") or "order_modify_unconfirmed"),
@@ -3193,12 +3439,14 @@ class BrokerAdapter:
                     "order_id": str(order_id),
                     "price_normalization": price_normalization,
                 }
+            record_order_event(operation="modify", result="ok", duration_s=time.perf_counter() - started)
             return {
                 "ok": True,
                 "order_id": str(order_id),
                 "order": confirm_result.get("order") or {},
                 "price_normalization": price_normalization,
             }
+        record_order_event(operation="modify", result="ok", duration_s=time.perf_counter() - started)
         return {
             "ok": True,
             "order_id": str(order_id),
@@ -3210,21 +3458,35 @@ class BrokerAdapter:
         return self.client.get_order_snapshot(order_id)
 
     def cancel_order(self, order_id: str) -> dict:
+        started = time.perf_counter()
         try:
             clearer = getattr(self.client, "clear_order_error", None)
             if callable(clearer):
                 clearer(str(order_id))
             self.client.cancel_open_order(order_id)
         except Exception as exc:
+            record_order_event(
+                operation="cancel",
+                result="error",
+                reason_code=exc.__class__.__name__,
+                duration_s=time.perf_counter() - started,
+            )
             return {"ok": False, "error": str(exc)}
         confirm_result = self.await_order_cancelled(str(order_id), timeout=3.0, poll_interval=0.2)
         if not confirm_result.get("ok"):
+            record_order_event(
+                operation="cancel",
+                result="unconfirmed",
+                reason_code=str(confirm_result.get("error") or "order_cancel_unconfirmed"),
+                duration_s=time.perf_counter() - started,
+            )
             return {
                 "ok": False,
                 "order_id": str(order_id),
                 "error": str(confirm_result.get("error") or "order_cancel_unconfirmed"),
                 "confirm": confirm_result,
             }
+        record_order_event(operation="cancel", result="ok", duration_s=time.perf_counter() - started)
         return {
             "ok": True,
             "order_id": str(order_id),

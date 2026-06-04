@@ -1,0 +1,25 @@
+[Unit]
+Description=Quant Monitoring Prometheus
+Documentation=https://prometheus.io/docs/introduction/overview/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=prometheus
+Group=prometheus
+WorkingDirectory=/opt/monitoring
+ExecStart=/opt/monitoring/bin/prometheus --config.file=/opt/monitoring/prometheus/prometheus.yml --storage.tsdb.path=/var/lib/prometheus --storage.tsdb.retention.time=15d --web.listen-address=127.0.0.1:9090 --web.enable-lifecycle
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=65536
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/prometheus
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

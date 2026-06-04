@@ -5,7 +5,7 @@ strategy(title="Signal Strategy Core[Glory]", overlay=true, max_labels_count=500
 // Derived from Signal Alert Core[Glory]: EMA trend/touch, SD mean-reversion windows,
 // DTP direction, fractal pivots, cRSI/OBV divergence, ATR risk sizing.
 
-string STRATEGY_VERSION = "SSC_v1_20260601"
+string STRATEGY_VERSION = "SSC_v1_20260604_profit100_roi20"
 string SCRIPT_TAG = "Signal_Strategy_Core[Glory]"
 
 // -----------------------------------------------------------------------------
@@ -54,13 +54,17 @@ breakevenOffsetR = input.float(0.05, "Breakeven offset (R)", step=0.01, minval=0
 useVolatilityFilter = input.bool(true, "Block low-volatility entries", group="05 Risk")
 minAtrPctForEntry = input.float(0.08, "Minimum ATR% for entry", step=0.01, minval=0.0, group="05 Risk")
 useProfitSpaceFilter = input.bool(true, "Block insufficient profit space", group="05 Risk")
-minNetProfitForEntry = input.float(50.0, "Minimum net profit ($)", step=5.0, minval=0.0, group="05 Risk")
-minNetRoiPctForEntry = input.float(1.0, "Minimum net ROI (%)", step=0.1, minval=0.0, group="05 Risk")
+minNetProfitForEntry = input.float(100.0, "Minimum net profit ($)", step=5.0, minval=0.0, group="05 Risk")
+minNetRoiPctForEntry = input.float(2.0, "Minimum net ROI (%)", step=0.1, minval=0.0, group="05 Risk")
 maxCostPctOfReward = input.float(15.0, "Maximum cost / reward (%)", step=1.0, minval=0.0, group="05 Risk")
 minTargetAtrMultipleForEntry = input.float(2.0, "Minimum target distance (x ATR)", step=0.25, minval=0.0, group="05 Risk")
 estimatedRoundTripFee = input.float(2.10, "Estimated round-trip fixed costs ($)", step=0.05, minval=0.0, group="05 Risk")
 estimatedSlippagePerSharePerSide = input.float(0.05, "Estimated slippage/share/side ($)", step=0.01, minval=0.0, group="05 Risk")
 tvEntryLimitCapBps = input.float(15.0, "TV->IBKR entry limit cap (bps)", step=1.0, minval=0.0, group="05 Risk")
+float profitSpaceMinNetProfitFloor = 100.0
+float profitSpaceMinNetRoiPctFloor = 2.0
+float effectiveMinNetProfitForEntry = math.max(minNetProfitForEntry, profitSpaceMinNetProfitFloor)
+float effectiveMinNetRoiPctForEntry = math.max(minNetRoiPctForEntry, profitSpaceMinNetRoiPctFloor)
 
 crsiDomcycle = input.int(20, "cRSI dominant cycle", minval=10, group="06 Oscillators")
 crsiVibration = input.int(6, "cRSI vibration", minval=1, group="06 Oscillators")
@@ -214,6 +218,9 @@ exitReasonDisplayName(string reason) =>
 
 fmtSignedMoney(float value) =>
     na(value) ? "--" : (value >= 0.0 ? "+$" : "-$") + str.tostring(math.abs(value), "#.##")
+
+fmtMoney(float value) =>
+    na(value) ? "--" : "$" + str.tostring(value, "#.##")
 
 fmtSignedPct(float value) =>
     na(value) ? "--" : (value >= 0.0 ? "+" : "-") + str.tostring(math.abs(value), "#.##") + "%"
@@ -522,13 +529,19 @@ profitSpaceTargetAtrMultiple(float entryPrice, float targetPrice) =>
     atrRaw > 0.0 ? math.abs(targetPrice - entryPrice) / atrRaw : 0.0
 
 profitSpaceFailureReason(float netProfit, float netRoiPct, float costPct, float targetAtrMultiple) =>
-    not useProfitSpaceFilter ? "disabled" : netProfit < minNetProfitForEntry ? "net_profit_below_min" : netRoiPct < minNetRoiPctForEntry ? "net_roi_below_min" : costPct > maxCostPctOfReward ? "cost_pct_above_max" : targetAtrMultiple < minTargetAtrMultipleForEntry ? "target_atr_below_min" : "pass"
+    not useProfitSpaceFilter ? "disabled" : netProfit < effectiveMinNetProfitForEntry ? "net_profit_below_min" : netRoiPct < effectiveMinNetRoiPctForEntry ? "net_roi_below_min" : costPct > maxCostPctOfReward ? "cost_pct_above_max" : targetAtrMultiple < minTargetAtrMultipleForEntry ? "target_atr_below_min" : "pass"
 
 profitSpaceEntryAllowed(float netProfit, float netRoiPct, float costPct, float targetAtrMultiple) =>
     not useProfitSpaceFilter or profitSpaceFailureReason(netProfit, netRoiPct, costPct, targetAtrMultiple) == "pass"
 
 profitSpaceSummaryText(float netProfit, float netRoiPct, float costPct, float targetAtrMultiple) =>
     "净利 " + fmtSignedMoney(netProfit) + " / ROI " + fmtSignedPct(netRoiPct) + " / 成本 " + str.tostring(costPct, "#.#") + "% / TP " + str.tostring(targetAtrMultiple, "#.#") + "ATR"
+
+profitSpaceThresholdText() =>
+    "门槛 净利 " + fmtMoney(effectiveMinNetProfitForEntry) + " / ROI " + str.tostring(effectiveMinNetRoiPctForEntry, "#.##") + "%"
+
+profitSpaceBlockedText(float netProfit, float netRoiPct, float costPct, float targetAtrMultiple) =>
+    "\n获利空间不足\n" + profitSpaceSummaryText(netProfit, netRoiPct, costPct, targetAtrMultiple) + "\n" + profitSpaceThresholdText()
 
 int crsiCycleLen = math.max(1, int(math.round(crsiDomcycle / 2.0)))
 int crsiMemory = math.max(2, crsiDomcycle * 2)
@@ -1009,8 +1022,8 @@ profitSpacePayload(string direction, float qty, float entryPrice, float targetPr
      jsonNum("final_target_net_profit", finalNetProfitValue) +
      jsonNum("final_target_net_roi_pct", finalNetRoiPctValue) +
      jsonNum("final_target_distance_atr", finalTargetAtrValue) +
-     jsonNum("min_net_profit_for_entry", minNetProfitForEntry) +
-     jsonNum("min_net_roi_pct_for_entry", minNetRoiPctForEntry) +
+     jsonNum("min_net_profit_for_entry", effectiveMinNetProfitForEntry) +
+     jsonNum("min_net_roi_pct_for_entry", effectiveMinNetRoiPctForEntry) +
      jsonNum("max_cost_pct_of_reward", maxCostPctOfReward) +
      jsonNum("min_target_atr_multiple_for_entry", minTargetAtrMultipleForEntry) +
      jsonNum("estimated_round_trip_fee", estimatedRoundTripFee) +
@@ -1339,7 +1352,7 @@ bool blockedVisualNow = showFlowLabels and blockedNow
 string blockedDirection = longRaw and (blockLong or candidateDirection == "long") ? "long" : "short"
 string blockedSetup = blockedDirection == "long" ? longSetup : shortSetup
 string blockedReason = conflict ? "long_short_conflict" : blockedDirection == "long" ? blockLongReason : blockShortReason
-string blockedProfitSpaceText = blockedReason == "profit_space_too_small" ? "\n" + (blockedDirection == "long" ? profitSpaceSummaryText(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr) : profitSpaceSummaryText(shortExpectedNetProfit, shortExpectedNetRoiPct, shortCostPctOfReward, shortTargetDistanceAtr)) : ""
+string blockedProfitSpaceText = blockedReason == "profit_space_too_small" ? (blockedDirection == "long" ? profitSpaceBlockedText(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr) : profitSpaceBlockedText(shortExpectedNetProfit, shortExpectedNetRoiPct, shortCostPctOfReward, shortTargetDistanceAtr)) : ""
 string blockedVisualKey = blockedDirection + ":" + blockedSetup + ":" + blockedReason + ":" + blockedProfitSpaceText
 if blockedVisualNow and blockedVisualKey != lastBlockVisualKey
     float blockedY = blockedDirection == "short" ? high + atrVal * 4.0 : low - atrVal * 4.0

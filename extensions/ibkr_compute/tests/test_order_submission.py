@@ -1909,7 +1909,7 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         self.assertEqual("rejected", _broker_execution(patch)["status"])
         self.assertEqual("buying_power_blocked", patch["extra"]["status_reason"])
         self.assertEqual("blocked", patch["extra"]["buying_power_guard"]["state"])
-        self.assertEqual("自动开仓已被购买力阈值拦截", pb.events[-1]["title"])
+        self.assertEqual("自动开仓已被动态购买力上限拦截", pb.events[-1]["title"])
 
     def test_buying_power_guard_waits_when_account_snapshot_unavailable(self):
         signal = self._signal("AAPL")
@@ -1953,7 +1953,7 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         self.assertEqual("gateway_unavailable", patch["extra"]["status_reason"])
         self.assertEqual("waiting_for_account_snapshot", patch["extra"]["execution_state"])
         self.assertEqual("unavailable", patch["extra"]["buying_power_guard"]["state"])
-        self.assertEqual("自动开仓暂停：账户/Gateway不可用", pb.events[-1]["title"])
+        self.assertEqual("自动开仓暂停：购买力风控不可用", pb.events[-1]["title"])
 
     def test_buying_power_warning_continues_and_ack_includes_guard(self):
         signal = self._signal("AAPL")

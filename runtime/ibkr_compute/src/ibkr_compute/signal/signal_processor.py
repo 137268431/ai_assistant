@@ -9,8 +9,10 @@
 """
 
 import logging
+import time
 from datetime import datetime, timedelta
 from ibkr_compute.core.time_utils import ET
+from ibkr_compute.observability.prometheus import record_signal_event
 from typing import Callable, Dict, Tuple
 
 logger = logging.getLogger(__name__)
@@ -46,59 +48,74 @@ class SignalProcessor:
         self._daily_entry_counts_date = ""
 
     def validate_signal(self, signal: dict) -> Tuple[bool, str]:
+        started = time.perf_counter()
+
+        def _finish(ok: bool, reason: str) -> Tuple[bool, str]:
+            record_signal_event(
+                environment=self.environment,
+                stage="validation",
+                signal_source=str((signal.get("extra") or {}).get("source") or signal.get("source") or "unknown")
+                if isinstance(signal, dict)
+                else "unknown",
+                result="accepted" if ok else "rejected",
+                reason_code=reason,
+                duration_s=time.perf_counter() - started,
+            )
+            return ok, reason
+
         et_now = datetime.now(ET)
 
         if not self._is_trading_enabled():
-            return False, "trading_disabled"
+            return _finish(False, "trading_disabled")
 
         trade_ready, trade_ready_reason = self._trade_readiness_status()
         if not trade_ready:
-            return False, trade_ready_reason
+            return _finish(False, trade_ready_reason)
 
         if not self._in_trade_window(et_now):
-            return False, "outside_trade_window"
+            return _finish(False, "outside_trade_window")
 
         if not self._in_order_window(et_now):
-            return False, "outside_order_window"
+            return _finish(False, "outside_order_window")
 
         if self._is_signal_expired(signal, et_now):
-            return False, "signal_expired"
+            return _finish(False, "signal_expired")
 
         if self.order_lifecycle and self.order_lifecycle.is_sl_circuit_breaker:
-            return False, "sl_circuit_breaker"
+            return _finish(False, "sl_circuit_breaker")
 
         if self.order_lifecycle and self.order_lifecycle.is_position_limit_reached:
-            return False, "position_limit_reached"
+            return _finish(False, "position_limit_reached")
 
         symbol = signal.get("symbol", "").upper()
         direction = signal.get("direction", "")
 
         if self._is_fixed_position_symbol(symbol):
-            return False, "fixed_position_symbol_blocked"
+            return _finish(False, "fixed_position_symbol_blocked")
 
         capacity_ok, capacity_reason = self._strategy_capacity_status()
         if not capacity_ok:
-            return False, capacity_reason
+            return _finish(False, capacity_reason)
 
         cooldown_active, cooldown_reason = self._cooldown_status(symbol, et_now)
         if cooldown_active:
-            return False, cooldown_reason
+            return _finish(False, cooldown_reason)
 
         if self._has_conflicting_position(symbol, direction):
-            return False, "direction_conflict"
+            return _finish(False, "direction_conflict")
 
         daily_entry_ok, daily_entry_reason = self._daily_entry_limit_status(symbol, et_now)
         if not daily_entry_ok:
-            return False, daily_entry_reason
+            return _finish(False, daily_entry_reason)
 
         aligned, alignment_reason = self._target_direction_alignment_status(symbol, direction)
         if not aligned:
-            return False, alignment_reason
+            return _finish(False, alignment_reason)
 
         if not self._validate_prices(signal):
-            return False, "invalid_prices"
+            return _finish(False, "invalid_prices")
 
-        return True, "ok"
+        return _finish(True, "ok")
 
     def _is_trading_enabled(self) -> bool:
         trading_enabled = self.config.get_bool_for_environment(

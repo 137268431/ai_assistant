@@ -162,6 +162,7 @@ from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_scheduler.cron_registry import build_cron_payload
 from ibkr_compute.core.config import Config
 from ibkr_compute.integrations.pb_client import PBClient
+from ibkr_compute.observability.prometheus import install_flask_metrics
 from ibkr_api.signals.api import build_signals_ack_response, build_signals_pending_response
 
 
@@ -211,9 +212,14 @@ ENVIRONMENT_LABELS = {
 _FEISHU_TOKEN_CACHE: dict[str, Any] = {"token": "", "expires_at": 0.0}
 
 app = Flask(__name__)
+install_flask_metrics(app)
 # Avoid recursively routing runtime-config reads back into this API service.
 pb = PBClient(base_url=PB_BASE_URL, prefer_runtime_config_api=False)
 config = Config(pb_client=pb)
+try:
+    config.refresh()
+except Exception as exc:
+    print(f"[ibkr_api] startup config refresh failed: {exc}")
 
 
 EXCLUDED_RESPONSE_HEADERS = {"content-encoding", "content-length", "transfer-encoding", "connection"}

@@ -55,7 +55,7 @@ def recover_live_open_orders(api_app, service, orders_raw: list[dict], fallback_
         live_open_payload = service.order_tracker.get_complete_live_open_orders(
             pb_seed_ids=fallback_ids,
             bulk_orders=orders_raw,
-            force=True,
+            force=False,
         )
         existing_ids = {
             str(item.get("orderId") or item.get("order_id") or item.get("id") or "").strip()

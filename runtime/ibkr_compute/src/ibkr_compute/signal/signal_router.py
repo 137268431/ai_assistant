@@ -9,6 +9,7 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 from ibkr_compute.core.time_utils import ET
+from ibkr_compute.observability.prometheus import record_signal_event
 from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -73,14 +74,26 @@ class SignalRouter:
         return False
 
     def fetch_pending_signals(self) -> List[Dict]:
+        started = time.perf_counter()
         today = datetime.now(ET).strftime("%Y-%m-%d")
         source_mode = self.signal_source
-        rows = self.pb_client.get_records(
-            "ibkr_signals",
-            filter=f'status = "pending" && date = "{today}" && environment = "{self.environment}"',
-            sort="-created",
-            per_page=100,
-        )
+        try:
+            rows = self.pb_client.get_records(
+                "ibkr_signals",
+                filter=f'status = "pending" && date = "{today}" && environment = "{self.environment}"',
+                sort="-created",
+                per_page=100,
+            )
+        except Exception as exc:
+            record_signal_event(
+                environment=self.environment,
+                stage="poll",
+                signal_source=source_mode,
+                result="error",
+                reason_code=exc.__class__.__name__,
+                duration_s=time.perf_counter() - started,
+            )
+            raise
 
         signals: List[Dict] = []
         seen_signal_ids = set()
@@ -131,6 +144,14 @@ class SignalRouter:
             })
 
         self._last_poll = time.time()
+        record_signal_event(
+            environment=self.environment,
+            stage="poll",
+            signal_source=source_mode,
+            result="ok",
+            reason_code="pending_found" if signals else "empty",
+            duration_s=time.perf_counter() - started,
+        )
         return signals
 
     def _resolve_source(self, row: Dict) -> str:
@@ -156,18 +177,22 @@ class SignalRouter:
             return
         self._inflight_ids.discard(text)
         self._processed_ids.add(text)
+        record_signal_event(environment=self.environment, stage="mark_processed", result="ok", reason_code="processed")
 
     def claim_signal(self, signal_id: str) -> bool:
         text = str(signal_id or "").strip()
         if not text or text in self._processed_ids or text in self._inflight_ids:
+            record_signal_event(environment=self.environment, stage="claim", result="duplicate", reason_code="already_seen")
             return False
         self._inflight_ids.add(text)
+        record_signal_event(environment=self.environment, stage="claim", result="claimed", reason_code="ok")
         return True
 
     def release_signal(self, signal_id: str):
         text = str(signal_id or "").strip()
         if text:
             self._inflight_ids.discard(text)
+            record_signal_event(environment=self.environment, stage="release", result="ok", reason_code="released")
 
     def forget_processed(self, signal_ids):
         for signal_id in (signal_ids or []):

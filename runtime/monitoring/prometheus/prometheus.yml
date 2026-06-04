@@ -1,0 +1,80 @@
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+
+rule_files:
+  - /opt/monitoring/prometheus/rules/*.yml
+
+scrape_configs:
+  - job_name: ibkr-compute
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - 127.0.0.1:5100
+        labels:
+          service: ibkr-compute
+          stack: ibkr
+
+  - job_name: ibkr-runtime
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - 127.0.0.1:5101
+        labels:
+          service: ibkr-runtime
+          stack: ibkr
+
+  - job_name: ibkr-api
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - 127.0.0.1:5102
+        labels:
+          service: ibkr-api
+          stack: ibkr
+
+  - job_name: ibkr-scheduler
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - 127.0.0.1:5103
+        labels:
+          service: ibkr-scheduler
+          stack: ibkr
+
+  - job_name: ibkr-backtest
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - 127.0.0.1:5105
+        labels:
+          service: ibkr-backtest
+          stack: ibkr
+
+  - job_name: prometheus
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - 127.0.0.1:9090
+        labels:
+          service: prometheus
+          stack: monitoring
+
+  - job_name: node-exporter
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - 127.0.0.1:9100
+        labels:
+          service: node-exporter
+          stack: monitoring
+
+  - job_name: grafana
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - 127.0.0.1:3000
+        labels:
+          service: grafana
+          stack: monitoring

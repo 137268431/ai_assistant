@@ -11,6 +11,7 @@ from ibkr_compute.api.account.buying_power_guard import (
     estimate_entry_exposure,
 )
 from ibkr_compute.core.time_utils import ET
+from ibkr_compute.observability.prometheus import record_signal_event
 
 
 def _service_mod():
@@ -41,6 +42,21 @@ class TradingServiceSignalsMixin:
         "runtime_stopped",
         "no_trade_symbols",
     }
+    BUYING_POWER_SNAPSHOT_META_KEYS = (
+        "source",
+        "snapshot_error",
+        "configured_buying_power",
+        "risk_model",
+        "risk_model_default_entry_exposure",
+        "risk_model_remaining_slots",
+        "risk_model_position_exposure",
+        "risk_model_open_order_exposure",
+        "risk_model_used_exposure",
+        "risk_model_strategy_position_count",
+        "risk_model_strategy_entry_order_count",
+        "risk_model_strategy_position_symbols",
+        "risk_model_strategy_entry_order_symbols",
+    )
 
     @staticmethod
     def _is_protection_incomplete_result(result: dict) -> bool:
@@ -194,12 +210,20 @@ class TradingServiceSignalsMixin:
                 if self.session_keeper.is_authenticated:
                     self._process_signals()
                     self.reverse_handler.check_and_process()
+                    record_signal_event(environment=service_mod.ENVIRONMENT, stage="loop", result="ok")
                 else:
                     service_mod.logger.info(
                         "Skip signal/reverse processing while session is unauthenticated"
                     )
+                    record_signal_event(environment=service_mod.ENVIRONMENT, stage="loop", result="unauthenticated")
             except Exception as exc:
                 service_mod.logger.error("Signal loop error: %s", exc)
+                record_signal_event(
+                    environment=service_mod.ENVIRONMENT,
+                    stage="loop",
+                    result="error",
+                    reason_code=exc.__class__.__name__,
+                )
                 signal_poll_interval = service_mod.DEFAULT_SIGNAL_POLL_INTERVAL
             self._signal_wakeup.wait(timeout=signal_poll_interval)
             self._signal_wakeup.clear()
@@ -338,6 +362,7 @@ class TradingServiceSignalsMixin:
 
                     sig = guarded_sig
                 buying_power_guard = self._evaluate_signal_buying_power_guard(sig)
+                self._handle_buying_power_guard_state_transition(sig, buying_power_guard)
                 if buying_power_guard.get("state") == "unavailable":
                     service_mod.logger.warning(
                         "Signal waiting for account/Gateway snapshot before buying-power guard: signal_id=%s symbol=%s reason=%s",
@@ -446,6 +471,7 @@ class TradingServiceSignalsMixin:
                             sig = self._apply_order_flow_entry_decision(sig, order_flow_decision)
                             if self._safe_float(sig.get("entry"), 0.0) != previous_entry:
                                 buying_power_guard = self._evaluate_signal_buying_power_guard(sig)
+                                self._handle_buying_power_guard_state_transition(sig, buying_power_guard)
                                 if buying_power_guard.get("state") == "unavailable":
                                     service_mod.logger.warning(
                                         "Signal waiting for account/Gateway snapshot after order-flow repricing: signal_id=%s symbol=%s reason=%s",
@@ -581,6 +607,13 @@ class TradingServiceSignalsMixin:
                         )
 
                 if result.get("ok"):
+                    record_signal_event(
+                        environment=service_mod.ENVIRONMENT,
+                        stage="order_submission",
+                        signal_source=str(sig.get("source") or "unknown"),
+                        result="ok",
+                        reason_code=str(result.get("order_family_type") or "submitted"),
+                    )
                     if order_flow_manager is not None and not direct_tv_entry:
                         try:
                             order_flow_manager.mark_filled(
@@ -635,6 +668,13 @@ class TradingServiceSignalsMixin:
                     self.order_lifecycle.increment_position_count()
                 else:
                     service_mod.logger.error("Order failed: %s - %s", symbol, result.get("error"))
+                    record_signal_event(
+                        environment=service_mod.ENVIRONMENT,
+                        stage="order_submission",
+                        signal_source=str(sig.get("source") or "unknown"),
+                        result="error",
+                        reason_code="protection_incomplete" if result.get("protection_incomplete") else "submit_failed",
+                    )
                     self._mark_signal_submit_failed(sig, result)
 
                 self.signal_router.mark_processed(signal_id)
@@ -1614,6 +1654,136 @@ class TradingServiceSignalsMixin:
             "buying_power_guard_reason": guard.get("reason"),
         }
 
+    def _merge_buying_power_snapshot_guard(self, guard: dict, snapshot_guard: dict | None) -> dict:
+        if not isinstance(snapshot_guard, dict):
+            return guard
+        for key in self.BUYING_POWER_SNAPSHOT_META_KEYS:
+            if snapshot_guard.get(key) not in (None, ""):
+                guard[key] = snapshot_guard.get(key)
+        if guard.get("state") == "unavailable" and snapshot_guard.get("reason"):
+            guard["reason"] = snapshot_guard.get("reason")
+        self._recompute_buying_power_guard_capacity(guard)
+        return guard
+
+    def _recompute_buying_power_guard_capacity(self, guard: dict) -> None:
+        default_entry_exposure = self._safe_float(guard.get("risk_model_default_entry_exposure"), 0.0)
+        if default_entry_exposure <= 0:
+            return
+        remaining_after = guard.get("remaining_after")
+        if remaining_after in (None, ""):
+            remaining_after = guard.get("remaining")
+        remaining_value = self._safe_float(remaining_after, 0.0)
+        block_floor = self._safe_float(guard.get("block_floor"), 0.0)
+        guard["risk_model_remaining_slots"] = int(
+            math.floor(max(0.0, remaining_value - block_floor) / default_entry_exposure)
+        )
+
+    def _buying_power_guard_state_key(self) -> str:
+        return "buying_power_guard:auto_entry"
+
+    def _load_buying_power_guard_state(self) -> dict:
+        pb = getattr(self, "pb", None)
+        getter = getattr(pb, "get_state", None)
+        if not callable(getter):
+            return {}
+        try:
+            record = getter(self._buying_power_guard_state_key(), _service_mod().ENVIRONMENT, "global")
+        except Exception as exc:
+            _service_mod().logger.debug("Buying-power guard state load failed: %s", exc)
+            return {}
+        data = (record or {}).get("data") if isinstance(record, dict) else {}
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except Exception:
+                data = {}
+        return data if isinstance(data, dict) else {}
+
+    def _save_buying_power_guard_state(self, sig: dict, guard: dict) -> None:
+        pb = getattr(self, "pb", None)
+        upsert = getattr(pb, "upsert_state", None)
+        if not callable(upsert):
+            return
+        state = str((guard or {}).get("state") or "ok").strip().lower() or "ok"
+        payload = {
+            "state": state,
+            "reason": str((guard or {}).get("reason") or ""),
+            "source": str((guard or {}).get("source") or ""),
+            "signal_id": str((sig or {}).get("signal_id") or ""),
+            "symbol": str((sig or {}).get("symbol") or "").upper(),
+            "remaining": (guard or {}).get("remaining"),
+            "remaining_after": (guard or {}).get("remaining_after"),
+            "warn_floor": (guard or {}).get("warn_floor"),
+            "block_floor": (guard or {}).get("block_floor"),
+            "updated_at": self._now_iso(),
+        }
+        try:
+            upsert(self._buying_power_guard_state_key(), _service_mod().ENVIRONMENT, payload, date="global")
+        except Exception as exc:
+            _service_mod().logger.debug("Buying-power guard state save failed: %s", exc)
+
+    def _handle_buying_power_guard_state_transition(self, sig: dict, guard: dict) -> None:
+        state = str((guard or {}).get("state") or "ok").strip().lower() or "ok"
+        previous = self._load_buying_power_guard_state()
+        previous_state = str((previous or {}).get("state") or "ok").strip().lower() or "ok"
+        if state == "ok" and previous_state in {"warning", "blocked", "unavailable"}:
+            self._notify_buying_power_recovered(sig, guard, previous)
+        self._save_buying_power_guard_state(sig, guard)
+
+    def _buying_power_guard_detail(self, sig: dict, guard: dict, *, previous: dict | None = None) -> dict:
+        def guard_number(key: str):
+            raw = (guard or {}).get(key)
+            if raw in (None, ""):
+                return "不可用"
+            try:
+                return round(float(raw), 2)
+            except (TypeError, ValueError):
+                return "不可用"
+
+        detail = {
+            "信号ID": str((sig or {}).get("signal_id") or ""),
+            "标的": str((sig or {}).get("symbol") or "").upper(),
+            "方向": str((sig or {}).get("direction") or ""),
+            "数量": int(self._safe_float((sig or {}).get("shares"), 0.0)),
+            "风控来源": str((guard or {}).get("source") or "account_summary"),
+            "当前剩余购买力": guard_number("remaining"),
+            "本次预估占用": guard_number("requested_exposure"),
+            "下单后剩余购买力": guard_number("remaining_after"),
+            "预警阈值": guard_number("warn_floor"),
+            "禁止阈值": guard_number("block_floor"),
+            "状态": str((guard or {}).get("state") or "ok").strip().lower() or "ok",
+            "原因": str((guard or {}).get("reason") or ""),
+        }
+        if (guard or {}).get("configured_buying_power") not in (None, ""):
+            detail["配置购买力"] = guard_number("configured_buying_power")
+        if (guard or {}).get("risk_model_used_exposure") not in (None, ""):
+            detail["策略已占用"] = guard_number("risk_model_used_exposure")
+        if (guard or {}).get("risk_model_remaining_slots") not in (None, ""):
+            detail["估算剩余可开仓数"] = guard.get("risk_model_remaining_slots")
+        if isinstance(previous, dict) and previous:
+            detail["上一状态"] = str(previous.get("state") or "")
+            detail["上一原因"] = str(previous.get("reason") or "")
+        return detail
+
+    def _notify_buying_power_recovered(self, sig: dict, guard: dict, previous: dict) -> None:
+        if not self._buying_power_notify_enabled():
+            return
+        pb = getattr(self, "pb", None)
+        notifier = getattr(pb, "notify_system_event", None)
+        if not callable(notifier):
+            return
+        try:
+            notifier(
+                "自动开仓购买力风控已恢复",
+                self._buying_power_guard_detail(sig, guard, previous=previous),
+                event_type="alert",
+                level="info",
+                source="ibkr_compute",
+                environment=_service_mod().ENVIRONMENT,
+            )
+        except Exception as exc:
+            _service_mod().logger.warning("Buying-power recovery notification failed: %s", exc)
+
     def _account_buying_power_snapshot(self) -> dict:
         provider = getattr(self, "account_snapshot_provider", None)
         if callable(provider):
@@ -1650,18 +1820,14 @@ class TradingServiceSignalsMixin:
             requested_exposure=exposure,
         )
         snapshot_guard = (snapshot or {}).get("buying_power_guard")
-        if isinstance(snapshot_guard, dict):
-            for key in ("source", "snapshot_error"):
-                if snapshot_guard.get(key) not in (None, ""):
-                    guard[key] = snapshot_guard.get(key)
-            if guard.get("state") == "unavailable" and snapshot_guard.get("reason"):
-                guard["reason"] = snapshot_guard.get("reason")
+        self._merge_buying_power_snapshot_guard(guard, snapshot_guard if isinstance(snapshot_guard, dict) else None)
         if isinstance((snapshot or {}).get("errors"), dict):
             guard["snapshot_errors"] = dict((snapshot or {}).get("errors") or {})
         guard["snapshot_fetched_at"] = (snapshot or {}).get("fetched_at") or ""
         if exposure <= 0 and guard.get("enabled"):
             guard["state"] = "blocked"
             guard["reason"] = "buying_power_price_unavailable"
+        self._recompute_buying_power_guard_capacity(guard)
         return guard
 
     def _buying_power_notify_enabled(self) -> bool:
@@ -1707,35 +1873,15 @@ class TradingServiceSignalsMixin:
         state = str((guard or {}).get("state") or "ok").strip().lower()
         title = "自动开仓购买力预警"
         if state == "unavailable":
-            title = "自动开仓暂停：账户/Gateway不可用"
+            title = "自动开仓暂停：购买力风控不可用"
         elif state == "blocked":
-            title = "自动开仓已被购买力阈值拦截"
+            title = "自动开仓已被动态购买力上限拦截"
         elif level == "info":
             title = "自动开仓已提交"
-        def guard_number(key: str):
-            raw = (guard or {}).get(key)
-            if raw in (None, ""):
-                return "不可用"
-            try:
-                return round(float(raw), 2)
-            except (TypeError, ValueError):
-                return "不可用"
         try:
             notifier(
                 title,
-                {
-                    "信号ID": str((sig or {}).get("signal_id") or ""),
-                    "标的": str((sig or {}).get("symbol") or "").upper(),
-                    "方向": str((sig or {}).get("direction") or ""),
-                    "数量": int(self._safe_float((sig or {}).get("shares"), 0.0)),
-                    "当前剩余购买力": guard_number("remaining"),
-                    "本次预估占用": guard_number("requested_exposure"),
-                    "下单后剩余购买力": guard_number("remaining_after"),
-                    "预警阈值": guard_number("warn_floor"),
-                    "禁止阈值": guard_number("block_floor"),
-                    "状态": state,
-                    "原因": str((guard or {}).get("reason") or ""),
-                },
+                self._buying_power_guard_detail(sig, guard),
                 event_type=event_type,
                 level=level,
                 source="ibkr_compute",

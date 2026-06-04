@@ -11,6 +11,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from ibkr_compute.api.account.snapshot_builder.fetch import fetch_snapshot_sources
 from ibkr_compute.api.account.snapshot_builder.payload import (
+    _build_ibkr_account_buying_power_snapshot,
     _build_ibkr_account_snapshot,
     refresh_account_snapshot_cache,
 )
@@ -117,6 +118,66 @@ class _SnapshotService:
         self.order_lifecycle = lifecycle
 
 
+class _BrokerSourceConfig:
+    def get_for_environment(self, key, _environment, default=None):
+        if key == "ibkr_buying_power_guard_paper_source":
+            return "broker"
+        return default
+
+    def get_bool_for_environment(self, _key, _environment, default=False):
+        return default
+
+    def get_float_for_environment(self, _key, _environment, default=0.0):
+        return default
+
+
+class _BuyingPowerLifecycle:
+    account_id = "DU123"
+
+    def __init__(self, *, delay: float = 0.0):
+        self.delay = delay
+        self.snapshot_calls = 0
+        self.summary_calls = 0
+
+    def get_account_snapshot(self, _account_id):
+        self.snapshot_calls += 1
+        return {
+            "summary": {
+                "AccountCode": {"value": "DU123"},
+                "NetLiquidation": {"value": "100000", "currency": "USD"},
+                "BuyingPower": {"value": "50000", "currency": "USD"},
+                "AvailableFunds": {"value": "25000", "currency": "USD"},
+            },
+            "positions": [],
+        }
+
+    def get_account_summary(self, _account_id):
+        self.summary_calls += 1
+        if self.delay:
+            time.sleep(self.delay)
+        return {
+            "AccountCode": {"value": "DU123"},
+            "NetLiquidation": {"value": "100000", "currency": "USD"},
+            "BuyingPower": {"value": "50000", "currency": "USD"},
+            "AvailableFunds": {"value": "25000", "currency": "USD"},
+        }
+
+
+class _BuyingPowerService(_SnapshotService):
+    config = _BrokerSourceConfig()
+
+    def __init__(self, lifecycle: _BuyingPowerLifecycle, *, circuit: dict | None = None):
+        super().__init__(lifecycle)
+        self._circuit = dict(circuit or {})
+
+    def status(self):
+        return {
+            "gateway": {"running": True, "reachable": True},
+            "session": {"authenticated": True},
+            "account_data_circuit": self._circuit,
+        }
+
+
 def _with_fake_api_app(app, fn):
     with mock.patch("ibkr_compute.api.account.snapshot_builder.context._api_app", return_value=app):
         return fn()
@@ -183,6 +244,46 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertEqual("account snapshot timeout", fallback["refresh_error"])
         self.assertEqual([], fallback["positions"])
         self.assertEqual(2, lifecycle.snapshot_calls)
+
+    def test_buying_power_reuses_fresh_full_snapshot_cache(self):
+        app = _FakeApiApp()
+        lifecycle = _BuyingPowerLifecycle()
+        service = _BuyingPowerService(lifecycle)
+
+        full_snapshot = _with_fake_api_app(app, lambda: _build_ibkr_account_snapshot(service, include_pnl=False))
+        buying_power = _with_fake_api_app(app, lambda: _build_ibkr_account_buying_power_snapshot(service))
+
+        self.assertTrue(full_snapshot["summary_available"])
+        self.assertEqual("account_snapshot_cache", buying_power["source"])
+        self.assertEqual(1, lifecycle.snapshot_calls)
+        self.assertEqual(0, lifecycle.summary_calls)
+        self.assertEqual("ok", buying_power["account_snapshot_health"]["state"])
+
+    def test_buying_power_snapshot_single_flight_for_summary_fetch(self):
+        app = _FakeApiApp()
+        lifecycle = _BuyingPowerLifecycle(delay=0.05)
+        service = _BuyingPowerService(lifecycle)
+
+        def run():
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                return list(executor.map(lambda _idx: _build_ibkr_account_buying_power_snapshot(service), range(4)))
+
+        payloads = _with_fake_api_app(app, run)
+
+        self.assertEqual(1, lifecycle.summary_calls)
+        self.assertTrue(all(payload["buying_power_guard"]["state"] == "ok" for payload in payloads))
+
+    def test_buying_power_snapshot_short_circuits_when_account_data_circuit_open(self):
+        app = _FakeApiApp()
+        lifecycle = _BuyingPowerLifecycle()
+        service = _BuyingPowerService(lifecycle, circuit={"active": True, "reason": "positions_timeout", "remaining_s": 42.0})
+
+        payload = _with_fake_api_app(app, lambda: _build_ibkr_account_buying_power_snapshot(service))
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual("account_data_circuit_open", payload["buying_power_guard"]["reason"])
+        self.assertEqual(42.0, payload["retry_after_s"])
+        self.assertEqual(0, lifecycle.summary_calls)
 
 
 if __name__ == "__main__":

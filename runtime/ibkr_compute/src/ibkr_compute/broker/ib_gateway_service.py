@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import logging
 import socket
+import time
 from typing import TYPE_CHECKING, Dict, List, Optional
 
+from ibkr_compute.observability.prometheus import (
+    record_gateway_service_action,
+    record_gateway_socket_probe,
+    set_gateway_status,
+)
 from ibkr_compute.broker.ib_gateway_support import (
     DEFAULT_HOST,
     DEFAULT_PORT,
@@ -56,6 +62,7 @@ def _pid_uptime_seconds(pid: int) -> Optional[float]:
 def _api_socket_status(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> dict:
     host = str(host or DEFAULT_HOST)
     port = int(port or DEFAULT_PORT)
+    started = time.perf_counter()
     proc = _run_command(["ss", "-ltn"], timeout=5)
     if proc is not None and proc.returncode == 0:
         for line in (proc.stdout or "").splitlines():
@@ -64,6 +71,16 @@ def _api_socket_status(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> di
                 continue
             local_address = parts[3].strip()
             if local_address.rsplit(":", 1)[-1] == str(port):
+                duration_s = time.perf_counter() - started
+                record_gateway_socket_probe(
+                    host=host,
+                    port=port,
+                    source="ss",
+                    result="ok",
+                    reason_code="listening",
+                    duration_s=duration_s,
+                    listening=True,
+                )
                 return {
                     "listening": True,
                     "host": host,
@@ -71,6 +88,16 @@ def _api_socket_status(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> di
                     "source": "ss",
                     "reason": "",
                 }
+        duration_s = time.perf_counter() - started
+        record_gateway_socket_probe(
+            host=host,
+            port=port,
+            source="ss",
+            result="error",
+            reason_code="port_not_listening",
+            duration_s=duration_s,
+            listening=False,
+        )
         return {
             "listening": False,
             "host": host,
@@ -83,6 +110,16 @@ def _api_socket_status(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> di
     try:
         with socket.create_connection((probe_host, port), timeout=0.5):
             pass
+        duration_s = time.perf_counter() - started
+        record_gateway_socket_probe(
+            host=host,
+            port=port,
+            source="socket",
+            result="ok",
+            reason_code="listening",
+            duration_s=duration_s,
+            listening=True,
+        )
         return {
             "listening": True,
             "host": host,
@@ -91,6 +128,16 @@ def _api_socket_status(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> di
             "reason": "",
         }
     except OSError as exc:
+        duration_s = time.perf_counter() - started
+        record_gateway_socket_probe(
+            host=host,
+            port=port,
+            source="socket",
+            result="error",
+            reason_code="connect_failed",
+            duration_s=duration_s,
+            listening=False,
+        )
         return {
             "listening": False,
             "host": host,
@@ -122,17 +169,23 @@ class GatewayServiceManager:
         return _pid_uptime_seconds(self.pid)
 
     def start(self) -> bool:
-        return self._systemctl("start") and self.is_running
+        ok = self._systemctl("start") and self.is_running
+        record_gateway_service_action(action="start", result="ok" if ok else "error")
+        return ok
 
     def stop(self) -> bool:
         if self.broker:
             self.broker.disconnect()
-        return self._systemctl("stop")
+        ok = self._systemctl("stop")
+        record_gateway_service_action(action="stop", result="ok" if ok else "error")
+        return ok
 
     def restart(self) -> bool:
         if self.broker:
             self.broker.disconnect()
-        return self._systemctl("restart") and self.is_running
+        ok = self._systemctl("restart") and self.is_running
+        record_gateway_service_action(action="restart", result="ok" if ok else "error")
+        return ok
 
     def recent_logs(self, lines: int = 50, since_minutes: int = 10) -> List[str]:
         proc = _run_command(
@@ -166,6 +219,7 @@ class GatewayServiceManager:
             status_code = 502
         elif running and not status_code:
             status_code = 401
+        set_gateway_status(running=running, uptime_s=self.uptime_seconds, status_code=status_code)
         return {
             "managed_by": "systemd",
             "service": self.service_name,

@@ -20,6 +20,7 @@ from ibkr_compute.api.app_bootstrap import (
 )
 from ibkr_compute.api.app_logging import configure_api_logging
 from ibkr_compute.api.app_routes import register_api_routes
+from ibkr_compute.observability.prometheus import install_flask_metrics
 
 
 configure_api_logging()
@@ -28,6 +29,7 @@ register_canonical_module_alias(__name__, globals())
 apply_app_exports(globals())
 
 app = Flask(__name__)
+install_flask_metrics(app)
 
 globals().update(
     build_service_bundle(

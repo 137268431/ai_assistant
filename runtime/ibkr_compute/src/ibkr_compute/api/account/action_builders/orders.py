@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 
 from ibkr_compute.api.account.action_builders.common import _build_snapshot_action_response
@@ -14,6 +15,55 @@ from ibkr_compute.api.account.snapshot import (
     _build_ibkr_account_snapshot,
 )
 from ibkr_compute.api.shared.service_status import get_service_status_snapshot
+
+
+BUYING_POWER_SNAPSHOT_META_KEYS = (
+    "source",
+    "snapshot_error",
+    "configured_buying_power",
+    "risk_model",
+    "risk_model_default_entry_exposure",
+    "risk_model_remaining_slots",
+    "risk_model_position_exposure",
+    "risk_model_open_order_exposure",
+    "risk_model_used_exposure",
+    "risk_model_strategy_position_count",
+    "risk_model_strategy_entry_order_count",
+    "risk_model_strategy_position_symbols",
+    "risk_model_strategy_entry_order_symbols",
+)
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    if number != number:
+        return default
+    return number
+
+
+def _merge_snapshot_guard_metadata(guard: dict, snapshot_guard: dict | None) -> dict:
+    if not isinstance(snapshot_guard, dict):
+        return guard
+    for key in BUYING_POWER_SNAPSHOT_META_KEYS:
+        if snapshot_guard.get(key) not in (None, ""):
+            guard[key] = snapshot_guard.get(key)
+    if guard.get("state") == "unavailable" and snapshot_guard.get("reason"):
+        guard["reason"] = snapshot_guard.get("reason")
+    default_entry_exposure = _safe_float(guard.get("risk_model_default_entry_exposure"), 0.0)
+    if default_entry_exposure > 0:
+        remaining_after = guard.get("remaining_after")
+        if remaining_after in (None, ""):
+            remaining_after = guard.get("remaining")
+        guard["risk_model_remaining_slots"] = int(
+            math.floor(
+                max(0.0, _safe_float(remaining_after, 0.0) - _safe_float(guard.get("block_floor"), 0.0))
+                / default_entry_exposure
+            )
+        )
+    return guard
 
 
 def _notify_manual_buying_power_event(
@@ -41,21 +91,29 @@ def _notify_manual_buying_power_event(
             return round(float(raw), 2)
         except (TypeError, ValueError):
             return "不可用"
+    detail = {
+        "标的": symbol,
+        "方向": direction,
+        "数量": quantity,
+        "风控来源": str((guard or {}).get("source") or "account_summary"),
+        "当前剩余购买力": guard_number("remaining"),
+        "本次预估占用": guard_number("requested_exposure"),
+        "下单后剩余购买力": guard_number("remaining_after"),
+        "预警阈值": guard_number("warn_floor"),
+        "禁止阈值": guard_number("block_floor"),
+        "状态": str((guard or {}).get("state") or "ok"),
+        "原因": str((guard or {}).get("reason") or ""),
+    }
+    if (guard or {}).get("configured_buying_power") not in (None, ""):
+        detail["配置购买力"] = guard_number("configured_buying_power")
+    if (guard or {}).get("risk_model_used_exposure") not in (None, ""):
+        detail["策略已占用"] = guard_number("risk_model_used_exposure")
+    if (guard or {}).get("risk_model_remaining_slots") not in (None, ""):
+        detail["估算剩余可开仓数"] = guard.get("risk_model_remaining_slots")
     try:
         notifier(
             title,
-            {
-                "标的": symbol,
-                "方向": direction,
-                "数量": quantity,
-                "当前剩余购买力": guard_number("remaining"),
-                "本次预估占用": guard_number("requested_exposure"),
-                "下单后剩余购买力": guard_number("remaining_after"),
-                "预警阈值": guard_number("warn_floor"),
-                "禁止阈值": guard_number("block_floor"),
-                "状态": str((guard or {}).get("state") or "ok"),
-                "原因": str((guard or {}).get("reason") or ""),
-            },
+            detail,
             event_type="account_order",
             level=level,
             source="ibkr_compute",
@@ -220,18 +278,13 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
         requested_exposure=requested_exposure,
     )
     snapshot_guard = (pre_submit_snapshot or {}).get("buying_power_guard")
-    if isinstance(snapshot_guard, dict):
-        for key in ("source", "snapshot_error"):
-            if snapshot_guard.get(key) not in (None, ""):
-                buying_power_guard[key] = snapshot_guard.get(key)
-        if buying_power_guard.get("state") == "unavailable" and snapshot_guard.get("reason"):
-            buying_power_guard["reason"] = snapshot_guard.get("reason")
+    _merge_snapshot_guard_metadata(buying_power_guard, snapshot_guard if isinstance(snapshot_guard, dict) else None)
     if isinstance((pre_submit_snapshot or {}).get("errors"), dict):
         buying_power_guard["snapshot_errors"] = dict((pre_submit_snapshot or {}).get("errors") or {})
     if buying_power_guard.get("state") == "unavailable":
         _notify_manual_buying_power_event(
             service,
-            title="手动开仓暂停：账户/Gateway不可用",
+            title="手动开仓暂停：购买力风控不可用",
             level="error",
             environment=runtime_environment,
             symbol=symbol,
@@ -257,7 +310,7 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
     if buying_power_guard.get("state") == "blocked":
         _notify_manual_buying_power_event(
             service,
-            title="手动开仓已被购买力阈值拦截",
+            title="手动开仓已被动态购买力上限拦截",
             level="error",
             environment=runtime_environment,
             symbol=symbol,

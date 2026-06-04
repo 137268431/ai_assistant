@@ -120,12 +120,12 @@ def _signal_chat_id(signal_chat_id_fn: SignalChatId | None, environment: str) ->
 
 def _manual_confirm_enabled(config_value: ConfigValue | None, environment: str) -> bool:
     if not callable(config_value):
-        return True
+        return False
     try:
-        value = config_value("signal_manual_confirm_enabled", "true", environment)
+        value = config_value("signal_manual_confirm_enabled", "false", environment)
     except Exception:
-        return True
-    return parse_boolean(value, True)
+        return False
+    return parse_boolean(value, False)
 
 
 def _apply_signal_strength(prepared: dict[str, Any]) -> dict[str, Any]:

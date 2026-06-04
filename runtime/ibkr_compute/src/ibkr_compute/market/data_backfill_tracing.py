@@ -8,6 +8,7 @@ import uuid
 from typing import Dict, Optional, Sequence
 
 from ibkr_compute.core.large_operation_alert import emit_large_operation_alert
+from ibkr_compute.observability.prometheus import record_history_event, set_history_active
 
 from .timeframe_utils import normalize_interval
 
@@ -76,6 +77,7 @@ class DataBackfillTracingMixin:
                 self._active_symbol_counts[normalized_symbol] = (
                     int(self._active_symbol_counts.get(normalized_symbol, 0) or 0) + 1
                 )
+            set_history_active(environment=getattr(self, "environment", ""), source="data_backfill", value=self._active_requests)
             return self._active_requests, sorted(self._active_symbol_counts.keys())
 
     def _active_request_exit(self, symbol: str) -> tuple[int, list[str]]:
@@ -88,6 +90,7 @@ class DataBackfillTracingMixin:
                     self._active_symbol_counts[normalized_symbol] = next_count
                 else:
                     self._active_symbol_counts.pop(normalized_symbol, None)
+            set_history_active(environment=getattr(self, "environment", ""), source="data_backfill", value=self._active_requests)
             return self._active_requests, sorted(self._active_symbol_counts.keys())
 
     def _record_trace_request(
@@ -291,6 +294,15 @@ class DataBackfillTracingMixin:
             "symbol_timings": list((trace.get("symbols_timing") or [])[-12:]),
             "finished_at_ms": int(finished_at * 1000),
         }
+        record_history_event(
+            environment=getattr(self, "environment", ""),
+            source=str(trace.get("source") or "data_backfill"),
+            operation="trace",
+            result="error" if error else "ok",
+            duration_s=float(summary.get("duration_s") or 0.0),
+            rows=int(total_written or 0),
+            error_class="error" if error else "",
+        )
         symbol_outcomes = list((trace.get("symbol_outcomes") or {}).values())
         hmds_no_data_symbols = sorted(
             str((item or {}).get("symbol") or "")

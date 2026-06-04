@@ -217,6 +217,98 @@ class SignalIngressBuildersTest(unittest.TestCase):
         self.assertEqual(row["extra"]["feishu_signal_message_id"], "signal-chat-paper:paper")
         self.assertEqual(row["extra"]["feishu_signal_card_version"], 1)
 
+    def test_signal_ingest_defaults_to_auto_when_config_returns_default(self):
+        pb = _FakePB()
+
+        payload, status_code = build_signal_ingest_response(
+            pb,
+            payload={
+                "broker_mode": "paper",
+                "market_data_mode": "live",
+                "symbol": "msft",
+                "signal_id": "sig-auto-default",
+                "direction": "long",
+                "entry": 410.0,
+                "stop_loss": 405.0,
+                "take_profit": 420.0,
+                "bar_time_ms": 1713797700000,
+            },
+            normalize_environment=self.normalize_environment,
+            escape_filter_string=self.escape_filter_string,
+            config_value=lambda key, default, environment: default,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(payload["status"], "pending")
+        row = pb.signals["ibkr_signals-1"]
+        self.assertEqual(row["status"], "pending")
+        self.assertEqual(row["note"], "")
+        self.assertEqual(row["extra"]["signal_confirmation_required"], False)
+        self.assertEqual(row["extra"]["signal_confirmation_mode"], "auto")
+        self.assertEqual(row["extra"].get("status_reason", ""), "")
+        self.assertEqual(row["extra"]["execution_by_mode"]["paper"]["status"], "pending")
+        self.assertEqual(row["extra"]["execution_by_mode"]["paper"]["note"], "")
+        self.assertEqual(row["extra"]["execution_by_mode"]["paper"]["signal_confirmation_required"], False)
+        self.assertEqual(row["extra"]["execution_by_mode"]["paper"]["signal_confirmation_mode"], "auto")
+
+    def test_signal_ingest_defaults_to_auto_when_config_raises(self):
+        pb = _FakePB()
+
+        def config_value(_key, _default, _environment):
+            raise RuntimeError("config unavailable")
+
+        payload, status_code = build_signal_ingest_response(
+            pb,
+            payload={
+                "broker_mode": "paper",
+                "market_data_mode": "live",
+                "symbol": "nvda",
+                "signal_id": "sig-auto-exception",
+                "direction": "long",
+                "entry": 900.0,
+                "stop_loss": 890.0,
+                "take_profit": 920.0,
+                "bar_time_ms": 1713797700000,
+            },
+            normalize_environment=self.normalize_environment,
+            escape_filter_string=self.escape_filter_string,
+            config_value=config_value,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(payload["status"], "pending")
+        row = pb.signals["ibkr_signals-1"]
+        self.assertEqual(row["extra"]["signal_confirmation_required"], False)
+        self.assertEqual(row["extra"]["signal_confirmation_mode"], "auto")
+        self.assertEqual(row["extra"]["execution_by_mode"]["paper"]["status"], "pending")
+
+    def test_signal_ingest_defaults_to_auto_without_config_value(self):
+        pb = _FakePB()
+
+        payload, status_code = build_signal_ingest_response(
+            pb,
+            payload={
+                "broker_mode": "paper",
+                "market_data_mode": "live",
+                "symbol": "amzn",
+                "signal_id": "sig-auto-missing-config",
+                "direction": "long",
+                "entry": 180.0,
+                "stop_loss": 178.0,
+                "take_profit": 184.0,
+                "bar_time_ms": 1713797700000,
+            },
+            normalize_environment=self.normalize_environment,
+            escape_filter_string=self.escape_filter_string,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(payload["status"], "pending")
+        row = pb.signals["ibkr_signals-1"]
+        self.assertEqual(row["extra"]["signal_confirmation_required"], False)
+        self.assertEqual(row["extra"]["signal_confirmation_mode"], "auto")
+        self.assertEqual(row["extra"]["execution_by_mode"]["paper"]["status"], "pending")
+
     def test_signal_notification_failure_records_feishu_error_detail(self):
         pb = _FakePB()
 

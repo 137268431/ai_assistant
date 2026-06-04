@@ -94,6 +94,62 @@ class BrokerReadyGuardTest(unittest.TestCase):
         self.assertTrue(circuit["active"])
         self.assertEqual(4, circuit["recent_failure_count"])
 
+    def test_expected_account_update_unsubscribe_does_not_trip_circuit(self):
+        app = _IBGatewayApp("127.0.0.1", 4001, 31)
+
+        for _ in range(4):
+            app._mark_expected_account_updates_unsubscribe()
+            app.error(-1, 2100, "API client has been unsubscribed from account data.")
+
+        circuit = app.status()["account_data_circuit"]
+        self.assertFalse(circuit["active"])
+        self.assertEqual(0, circuit["recent_failure_count"])
+
+    def test_account_summary_cancels_subscription_and_uses_cache(self):
+        app = _IBGatewayApp("127.0.0.1", 4001, 31)
+        app._managed_accounts = "DU123"
+        app._ensure_ready = mock.Mock(return_value={"ready": True})
+        app.cancelAccountSummary = mock.Mock()
+
+        def req_summary(req_id, _group, _tags):
+            app.accountSummary(req_id, "DU123", "NetLiquidation", "100000", "USD")
+            app.accountSummary(req_id, "DU123", "BuyingPower", "50000", "USD")
+            app.accountSummaryEnd(req_id)
+
+        app.reqAccountSummary = mock.Mock(side_effect=req_summary)
+
+        first = app.request_account_summary(timeout=1)
+        second = app.request_account_summary(timeout=1)
+
+        self.assertIn("BuyingPower", first)
+        self.assertEqual(first, second)
+        app.reqAccountSummary.assert_called_once()
+        app.cancelAccountSummary.assert_called_once()
+
+    def test_account_summary_cancels_on_timeout(self):
+        app = _IBGatewayApp("127.0.0.1", 4001, 31)
+        app._ensure_ready = mock.Mock(return_value={"ready": True})
+        app.reqAccountSummary = mock.Mock()
+        app.cancelAccountSummary = mock.Mock()
+        app._await = mock.Mock(side_effect=TimeoutError("account_summary_timeout"))
+
+        with self.assertRaisesRegex(TimeoutError, "account_summary_timeout"):
+            app.request_account_summary(timeout=1)
+
+        app.cancelAccountSummary.assert_called_once()
+
+    def test_positions_cancel_after_snapshot(self):
+        app = _IBGatewayApp("127.0.0.1", 4001, 31)
+        app._ensure_ready = mock.Mock(return_value={"ready": True})
+        app.reqPositions = mock.Mock()
+        app.cancelPositions = mock.Mock()
+        app._await = mock.Mock(return_value=[{"ticker": "SPY", "position": 1}])
+
+        positions = app.request_positions(timeout=1)
+
+        self.assertEqual([{"ticker": "SPY", "position": 1}], positions)
+        app.cancelPositions.assert_called_once()
+
 
 class _DummyStaleBrokerService(TradingServiceAuthRecoveryMixin):
     def __init__(self):

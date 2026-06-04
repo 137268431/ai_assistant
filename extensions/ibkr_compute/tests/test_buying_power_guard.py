@@ -12,6 +12,7 @@ from ibkr_compute.api.account.buying_power_guard import (  # noqa: E402
     estimate_entry_exposure,
 )
 import ibkr_compute.api.account.action_builders.orders as order_actions  # noqa: E402
+import ibkr_compute.api.account.snapshot_builder.payload as snapshot_payload  # noqa: E402
 
 
 class FakeConfig:
@@ -30,6 +31,32 @@ class FakeConfig:
             return float(self.values.get(key, default))
         except (TypeError, ValueError):
             return float(default)
+
+
+class FakePaperSnapshotApiApp:
+    pass
+
+
+class FakePaperLifecycle:
+    def __init__(self, positions=None, entry_orders=None):
+        self.positions = list(positions or [])
+        self.entry_orders = list(entry_orders or [])
+
+    def get_positions(self):
+        return list(self.positions)
+
+    def strategy_open_entry_orders(self, order_tracker=None):
+        return list(self.entry_orders)
+
+
+class FakePaperSnapshotService:
+    is_running = True
+    is_starting = False
+
+    def __init__(self, config=None, positions=None, entry_orders=None):
+        self.config = config or FakeConfig()
+        self.order_lifecycle = FakePaperLifecycle(positions=positions, entry_orders=entry_orders)
+        self.order_tracker = object()
 
 
 class BuyingPowerGuardHelperTest(unittest.TestCase):
@@ -119,6 +146,93 @@ class BuyingPowerGuardHelperTest(unittest.TestCase):
         exposure = estimate_entry_exposure(10, None, 104, 98, "long", "MKT")
 
         self.assertEqual(1040, exposure)
+
+
+class PaperConfigBuyingPowerSnapshotTest(unittest.TestCase):
+    def setUp(self):
+        self.old_context = snapshot_payload.build_snapshot_context
+        self.api_app = FakePaperSnapshotApiApp()
+        snapshot_payload.build_snapshot_context = lambda service, include_pnl=False: {
+            "api_app": self.api_app,
+            "runtime_environment": "paper",
+            "service_status": {
+                "session": {"authenticated": True},
+                "gateway": {"running": True},
+            },
+            "account_id": "DU-PAPER",
+            "include_pnl": bool(include_pnl),
+            "cache_key": ("paper", "DU-PAPER", bool(include_pnl)),
+        }
+
+    def tearDown(self):
+        snapshot_payload.build_snapshot_context = self.old_context
+
+    def test_paper_mode_uses_configured_buying_power_and_deducts_strategy_exposure(self):
+        service = FakePaperSnapshotService(
+            config=FakeConfig(
+                {
+                    "ibkr_buying_power_guard_paper_source": "config",
+                    "ibkr_paper_risk_buying_power_usd": "194388.61",
+                    "ibkr_paper_risk_net_liquidation_usd": "61398",
+                    "ibkr_paper_risk_default_entry_exposure_usd": "5000",
+                }
+            ),
+            positions=[{"ticker": "AAPL", "position": 50, "mktPrice": 100}],
+            entry_orders=[{"symbol": "MSFT", "remainingQuantity": 25, "price": 200}],
+        )
+
+        snapshot = snapshot_payload._build_ibkr_account_buying_power_snapshot(service)
+
+        self.assertTrue(snapshot["ok"])
+        self.assertEqual("paper_config", snapshot["source"])
+        self.assertAlmostEqual(184388.61, snapshot["summary"]["buying_power"])
+        self.assertAlmostEqual(10000.0, snapshot["buying_power_guard"]["risk_model_used_exposure"])
+        self.assertEqual(34, snapshot["buying_power_guard"]["risk_model_remaining_slots"])
+
+    def test_paper_mode_fails_closed_when_configured_buying_power_is_missing(self):
+        service = FakePaperSnapshotService(config=FakeConfig({"ibkr_buying_power_guard_paper_source": "config"}))
+
+        snapshot = snapshot_payload._build_ibkr_account_buying_power_snapshot(service)
+
+        self.assertFalse(snapshot["ok"])
+        self.assertEqual("unavailable", snapshot["buying_power_guard"]["state"])
+        self.assertEqual("paper_risk_buying_power_config_unavailable", snapshot["buying_power_guard"]["reason"])
+
+    def test_default_thresholds_warn_and_block_against_configured_paper_buying_power(self):
+        config = FakeConfig(
+            {
+                "ibkr_buying_power_guard_paper_source": "config",
+                "ibkr_paper_risk_buying_power_usd": "194388.61",
+                "ibkr_paper_risk_net_liquidation_usd": "61398",
+                "ibkr_paper_risk_default_entry_exposure_usd": "5000",
+            }
+        )
+        warning_service = FakePaperSnapshotService(
+            config=config,
+            positions=[{"ticker": "AAPL", "position": 1650, "mktPrice": 100}],
+        )
+        warning_snapshot = snapshot_payload._build_ibkr_account_buying_power_snapshot(warning_service)
+        warning_guard = build_buying_power_guard(
+            warning_snapshot["summary"],
+            config=config,
+            environment="paper",
+            requested_exposure=5000,
+        )
+        self.assertEqual("warning", warning_guard["state"])
+
+        self.api_app = FakePaperSnapshotApiApp()
+        blocked_service = FakePaperSnapshotService(
+            config=config,
+            positions=[{"ticker": "AAPL", "position": 1800, "mktPrice": 100}],
+        )
+        blocked_snapshot = snapshot_payload._build_ibkr_account_buying_power_snapshot(blocked_service)
+        blocked_guard = build_buying_power_guard(
+            blocked_snapshot["summary"],
+            config=config,
+            environment="paper",
+            requested_exposure=5000,
+        )
+        self.assertEqual("blocked", blocked_guard["state"])
 
 
 class FakeApiApp:
@@ -221,7 +335,7 @@ class BuyingPowerManualOrderActionTest(unittest.TestCase):
         self.assertEqual("blocked", payload["buying_power_guard"]["state"])
         self.assertEqual([], service.conid_resolver.calls)
         self.assertEqual([], service.order_placer.calls)
-        self.assertEqual("手动开仓已被购买力阈值拦截", service.pb.events[-1]["title"])
+        self.assertEqual("手动开仓已被动态购买力上限拦截", service.pb.events[-1]["title"])
 
     def test_manual_order_warning_continues_and_surfaces_guard(self):
         service = FakeOrderService()
@@ -286,7 +400,7 @@ class BuyingPowerManualOrderActionTest(unittest.TestCase):
         self.assertEqual("unavailable", payload["buying_power_guard"]["state"])
         self.assertEqual("gateway_unavailable", payload["buying_power_guard"]["reason"])
         self.assertEqual([], service.order_placer.calls)
-        self.assertEqual("手动开仓暂停：账户/Gateway不可用", service.pb.events[-1]["title"])
+        self.assertEqual("手动开仓暂停：购买力风控不可用", service.pb.events[-1]["title"])
 
 
 if __name__ == "__main__":

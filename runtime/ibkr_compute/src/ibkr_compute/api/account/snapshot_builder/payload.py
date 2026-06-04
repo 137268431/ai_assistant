@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import math
 from datetime import datetime, timezone
+from typing import Any
 
 from ibkr_compute.api.account.buying_power_guard import (
     build_buying_power_guard,
     enrich_buying_power_summary,
+    _config_float,
 )
 from ibkr_compute.api.account.live import (
     _extract_summary_number,
@@ -218,47 +220,232 @@ def _buying_power_unavailable_reason(service_status: dict, summary_error: str, s
     return "buying_power_unavailable"
 
 
-def _build_ibkr_account_buying_power_snapshot(service) -> dict:
-    context = build_snapshot_context(service, include_pnl=False)
-    api_app = context["api_app"]
-    cache_key = (context["runtime_environment"], f"{context['account_id']}::buying_power", False)
-    cached = load_cached_snapshot(api_app, cache_key)
-    if cached:
-        return cached
+def _config_text(config: Any, key: str, environment: str, default: str = "") -> str:
+    if config is None:
+        return str(default)
+    for method_name, args in (
+        ("get_for_environment", (key, environment, default)),
+        ("get", (key, default)),
+    ):
+        getter = getattr(config, method_name, None)
+        if callable(getter):
+            try:
+                value = getter(*args)
+            except Exception:
+                continue
+            return str(default if value in (None, "") else value)
+    values = getattr(config, "values", None)
+    if isinstance(values, dict):
+        value = values.get(key, default)
+        return str(default if value in (None, "") else value)
+    return str(default)
 
-    summary_raw = {}
-    summary_error = ""
+
+def _buying_power_paper_source(config: Any, environment: str) -> str:
+    return _config_text(config, "ibkr_buying_power_guard_paper_source", environment, "config").strip().lower()
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    if number != number:
+        return float(default)
+    return float(number)
+
+
+def _position_symbol(row: dict) -> str:
+    return str(row.get("ticker") or row.get("symbol") or row.get("contractDesc") or "").strip().upper()
+
+
+def _position_notional(row: dict) -> float:
+    quantity = _safe_float(row.get("position", row.get("quantity", 0.0)), 0.0)
+    market_value = row.get("mktValue", row.get("market_value"))
+    if market_value not in (None, ""):
+        return abs(_safe_float(market_value, 0.0))
+    market_price = _safe_float(row.get("mktPrice", row.get("market_price", row.get("last_price"))), 0.0)
+    if market_price <= 0:
+        market_price = _safe_float(row.get("avgCost", row.get("avg_price", row.get("avgPrice"))), 0.0)
+    return abs(quantity * market_price)
+
+
+def _order_symbol(row: dict) -> str:
+    return str(row.get("ticker") or row.get("symbol") or row.get("contractDesc") or "").strip().upper()
+
+
+def _order_notional(row: dict, default_entry_exposure: float) -> float:
+    quantity = _safe_float(
+        row.get(
+            "remainingQuantity",
+            row.get(
+                "remaining_quantity",
+                row.get("remainingSize", row.get("totalSize", row.get("total_size", row.get("quantity", 0.0)))),
+            ),
+        ),
+        0.0,
+    )
+    if quantity <= 0:
+        quantity = _safe_float(row.get("quantity", row.get("totalSize", row.get("total_quantity", 0.0))), 0.0)
+    price = _safe_float(
+        row.get(
+            "price",
+            row.get("limit_price", row.get("lmtPrice", row.get("entry_price", row.get("avgPrice", row.get("avg_price"))))),
+        ),
+        0.0,
+    )
+    notional = abs(quantity * price) if quantity > 0 and price > 0 else 0.0
+    return notional if notional > 0 else max(0.0, float(default_entry_exposure or 0.0))
+
+
+def _fixed_position_symbols(service) -> set[str]:
     lifecycle = getattr(service, "order_lifecycle", None)
-    getter = getattr(lifecycle, "get_account_summary", None)
+    getter = getattr(lifecycle, "_fixed_position_symbols", None)
     if callable(getter):
         try:
-            value = getter(context["account_id"])
-            summary_raw = value if isinstance(value, dict) else {}
-        except Exception as exc:
-            summary_error = str(exc)
-    else:
-        summary_error = "account_summary_unavailable"
-    if not summary_raw and not summary_error:
-        summary_error = "account_summary_unavailable"
+            return {str(item or "").strip().upper() for item in getter() if str(item or "").strip()}
+        except Exception:
+            return set()
+    return set()
 
-    summary = _build_snapshot_summary(summary_raw, context["account_id"], [], {})
-    guard = build_buying_power_guard(
-        summary,
-        config=getattr(service, "config", None),
-        environment=context["runtime_environment"],
+
+def _strategy_positions_for_risk(service) -> list[dict]:
+    lifecycle = getattr(service, "order_lifecycle", None)
+    getter = getattr(lifecycle, "get_positions", None)
+    if not callable(getter):
+        return []
+    try:
+        rows = list(getter() or [])
+    except Exception:
+        return []
+    fixed_symbols = _fixed_position_symbols(service)
+    result = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        symbol = _position_symbol(row)
+        if not symbol or symbol in fixed_symbols:
+            continue
+        if _safe_float(row.get("position", row.get("quantity", 0.0)), 0.0) == 0.0:
+            continue
+        result.append(row)
+    return result
+
+
+def _strategy_entry_orders_for_risk(service) -> list[dict]:
+    lifecycle = getattr(service, "order_lifecycle", None)
+    snapshotter = getattr(lifecycle, "strategy_open_entry_orders", None)
+    if callable(snapshotter):
+        try:
+            return list(snapshotter(order_tracker=getattr(service, "order_tracker", None)) or [])
+        except TypeError:
+            try:
+                return list(snapshotter() or [])
+            except Exception:
+                return []
+        except Exception:
+            return []
+    return []
+
+
+def _paper_risk_exposure_snapshot(service, default_entry_exposure: float) -> dict:
+    positions = _strategy_positions_for_risk(service)
+    entry_orders = _strategy_entry_orders_for_risk(service)
+    position_exposure = sum(_position_notional(row) for row in positions)
+    open_order_exposure = sum(_order_notional(row, default_entry_exposure) for row in entry_orders)
+    return {
+        "position_exposure": round(position_exposure, 4),
+        "open_order_exposure": round(open_order_exposure, 4),
+        "used_exposure": round(position_exposure + open_order_exposure, 4),
+        "strategy_position_count": len(positions),
+        "strategy_entry_order_count": len(entry_orders),
+        "strategy_position_symbols": sorted(
+            {_position_symbol(row) for row in positions if _position_symbol(row)}
+        ),
+        "strategy_entry_order_symbols": sorted(
+            {_order_symbol(row) for row in entry_orders if _order_symbol(row)}
+        ),
+    }
+
+
+def _build_paper_config_buying_power_snapshot(service, context: dict) -> dict:
+    config = getattr(service, "config", None)
+    environment = str(context.get("runtime_environment") or "paper").strip().lower() or "paper"
+    configured_buying_power = max(0.0, _config_float(config, "ibkr_paper_risk_buying_power_usd", environment, 0.0))
+    configured_net_liq = max(0.0, _config_float(config, "ibkr_paper_risk_net_liquidation_usd", environment, 0.0))
+    default_entry_exposure = max(
+        0.0,
+        _config_float(config, "ibkr_paper_risk_default_entry_exposure_usd", environment, 5000.0),
     )
-    guard["source"] = "account_summary"
-    if guard.get("state") == "unavailable":
-        guard["reason"] = _buying_power_unavailable_reason(
-            context["service_status"],
-            summary_error,
-            summary,
-        )
-        guard["snapshot_error"] = summary_error or guard["reason"]
+    exposure = _paper_risk_exposure_snapshot(service, default_entry_exposure)
+    fetched_at = datetime.now(timezone.utc).isoformat()
 
-    payload = {
+    if configured_buying_power <= 0:
+        reason = "paper_risk_buying_power_config_unavailable"
+        guard = build_buying_power_guard({}, config=config, environment=environment)
+        guard.update(
+            {
+                "available": False,
+                "state": "unavailable",
+                "reason": reason,
+                "source": "paper_config",
+                "snapshot_error": reason,
+                "configured_buying_power": configured_buying_power,
+                "risk_model_default_entry_exposure": default_entry_exposure,
+                **{f"risk_model_{key}": value for key, value in exposure.items()},
+            }
+        )
+        return {
+            "ok": False,
+            "environment": environment,
+            "account_id": context["account_id"],
+            "service_running": bool(getattr(service, "is_running", False)),
+            "service_starting": bool(getattr(service, "is_starting", False)),
+            "session_authenticated": bool((context["service_status"].get("session") or {}).get("authenticated")),
+            "gateway_running": bool((context["service_status"].get("gateway") or {}).get("running")),
+            "summary": {},
+            "buying_power_guard": guard,
+            "summary_raw": {},
+            "errors": {"summary": reason},
+            "fetched_at": fetched_at,
+            "source": "paper_config",
+        }
+
+    remaining_buying_power = max(0.0, configured_buying_power - float(exposure.get("used_exposure") or 0.0))
+    summary = enrich_buying_power_summary(
+        {
+            "account_code": context["account_id"] or "paper_config",
+            "account_type": "PAPER_RISK_MODEL",
+            "net_liquidation": configured_net_liq,
+            "available_funds": remaining_buying_power,
+            "buying_power": remaining_buying_power,
+            "excess_liquidity": remaining_buying_power / 4.0 if remaining_buying_power > 0 else 0.0,
+            "gross_position_value": float(exposure.get("used_exposure") or 0.0),
+            "currency": "USD",
+        }
+    )
+    guard = build_buying_power_guard(summary, config=config, environment=environment)
+    remaining_slots = None
+    if default_entry_exposure > 0 and guard.get("remaining") is not None:
+        remaining_slots = int(
+            math.floor(
+                max(0.0, float(guard.get("remaining") or 0.0) - float(guard.get("block_floor") or 0.0))
+                / default_entry_exposure
+            )
+        )
+    guard.update(
+        {
+            "source": "paper_config",
+            "configured_buying_power": configured_buying_power,
+            "risk_model": "configured_paper_buying_power",
+            "risk_model_default_entry_exposure": default_entry_exposure,
+            "risk_model_remaining_slots": remaining_slots,
+            **{f"risk_model_{key}": value for key, value in exposure.items()},
+        }
+    )
+    return {
         "ok": bool(guard.get("available")),
-        "environment": context["runtime_environment"],
+        "environment": environment,
         "account_id": context["account_id"],
         "service_running": bool(getattr(service, "is_running", False)),
         "service_starting": bool(getattr(service, "is_starting", False)),
@@ -266,13 +453,222 @@ def _build_ibkr_account_buying_power_snapshot(service) -> dict:
         "gateway_running": bool((context["service_status"].get("gateway") or {}).get("running")),
         "summary": summary,
         "buying_power_guard": guard,
-        "summary_raw": summary_raw,
-        "errors": {"summary": summary_error},
-        "fetched_at": datetime.now(timezone.utc).isoformat(),
-        "source": "account_summary",
+        "summary_raw": {},
+        "errors": {},
+        "fetched_at": fetched_at,
+        "source": "paper_config",
     }
-    store_cached_snapshot(api_app, cache_key, payload)
+
+
+def _account_data_circuit_status(service_status: dict) -> dict:
+    status = service_status if isinstance(service_status, dict) else {}
+    circuit = status.get("account_data_circuit") if isinstance(status.get("account_data_circuit"), dict) else {}
+    if circuit:
+        return dict(circuit)
+    gateway = status.get("gateway") if isinstance(status.get("gateway"), dict) else {}
+    broker = gateway.get("broker") if isinstance(gateway.get("broker"), dict) else {}
+    circuit = broker.get("account_data_circuit") if isinstance(broker.get("account_data_circuit"), dict) else {}
+    return dict(circuit) if circuit else {}
+
+
+def _summary_snapshot_available(summary: dict) -> bool:
+    if not isinstance(summary, dict) or not summary:
+        return False
+    for key in (
+        "remaining_buying_power",
+        "buying_power",
+        "net_liquidation",
+        "available_funds",
+        "excess_liquidity",
+        "equity_with_loan",
+    ):
+        raw = summary.get(key)
+        if raw in (None, ""):
+            continue
+        number = _safe_float(raw, 0.0)
+        if number != 0.0:
+            return True
+    return bool(str(summary.get("account_type") or "").strip())
+
+
+def _decorate_account_snapshot_health(payload: dict, *, reason: str = "") -> dict:
+    result = payload if isinstance(payload, dict) else {}
+    summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+    guard = result.get("buying_power_guard") if isinstance(result.get("buying_power_guard"), dict) else {}
+    summary_available = _summary_snapshot_available(summary)
+    guard_state = str(guard.get("state") or "").strip().lower()
+    health = "ok"
+    health_reason = str(reason or "").strip() or "ok"
+    if result.get("stale") or str(result.get("cache_state") or "").strip() in {"stale_after_error", "empty_error"}:
+        health = "stale" if summary_available else "unavailable"
+        health_reason = str(result.get("refresh_error") or reason or "account_snapshot_stale")
+    elif result.get("ok") is False or guard_state == "unavailable" or not summary_available:
+        health = "unavailable"
+        health_reason = str(guard.get("reason") or reason or "account_snapshot_unavailable")
+    result["summary_available"] = bool(summary_available)
+    result["account_snapshot_health"] = {
+        "state": health,
+        "reason": health_reason,
+        "summary_available": bool(summary_available),
+        "buying_power_guard_state": guard_state or "",
+        "source": str(result.get("source") or ""),
+        "cache_state": str(result.get("cache_state") or ""),
+        "cache_age_s": result.get("cache_age_s"),
+        "retry_after_s": result.get("retry_after_s"),
+    }
+    return result
+
+
+def _fresh_full_snapshot_for_buying_power(api_app, context: dict) -> dict:
+    cached = load_cached_snapshot(api_app, context["cache_key"], allow_stale=False)
+    if not isinstance(cached, dict):
+        return {}
+    payload = _decorate_account_snapshot_health(dict(cached))
+    health = payload.get("account_snapshot_health") if isinstance(payload.get("account_snapshot_health"), dict) else {}
+    if str(health.get("state") or "").strip().lower() != "ok":
+        return {}
+    guard = payload.get("buying_power_guard") if isinstance(payload.get("buying_power_guard"), dict) else {}
+    guard = dict(guard)
+    guard.setdefault("source", "account_snapshot_cache")
+    payload["buying_power_guard"] = guard
+    payload["source"] = str(payload.get("source") or "account_snapshot_cache")
     return payload
+
+
+def _build_account_data_circuit_buying_power_snapshot(service, context: dict, circuit: dict) -> dict:
+    retry_after_s = _safe_float((circuit or {}).get("remaining_s"), 0.0)
+    reason = "account_data_circuit_open"
+    guard = build_buying_power_guard({}, config=getattr(service, "config", None), environment=context["runtime_environment"])
+    guard.update(
+        {
+            "available": False,
+            "state": "unavailable",
+            "reason": reason,
+            "source": "account_data_circuit",
+            "snapshot_error": reason,
+            "retry_after_s": retry_after_s,
+        }
+    )
+    payload = {
+        "ok": False,
+        "environment": context["runtime_environment"],
+        "account_id": context["account_id"],
+        "service_running": bool(getattr(service, "is_running", False)),
+        "service_starting": bool(getattr(service, "is_starting", False)),
+        "session_authenticated": bool((context["service_status"].get("session") or {}).get("authenticated")),
+        "gateway_running": bool((context["service_status"].get("gateway") or {}).get("running")),
+        "summary": {},
+        "buying_power_guard": guard,
+        "summary_raw": {},
+        "errors": {"summary": reason},
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "source": "account_data_circuit",
+        "account_data_circuit": dict(circuit or {}),
+        "retry_after_s": retry_after_s,
+    }
+    return _decorate_account_snapshot_health(payload, reason=reason)
+
+
+def _build_ibkr_account_buying_power_snapshot(service) -> dict:
+    context = build_snapshot_context(service, include_pnl=False)
+    api_app = context["api_app"]
+    cache_key = (context["runtime_environment"], f"{context['account_id']}::buying_power", False)
+    paper_config_source = (
+        str(context.get("runtime_environment") or "").strip().lower() == "paper"
+        and _buying_power_paper_source(getattr(service, "config", None), context["runtime_environment"]) == "config"
+    )
+
+    cached = load_cached_snapshot(api_app, cache_key)
+    if cached:
+        return _decorate_account_snapshot_health(cached)
+
+    refresh_lock = get_snapshot_refresh_lock(api_app, cache_key)
+    with refresh_lock:
+        cached = load_cached_snapshot(api_app, cache_key)
+        if cached:
+            return _decorate_account_snapshot_health(cached)
+
+        if paper_config_source:
+            payload = _decorate_account_snapshot_health(_build_paper_config_buying_power_snapshot(service, context))
+            store_cached_snapshot(api_app, cache_key, payload)
+            return load_cached_snapshot(api_app, cache_key, allow_stale=False) or payload
+
+        circuit = _account_data_circuit_status(context.get("service_status") or {})
+        if bool(circuit.get("active")):
+            payload = _build_account_data_circuit_buying_power_snapshot(service, context, circuit)
+            store_cached_snapshot(api_app, cache_key, payload)
+            return load_cached_snapshot(api_app, cache_key, allow_stale=False) or payload
+
+        full_cached = _fresh_full_snapshot_for_buying_power(api_app, context)
+        if full_cached:
+            payload = {
+                "ok": bool(full_cached.get("ok", True)),
+                "environment": full_cached.get("environment") or context["runtime_environment"],
+                "account_id": full_cached.get("account_id") or context["account_id"],
+                "service_running": bool(full_cached.get("service_running")),
+                "service_starting": bool(full_cached.get("service_starting")),
+                "session_authenticated": bool(full_cached.get("session_authenticated")),
+                "gateway_running": bool(full_cached.get("gateway_running")),
+                "summary": dict(full_cached.get("summary") or {}),
+                "buying_power_guard": dict(full_cached.get("buying_power_guard") or {}),
+                "summary_raw": dict(full_cached.get("summary_raw") or {}),
+                "errors": dict(full_cached.get("errors") or {}),
+                "fetched_at": full_cached.get("fetched_at") or datetime.now(timezone.utc).isoformat(),
+                "source": "account_snapshot_cache",
+                "snapshot_source": full_cached.get("source") or "account_snapshot_cache",
+            }
+            payload = _decorate_account_snapshot_health(payload)
+            store_cached_snapshot(api_app, cache_key, payload)
+            return load_cached_snapshot(api_app, cache_key, allow_stale=False) or payload
+
+        summary_raw = {}
+        summary_error = ""
+        lifecycle = getattr(service, "order_lifecycle", None)
+        getter = getattr(lifecycle, "get_account_summary", None)
+        if callable(getter):
+            try:
+                value = getter(context["account_id"])
+                summary_raw = value if isinstance(value, dict) else {}
+            except Exception as exc:
+                summary_error = str(exc)
+        else:
+            summary_error = "account_summary_unavailable"
+        if not summary_raw and not summary_error:
+            summary_error = "account_summary_unavailable"
+
+        summary = _build_snapshot_summary(summary_raw, context["account_id"], [], {})
+        guard = build_buying_power_guard(
+            summary,
+            config=getattr(service, "config", None),
+            environment=context["runtime_environment"],
+        )
+        guard["source"] = "account_summary"
+        if guard.get("state") == "unavailable":
+            guard["reason"] = _buying_power_unavailable_reason(
+                context["service_status"],
+                summary_error,
+                summary,
+            )
+            guard["snapshot_error"] = summary_error or guard["reason"]
+
+        payload = {
+            "ok": bool(guard.get("available")),
+            "environment": context["runtime_environment"],
+            "account_id": context["account_id"],
+            "service_running": bool(getattr(service, "is_running", False)),
+            "service_starting": bool(getattr(service, "is_starting", False)),
+            "session_authenticated": bool((context["service_status"].get("session") or {}).get("authenticated")),
+            "gateway_running": bool((context["service_status"].get("gateway") or {}).get("running")),
+            "summary": summary,
+            "buying_power_guard": guard,
+            "summary_raw": summary_raw,
+            "errors": {"summary": summary_error},
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "source": "account_summary",
+        }
+        payload = _decorate_account_snapshot_health(payload)
+        store_cached_snapshot(api_app, cache_key, payload)
+        return load_cached_snapshot(api_app, cache_key, allow_stale=False) or payload
 
 
 def _stale_snapshot_after_error(payload: dict, error: str) -> dict:
@@ -283,13 +679,13 @@ def _stale_snapshot_after_error(payload: dict, error: str) -> dict:
     result["refresh_error"] = str(error or "").strip() or "account_snapshot_refresh_failed"
     errors = result.get("errors") if isinstance(result.get("errors"), dict) else {}
     result["errors"] = {**errors, "refresh": result["refresh_error"]}
-    return result
+    return _decorate_account_snapshot_health(result, reason=result["refresh_error"])
 
 
 def _account_snapshot_error_payload(context: dict, error: str) -> dict:
     message = str(error or "").strip() or "account_snapshot_unavailable"
     service_status = context["service_status"] if isinstance(context.get("service_status"), dict) else {}
-    return {
+    return _decorate_account_snapshot_health({
         "ok": False,
         "environment": context["runtime_environment"],
         "account_id": context["account_id"],
@@ -314,7 +710,7 @@ def _account_snapshot_error_payload(context: dict, error: str) -> dict:
         "cache_state": "empty_error",
         "stale": False,
         "refresh_error": message,
-    }
+    }, reason=message)
 
 
 def _build_fresh_ibkr_account_snapshot_payload(service, context: dict) -> dict:
@@ -375,7 +771,7 @@ def _build_fresh_ibkr_account_snapshot_payload(service, context: dict) -> dict:
         "errors": snapshot_sources["errors"],
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
-    return payload
+    return _decorate_account_snapshot_health(payload)
 
 
 def refresh_account_snapshot_cache(service, *, include_pnl: bool = False) -> dict:

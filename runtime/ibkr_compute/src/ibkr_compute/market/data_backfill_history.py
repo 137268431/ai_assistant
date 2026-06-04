@@ -8,6 +8,8 @@ import sys
 import time
 from typing import Dict, List, Optional, Sequence
 
+from ibkr_compute.observability.prometheus import record_history_event
+
 from .data_backfill_support import (
     PERIOD_MAP,
     _format_ib_end_datetime,
@@ -73,6 +75,13 @@ class DataBackfillHistoryMixin:
         if delay > 0:
             with self._count_lock:
                 self._throttle_count += 1
+            record_history_event(
+                environment=getattr(self, "environment", ""),
+                source="data_backfill",
+                operation="throttle",
+                result="wait",
+                duration_s=delay,
+            )
             time.sleep(delay)
         return delay
 
@@ -121,6 +130,15 @@ class DataBackfillHistoryMixin:
                     rows=len(bars or []),
                     active_at_start=active_at_start,
                 )
+                record_history_event(
+                    environment=getattr(self, "environment", ""),
+                    source=str((trace or {}).get("source") or "data_backfill"),
+                    interval=interval,
+                    operation="request",
+                    result="ok",
+                    duration_s=broker_s,
+                    rows=len(bars or []),
+                )
                 return {
                     "serverId": "ib_gateway_socket",
                     "symbol": str(symbol or "").upper(),
@@ -143,20 +161,56 @@ class DataBackfillHistoryMixin:
                     active_at_start=active_at_start,
                 )
                 if self._is_terminal_history_error(exc):
+                    record_history_event(
+                        environment=getattr(self, "environment", ""),
+                        source=str((trace or {}).get("source") or "data_backfill"),
+                        interval=interval,
+                        operation="request",
+                        result="error",
+                        duration_s=broker_s,
+                        error_class="terminal",
+                    )
                     raise RuntimeError(
                         f"history_fetch_terminal:{symbol}:{interval}:{conid}:{exc}"
                     ) from exc
                 if self._is_broker_blocked_history_error(exc):
+                    record_history_event(
+                        environment=getattr(self, "environment", ""),
+                        source=str((trace or {}).get("source") or "data_backfill"),
+                        interval=interval,
+                        operation="request",
+                        result="blocked",
+                        duration_s=broker_s,
+                        error_class="broker_blocked",
+                    )
                     raise RuntimeError(
                         f"history_fetch_broker_blocked:{symbol}:{interval}:{conid}:{exc}"
                     ) from exc
                 if attempt >= max_retries:
+                    record_history_event(
+                        environment=getattr(self, "environment", ""),
+                        source=str((trace or {}).get("source") or "data_backfill"),
+                        interval=interval,
+                        operation="request",
+                        result="error",
+                        duration_s=broker_s,
+                        error_class=exc.__class__.__name__,
+                    )
                     raise RuntimeError(
                         f"history_fetch_failed_after_retries:{symbol}:{interval}:{conid}:{exc}"
                     ) from exc
                 delay = retry_base_delay * (2 ** attempt)
                 with self._count_lock:
                     self._retry_count += 1
+                record_history_event(
+                    environment=getattr(self, "environment", ""),
+                    source=str((trace or {}).get("source") or "data_backfill"),
+                    interval=interval,
+                    operation="retry",
+                    result="retry",
+                    duration_s=broker_s,
+                    error_class=exc.__class__.__name__,
+                )
                 logger.warning(
                     "History fetch retry for %s/%s (conid=%d, attempt=%d/%d, sleep=%.1fs): %s",
                     symbol,

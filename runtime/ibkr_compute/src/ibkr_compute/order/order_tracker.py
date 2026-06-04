@@ -15,6 +15,7 @@ from ibkr_compute.core.time_utils import CN, ET
 
 from ibkr_compute.broker import BrokerAdapter
 from ibkr_compute.backtest.execution_fills import normalize_execution_fill, normalize_execution_fills
+from ibkr_compute.observability.prometheus import record_order_event
 
 logger = logging.getLogger(__name__)
 
@@ -332,22 +333,50 @@ class OrderTracker:
     def get_live_orders(
         self,
         *,
-        retries: int = 3,
+        retries: int = 1,
         retry_delay: float = 0.5,
-        force: bool = True,
+        force: bool = False,
         include_all: bool = False,
     ) -> List[Dict]:
+        started = time.perf_counter()
         attempts = max(1, int(retries or 1))
         for attempt in range(attempts):
             try:
-                orders = list(self.broker.list_open_orders(include_all=include_all) or [])
+                try:
+                    orders = list(self.broker.list_open_orders(include_all=include_all, force=force) or [])
+                except TypeError:
+                    orders = list(self.broker.list_open_orders(include_all=include_all) or [])
                 if orders or attempt + 1 >= attempts:
+                    record_order_event(
+                        environment=self.environment,
+                        operation="tracker_live_orders_fetch",
+                        order_family_type="all" if include_all else "open",
+                        result="ok",
+                        reason_code="orders_found" if orders else "empty",
+                        duration_s=time.perf_counter() - started,
+                    )
                     return orders
             except Exception as exc:
                 logger.warning("Failed to get live orders: %s", exc)
                 if attempt + 1 >= attempts:
+                    record_order_event(
+                        environment=self.environment,
+                        operation="tracker_live_orders_fetch",
+                        order_family_type="all" if include_all else "open",
+                        result="error",
+                        reason_code=exc.__class__.__name__,
+                        duration_s=time.perf_counter() - started,
+                    )
                     return []
             time.sleep(max(0.0, float(retry_delay or 0.0)))
+        record_order_event(
+            environment=self.environment,
+            operation="tracker_live_orders_fetch",
+            order_family_type="all" if include_all else "open",
+            result="ok",
+            reason_code="empty",
+            duration_s=time.perf_counter() - started,
+        )
         return []
 
     def _build_fill_history_index(self, fills: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Dict[str, Any]]:
@@ -466,9 +495,9 @@ class OrderTracker:
         *,
         pb_seed_ids: Optional[List[str]] = None,
         bulk_orders: Optional[List[Dict]] = None,
-        retries: int = 3,
+        retries: int = 1,
         retry_delay: float = 0.5,
-        force: bool = True,
+        force: bool = False,
     ) -> Dict[str, Any]:
         seed_sources = self._build_live_seed_source_map(pb_seed_ids)
         bulk_list = bulk_orders if bulk_orders is not None else self.get_live_orders(
@@ -948,6 +977,13 @@ class OrderTracker:
             self._sync_to_pb(merged)
             self._emit_order_transition_callbacks(prev_status, merged)
 
+        record_order_event(
+            environment=self.environment,
+            operation="tracker_update",
+            order_family_type=str(source or "unknown"),
+            result="synced" if should_sync else "seen",
+            reason_code=self._extract_order_status(merged) or "unknown",
+        )
         logger.debug(
             "Order update applied: source=%s order_id=%s status=%s sync=%s",
             source,
@@ -1050,7 +1086,15 @@ class OrderTracker:
     def on_execution_fill_update(self, fill: Dict):
         if not isinstance(fill, dict):
             return
-        if self._persist_execution_fill(fill, source="ib_socket_callback"):
+        persisted = self._persist_execution_fill(fill, source="ib_socket_callback")
+        record_order_event(
+            environment=self.environment,
+            operation="execution_fill",
+            order_family_type="ib_socket_callback",
+            result="ok" if persisted else "skipped",
+            reason_code="persisted" if persisted else "not_persisted",
+        )
+        if persisted:
             self._mark_order_activity()
 
     def _finalize_disappeared_orders(self, current_order_ids: set[str]):
@@ -1107,6 +1151,12 @@ class OrderTracker:
                 self._maybe_sync_recent_execution_fills()
                 self._initial_snapshot_pending = False
             except Exception as exc:
+                record_order_event(
+                    environment=self.environment,
+                    operation="tracker_poll",
+                    result="error",
+                    reason_code=exc.__class__.__name__,
+                )
                 logger.error("Order poll error: %s", exc)
 
             if not self._running:
@@ -1124,16 +1174,35 @@ class OrderTracker:
         return self._active_poll_interval() if active_orders else self._idle_poll_interval()
 
     def _poll_orders(self, force: bool = False):
-        orders = self.get_live_orders(force=bool(force))
-        self._last_poll = time.time()
-        current_order_ids = set()
-        for order in orders:
-            order_id = self._normalize_text(order.get("orderId") or order.get("order_id"))
-            if not order_id:
-                continue
-            current_order_ids.add(order_id)
-            self._handle_live_order_payload(order, source="poll")
-        self._finalize_disappeared_orders(current_order_ids)
+        started = time.perf_counter()
+        try:
+            orders = self.get_live_orders(force=bool(force))
+            self._last_poll = time.time()
+            current_order_ids = set()
+            for order in orders:
+                order_id = self._normalize_text(order.get("orderId") or order.get("order_id"))
+                if not order_id:
+                    continue
+                current_order_ids.add(order_id)
+                self._handle_live_order_payload(order, source="poll")
+            self._finalize_disappeared_orders(current_order_ids)
+        except Exception:
+            record_order_event(
+                environment=self.environment,
+                operation="tracker_poll",
+                order_family_type="force" if force else "scheduled",
+                result="error",
+                duration_s=time.perf_counter() - started,
+            )
+            raise
+        record_order_event(
+            environment=self.environment,
+            operation="tracker_poll",
+            order_family_type="force" if force else "scheduled",
+            result="ok",
+            reason_code="orders_seen" if orders else "empty",
+            duration_s=time.perf_counter() - started,
+        )
 
     def _persist_execution_fill(self, raw_fill: Dict[str, Any], *, source: str) -> bool:
         if not getattr(self, "pb_client", None):
@@ -1631,7 +1700,20 @@ class OrderTracker:
                 elif role == "take_profit" and limit_price > 0:
                     order_payload["tp_price"] = limit_price
                 self.pb_client.upsert_order(order_payload)
+                record_order_event(
+                    environment=self.environment,
+                    operation="pb_order_sync",
+                    order_family_type=role or "unknown",
+                    result="ok",
+                    reason_code=mapped_status or "unknown",
+                )
         except Exception as exc:
+            record_order_event(
+                environment=self.environment,
+                operation="pb_order_sync",
+                result="error",
+                reason_code=exc.__class__.__name__,
+            )
             logger.debug("PB order sync failed: %s", exc)
 
     def start(self):

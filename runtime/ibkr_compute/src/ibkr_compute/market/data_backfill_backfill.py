@@ -8,6 +8,7 @@ import time
 from typing import Dict, List, Optional, Sequence
 
 from ibkr_compute.core.large_operation_alert import emit_large_operation_alert
+from ibkr_compute.observability.prometheus import record_history_event
 
 from .data_backfill_support import PERIOD_MAP
 from .timeframe_utils import normalize_interval
@@ -145,6 +146,15 @@ class DataBackfillBackfillMixin:
             written=written,
             write_s=time.perf_counter() - started,
         )
+        record_history_event(
+            environment=getattr(self, "environment", ""),
+            source=str((trace or {}).get("source") or "data_backfill"),
+            interval=interval or (str((bars[0] or {}).get("interval") or "") if bars else ""),
+            operation="write",
+            result="ok",
+            duration_s=time.perf_counter() - started,
+            rows=written,
+        )
         return written
 
     def backfill_symbol(
@@ -250,6 +260,7 @@ class DataBackfillBackfillMixin:
         trace_source: str = "backfill_all",
         trace_context: Optional[Dict] = None,
     ) -> Dict[str, Dict[str, int]]:
+        backfill_started = time.perf_counter()
         results = {}
         metadata = symbol_meta or {}
         interval_list = self._resolve_intervals(intervals)
@@ -259,6 +270,13 @@ class DataBackfillBackfillMixin:
             results[symbol] = {interval: 0 for interval in interval_list}
 
         if not conid_map:
+            record_history_event(
+                environment=getattr(self, "environment", ""),
+                source=trace_source,
+                operation="backfill_all",
+                result="skipped",
+                duration_s=time.perf_counter() - backfill_started,
+            )
             return results
 
         if not self._legacy_bar_pipeline_enabled():
@@ -271,6 +289,14 @@ class DataBackfillBackfillMixin:
                 intervals=interval_list,
                 reason=reason,
                 context=trace_context_payload,
+            )
+            record_history_event(
+                environment=getattr(self, "environment", ""),
+                source=trace_source,
+                operation="backfill_all",
+                result="skipped",
+                duration_s=time.perf_counter() - backfill_started,
+                error_class=reason,
             )
             return BackfillResult(
                 results,
@@ -375,4 +401,13 @@ class DataBackfillBackfillMixin:
             for per_symbol in results.values()
             for count in per_symbol.values()
         ), error=trace_error)
+        record_history_event(
+            environment=getattr(self, "environment", ""),
+            source=trace_source,
+            operation="backfill_all",
+            result="error" if trace_error else "ok",
+            duration_s=time.perf_counter() - backfill_started,
+            rows=sum(int(count or 0) for per_symbol in results.values() for count in per_symbol.values()),
+            error_class="error" if trace_error else "",
+        )
         return results

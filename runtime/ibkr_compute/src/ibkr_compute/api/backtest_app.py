@@ -37,6 +37,7 @@ from ibkr_compute.backtest import BacktestService
 from ibkr_compute.core.broker_mode import configured_broker_mode, normalize_broker_mode, resolve_data_environment
 from ibkr_compute.core.config import Config
 from ibkr_compute.integrations.pb_client import PBClient
+from ibkr_compute.observability.prometheus import install_flask_metrics
 
 
 SERVICE_NAME = "ibkr-backtest"
@@ -111,6 +112,7 @@ def _backtest_account_snapshot_provider(environment: str = "") -> dict:
 backtest_service = BacktestService(pb, account_snapshot_provider=_backtest_account_snapshot_provider)
 
 app = Flask(__name__, static_folder=None)
+install_flask_metrics(app, service_name=SERVICE_NAME)
 register_app_module_context(app, _register_canonical_module_alias() or sys.modules[__name__])
 
 

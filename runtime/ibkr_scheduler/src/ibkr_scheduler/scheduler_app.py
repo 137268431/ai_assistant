@@ -35,6 +35,7 @@ from ibkr_compute.core.config import Config
 from ibkr_compute.core.large_operation_alert import emit_large_operation_alert
 from ibkr_compute.core.payload_compact import compact_json_payload
 from ibkr_compute.integrations.pb_client import PBClient
+from ibkr_compute.observability.prometheus import install_flask_metrics
 
 
 PB_BASE_URL = str(os.environ.get("PB_BASE_URL") or "http://127.0.0.1:8090").rstrip("/")
@@ -256,6 +257,7 @@ def _scheduler_mode_context(
 
 
 app = Flask(__name__)
+install_flask_metrics(app)
 pb = PBClient(base_url=PB_BASE_URL)
 config = Config(pb_client=pb)
 

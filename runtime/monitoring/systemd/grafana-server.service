@@ -1,0 +1,27 @@
+[Unit]
+Description=Quant Monitoring Grafana
+Documentation=https://grafana.com/docs/grafana/latest/
+After=network-online.target prometheus.service
+Wants=network-online.target prometheus.service
+
+[Service]
+Type=simple
+User=grafana
+Group=grafana
+WorkingDirectory=/usr/share/grafana
+EnvironmentFile=-/etc/monitoring/grafana.env
+ExecStartPre=/bin/sh -lc 'test -n "${GF_SECURITY_ADMIN_USER:-}" && test -n "${GF_SECURITY_ADMIN_PASSWORD:-}" && test -n "${GF_SECURITY_SECRET_KEY:-}"'
+ExecStart=/usr/share/grafana/bin/grafana server --homepath=/usr/share/grafana --config=/opt/monitoring/grafana/grafana.ini --packaging=deb cfg:paths.provisioning=/opt/monitoring/grafana/provisioning cfg:paths.data=/var/lib/grafana cfg:paths.logs=/var/log/grafana cfg:paths.plugins=/var/lib/grafana/plugins
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=10000
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/grafana /var/log/grafana /var/lib/grafana/plugins
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
