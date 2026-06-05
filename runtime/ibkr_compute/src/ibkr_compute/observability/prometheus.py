@@ -388,6 +388,11 @@ if _client_available():
         "Whether the IBKR market data websocket is ready.",
         ("service", "environment"),
     )
+    MARKET_UNIVERSE_SYMBOLS = Gauge(
+        "ibkr_market_universe_symbols_count",
+        "IBKR market universe symbol counts by low-cardinality universe kind.",
+        ("service", "environment", "kind"),
+    )
     MARKET_DATA_SUBSCRIPTION_ACTIVE = Gauge(
         "ibkr_market_data_subscription_active_count",
         "Active IBKR market data subscriptions by low-cardinality subscription kind.",
@@ -610,7 +615,7 @@ else:  # pragma: no cover
     GATEWAY_SOCKET_PROBES = GATEWAY_SOCKET_DURATION = GATEWAY_SOCKET_LISTENING = None
     GATEWAY_SERVICE_ACTIONS = GATEWAY_SERVICE_RUNNING = GATEWAY_SERVICE_UPTIME = GATEWAY_STATUS_CODE = None
     GATEWAY_REACHABLE = GATEWAY_SESSION_AUTHENTICATED = GATEWAY_WEBSOCKET_READY = None
-    MARKET_DATA_SUBSCRIPTION_ACTIVE = MARKET_DATA_SUBSCRIPTION_LIMIT = None
+    MARKET_UNIVERSE_SYMBOLS = MARKET_DATA_SUBSCRIPTION_ACTIVE = MARKET_DATA_SUBSCRIPTION_LIMIT = None
     MARKET_DATA_SUBSCRIPTION_UTILIZATION = MARKET_DATA_SUBSCRIPTION_PENDING = None
     MARKET_DATA_WS_LAST_MESSAGE_AGE = MARKET_DATA_WS_LAST_TIC_AGE = None
     MARKET_DATA_BAR_LAG = MARKET_DATA_BAR_PENDING_SYMBOLS = ACCOUNT_DATA_CIRCUIT_ACTIVE = None
@@ -907,6 +912,16 @@ def set_runtime_status_metrics(status: dict[str, Any] | None = None, *, environm
         market_universe.get("active_subscription_count"),
         _safe_len(market_universe.get("active_subscription_symbols")),
     )
+    watchlist_pool_count = _first_number(
+        market_universe.get("watchlist_pool_count"),
+        market_universe.get("data_symbols_total"),
+        _safe_len(market_universe.get("data_symbols")),
+    )
+    watchlist_trade_count = _first_number(
+        market_universe.get("watchlist_trade_count"),
+        market_universe.get("scan_symbols_total"),
+        _safe_len(market_universe.get("scan_symbols")),
+    )
     active_trade_count = _first_number(
         market_universe.get("active_trade_symbol_count"),
         market_universe.get("active_target_count"),
@@ -946,6 +961,23 @@ def set_runtime_status_metrics(status: dict[str, Any] | None = None, *, environm
         market_universe.get("market_ws_symbols_total"),
         _safe_len(market_universe.get("market_ws_symbols")),
     )
+    context_ws_count = _first_number(
+        market_universe.get("market_ws_symbols_total"),
+        _safe_len(market_universe.get("market_ws_symbols")),
+        monitor_limit,
+    )
+    for universe_kind, universe_value in (
+        ("pool", watchlist_pool_count),
+        ("trade_watchlist", watchlist_trade_count),
+        ("context_ws", context_ws_count),
+        ("active_trade", active_trade_count),
+        ("active_subscription", active_subscription_count),
+    ):
+        _gauge_set(
+            MARKET_UNIVERSE_SYMBOLS,
+            (service, env, _sanitize_label(universe_kind)),
+            universe_value,
+        )
     websocket_limit = _first_number(market_universe.get("websocket_subscription_limit"), total_limit)
     _set_market_data_subscription_metrics(
         service,

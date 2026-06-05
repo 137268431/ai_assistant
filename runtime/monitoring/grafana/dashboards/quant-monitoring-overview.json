@@ -144,8 +144,8 @@
     {
       "id": 3,
       "type": "stat",
-      "title": "行情订阅利用率 / Market Data Subscription Utilization",
-      "description": "订阅槽位使用率；超过 80% 需关注，超过 95% 可能影响新标的订阅。",
+      "title": "监控池与订阅 / Universe and Subscriptions",
+      "description": "这里展示数量，不是利用率：pool 是行情监控池，trade watchlist 是交易扫描池，context ws 是固定上下文订阅。",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -163,15 +163,48 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (kind) (ibkr_market_data_subscription_utilization_pct{service=~\"$service\", environment=~\"$environment\", kind=~\"total|trade|monitor|websocket\"})",
-          "legendFormat": "{{kind}}",
+          "expr": "max(ibkr_market_universe_symbols_count{service=~\"$service\", environment=~\"$environment\", kind=\"pool\"})",
+          "legendFormat": "pool",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_market_universe_symbols_count{service=~\"$service\", environment=~\"$environment\", kind=\"trade_watchlist\"})",
+          "legendFormat": "trade watchlist",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_market_universe_symbols_count{service=~\"$service\", environment=~\"$environment\", kind=\"context_ws\"})",
+          "legendFormat": "context ws",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_market_universe_symbols_count{service=~\"$service\", environment=~\"$environment\", kind=\"active_subscription\"})",
+          "legendFormat": "active sub",
+          "range": true,
+          "refId": "D"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "percent",
+          "unit": "short",
           "custom": {},
           "thresholds": {
             "mode": "absolute",
@@ -179,14 +212,6 @@
               {
                 "color": "green",
                 "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 80
-              },
-              {
-                "color": "red",
-                "value": 95
               }
             ]
           }
@@ -1018,7 +1043,7 @@
       "id": 13,
       "type": "timeseries",
       "title": "订阅 Active vs Limit / Subscription Active vs Limit",
-      "description": "总订阅、交易标的、监控标的、WebSocket subscribed 与对应 limit。",
+      "description": "订阅槽位明细。context ws 是 SPY/QQQ/VIX 等固定上下文行情，不代表完整监控池。",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1036,8 +1061,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (kind) (ibkr_market_data_subscription_active_count{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "active {{kind}}",
+          "expr": "max(ibkr_market_data_subscription_active_count{service=~\"$service\", environment=~\"$environment\", kind=\"total\"})",
+          "legendFormat": "total active",
           "range": true,
           "refId": "A"
         },
@@ -1047,10 +1072,76 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (kind) (ibkr_market_data_subscription_limit{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "limit {{kind}}",
+          "expr": "max(ibkr_market_data_subscription_limit{service=~\"$service\", environment=~\"$environment\", kind=\"total\"})",
+          "legendFormat": "total limit",
           "range": true,
           "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_market_data_subscription_active_count{service=~\"$service\", environment=~\"$environment\", kind=\"trade\"})",
+          "legendFormat": "trade active",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_market_data_subscription_limit{service=~\"$service\", environment=~\"$environment\", kind=\"trade\"})",
+          "legendFormat": "trade limit",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_market_data_subscription_active_count{service=~\"$service\", environment=~\"$environment\", kind=\"monitor\"})",
+          "legendFormat": "context ws active",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_market_data_subscription_limit{service=~\"$service\", environment=~\"$environment\", kind=\"monitor\"})",
+          "legendFormat": "context ws limit",
+          "range": true,
+          "refId": "F"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_market_data_subscription_active_count{service=~\"$service\", environment=~\"$environment\", kind=\"websocket\"})",
+          "legendFormat": "websocket active",
+          "range": true,
+          "refId": "G"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_market_data_subscription_limit{service=~\"$service\", environment=~\"$environment\", kind=\"websocket\"})",
+          "legendFormat": "websocket limit",
+          "range": true,
+          "refId": "H"
         }
       ],
       "fieldConfig": {
@@ -2257,15 +2348,15 @@
     {
       "id": 29,
       "type": "timeseries",
-      "title": "订阅数量 / Subscription Counts",
-      "description": "",
+      "title": "监控池数量 / Universe Symbol Counts",
+      "description": "把监控池、交易扫描池、固定上下文订阅与当前 active 订阅分开展示，避免把 context ws 误读为 monitor。",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "gridPos": {
         "h": 7,
-        "w": 12,
+        "w": 8,
         "x": 0,
         "y": 53
       },
@@ -2276,8 +2367,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (kind) (ibkr_market_data_subscription_active_count{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "active {{kind}}",
+          "expr": "max(ibkr_market_universe_symbols_count{service=~\"$service\", environment=~\"$environment\", kind=\"pool\"})",
+          "legendFormat": "pool",
           "range": true,
           "refId": "A"
         },
@@ -2287,8 +2378,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (kind) (ibkr_market_data_subscription_limit{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "limit {{kind}}",
+          "expr": "max(ibkr_market_universe_symbols_count{service=~\"$service\", environment=~\"$environment\", kind=\"trade_watchlist\"})",
+          "legendFormat": "trade watchlist",
           "range": true,
           "refId": "B"
         },
@@ -2298,10 +2389,189 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (kind) (ibkr_market_data_subscription_pending_count{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "pending {{kind}}",
+          "expr": "max(ibkr_market_universe_symbols_count{service=~\"$service\", environment=~\"$environment\", kind=\"context_ws\"})",
+          "legendFormat": "context ws",
           "range": true,
           "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_market_universe_symbols_count{service=~\"$service\", environment=~\"$environment\", kind=\"active_trade\"})",
+          "legendFormat": "active trade",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_market_universe_symbols_count{service=~\"$service\", environment=~\"$environment\", kind=\"active_subscription\"})",
+          "legendFormat": "active sub",
+          "range": true,
+          "refId": "E"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "width": 420
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 30,
+      "type": "timeseries",
+      "title": "订阅数量 / Subscription Counts",
+      "description": "context ws 是固定上下文行情订阅；完整监控池看左侧 Universe。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 53
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_market_data_subscription_active_count{service=~\"$service\", environment=~\"$environment\", kind=\"total\"})",
+          "legendFormat": "total active",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_market_data_subscription_limit{service=~\"$service\", environment=~\"$environment\", kind=\"total\"})",
+          "legendFormat": "total limit",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_market_data_subscription_active_count{service=~\"$service\", environment=~\"$environment\", kind=\"trade\"})",
+          "legendFormat": "trade active",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_market_data_subscription_limit{service=~\"$service\", environment=~\"$environment\", kind=\"trade\"})",
+          "legendFormat": "trade limit",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_market_data_subscription_active_count{service=~\"$service\", environment=~\"$environment\", kind=\"monitor\"})",
+          "legendFormat": "context ws active",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_market_data_subscription_limit{service=~\"$service\", environment=~\"$environment\", kind=\"monitor\"})",
+          "legendFormat": "context ws limit",
+          "range": true,
+          "refId": "F"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_market_data_subscription_pending_count{service=~\"$service\", environment=~\"$environment\", kind=\"total\"})",
+          "legendFormat": "pending total",
+          "range": true,
+          "refId": "G"
         }
       ],
       "fieldConfig": {
@@ -2372,18 +2642,18 @@
       }
     },
     {
-      "id": 30,
+      "id": 31,
       "type": "timeseries",
       "title": "订阅利用率 / Subscription Utilization",
-      "description": "",
+      "description": "容量利用率只看 total/trade/websocket；不再把 context ws 的 3/3 显示成 monitor 100%。",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "gridPos": {
         "h": 7,
-        "w": 12,
-        "x": 12,
+        "w": 8,
+        "x": 16,
         "y": 53
       },
       "targets": [
@@ -2393,10 +2663,32 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (kind) (ibkr_market_data_subscription_utilization_pct{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "{{kind}}",
+          "expr": "max(ibkr_market_data_subscription_utilization_pct{service=~\"$service\", environment=~\"$environment\", kind=\"total\"})",
+          "legendFormat": "total",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_market_data_subscription_utilization_pct{service=~\"$service\", environment=~\"$environment\", kind=\"trade\"})",
+          "legendFormat": "trade",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_market_data_subscription_utilization_pct{service=~\"$service\", environment=~\"$environment\", kind=\"websocket\"})",
+          "legendFormat": "websocket",
+          "range": true,
+          "refId": "C"
         }
       ],
       "fieldConfig": {
@@ -2471,7 +2763,7 @@
       }
     },
     {
-      "id": 31,
+      "id": 32,
       "type": "timeseries",
       "title": "WebSocket 消息年龄 / WebSocket Message Age",
       "description": "",
@@ -2581,7 +2873,7 @@
       }
     },
     {
-      "id": 32,
+      "id": 33,
       "type": "timeseries",
       "title": "5m Bar Lag / 5m Bar Lag",
       "description": "",
@@ -2680,7 +2972,7 @@
       }
     },
     {
-      "id": 33,
+      "id": 34,
       "type": "timeseries",
       "title": "Bar Pending Symbols / Bar Pending Symbols",
       "description": "",
@@ -2775,7 +3067,7 @@
       }
     },
     {
-      "id": 34,
+      "id": 35,
       "type": "row",
       "title": "05 - 账户资金与购买力风控 / Account Capital and Buying Power Guard",
       "collapsed": false,
@@ -2792,7 +3084,7 @@
       "panels": []
     },
     {
-      "id": 35,
+      "id": 36,
       "type": "stat",
       "title": "账户资金 / Account Capital",
       "description": "",
@@ -2899,7 +3191,7 @@
       }
     },
     {
-      "id": 36,
+      "id": 37,
       "type": "timeseries",
       "title": "保证金与持仓占用 / Margin and Exposure",
       "description": "",
@@ -3027,7 +3319,7 @@
       }
     },
     {
-      "id": 37,
+      "id": 38,
       "type": "stat",
       "title": "购买力阈值 / Buying Power Floors",
       "description": "",
@@ -3101,7 +3393,7 @@
       }
     },
     {
-      "id": 38,
+      "id": 39,
       "type": "stat",
       "title": "账户风控状态 / Account Guard State",
       "description": "",
@@ -3175,7 +3467,7 @@
       }
     },
     {
-      "id": 39,
+      "id": 40,
       "type": "timeseries",
       "title": "账户资金趋势 / Account Capital Trend",
       "description": "",
@@ -3314,7 +3606,7 @@
       }
     },
     {
-      "id": 40,
+      "id": 41,
       "type": "timeseries",
       "title": "保证金与敞口趋势 / Margin and Exposure Trend",
       "description": "",
@@ -3442,7 +3734,7 @@
       }
     },
     {
-      "id": 41,
+      "id": 42,
       "type": "row",
       "title": "06 - 信号、反向与订单链路 / Signals Reverse and Orders",
       "collapsed": false,
@@ -3459,7 +3751,7 @@
       "panels": []
     },
     {
-      "id": 42,
+      "id": 43,
       "type": "timeseries",
       "title": "信号阶段 QPS / Signal Stage QPS",
       "description": "主图只保留 stage/result，source/reason 明细放到表格，避免图例遮挡。",
@@ -3554,7 +3846,7 @@
       }
     },
     {
-      "id": 43,
+      "id": 44,
       "type": "timeseries",
       "title": "信号阶段 p95 延迟 / Signal Stage p95 Latency",
       "description": "",
@@ -3649,7 +3941,7 @@
       }
     },
     {
-      "id": 44,
+      "id": 45,
       "type": "table",
       "title": "信号结果明细 / Signal Result Details",
       "description": "",
@@ -3716,7 +4008,7 @@
       }
     },
     {
-      "id": 45,
+      "id": 46,
       "type": "table",
       "title": "订单/反向结果个数 / Order and Reverse Counts",
       "description": "",
@@ -3794,7 +4086,7 @@
       }
     },
     {
-      "id": 46,
+      "id": 47,
       "type": "timeseries",
       "title": "订单事件 QPS / Order Event QPS",
       "description": "",
@@ -3889,7 +4181,7 @@
       }
     },
     {
-      "id": 47,
+      "id": 48,
       "type": "timeseries",
       "title": "订单操作 p95 延迟 / Order Operation p95 Latency",
       "description": "",
@@ -3984,7 +4276,7 @@
       }
     },
     {
-      "id": 48,
+      "id": 49,
       "type": "table",
       "title": "订单命令个数 / Order Command Counts",
       "description": "",
@@ -4051,7 +4343,7 @@
       }
     },
     {
-      "id": 49,
+      "id": 50,
       "type": "table",
       "title": "保护单 TP/SL 与调整个数 / TP SL Modify Counts",
       "description": "",
@@ -4118,7 +4410,7 @@
       }
     },
     {
-      "id": 50,
+      "id": 51,
       "type": "row",
       "title": "07 - Broker 请求压力 / Broker Request Pressure",
       "collapsed": false,
@@ -4135,7 +4427,7 @@
       "panels": []
     },
     {
-      "id": 51,
+      "id": 52,
       "type": "timeseries",
       "title": "IB API 请求 QPS / IB API Request QPS",
       "description": "",
@@ -4230,7 +4522,7 @@
       }
     },
     {
-      "id": 52,
+      "id": 53,
       "type": "timeseries",
       "title": "IB API 请求 p95 延迟 / IB API Request p95 Latency",
       "description": "",
@@ -4325,7 +4617,7 @@
       }
     },
     {
-      "id": 53,
+      "id": 54,
       "type": "timeseries",
       "title": "IB API Pending 请求 / IB API Pending Requests",
       "description": "",
@@ -4420,7 +4712,7 @@
       }
     },
     {
-      "id": 54,
+      "id": 55,
       "type": "table",
       "title": "IB 错误码统计 / IB Error Codes",
       "description": "",
@@ -4487,7 +4779,7 @@
       }
     },
     {
-      "id": 55,
+      "id": 56,
       "type": "row",
       "title": "08 - 历史数据与回补 / History and Backfill",
       "collapsed": false,
@@ -4504,7 +4796,7 @@
       "panels": []
     },
     {
-      "id": 56,
+      "id": 57,
       "type": "timeseries",
       "title": "历史事件 QPS / History Event QPS",
       "description": "",
@@ -4599,7 +4891,7 @@
       }
     },
     {
-      "id": 57,
+      "id": 58,
       "type": "timeseries",
       "title": "历史操作 p95 延迟 / History p95 Operation Latency",
       "description": "",
@@ -4694,7 +4986,7 @@
       }
     },
     {
-      "id": 58,
+      "id": 59,
       "type": "timeseries",
       "title": "历史活跃请求 / History Active Requests",
       "description": "",
@@ -4789,7 +5081,7 @@
       }
     },
     {
-      "id": 59,
+      "id": 60,
       "type": "timeseries",
       "title": "历史行数吞吐 / History Rows Throughput",
       "description": "",
@@ -4884,7 +5176,7 @@
       }
     },
     {
-      "id": 60,
+      "id": 61,
       "type": "row",
       "title": "09 - HTTP 入口与出站依赖 / HTTP and Dependencies",
       "collapsed": false,
@@ -4901,7 +5193,7 @@
       "panels": []
     },
     {
-      "id": 61,
+      "id": 62,
       "type": "timeseries",
       "title": "入口 QPS / Inbound Request QPS",
       "description": "",
@@ -4996,7 +5288,7 @@
       }
     },
     {
-      "id": 62,
+      "id": 63,
       "type": "timeseries",
       "title": "入口 p95 延迟 / Inbound p95 Latency",
       "description": "",
@@ -5091,7 +5383,7 @@
       }
     },
     {
-      "id": 63,
+      "id": 64,
       "type": "timeseries",
       "title": "出站 QPS / Outbound Request QPS",
       "description": "",
@@ -5186,7 +5478,7 @@
       }
     },
     {
-      "id": 64,
+      "id": 65,
       "type": "timeseries",
       "title": "出站 p95 延迟 / Outbound p95 Latency",
       "description": "",
@@ -5281,7 +5573,7 @@
       }
     },
     {
-      "id": 65,
+      "id": 66,
       "type": "timeseries",
       "title": "入口/出站处理中请求 / In-Flight Requests",
       "description": "",
@@ -5387,7 +5679,7 @@
       }
     },
     {
-      "id": 66,
+      "id": 67,
       "type": "timeseries",
       "title": "HTTP 异常与错误 / HTTP Exceptions and Errors",
       "description": "",
@@ -5504,7 +5796,7 @@
       }
     },
     {
-      "id": 67,
+      "id": 68,
       "type": "row",
       "title": "10 - 主机与进程资源 / Host and Process Resource",
       "collapsed": false,
@@ -5521,7 +5813,7 @@
       "panels": []
     },
     {
-      "id": 68,
+      "id": 69,
       "type": "timeseries",
       "title": "CPU 使用率 / CPU Usage",
       "description": "",
@@ -5620,7 +5912,7 @@
       }
     },
     {
-      "id": 69,
+      "id": 70,
       "type": "timeseries",
       "title": "内存使用率 / Memory Usage",
       "description": "",
@@ -5719,7 +6011,7 @@
       }
     },
     {
-      "id": 70,
+      "id": 71,
       "type": "timeseries",
       "title": "文件系统剩余 / Filesystem Free",
       "description": "",
@@ -5814,7 +6106,7 @@
       }
     },
     {
-      "id": 71,
+      "id": 72,
       "type": "timeseries",
       "title": "待执行/积压请求 / Pending and Backlog",
       "description": "",
@@ -5920,7 +6212,7 @@
       }
     },
     {
-      "id": 72,
+      "id": 73,
       "type": "row",
       "title": "11 - 影响规模与报警辅助 / Impact Counts and Alert Context",
       "collapsed": false,
@@ -5937,7 +6229,7 @@
       "panels": []
     },
     {
-      "id": 73,
+      "id": 74,
       "type": "table",
       "title": "最近 5m 入口请求/错误个数 / Inbound 5m Counts",
       "description": "",
@@ -6015,7 +6307,7 @@
       }
     },
     {
-      "id": 74,
+      "id": 75,
       "type": "table",
       "title": "最近 5m Broker/订单错误个数 / Broker and Order 5m Counts",
       "description": "",

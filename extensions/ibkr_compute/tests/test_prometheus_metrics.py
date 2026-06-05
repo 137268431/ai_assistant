@@ -419,6 +419,7 @@ class ComputePrometheusMetricsTest(unittest.TestCase):
             requiring=("set_runtime_status_metrics",),
         )
 
+        universe_labels = set(getattr(getattr(module, "MARKET_UNIVERSE_SYMBOLS", None), "_labelnames", None) or ())
         subscription_metric_names = (
             "MARKET_DATA_SUBSCRIPTION_ACTIVE",
             "MARKET_DATA_SUBSCRIPTION_LIMIT",
@@ -438,15 +439,17 @@ class ComputePrometheusMetricsTest(unittest.TestCase):
             for name in ("MARKET_DATA_BAR_LAG", "MARKET_DATA_BAR_PENDING_SYMBOLS")
         ]
         if (
-            any(not labels for labels in subscription_label_sets)
+            not universe_labels
+            or any(not labels for labels in subscription_label_sets)
             or any(not labels for labels in websocket_label_sets)
             or any(not labels for labels in bar_label_sets)
         ):
             self.skipTest("prometheus_client label schemas are unavailable in this environment")
 
         denied = _get_denylist(module)
-        for label_set in (*subscription_label_sets, *websocket_label_sets, *bar_label_sets):
+        for label_set in (universe_labels, *subscription_label_sets, *websocket_label_sets, *bar_label_sets):
             self.assertFalse(denied.intersection(label_set), label_set)
+        self.assertEqual({"service", "environment", "kind"}, universe_labels)
         for label_set in subscription_label_sets:
             self.assertEqual({"service", "environment", "kind"}, label_set)
         for label_set in websocket_label_sets:
@@ -477,6 +480,8 @@ class ComputePrometheusMetricsTest(unittest.TestCase):
                 "market_universe": {
                     "active_subscription_count": 7,
                     "active_trade_symbol_count": 4,
+                    "watchlist_pool_count": 276,
+                    "watchlist_trade_count": 273,
                     "active_monitor_symbol_count": 3,
                     "target_subscription_limit": 10,
                     "total_subscription_limit": 20,
@@ -489,6 +494,8 @@ class ComputePrometheusMetricsTest(unittest.TestCase):
         )
         metrics_text = generate_latest().decode("utf-8", errors="replace")
 
+        self.assertIn('ibkr_market_universe_symbols_count', metrics_text)
+        self.assertIn(f'environment="{environment}",kind="pool"', metrics_text)
         self.assertIn(f'environment="{environment}",kind="total"', metrics_text)
         self.assertIn('ibkr_market_data_subscription_active_count', metrics_text)
         self.assertIn('ibkr_market_data_subscription_utilization_pct', metrics_text)
