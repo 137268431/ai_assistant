@@ -219,13 +219,19 @@ class GatewayServiceManager:
             status_code = 502
         elif running and not status_code:
             status_code = 401
-        set_gateway_status(running=running, uptime_s=self.uptime_seconds, status_code=status_code)
+        reachable = bool(running and bool(api_socket.get("listening")) and status_code not in {502, 503})
+        set_gateway_status(
+            running=running,
+            uptime_s=self.uptime_seconds,
+            status_code=status_code,
+            reachable=reachable,
+        )
         return {
             "managed_by": "systemd",
             "service": self.service_name,
             "pid": _safe_int(data.get("MainPID"), 0),
             "uptime_s": round(self.uptime_seconds, 1) if self.uptime_seconds else None,
-            "reachable": bool(running and bool(api_socket.get("listening")) and status_code not in {502, 503}),
+            "reachable": reachable,
             "running": running,
             "status_code": status_code,
             "api_socket_listening": bool(api_socket.get("listening")),

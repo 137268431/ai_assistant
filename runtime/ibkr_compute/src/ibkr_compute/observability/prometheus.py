@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import math
 import os
 import re
 import threading
@@ -161,6 +162,16 @@ def _status_class(status_code: Any) -> str:
     if code <= 0:
         return "0xx"
     return f"{code // 100}xx"
+
+
+def _optional_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return float(number)
 
 
 def _exception_class(exc: Any) -> str:
@@ -362,6 +373,76 @@ if _client_available():
         "Gateway status code reported by runtime.",
         ("service", "environment"),
     )
+    GATEWAY_REACHABLE = Gauge(
+        "ibkr_gateway_reachable",
+        "Whether the IB Gateway is reachable by the runtime service.",
+        ("service", "environment"),
+    )
+    GATEWAY_SESSION_AUTHENTICATED = Gauge(
+        "ibkr_gateway_session_authenticated",
+        "Whether the IB Gateway session is authenticated.",
+        ("service", "environment"),
+    )
+    GATEWAY_WEBSOCKET_READY = Gauge(
+        "ibkr_gateway_websocket_ready",
+        "Whether the IBKR market data websocket is ready.",
+        ("service", "environment"),
+    )
+    ACCOUNT_DATA_CIRCUIT_ACTIVE = Gauge(
+        "ibkr_account_data_circuit_active",
+        "Whether the account data circuit breaker is active.",
+        ("service", "environment"),
+    )
+    ACCOUNT_SNAPSHOT_AVAILABLE = Gauge(
+        "ibkr_account_snapshot_available",
+        "Whether the latest account or buying-power snapshot is available.",
+        ("service", "environment", "source"),
+    )
+    ACCOUNT_NET_LIQUIDATION = Gauge(
+        "ibkr_account_net_liquidation_usd",
+        "Account or paper risk-model net liquidation in USD.",
+        ("service", "environment", "source"),
+    )
+    ACCOUNT_BUYING_POWER_CONFIGURED = Gauge(
+        "ibkr_account_buying_power_configured_usd",
+        "Configured paper risk-model buying power in USD.",
+        ("service", "environment", "source"),
+    )
+    ACCOUNT_BUYING_POWER_REMAINING = Gauge(
+        "ibkr_account_buying_power_remaining_usd",
+        "Remaining account or paper risk-model buying power in USD.",
+        ("service", "environment", "source"),
+    )
+    ACCOUNT_BUYING_POWER_USED_EXPOSURE = Gauge(
+        "ibkr_account_buying_power_used_exposure_usd",
+        "Strategy exposure already consuming paper risk-model buying power.",
+        ("service", "environment", "source"),
+    )
+    ACCOUNT_BUYING_POWER_UTILIZATION = Gauge(
+        "ibkr_account_buying_power_utilization_pct",
+        "Buying-power utilization percentage for account or paper risk model.",
+        ("service", "environment", "source"),
+    )
+    ACCOUNT_BUYING_POWER_REMAINING_SLOTS = Gauge(
+        "ibkr_account_buying_power_remaining_slots",
+        "Estimated remaining entry slots under the paper risk model.",
+        ("service", "environment", "source"),
+    )
+    ACCOUNT_BUYING_POWER_WARN_FLOOR = Gauge(
+        "ibkr_account_buying_power_warn_floor_usd",
+        "Buying-power warning floor in USD.",
+        ("service", "environment", "source"),
+    )
+    ACCOUNT_BUYING_POWER_BLOCK_FLOOR = Gauge(
+        "ibkr_account_buying_power_block_floor_usd",
+        "Buying-power block floor in USD.",
+        ("service", "environment", "source"),
+    )
+    ACCOUNT_BUYING_POWER_GUARD_STATE = Gauge(
+        "ibkr_account_buying_power_guard_state",
+        "Buying-power guard state marker; the active state has value 1.",
+        ("service", "environment", "source", "state"),
+    )
     BROKER_CONNECTS = Counter(
         "ibkr_broker_connect_attempts_total",
         "IB API broker connect attempts.",
@@ -458,6 +539,11 @@ else:  # pragma: no cover
     HTTP_CLIENT_REQUESTS = HTTP_CLIENT_DURATION = HTTP_CLIENT_IN_FLIGHT = HTTP_CLIENT_EXCEPTIONS = None
     GATEWAY_SOCKET_PROBES = GATEWAY_SOCKET_DURATION = GATEWAY_SOCKET_LISTENING = None
     GATEWAY_SERVICE_ACTIONS = GATEWAY_SERVICE_RUNNING = GATEWAY_SERVICE_UPTIME = GATEWAY_STATUS_CODE = None
+    GATEWAY_REACHABLE = GATEWAY_SESSION_AUTHENTICATED = GATEWAY_WEBSOCKET_READY = ACCOUNT_DATA_CIRCUIT_ACTIVE = None
+    ACCOUNT_SNAPSHOT_AVAILABLE = ACCOUNT_NET_LIQUIDATION = ACCOUNT_BUYING_POWER_CONFIGURED = None
+    ACCOUNT_BUYING_POWER_REMAINING = ACCOUNT_BUYING_POWER_USED_EXPOSURE = ACCOUNT_BUYING_POWER_UTILIZATION = None
+    ACCOUNT_BUYING_POWER_REMAINING_SLOTS = ACCOUNT_BUYING_POWER_WARN_FLOOR = ACCOUNT_BUYING_POWER_BLOCK_FLOOR = None
+    ACCOUNT_BUYING_POWER_GUARD_STATE = None
     BROKER_CONNECTS = BROKER_CONNECT_DURATION = BROKER_READY = BROKER_CONNECTED = BROKER_DISCONNECTS = BROKER_ERRORS = None
     BROKER_REQUESTS = BROKER_REQUEST_DURATION = BROKER_PENDING_REQUESTS = None
     HISTORY_EVENTS = HISTORY_DURATION = HISTORY_ACTIVE = HISTORY_ROWS = None
@@ -608,11 +694,32 @@ def _client_id(obj: Any = None) -> str:
     return _sanitize_label(getattr(obj, "client_id", None) or os.environ.get("IBGW_CLIENT_ID") or "0")
 
 
+def _metric_environment(environment: str = "") -> str:
+    return _sanitize_label(
+        environment
+        or os.environ.get("IBKR_BROKER_MODE")
+        or os.environ.get("BROKER_MODE")
+        or "unknown"
+    )
+
+
+def _gauge_set(metric: Any, labels: tuple[Any, ...], value: Any) -> None:
+    if metric is None:
+        return
+    number = _optional_float(value)
+    if number is None:
+        return
+    try:
+        metric.labels(*labels).set(number)
+    except Exception:
+        pass
+
+
 def record_gateway_socket_probe(*, environment: str = "", host: Any = "", port: Any = "", source: str = "status", result: str = "unknown", reason_code: str = "", duration_s: float | None = None, listening: bool | None = None) -> None:
     if not _client_available():
         return
     service = resolve_source_service()
-    env = _sanitize_label(environment or os.environ.get("IBKR_BROKER_MODE") or "unknown")
+    env = _metric_environment(environment)
     host_label = _sanitize_label(host or "unknown")
     port_label = _sanitize_label(port or "0")
     result_label = _sanitize_label(result)
@@ -628,14 +735,21 @@ def record_gateway_socket_probe(*, environment: str = "", host: Any = "", port: 
 
 def record_gateway_service_action(*, environment: str = "", action: str, result: str) -> None:
     if GATEWAY_SERVICE_ACTIONS is not None:
-        GATEWAY_SERVICE_ACTIONS.labels(resolve_source_service(), _sanitize_label(environment or "unknown"), _sanitize_label(action), _sanitize_label(result)).inc()
+        GATEWAY_SERVICE_ACTIONS.labels(resolve_source_service(), _metric_environment(environment), _sanitize_label(action), _sanitize_label(result)).inc()
 
 
-def set_gateway_status(*, environment: str = "", running: Any = None, uptime_s: Any = None, status_code: Any = None) -> None:
+def set_gateway_status(
+    *,
+    environment: str = "",
+    running: Any = None,
+    uptime_s: Any = None,
+    status_code: Any = None,
+    reachable: Any = None,
+) -> None:
     if not _client_available():
         return
     service = resolve_source_service()
-    env = _sanitize_label(environment or "unknown")
+    env = _metric_environment(environment)
     if GATEWAY_SERVICE_RUNNING is not None and running is not None:
         GATEWAY_SERVICE_RUNNING.labels(service, env).set(1.0 if bool(running) else 0.0)
     if GATEWAY_SERVICE_UPTIME is not None and uptime_s is not None:
@@ -648,6 +762,85 @@ def set_gateway_status(*, environment: str = "", running: Any = None, uptime_s: 
             GATEWAY_STATUS_CODE.labels(service, env).set(float(status_code or 0))
         except Exception:
             pass
+    if GATEWAY_REACHABLE is not None and reachable is not None:
+        GATEWAY_REACHABLE.labels(service, env).set(1.0 if bool(reachable) else 0.0)
+
+
+def set_runtime_status_metrics(status: dict[str, Any] | None = None, *, environment: str = "") -> None:
+    if not _client_available() or not isinstance(status, dict):
+        return
+    service = resolve_source_service()
+    env = _metric_environment(environment or status.get("environment") or status.get("broker_mode"))
+    gateway = status.get("gateway") if isinstance(status.get("gateway"), dict) else {}
+    session = status.get("session") if isinstance(status.get("session"), dict) else {}
+    websocket = status.get("websocket") if isinstance(status.get("websocket"), dict) else {}
+    account_data_circuit = status.get("account_data_circuit") if isinstance(status.get("account_data_circuit"), dict) else {}
+    if not account_data_circuit and isinstance(gateway.get("broker"), dict):
+        broker_circuit = gateway["broker"].get("account_data_circuit")
+        account_data_circuit = broker_circuit if isinstance(broker_circuit, dict) else {}
+    _gauge_set(GATEWAY_REACHABLE, (service, env), 1.0 if bool(gateway.get("reachable")) else 0.0)
+    _gauge_set(GATEWAY_SESSION_AUTHENTICATED, (service, env), 1.0 if bool(session.get("authenticated")) else 0.0)
+    _gauge_set(
+        GATEWAY_WEBSOCKET_READY,
+        (service, env),
+        1.0 if bool(websocket.get("ready") or websocket.get("connected")) else 0.0,
+    )
+    _gauge_set(ACCOUNT_DATA_CIRCUIT_ACTIVE, (service, env), 1.0 if bool(account_data_circuit.get("active")) else 0.0)
+
+
+def set_account_snapshot_metrics(payload: dict[str, Any] | None = None, *, source: str = "", environment: str = "") -> None:
+    if not _client_available() or not isinstance(payload, dict):
+        return
+    service = resolve_source_service()
+    guard = payload.get("buying_power_guard") if isinstance(payload.get("buying_power_guard"), dict) else {}
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    env = _metric_environment(environment or payload.get("environment") or guard.get("environment"))
+    src = _sanitize_label(source or guard.get("source") or payload.get("source") or "account_snapshot")
+
+    health = payload.get("account_snapshot_health") if isinstance(payload.get("account_snapshot_health"), dict) else {}
+    guard_available = guard.get("available")
+    available = bool(payload.get("ok", True)) and str(health.get("health") or "ok").lower() != "unavailable"
+    if guard_available is False:
+        available = False
+    if ACCOUNT_SNAPSHOT_AVAILABLE is not None:
+        ACCOUNT_SNAPSHOT_AVAILABLE.labels(service, env, src).set(1.0 if available else 0.0)
+
+    net_liq = _optional_float(guard.get("net_liquidation"))
+    if net_liq is None:
+        net_liq = _optional_float(summary.get("net_liquidation"))
+    remaining = _optional_float(guard.get("remaining"))
+    if remaining is None:
+        remaining = _optional_float(summary.get("remaining_buying_power"))
+    if remaining is None:
+        remaining = _optional_float(summary.get("buying_power"))
+    configured = _optional_float(guard.get("configured_buying_power"))
+    used = _optional_float(guard.get("risk_model_used_exposure"))
+    if used is None and configured is not None and remaining is not None:
+        used = max(0.0, configured - remaining)
+    elif used is None:
+        used = _optional_float(summary.get("gross_position_value"))
+
+    _gauge_set(ACCOUNT_NET_LIQUIDATION, (service, env, src), net_liq)
+    _gauge_set(ACCOUNT_BUYING_POWER_CONFIGURED, (service, env, src), configured)
+    _gauge_set(ACCOUNT_BUYING_POWER_REMAINING, (service, env, src), remaining)
+    _gauge_set(ACCOUNT_BUYING_POWER_USED_EXPOSURE, (service, env, src), used)
+    _gauge_set(ACCOUNT_BUYING_POWER_REMAINING_SLOTS, (service, env, src), guard.get("risk_model_remaining_slots"))
+    _gauge_set(ACCOUNT_BUYING_POWER_WARN_FLOOR, (service, env, src), guard.get("warn_floor"))
+    _gauge_set(ACCOUNT_BUYING_POWER_BLOCK_FLOOR, (service, env, src), guard.get("block_floor"))
+
+    utilization = _optional_float(guard.get("utilization_pct"))
+    if utilization is None and configured is not None and configured > 0 and used is not None:
+        utilization = max(0.0, min(100.0, used / configured * 100.0))
+    elif utilization is None and remaining is not None:
+        buying_power = _optional_float(summary.get("buying_power"))
+        if buying_power is not None and buying_power > 0:
+            utilization = max(0.0, min(100.0, (buying_power - remaining) / buying_power * 100.0))
+    _gauge_set(ACCOUNT_BUYING_POWER_UTILIZATION, (service, env, src), utilization)
+
+    state = _sanitize_label(str(guard.get("state") or "unknown").strip().lower() or "unknown")
+    if ACCOUNT_BUYING_POWER_GUARD_STATE is not None:
+        for candidate in ("ok", "warning", "blocked", "unavailable", "disabled", "unknown"):
+            ACCOUNT_BUYING_POWER_GUARD_STATE.labels(service, env, src, candidate).set(1.0 if state == candidate else 0.0)
 
 
 def record_broker_connect(obj: Any = None, *, result: str, duration_s: float, status_code: Any = 0, reason_code: str = "") -> None:
@@ -795,8 +988,10 @@ __all__ = [
     "safe_metric_labels",
     "sanitize_labels",
     "sanitize_metric_labels",
+    "set_account_snapshot_metrics",
     "set_broker_pending",
     "set_gateway_status",
     "set_history_active",
+    "set_runtime_status_metrics",
     "setup_prometheus_metrics",
 ]

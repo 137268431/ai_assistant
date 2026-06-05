@@ -68,11 +68,12 @@ class TradingServiceRuntimeStatusMixin:
         except Exception as exc:
             strategy_capacity = {"available": False, "capacity_full": False, "capacity_check_error": str(exc)}
 
-        return {
+        payload = {
             "symbol": config_text("ibkr_market_calendar_symbol", "SPY").upper(),
             "exchange": config_text("ibkr_market_calendar_exchange", "SMART").upper(),
             "sec_type": config_text("ibkr_market_calendar_sec_type", "STK").upper(),
         }
+        return payload
 
     def _runtime_market_session_snapshot(self, service_mod, *, refresh_ibkr_calendar: bool = True) -> dict:
         from ibkr_compute.market.calendar import (
@@ -685,3 +686,10 @@ class TradingServiceRuntimeStatusMixin:
                 "last_pipeline_repair_symbols": list(self._last_pipeline_repair_symbols),
             },
         }
+        try:
+            from ibkr_compute.observability.prometheus import set_runtime_status_metrics
+
+            set_runtime_status_metrics(payload, environment=service_mod.ENVIRONMENT)
+        except Exception:
+            service_mod.logger.debug("Failed to publish runtime status metrics", exc_info=True)
+        return payload

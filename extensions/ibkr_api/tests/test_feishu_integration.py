@@ -1,5 +1,6 @@
 import sys
 import unittest
+import json
 from pathlib import Path
 
 SERVICE_SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_api" / "src"
@@ -7,6 +8,7 @@ if str(SERVICE_SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SERVICE_SRC_ROOT))
 
 from ibkr_api.integrations.feishu import feishu_send_interactive, feishu_token, feishu_update_interactive
+from ibkr_api.integrations.feishu_time import normalize_feishu_time_text
 
 
 class _FakeResponse:
@@ -86,6 +88,44 @@ class FeishuIntegrationTest(unittest.TestCase):
         self.assertEqual(
             requests_module.post_calls[1]["headers"]["Authorization"],
             "Bearer token-123",
+        )
+
+    def test_feishu_send_interactive_normalizes_visible_times(self):
+        requests_module = _FakeRequests(
+            post_responses=[
+                _FakeResponse({"code": 0, "data": {"message_id": "msg-1"}}),
+            ]
+        )
+
+        result = feishu_send_interactive(
+            {
+                "header": {"title": {"tag": "plain_text", "content": "信号 · 2026-06-04 20:05:31"}},
+                "elements": [
+                    {"tag": "markdown", "content": "**时间**: 2026-06-04 20:05:31\n**本轮截止**: 2026-06-05 08:05:31 CN / 2026-06-04 20:05:31 US"}
+                ],
+            },
+            "oc_system_chat",
+            "live",
+            normalize_environment=self._normalize_environment,
+            token_loader=lambda: "token-123",
+            requests_module=requests_module,
+        )
+
+        self.assertTrue(result["success"])
+        payload = json.loads(requests_module.post_calls[0]["json"]["content"])
+        title = payload["header"]["title"]["content"]
+        content = payload["elements"][0]["content"]
+        expected = "美东 2026-06-04 20:05:31 | 北京 2026-06-05 08:05:31"
+        self.assertIn(expected, title)
+        self.assertIn(f"**时间**: {expected}", content)
+        self.assertIn(f"**本轮截止**: {expected}", content)
+
+    def test_normalize_feishu_time_text_handles_beijing_first_sentence(self):
+        text = "当前预计截止为北京时间 2026-06-05 08:05:31 / 美东 2026-06-04 20:05:31。"
+
+        self.assertEqual(
+            normalize_feishu_time_text(text),
+            "当前预计截止为美东 2026-06-04 20:05:31 | 北京 2026-06-05 08:05:31。",
         )
 
     def test_feishu_update_interactive_uses_token_when_code_is_zero(self):

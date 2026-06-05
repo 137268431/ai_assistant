@@ -21,10 +21,6 @@ DEFAULT_FEISHU_RELAY_URL = os.environ.get("MONITORING_FEISHU_RELAY_URL", "http:/
 DEFAULT_PUBLIC_URL = os.environ.get("MONITORING_PUBLIC_BASE_URL", "https://quant-monitor.lzw-glory.top")
 DEFAULT_MONITORING_REMOTE_ROOT = os.environ.get("MONITORING_REMOTE_ROOT", "/opt/monitoring").rstrip("/")
 DEFAULT_CADDY_SITE_FILE = os.environ.get("MONITORING_CADDY_SITE_FILE", "/etc/caddy/conf.d/quant-monitor.lzw-glory.top.caddy")
-DEFAULT_CADDY_AUTH_FILE = os.environ.get(
-    "MONITORING_CADDY_AUTH_FILE",
-    "/etc/caddy/secrets/quant-monitor.lzw-glory.top.auth.caddy",
-)
 DEFAULT_GRAFANA_ENV_FILE = os.environ.get("GRAFANA_ENV_FILE", "/etc/monitoring/grafana.env")
 
 REMOTE_SCRIPT = r'''
@@ -136,8 +132,8 @@ required_files = [
     config["grafana_env_file"],
 ]
 if config.get("check_caddy", True):
-    required_files.extend([config["caddy_site_file"], config["caddy_auth_file"]])
-files = {path: path_status(path, redact=path in {config["caddy_auth_file"], config["grafana_env_file"]}) for path in required_files}
+    required_files.append(config["caddy_site_file"])
+files = {path: path_status(path, redact=path == config["grafana_env_file"]) for path in required_files}
 
 targets = []
 target_payload = endpoints["prometheus_targets"].get("json")
@@ -169,11 +165,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--feishu-relay-url", default=DEFAULT_FEISHU_RELAY_URL)
     parser.add_argument("--public-url", default=DEFAULT_PUBLIC_URL)
     parser.add_argument("--caddy-site-file", default=DEFAULT_CADDY_SITE_FILE)
-    parser.add_argument("--caddy-auth-file", default=DEFAULT_CADDY_AUTH_FILE)
     parser.add_argument("--grafana-env-file", default=DEFAULT_GRAFANA_ENV_FILE)
     parser.add_argument("--timeout", type=int, default=8)
     parser.add_argument("--strict-targets", action="store_true", help="Fail if any Prometheus target is down.")
-    parser.add_argument("--skip-public", action="store_true", help="Skip public URL Basic Auth check.")
+    parser.add_argument("--skip-public", action="store_true", help="Skip public Grafana UI check.")
     parser.add_argument("--skip-caddy", action="store_true", help="Skip Caddy file and public URL checks.")
     parser.add_argument("--local", action="store_true", help="Run checks on this machine instead of over SSH.")
     parser.add_argument("--json", action="store_true")
@@ -205,7 +200,6 @@ def remote_config(args: argparse.Namespace) -> dict[str, Any]:
         "grafana_url": args.grafana_url,
         "feishu_relay_url": args.feishu_relay_url,
         "caddy_site_file": args.caddy_site_file,
-        "caddy_auth_file": args.caddy_auth_file,
         "grafana_env_file": args.grafana_env_file,
         "check_caddy": not args.skip_caddy,
         "timeout": args.timeout,
@@ -257,13 +251,21 @@ def fetch_public_url(url: str, timeout: int) -> dict[str, Any]:
                 "ok": 200 <= response.status < 300,
                 "status_code": response.status,
                 "url": url,
-                "body_snippet": body[:200],
+                "content_type": response.headers.get("Content-Type", ""),
+                "body_snippet": body[:2048],
             }
     except urllib.error.HTTPError as exc:
         body = exc.read(2048).decode("utf-8", errors="replace")
-        return {"ok": False, "status_code": exc.code, "url": url, "body_snippet": body[:200]}
+        return {"ok": False, "status_code": exc.code, "url": url, "body_snippet": body[:2048]}
     except Exception as exc:
         return {"ok": False, "url": url, "error": str(exc)}
+
+
+def public_url_shows_grafana_ui(payload: dict[str, Any]) -> bool:
+    if not payload.get("ok"):
+        return False
+    body = str(payload.get("body_snippet") or "").lower()
+    return "grafana" in body
 
 
 def evaluate(payload: dict[str, Any], args: argparse.Namespace) -> list[str]:
@@ -293,9 +295,9 @@ def evaluate(payload: dict[str, Any], args: argparse.Namespace) -> list[str]:
 
     public_payload = payload.get("public") or {}
     if not args.skip_public and not args.skip_caddy:
-        status_code = public_payload.get("status_code")
-        if status_code != 401:
-            failures.append(f"public_basic_auth_not_enforced:{status_code or public_payload.get('error') or 'unknown'}")
+        if not public_url_shows_grafana_ui(public_payload):
+            status = public_payload.get("status_code") or public_payload.get("error") or "unknown"
+            failures.append(f"public_grafana_ui_unreachable:{status}")
 
     return failures
 
@@ -325,7 +327,7 @@ def print_human(payload: dict[str, Any], failures: list[str], args: argparse.Nam
     if not args.skip_public and not args.skip_caddy:
         public_payload = payload.get("public") or {}
         public_status = public_payload.get("status_code") or public_payload.get("error") or "unknown"
-        auth_state = "basic_auth_enforced" if public_payload.get("status_code") == 401 else "unexpected"
+        auth_state = "grafana_ui_reachable" if public_url_shows_grafana_ui(public_payload) else "unexpected"
         print(f"public_url: {public_status} ({auth_state})")
     if failures:
         print("failures:")

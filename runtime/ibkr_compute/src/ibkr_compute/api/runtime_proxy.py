@@ -22,6 +22,7 @@ from ibkr_compute.api.service_topology import (
 
 logger = logging.getLogger(__name__)
 RUNTIME_PROXY_TIMEOUT_SECONDS = 60
+RUNTIME_STATUS_PROXY_TIMEOUT_SECONDS = 3
 RUNTIME_PROXY_LONG_TIMEOUT_SECONDS = 300
 RUNTIME_PROXY_LONG_TIMEOUT_PATHS = {
     "/ibkr/data-quality/repair",
@@ -39,6 +40,11 @@ ASYNC_RUNTIME_OPERATION_PATHS = {
 }
 _ASYNC_OPERATION_LOCK = threading.RLock()
 _ASYNC_OPERATION_STATES: dict[str, dict[str, Any]] = {}
+_RUNTIME_STATUS_PROXY_CACHE_LOCK = threading.RLock()
+_RUNTIME_STATUS_PROXY_CACHE: dict[str, Any] = {
+    "cached_at": 0.0,
+    "payload": None,
+}
 
 
 def _coerce_timeout_seconds(env_name: str, default: float) -> float:
@@ -99,6 +105,13 @@ def _runtime_proxy_timeout_seconds(path: str) -> float:
     return _coerce_timeout_seconds(
         "IBKR_COMPUTE_RUNTIME_PROXY_TIMEOUT_SEC",
         RUNTIME_PROXY_TIMEOUT_SECONDS,
+    )
+
+
+def _runtime_status_proxy_timeout_seconds() -> float:
+    return _coerce_timeout_seconds(
+        "IBKR_COMPUTE_RUNTIME_STATUS_PROXY_TIMEOUT_SEC",
+        RUNTIME_STATUS_PROXY_TIMEOUT_SECONDS,
     )
 
 
@@ -197,9 +210,45 @@ def should_proxy_runtime_requests() -> bool:
     return is_runtime_remote_mode()
 
 
+def _is_runtime_status_proxy_request(path: str) -> bool:
+    return request.method == "GET" and _normalize_path(path) == "/ibkr/status"
+
+
 def _build_runtime_upstream(path: str) -> str:
     normalized_path = _normalize_path(path)
     return f"{get_runtime_internal_url()}{normalized_path}"
+
+
+def _cache_runtime_status_proxy_payload(upstream_response) -> None:
+    if not getattr(upstream_response, "ok", False):
+        return
+    try:
+        payload = upstream_response.json() if upstream_response.content else {}
+    except Exception:
+        return
+    if not isinstance(payload, dict) or not payload:
+        return
+    with _RUNTIME_STATUS_PROXY_CACHE_LOCK:
+        _RUNTIME_STATUS_PROXY_CACHE["payload"] = dict(payload)
+        _RUNTIME_STATUS_PROXY_CACHE["cached_at"] = time.time()
+
+
+def _build_stale_runtime_status_proxy_response(*, upstream: str, error: str, status_code: int = 200):
+    with _RUNTIME_STATUS_PROXY_CACHE_LOCK:
+        payload = _RUNTIME_STATUS_PROXY_CACHE.get("payload")
+        cached_at = float(_RUNTIME_STATUS_PROXY_CACHE.get("cached_at") or 0.0)
+    if not isinstance(payload, dict) or not payload:
+        return None
+    stale_payload = dict(payload)
+    stale_payload["runtime_status_stale"] = True
+    stale_payload["runtime_status_cache_age_s"] = round(max(0.0, time.time() - cached_at), 3) if cached_at else 0.0
+    if cached_at:
+        stale_payload["runtime_status_cached_at"] = cached_at
+    stale_payload["runtime_status_stale_reason"] = str(error or "runtime_status_proxy_failed")[:500]
+    stale_payload["proxy_upstream"] = upstream
+    if "service_topology" not in stale_payload:
+        stale_payload["service_topology"] = build_service_topology()
+    return jsonify(stale_payload), status_code
 
 
 def _async_runtime_worker(
@@ -383,7 +432,8 @@ def proxy_runtime_request(path: str):
         return _build_async_runtime_operation_response(normalized_path, raw_body)
 
     upstream = _build_runtime_upstream(normalized_path)
-    timeout_seconds = _runtime_proxy_timeout_seconds(normalized_path)
+    is_runtime_status_request = _is_runtime_status_proxy_request(normalized_path)
+    timeout_seconds = _runtime_status_proxy_timeout_seconds() if is_runtime_status_request else _runtime_proxy_timeout_seconds(normalized_path)
     params = list(request.args.items(multi=True))
     headers = {}
     for header_name in ("Accept", "Content-Type"):
@@ -412,6 +462,13 @@ def proxy_runtime_request(path: str):
             float(timeout_seconds),
             exc,
         )
+        if is_runtime_status_request:
+            stale_response = _build_stale_runtime_status_proxy_response(
+                upstream=upstream,
+                error=str(exc),
+            )
+            if stale_response is not None:
+                return stale_response
         return jsonify(
             {
                 "ok": False,
@@ -434,6 +491,16 @@ def proxy_runtime_request(path: str):
             elapsed_ms,
             float(timeout_seconds),
         )
+    if is_runtime_status_request:
+        if upstream_response.ok:
+            _cache_runtime_status_proxy_payload(upstream_response)
+        else:
+            stale_response = _build_stale_runtime_status_proxy_response(
+                upstream=upstream,
+                error=f"http_{int(upstream_response.status_code)}",
+            )
+            if stale_response is not None:
+                return stale_response
 
     response = Response(
         upstream_response.content,

@@ -7,6 +7,8 @@ from typing import Any, Callable
 
 import requests
 
+from ibkr_api.integrations.feishu_time import normalize_feishu_card_times
+
 
 DEFAULT_FEISHU_APP_ID = "cli_a936b8d2cc79dccb"
 DEFAULT_FEISHU_APP_SECRET = "ZZySOkZPaKBVkNhhk4upvfROPnXcSsry"
@@ -137,6 +139,7 @@ def feishu_send_interactive(
     if not token:
         return {"success": False, "message_id": "", "error": "missing_token"}
 
+    normalized_card = normalize_feishu_card_times(card)
     try:
         response = requests_module.post(
             "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
@@ -147,7 +150,7 @@ def feishu_send_interactive(
             json={
                 "receive_id": str(chat_id or ""),
                 "msg_type": "interactive",
-                "content": json.dumps(card, ensure_ascii=False),
+                "content": json.dumps(normalized_card, ensure_ascii=False),
             },
             timeout=15,
         )
@@ -188,6 +191,7 @@ def feishu_update_interactive(
     if not token:
         return {"success": False, "message_id": str(message_id or ""), "error": "missing_token"}
 
+    normalized_card = normalize_feishu_card_times(card)
     try:
         response = requests_module.patch(
             f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}",
@@ -195,7 +199,7 @@ def feishu_update_interactive(
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",
             },
-            json={"msg_type": "interactive", "content": json.dumps(card, ensure_ascii=False)},
+            json={"msg_type": "interactive", "content": json.dumps(normalized_card, ensure_ascii=False)},
             timeout=15,
         )
         payload = response.json() if response.content else {}

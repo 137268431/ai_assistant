@@ -45,11 +45,35 @@ class TradingServiceAccountSnapshotRefreshMixin:
     def _refresh_account_snapshot_once(self, *, reason: str = "loop") -> dict:
         if not self._account_snapshot_refresh_enabled():
             return {"ok": True, "skipped": True, "reason": "account_snapshot_refresh_disabled"}
-        from ibkr_compute.api.account.snapshot import refresh_account_snapshot_cache
+        try:
+            self.config.refresh()
+        except Exception:
+            pass
+        from ibkr_compute.api.account.snapshot import (
+            _build_ibkr_account_buying_power_snapshot,
+            refresh_account_snapshot_cache,
+        )
+        from ibkr_compute.observability.prometheus import set_account_snapshot_metrics
 
         payload = refresh_account_snapshot_cache(self, include_pnl=False)
         if isinstance(payload, dict):
             payload["refresh_reason"] = reason
+            try:
+                set_account_snapshot_metrics(payload, source="account_snapshot")
+                buying_power_payload = _build_ibkr_account_buying_power_snapshot(self)
+                set_account_snapshot_metrics(buying_power_payload, source="")
+                if isinstance(buying_power_payload, dict):
+                    payload["buying_power_metrics"] = {
+                        "ok": bool(buying_power_payload.get("ok")),
+                        "source": buying_power_payload.get("source"),
+                        "state": (
+                            (buying_power_payload.get("buying_power_guard") or {}).get("state")
+                            if isinstance(buying_power_payload.get("buying_power_guard"), dict)
+                            else ""
+                        ),
+                    }
+            except Exception as exc:
+                payload["metrics_error"] = str(exc)
             return payload
         return {"ok": False, "error": "account_snapshot_refresh_empty_result", "refresh_reason": reason}
 

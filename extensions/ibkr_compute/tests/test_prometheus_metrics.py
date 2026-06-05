@@ -380,6 +380,25 @@ class ComputePrometheusMetricsTest(unittest.TestCase):
             self.skipTest("prometheus_client label schemas are unavailable in this environment")
         self.assertFalse(required.intersection(label_names), label_names)
 
+    def test_account_and_gateway_metric_helpers_use_low_cardinality_labels(self):
+        module = _observability_or_skip(
+            self,
+            requiring=("set_account_snapshot_metrics", "set_runtime_status_metrics"),
+        )
+
+        account_labels = set(getattr(getattr(module, "ACCOUNT_BUYING_POWER_REMAINING", None), "_labelnames", None) or ())
+        state_labels = set(getattr(getattr(module, "ACCOUNT_BUYING_POWER_GUARD_STATE", None), "_labelnames", None) or ())
+        gateway_labels = set(getattr(getattr(module, "GATEWAY_SESSION_AUTHENTICATED", None), "_labelnames", None) or ())
+        if not account_labels or not state_labels or not gateway_labels:
+            self.skipTest("prometheus_client label schemas are unavailable in this environment")
+
+        denied = _get_denylist(module)
+        for label_set in (account_labels, state_labels, gateway_labels):
+            self.assertFalse(denied.intersection(label_set), label_set)
+        self.assertEqual({"service", "environment", "source"}, account_labels)
+        self.assertEqual({"service", "environment", "source", "state"}, state_labels)
+        self.assertEqual({"service", "environment"}, gateway_labels)
+
 
 if __name__ == "__main__":
     unittest.main()

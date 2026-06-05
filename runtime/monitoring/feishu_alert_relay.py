@@ -104,90 +104,227 @@ def _annotations_for_alert(alert: dict[str, Any]) -> dict[str, str]:
     return {str(k): str(v) for k, v in annotations.items() if v is not None}
 
 
+def _payload_common_labels(payload: dict[str, Any]) -> dict[str, str]:
+    common_labels = payload.get("commonLabels") if isinstance(payload.get("commonLabels"), dict) else {}
+    return {str(k): str(v) for k, v in common_labels.items() if v is not None}
+
+
+def _common_labels_for_payload(payload: dict[str, Any], alerts: list[dict[str, Any]]) -> dict[str, str]:
+    labels = _labels_for_alert(alerts[0]) if alerts else {}
+    labels.update(_payload_common_labels(payload))
+    return labels
+
+
+def _common_annotations_for_payload(payload: dict[str, Any], alerts: list[dict[str, Any]]) -> dict[str, str]:
+    annotations = _annotations_for_alert(alerts[0]) if alerts else {}
+    common_annotations = payload.get("commonAnnotations") if isinstance(payload.get("commonAnnotations"), dict) else {}
+    annotations.update({str(k): str(v) for k, v in common_annotations.items() if v is not None})
+    return annotations
+
+
+_STATUS_META = {
+    "firing": ("⚠️", "触发中"),
+    "resolved": ("✅", "已恢复"),
+    "pending": ("⏳", "待确认"),
+    "no_data": ("❔", "无数据"),
+    "error": ("🚨", "执行异常"),
+}
+
+
+def _status_meta(status: Any) -> tuple[str, str]:
+    return _STATUS_META.get(str(status or "unknown").strip().lower(), ("ℹ️", "未知"))
+
+
+def _severity_label(severity: Any) -> str:
+    text = str(severity or "unknown").strip().lower() or "unknown"
+    names = {
+        "critical": "critical",
+        "error": "error",
+        "warning": "warning",
+        "warn": "warning",
+        "info": "info",
+    }
+    return names.get(text, text)
+
+
+def _severity_display(severity: Any) -> str:
+    text = _severity_label(severity)
+    labels = {
+        "critical": "🚨 critical / 严重",
+        "error": "🚨 error / 错误",
+        "warning": "⚠️ warning / 警告",
+        "info": "ℹ️ info / 信息",
+    }
+    return labels.get(text, text)
+
+
+def _header_template(status: str, severity: str) -> str:
+    if str(status or "").lower() == "resolved":
+        return "green"
+    severity_text = _severity_label(severity)
+    if severity_text in {"critical", "error", "fatal"}:
+        return "red"
+    if severity_text in {"warning", "warn"}:
+        return "orange"
+    return "blue"
+
+
+_SUMMARY_LABEL_KEYS = ["alertname", "severity", "environment", "service", "target_service", "grafana_folder"]
+_SOURCE_LABEL_KEYS = [
+    "service",
+    "environment",
+    "target_service",
+    "route",
+    "job",
+    "instance",
+    "client_role",
+    "request_kind",
+    "operation",
+    "order_family_type",
+    "ib_error_code",
+    "host",
+    "port",
+    "mountpoint",
+    "grafana_folder",
+    "alert_source",
+]
+_LABEL_ALIASES = {
+    "alertname": "alert",
+    "severity": "severity",
+    "environment": "env",
+    "service": "service",
+    "target_service": "target",
+    "grafana_folder": "folder",
+    "alert_source": "source",
+}
+
+
+def _label_line(labels: dict[str, str], keys: list[str], *, default: str = "") -> str:
+    parts = []
+    seen: set[str] = set()
+    for key in keys:
+        value = str(labels.get(key) or "").strip()
+        if not value or key in seen:
+            continue
+        seen.add(key)
+        parts.append(f"{_LABEL_ALIASES.get(key, key)}={value}")
+    return " | ".join(parts) if parts else default
+
+
 def _alert_source_line(labels: dict[str, str]) -> str:
-    keys = [
-        "service",
-        "environment",
-        "job",
-        "instance",
-        "route",
-        "target_service",
-        "client_role",
-        "request_kind",
-        "operation",
-        "order_family_type",
-        "ib_error_code",
-        "host",
-        "port",
-        "mountpoint",
-        "alertname",
-        "grafana_folder",
-        "alert_source",
-    ]
-    parts = [f"{key}={labels[key]}" for key in keys if labels.get(key)]
-    return ", ".join(parts) if parts else "labels unavailable"
+    return _label_line(labels, _SOURCE_LABEL_KEYS, default="labels unavailable")
 
 
 def _alert_title(payload: dict[str, Any], alerts: list[dict[str, Any]]) -> str:
-    common_labels = payload.get("commonLabels") if isinstance(payload.get("commonLabels"), dict) else {}
-    first_labels = _labels_for_alert(alerts[0]) if alerts else {}
-    status = str(payload.get("status") or (alerts[0].get("status") if alerts else "unknown")).upper()
-    severity = _first_text(common_labels.get("severity"), first_labels.get("severity"), default="unknown")
-    alertname = _first_text(common_labels.get("alertname"), first_labels.get("alertname"), payload.get("title"), default="GrafanaAlert")
-    return f"[{status}] [{severity}] {alertname}"
+    common_labels = _common_labels_for_payload(payload, alerts)
+    common_annotations = _common_annotations_for_payload(payload, alerts)
+    status = str(payload.get("status") or (alerts[0].get("status") if alerts else "unknown")).lower()
+    icon, status_label = _status_meta(status)
+    alertname = _first_text(common_labels.get("alertname"), payload.get("title"), default="GrafanaAlert")
+    summary = _first_text(common_annotations.get("summary"), common_annotations.get("description"), default=alertname)
+    return f"{icon} {status_label} · {summary}"
+
+
+def _max_alert_items() -> int:
+    try:
+        return max(1, int(os.environ.get("FEISHU_ALERT_MAX_ITEMS") or "8"))
+    except ValueError:
+        return 8
+
+
+def _clean_time(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text or text.startswith("0001-01-01"):
+        return ""
+    return text
+
+
+def _dashboard_url(payload: dict[str, Any], alerts: list[dict[str, Any]]) -> str:
+    for key in ("panelURL", "dashboardURL", "generatorURL"):
+        for alert in alerts:
+            value = str(alert.get(key) or "").strip()
+            if value:
+                return value
+    return _first_text(payload.get("externalURL"), os.environ.get("GRAFANA_PUBLIC_URL"), default="https://quant-monitor.lzw-glory.top")
+
+
+def _alert_block(idx: int, alert: dict[str, Any], fallback_status: str) -> str:
+    labels = _labels_for_alert(alert)
+    annotations = _annotations_for_alert(alert)
+    status = str(alert.get("status") or fallback_status or "unknown").lower()
+    icon, status_label = _status_meta(status)
+    alertname = _first_text(labels.get("alertname"), default="GrafanaAlert")
+    lines = [f"**{idx}. {icon} {status_label}** · `{alertname}`"]
+    item_summary = _first_text(annotations.get("summary"), annotations.get("description"), default="")
+    if item_summary:
+        lines.append(f"**摘要**: {item_summary}")
+    source = _alert_source_line(labels)
+    if source and source != "labels unavailable":
+        lines.append(f"**标签**: {source}")
+    starts_at = _clean_time(alert.get("startsAt"))
+    ends_at = _clean_time(alert.get("endsAt"))
+    if starts_at:
+        lines.append(f"**开始**: {starts_at}")
+    if ends_at and status == "resolved":
+        lines.append(f"**恢复**: {ends_at}")
+    return "\n".join(lines)
 
 
 def _build_card(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
     alerts = [item for item in (payload.get("alerts") or []) if isinstance(item, dict)]
     status = str(payload.get("status") or "firing").lower()
-    firing = status == "firing"
+    icon, status_label = _status_meta(status)
     title = _alert_title(payload, alerts)
-    template = "red" if firing else "green"
-    common_annotations = payload.get("commonAnnotations") if isinstance(payload.get("commonAnnotations"), dict) else {}
+    common_labels = _common_labels_for_payload(payload, alerts)
+    common_annotations = _common_annotations_for_payload(payload, alerts)
+    severity = _severity_label(common_labels.get("severity"))
+    template = _header_template(status, severity)
     summary = _first_text(common_annotations.get("summary"), payload.get("message"), default="Grafana alert notification")
-    dashboard_url = _first_text(payload.get("externalURL"), os.environ.get("GRAFANA_PUBLIC_URL"), default="https://quant-monitor.lzw-glory.top")
-    max_alerts = int(os.environ.get("FEISHU_ALERT_MAX_ITEMS") or "8")
+    description = _first_text(common_annotations.get("description"), default="")
+    dashboard_url = _dashboard_url(payload, alerts)
+    max_alerts = _max_alert_items()
+    group_line = _label_line(_payload_common_labels(payload) or common_labels, _SUMMARY_LABEL_KEYS, default="")
 
-    lines = [
-        f"**状态**: {status.upper()}",
+    summary_lines = [
+        f"**状态**: {icon} {status_label}",
+        f"**级别**: {_severity_display(severity)}",
         f"**摘要**: {summary}",
-        f"**数量**: {len(alerts)} 个 alert instance",
+        f"**实例**: {len(alerts)} 个",
     ]
-    if payload.get("groupKey"):
-        lines.append(f"**分组**: {payload.get('groupKey')}")
-    lines.append("**报警来源**:")
-    for idx, alert in enumerate(alerts[:max_alerts], start=1):
-        labels = _labels_for_alert(alert)
-        annotations = _annotations_for_alert(alert)
-        state = str(alert.get("status") or status or "unknown").upper()
-        source = _alert_source_line(labels)
-        item_summary = _first_text(annotations.get("summary"), annotations.get("description"), default="")
-        line = f"{idx}. `{state}` {source}"
-        if item_summary:
-            line += f" — {item_summary}"
-        lines.append(line)
+    if description and description != summary:
+        summary_lines.append(f"**说明**: {description}")
+    if group_line:
+        summary_lines.append(f"**分组**: {group_line}")
+
+    detail_blocks = [_alert_block(idx, alert, status) for idx, alert in enumerate(alerts[:max_alerts], start=1)]
     if len(alerts) > max_alerts:
-        lines.append(f"+{len(alerts) - max_alerts} more")
-    lines.append(f"🕐 {time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+        detail_blocks.append(f"还有 {len(alerts) - max_alerts} 个实例未展开。")
+    detail_content = "**实例明细**:\n" + ("\n\n".join(detail_blocks) if detail_blocks else "无实例明细")
+    footer_content = f"**通知时间**: {time.strftime('%Y-%m-%d %H:%M:%S %Z')}"
 
     actions = []
     if dashboard_url:
         actions.append({
             "tag": "button",
-            "text": {"tag": "plain_text", "content": "打开 Grafana"},
-            "type": "default",
+            "text": {"tag": "plain_text", "content": "打开 Grafana 面板"},
+            "type": "primary" if status == "firing" else "default",
             "multi_url": {"url": dashboard_url, "pc_url": dashboard_url, "ios_url": dashboard_url, "android_url": dashboard_url},
         })
     card: dict[str, Any] = {
         "config": {"wide_screen_mode": True},
         "header": {"template": template, "title": {"tag": "plain_text", "content": title[:120]}},
-        "elements": [{"tag": "markdown", "content": "\n".join(lines)}],
+        "elements": [
+            {"tag": "markdown", "content": "\n".join(summary_lines)},
+            {"tag": "hr"},
+            {"tag": "markdown", "content": detail_content},
+            {"tag": "hr"},
+            {"tag": "markdown", "content": footer_content},
+        ],
     }
     if actions:
         card["elements"].append({"tag": "action", "actions": actions})
     env = _first_text(
-        (payload.get("commonLabels") or {}).get("environment") if isinstance(payload.get("commonLabels"), dict) else "",
-        (_labels_for_alert(alerts[0]).get("environment") if alerts else ""),
+        common_labels.get("environment"),
         os.environ.get("IBKR_BROKER_MODE"),
         default="live",
     )
@@ -197,9 +334,10 @@ def _build_card(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
 def _send_via_ibkr_api(card: dict[str, Any], environment: str, title: str) -> dict[str, Any]:
     api_url = os.environ.get("IBKR_API_NOTIFY_URL", "http://127.0.0.1:5102/api/custom/system/event")
     detail = {"来源": "Grafana", "Grafana": os.environ.get("GRAFANA_PUBLIC_URL", "https://quant-monitor.lzw-glory.top")}
+    title_lower = title.lower()
     payload = {
         "event_type": "alert",
-        "level": "error" if "[critical]" in title.lower() or "[firing]" in title.lower() else "warning",
+        "level": "error" if any(token in title_lower for token in ("critical", "firing", "触发中", "🚨", "⚠️")) else "warning",
         "source": "grafana",
         "title": title,
         "detail": detail,

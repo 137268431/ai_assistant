@@ -125,6 +125,12 @@ def _build_ibkr_status_response() -> tuple[dict, int]:
     status_payload["service_profile"] = get_service_profile()
     status_payload["runtime_mode"] = get_runtime_mode()
     status_payload["service_topology"] = build_service_topology(service=service, service_status=status_payload)
+    try:
+        from ibkr_compute.observability.prometheus import set_runtime_status_metrics
+
+        set_runtime_status_metrics(status_payload, environment=runtime_environment)
+    except Exception:
+        pass
     return {"ok": True, **status_payload}, 200
 
 

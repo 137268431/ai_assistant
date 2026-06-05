@@ -80,7 +80,7 @@
             }
           ],
           "dashboardUid": "quant-monitoring-overview",
-          "noDataState": "Alerting",
+          "noDataState": "OK",
           "execErrState": "Error",
           "for": "2m",
           "annotations": {
@@ -112,7 +112,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "ibkr_gateway_socket_listening == 0",
+                "expr": "max_over_time(ibkr_gateway_socket_listening[2m]) == 0",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -166,7 +166,7 @@
             }
           ],
           "dashboardUid": "quant-monitoring-overview",
-          "noDataState": "Alerting",
+          "noDataState": "OK",
           "execErrState": "Error",
           "for": "2m",
           "annotations": {
@@ -198,7 +198,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "(ibkr_broker_connected == 0) or (ibkr_broker_ready == 0)",
+                "expr": "(max_over_time(ibkr_broker_connected[2m]) == 0) or (max_over_time(ibkr_broker_ready[2m]) == 0)",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -252,7 +252,7 @@
             }
           ],
           "dashboardUid": "quant-monitoring-overview",
-          "noDataState": "Alerting",
+          "noDataState": "OK",
           "execErrState": "Error",
           "for": "2m",
           "annotations": {
@@ -542,7 +542,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "histogram_quantile(0.95, sum by (le, service, route) (rate(ibkr_http_server_request_duration_seconds_bucket[5m]))) > 2",
+                "expr": "(histogram_quantile(0.95, sum by (le, service, route) (rate(ibkr_http_server_request_duration_seconds_bucket{route!~\"/health|/status|/ibkr/status|/api/custom/ibkr/statusz|/api/custom/system/summaryz|/api/custom/system/monitorz|/api/custom/system/storagez\"}[5m]))) > 5) and (sum by (service, route) (increase(ibkr_http_server_requests_total{route!~\"/health|/status|/ibkr/status|/api/custom/ibkr/statusz|/api/custom/system/summaryz|/api/custom/system/monitorz|/api/custom/system/storagez\"}[5m])) > 20)",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -628,7 +628,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "(sum by (service, target_service, route) (rate(ibkr_http_client_requests_total{outcome!=\"success\"}[5m])) / clamp_min(sum by (service, target_service, route) (rate(ibkr_http_client_requests_total[5m])), 0.001) > 0.05) and (sum by (service, target_service, route) (increase(ibkr_http_client_requests_total[5m])) > 20)",
+                "expr": "(sum by (service, target_service, route) (rate(ibkr_http_client_requests_total{outcome!=\"success\", route!~\"/health|/status|/ibkr/status|/api/custom/ibkr/statusz|/api/custom/system/summaryz|/api/custom/system/monitorz|/api/custom/system/storagez\"}[5m])) / clamp_min(sum by (service, target_service, route) (rate(ibkr_http_client_requests_total{route!~\"/health|/status|/ibkr/status|/api/custom/ibkr/statusz|/api/custom/system/summaryz|/api/custom/system/monitorz|/api/custom/system/storagez\"}[5m])), 0.001) > 0.10) and (sum by (service, target_service, route) (increase(ibkr_http_client_requests_total{route!~\"/health|/status|/ibkr/status|/api/custom/ibkr/statusz|/api/custom/system/summaryz|/api/custom/system/monitorz|/api/custom/system/storagez\"}[5m])) > 50)",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -714,7 +714,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "sum by (service, environment, client_role, ib_error_code, severity) (increase(ibkr_broker_error_total[5m])) > 3",
+                "expr": "sum by (service, environment, client_role, ib_error_code, severity) (increase(ibkr_broker_error_total{severity!=\"benign\"}[5m])) > 3",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -1284,12 +1284,528 @@
             }
           ],
           "dashboardUid": "quant-monitoring-overview",
-          "noDataState": "Alerting",
+          "noDataState": "OK",
           "execErrState": "Error",
           "for": "3m",
           "annotations": {
             "summary": "监控组件不可采集",
             "description": "Prometheus、Grafana、node_exporter 或 Feishu relay 采集异常。"
+          },
+          "labels": {
+            "severity": "warning",
+            "alert_source": "grafana"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "paper_bp_guard_unavailable",
+          "title": "PaperBuyingPowerGuardUnavailable",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "max by (service, environment, source) (ibkr_account_buying_power_guard_state{source=\"paper_config\", state=\"unavailable\"}) > 0",
+                "hide": false,
+                "instant": true,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": false,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0.5
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "A"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "hide": false,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B",
+                "type": "classic_conditions"
+              }
+            }
+          ],
+          "dashboardUid": "quant-monitoring-overview",
+          "noDataState": "Alerting",
+          "execErrState": "Error",
+          "for": "2m",
+          "annotations": {
+            "summary": "Paper 购买力风控不可用",
+            "description": "Paper 自动开仓购买力风控不可用，自动开仓会暂停。"
+          },
+          "labels": {
+            "severity": "critical",
+            "alert_source": "grafana"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "paper_bp_remaining_critical",
+          "title": "PaperBuyingPowerRemainingCritical",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "(max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=\"paper_config\"}) < 10000) and (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=\"paper_config\"}) >= 0)",
+                "hide": false,
+                "instant": true,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": false,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0.5
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "A"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "hide": false,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B",
+                "type": "classic_conditions"
+              }
+            }
+          ],
+          "dashboardUid": "quant-monitoring-overview",
+          "noDataState": "Alerting",
+          "execErrState": "Error",
+          "for": "2m",
+          "annotations": {
+            "summary": "Paper 剩余购买力低于禁止阈值",
+            "description": "Paper 剩余购买力低于 10k，新的自动开仓应被阻止。"
+          },
+          "labels": {
+            "severity": "critical",
+            "alert_source": "grafana"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "paper_bp_remaining_low",
+          "title": "PaperBuyingPowerRemainingLow",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "(max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=\"paper_config\"}) < 15000) and (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=\"paper_config\"}) >= 10000)",
+                "hide": false,
+                "instant": true,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": false,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0.5
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "A"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "hide": false,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B",
+                "type": "classic_conditions"
+              }
+            }
+          ],
+          "dashboardUid": "quant-monitoring-overview",
+          "noDataState": "Alerting",
+          "execErrState": "Error",
+          "for": "2m",
+          "annotations": {
+            "summary": "Paper 剩余购买力接近禁止阈值",
+            "description": "Paper 剩余购买力低于 15k 预警阈值但尚未低于 10k 禁止阈值。"
+          },
+          "labels": {
+            "severity": "warning",
+            "alert_source": "grafana"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "account_snapshot_unavailable",
+          "title": "AccountSnapshotUnavailable",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "max by (service, environment, source) (ibkr_account_snapshot_available{source=~\"paper_config|account_snapshot\"}) == 0",
+                "hide": false,
+                "instant": true,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": false,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0.5
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "A"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "hide": false,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B",
+                "type": "classic_conditions"
+              }
+            }
+          ],
+          "dashboardUid": "quant-monitoring-overview",
+          "noDataState": "Alerting",
+          "execErrState": "Error",
+          "for": "2m",
+          "annotations": {
+            "summary": "账户快照不可用",
+            "description": "账户或 Paper 风控快照不可用，购买力、NetLiq 或剩余开仓数可能不可信。"
+          },
+          "labels": {
+            "severity": "warning",
+            "alert_source": "grafana"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "gateway_runtime_state_down",
+          "title": "GatewayRuntimeStateDown",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "(ibkr_gateway_reachable == 0) or (ibkr_gateway_session_authenticated == 0) or (ibkr_gateway_websocket_ready == 0)",
+                "hide": false,
+                "instant": true,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": false,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0.5
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "A"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "hide": false,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B",
+                "type": "classic_conditions"
+              }
+            }
+          ],
+          "dashboardUid": "quant-monitoring-overview",
+          "noDataState": "Alerting",
+          "execErrState": "Error",
+          "for": "2m",
+          "annotations": {
+            "summary": "Gateway/Session/WebSocket 运行态异常",
+            "description": "Gateway reachable、session authenticated 或 websocket ready 为 0，会影响交易或行情链路。"
+          },
+          "labels": {
+            "severity": "critical",
+            "alert_source": "grafana"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "account_data_circuit_active",
+          "title": "AccountDataCircuitActive",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "ibkr_account_data_circuit_active == 1",
+                "hide": false,
+                "instant": true,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": false,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0.5
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "A"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "hide": false,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B",
+                "type": "classic_conditions"
+              }
+            }
+          ],
+          "dashboardUid": "quant-monitoring-overview",
+          "noDataState": "Alerting",
+          "execErrState": "Error",
+          "for": "2m",
+          "annotations": {
+            "summary": "账户数据熔断已打开",
+            "description": "账户数据熔断已打开，账户快照和购买力读取可能被暂停。"
           },
           "labels": {
             "severity": "warning",

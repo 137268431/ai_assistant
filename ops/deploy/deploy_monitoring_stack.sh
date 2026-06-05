@@ -10,7 +10,6 @@ SYSTEMD_DIR="${MONITORING_SYSTEMD_DIR:-/etc/systemd/system}"
 CADDY_MAIN_PATH="${MONITORING_CADDY_MAIN_PATH:-/etc/caddy/Caddyfile}"
 CADDY_CONF_DIR="${MONITORING_CADDY_CONF_DIR:-/etc/caddy/conf.d}"
 CADDY_SITE_FILE="${MONITORING_CADDY_SITE_FILE:-$CADDY_CONF_DIR/quant-monitor.lzw-glory.top.caddy}"
-CADDY_AUTH_FILE="${MONITORING_CADDY_AUTH_FILE:-/etc/caddy/secrets/quant-monitor.lzw-glory.top.auth.caddy}"
 CADDY_SERVICE="${MONITORING_CADDY_SERVICE:-caddy}"
 PUBLIC_BASE_URL="${MONITORING_PUBLIC_BASE_URL:-https://quant-monitor.lzw-glory.top}"
 GRAFANA_ENV_FILE="${GRAFANA_ENV_FILE:-/etc/monitoring/grafana.env}"
@@ -38,15 +37,13 @@ trap cleanup EXIT
 
 render_caddy_template() {
   CADDY_RENDERED_PATH="$(mktemp "${TMPDIR:-/tmp}/quant-monitor-caddy.XXXXXX")"
-  python3 - "$LOCAL_CADDY_TEMPLATE_PATH" "$CADDY_AUTH_FILE" "$CADDY_RENDERED_PATH" <<'PY_RENDER_CADDY'
+  python3 - "$LOCAL_CADDY_TEMPLATE_PATH" "$CADDY_RENDERED_PATH" <<'PY_RENDER_CADDY'
 from pathlib import Path
 import sys
 
 template_path = Path(sys.argv[1])
-auth_file = sys.argv[2]
-target_path = Path(sys.argv[3])
+target_path = Path(sys.argv[2])
 text = template_path.read_text()
-text = text.replace("__MONITORING_CADDY_AUTH_FILE__", auth_file)
 target_path.write_text(text)
 PY_RENDER_CADDY
 }
@@ -71,7 +68,7 @@ Options:
   --skip-reload          Validate Caddy config but skip Caddy reload
   --skip-checks          Skip remote syntax/config checks
   --skip-health          Skip final monitoring health check
-  --skip-public-check    Skip public URL Basic Auth health check
+  --skip-public-check    Skip public Grafana login-page health check
   -h, --help             Show this help
 EOF_USAGE
 }
@@ -151,7 +148,6 @@ if [[ "$STATUS_ONLY" -eq 1 ]]; then
       MONITORING_REMOTE_ROOT="$MONITORING_REMOTE_ROOT" \
       SYSTEMD_DIR="$SYSTEMD_DIR" \
       CADDY_SITE_FILE="$CADDY_SITE_FILE" \
-      CADDY_AUTH_FILE="$CADDY_AUTH_FILE" \
       CADDY_SERVICE="$CADDY_SERVICE" \
       GRAFANA_ENV_FILE="$GRAFANA_ENV_FILE" \
     'bash -s' <<'REMOTE_STATUS'
@@ -178,7 +174,6 @@ for path in \
   "$SYSTEMD_DIR/grafana-server.service" \
   "$SYSTEMD_DIR/feishu-alert-relay.service" \
   "$CADDY_SITE_FILE" \
-  "$CADDY_AUTH_FILE" \
   "$GRAFANA_ENV_FILE"; do
   if [[ -e "$path" ]]; then
     ls -ld "$path"
@@ -216,36 +211,11 @@ deploy_log "  feishu relay: ${LOCAL_MONITORING_ROOT#$AI_ASSISTANT_ROOT/}/feishu_
 deploy_log "  systemd units: ${MONITORING_SERVICES[*]} -> $SYSTEMD_DIR"
 deploy_log "  restart monitoring services: $([[ "$NO_RESTART" -eq 1 ]] && printf 'no' || printf 'yes')"
 deploy_log "  caddy site: $([[ "$SKIP_CADDY" -eq 1 ]] && printf 'skipped' || printf '%s -> %s' "${LOCAL_CADDY_TEMPLATE_PATH#$AI_ASSISTANT_ROOT/}" "$CADDY_SITE_FILE")"
-deploy_log "  caddy auth import: $CADDY_AUTH_FILE"
 deploy_log "  reload caddy: $([[ "$SKIP_CADDY" -eq 1 || "$SKIP_RELOAD" -eq 1 ]] && printf 'no' || printf 'yes')"
 deploy_log "  public base url: $PUBLIC_BASE_URL"
 
 if [[ "$PLAN_ONLY" -eq 1 ]]; then
   exit 0
-fi
-
-if [[ "$SKIP_CADDY" -ne 1 && "$DRY_RUN" -ne 1 ]]; then
-  ssh "$REMOTE_HOST" env CADDY_AUTH_FILE="$CADDY_AUTH_FILE" 'bash -s' <<'REMOTE_CADDY_PREFLIGHT'
-set -euo pipefail
-if [[ ! -f "$CADDY_AUTH_FILE" ]]; then
-  cat >&2 <<EOF_AUTH
-Missing Caddy Basic Auth import: $CADDY_AUTH_FILE
-Create it before deploying the public Grafana site so Caddy never loads an unauthenticated or invalid site.
-Example content:
-basic_auth {
-    admin <hash-from-caddy-hash-password>
-}
-EOF_AUTH
-  exit 1
-fi
-if ! grep -Eq '^[[:space:]]*basic_auth([[:space:]{]|$)' "$CADDY_AUTH_FILE"; then
-  cat >&2 <<EOF_AUTH_DIRECTIVE
-Caddy Basic Auth import exists but does not contain an active basic_auth directive: $CADDY_AUTH_FILE
-Refusing to deploy Grafana publicly without the required Caddy Basic Auth layer.
-EOF_AUTH_DIRECTIVE
-  exit 1
-fi
-REMOTE_CADDY_PREFLIGHT
 fi
 
 ensure_remote_dir "$MONITORING_REMOTE_ROOT"
@@ -271,7 +241,6 @@ ssh "$REMOTE_HOST" \
     CADDY_MAIN_PATH="$CADDY_MAIN_PATH" \
     CADDY_CONF_DIR="$CADDY_CONF_DIR" \
     CADDY_SITE_FILE="$CADDY_SITE_FILE" \
-    CADDY_AUTH_FILE="$CADDY_AUTH_FILE" \
     CADDY_SERVICE="$CADDY_SERVICE" \
     GRAFANA_ENV_FILE="$GRAFANA_ENV_FILE" \
     NO_RESTART="$NO_RESTART" \
@@ -303,32 +272,6 @@ ensure_caddy_conf_import() {
   fi
 }
 
-validate_caddy_auth_file() {
-  if [[ ! -f "$CADDY_AUTH_FILE" ]]; then
-    cat >&2 <<EOF_AUTH
-Missing Caddy Basic Auth import: $CADDY_AUTH_FILE
-Create it with a Caddy-hashed password before deploying the public Grafana site.
-Example content:
-basic_auth {
-    admin <hash-from-caddy-hash-password>
-}
-EOF_AUTH
-    exit 1
-  fi
-  if ! grep -Eq '^[[:space:]]*basic_auth([[:space:]{]|$)' "$CADDY_AUTH_FILE"; then
-    cat >&2 <<EOF_AUTH_DIRECTIVE
-Caddy Basic Auth import exists but does not contain an active basic_auth directive: $CADDY_AUTH_FILE
-Refusing to reload Caddy for Grafana without the required Basic Auth layer.
-EOF_AUTH_DIRECTIVE
-    exit 1
-  fi
-  if getent group caddy >/dev/null 2>&1; then
-    chgrp caddy "$(dirname "$CADDY_AUTH_FILE")" "$CADDY_AUTH_FILE" || true
-    chmod 0750 "$(dirname "$CADDY_AUTH_FILE")" || true
-    chmod 0640 "$CADDY_AUTH_FILE" || true
-  fi
-}
-
 ensure_user prometheus
 ensure_user node_exporter
 install -d -m 0755 "$MONITORING_REMOTE_ROOT" "$MONITORING_REMOTE_ROOT/prometheus" "$MONITORING_REMOTE_ROOT/grafana"
@@ -343,7 +286,6 @@ chmod 0755 "$MONITORING_REMOTE_ROOT/feishu_alert_relay.py"
 if [[ "$SKIP_CADDY" != "1" ]]; then
   install -d -m 0755 "$CADDY_CONF_DIR"
   chmod 0644 "$CADDY_SITE_FILE"
-  validate_caddy_auth_file
   ensure_caddy_conf_import
 fi
 
@@ -387,7 +329,7 @@ fi
 REMOTE_DEPLOY
 
 if [[ "$SKIP_HEALTH" -ne 1 && "$NO_RESTART" -ne 1 ]]; then
-  health_args=(--host "$REMOTE_HOST" --remote-root "$MONITORING_REMOTE_ROOT" --public-url "$PUBLIC_BASE_URL" --caddy-site-file "$CADDY_SITE_FILE" --caddy-auth-file "$CADDY_AUTH_FILE" --grafana-env-file "$GRAFANA_ENV_FILE")
+  health_args=(--host "$REMOTE_HOST" --remote-root "$MONITORING_REMOTE_ROOT" --public-url "$PUBLIC_BASE_URL" --caddy-site-file "$CADDY_SITE_FILE" --grafana-env-file "$GRAFANA_ENV_FILE")
   [[ "$SKIP_PUBLIC_CHECK" -eq 1 ]] && health_args+=(--skip-public)
   [[ "$SKIP_CADDY" -eq 1 ]] && health_args+=(--skip-caddy)
   python3 "$AI_ASSISTANT_ROOT/ops/monitoring/health/check_monitoring_stack.py" "${health_args[@]}"
