@@ -388,6 +388,46 @@ if _client_available():
         "Whether the IBKR market data websocket is ready.",
         ("service", "environment"),
     )
+    MARKET_DATA_SUBSCRIPTION_ACTIVE = Gauge(
+        "ibkr_market_data_subscription_active_count",
+        "Active IBKR market data subscriptions by low-cardinality subscription kind.",
+        ("service", "environment", "kind"),
+    )
+    MARKET_DATA_SUBSCRIPTION_LIMIT = Gauge(
+        "ibkr_market_data_subscription_limit",
+        "Configured IBKR market data subscription limit by low-cardinality subscription kind.",
+        ("service", "environment", "kind"),
+    )
+    MARKET_DATA_SUBSCRIPTION_UTILIZATION = Gauge(
+        "ibkr_market_data_subscription_utilization_pct",
+        "IBKR market data subscription utilization percentage by low-cardinality subscription kind.",
+        ("service", "environment", "kind"),
+    )
+    MARKET_DATA_SUBSCRIPTION_PENDING = Gauge(
+        "ibkr_market_data_subscription_pending_count",
+        "Pending IBKR market data subscription count by low-cardinality subscription kind.",
+        ("service", "environment", "kind"),
+    )
+    MARKET_DATA_WS_LAST_MESSAGE_AGE = Gauge(
+        "ibkr_market_data_websocket_last_message_age_seconds",
+        "Age of the latest IBKR market data websocket message in seconds.",
+        ("service", "environment"),
+    )
+    MARKET_DATA_WS_LAST_TIC_AGE = Gauge(
+        "ibkr_market_data_websocket_last_tic_age_seconds",
+        "Age of the latest IBKR market data websocket TIC message in seconds.",
+        ("service", "environment"),
+    )
+    MARKET_DATA_BAR_LAG = Gauge(
+        "ibkr_market_data_bar_lag_seconds",
+        "Lag of the latest completed market data bar pipeline in seconds.",
+        ("service", "environment", "interval"),
+    )
+    MARKET_DATA_BAR_PENDING_SYMBOLS = Gauge(
+        "ibkr_market_data_bar_pending_symbols_count",
+        "Number of symbols still pending in the market data bar pipeline.",
+        ("service", "environment", "interval"),
+    )
     ACCOUNT_DATA_CIRCUIT_ACTIVE = Gauge(
         "ibkr_account_data_circuit_active",
         "Whether the account data circuit breaker is active.",
@@ -569,7 +609,11 @@ else:  # pragma: no cover
     HTTP_CLIENT_REQUESTS = HTTP_CLIENT_DURATION = HTTP_CLIENT_IN_FLIGHT = HTTP_CLIENT_EXCEPTIONS = None
     GATEWAY_SOCKET_PROBES = GATEWAY_SOCKET_DURATION = GATEWAY_SOCKET_LISTENING = None
     GATEWAY_SERVICE_ACTIONS = GATEWAY_SERVICE_RUNNING = GATEWAY_SERVICE_UPTIME = GATEWAY_STATUS_CODE = None
-    GATEWAY_REACHABLE = GATEWAY_SESSION_AUTHENTICATED = GATEWAY_WEBSOCKET_READY = ACCOUNT_DATA_CIRCUIT_ACTIVE = None
+    GATEWAY_REACHABLE = GATEWAY_SESSION_AUTHENTICATED = GATEWAY_WEBSOCKET_READY = None
+    MARKET_DATA_SUBSCRIPTION_ACTIVE = MARKET_DATA_SUBSCRIPTION_LIMIT = None
+    MARKET_DATA_SUBSCRIPTION_UTILIZATION = MARKET_DATA_SUBSCRIPTION_PENDING = None
+    MARKET_DATA_WS_LAST_MESSAGE_AGE = MARKET_DATA_WS_LAST_TIC_AGE = None
+    MARKET_DATA_BAR_LAG = MARKET_DATA_BAR_PENDING_SYMBOLS = ACCOUNT_DATA_CIRCUIT_ACTIVE = None
     ACCOUNT_SNAPSHOT_AVAILABLE = ACCOUNT_NET_LIQUIDATION = ACCOUNT_AVAILABLE_FUNDS = ACCOUNT_EXCESS_LIQUIDITY = None
     ACCOUNT_TOTAL_CASH = ACCOUNT_GROSS_POSITION_VALUE = ACCOUNT_INITIAL_MARGIN = ACCOUNT_MAINTENANCE_MARGIN = None
     ACCOUNT_BUYING_POWER_CONFIGURED = None
@@ -747,6 +791,45 @@ def _gauge_set(metric: Any, labels: tuple[Any, ...], value: Any) -> None:
         pass
 
 
+def _safe_len(value: Any) -> int:
+    try:
+        return len(value or [])
+    except Exception:
+        return 0
+
+
+def _first_number(*values: Any) -> float | None:
+    for value in values:
+        number = _optional_float(value)
+        if number is not None:
+            return number
+    return None
+
+
+def _set_market_data_subscription_metrics(
+    service: str,
+    env: str,
+    *,
+    kind: str,
+    active: Any = None,
+    limit: Any = None,
+    pending: Any = None,
+) -> None:
+    kind_label = _sanitize_label(kind or "unknown")
+    active_number = _optional_float(active)
+    limit_number = _optional_float(limit)
+    pending_number = _optional_float(pending)
+    if active_number is not None:
+        _gauge_set(MARKET_DATA_SUBSCRIPTION_ACTIVE, (service, env, kind_label), max(0.0, active_number))
+    if limit_number is not None:
+        _gauge_set(MARKET_DATA_SUBSCRIPTION_LIMIT, (service, env, kind_label), max(0.0, limit_number))
+    if pending_number is not None:
+        _gauge_set(MARKET_DATA_SUBSCRIPTION_PENDING, (service, env, kind_label), max(0.0, pending_number))
+    if active_number is not None and limit_number is not None and limit_number > 0:
+        utilization = max(0.0, min(100.0, active_number / limit_number * 100.0))
+        _gauge_set(MARKET_DATA_SUBSCRIPTION_UTILIZATION, (service, env, kind_label), utilization)
+
+
 def record_gateway_socket_probe(*, environment: str = "", host: Any = "", port: Any = "", source: str = "status", result: str = "unknown", reason_code: str = "", duration_s: float | None = None, listening: bool | None = None) -> None:
     if not _client_available():
         return
@@ -806,6 +889,7 @@ def set_runtime_status_metrics(status: dict[str, Any] | None = None, *, environm
     gateway = status.get("gateway") if isinstance(status.get("gateway"), dict) else {}
     session = status.get("session") if isinstance(status.get("session"), dict) else {}
     websocket = status.get("websocket") if isinstance(status.get("websocket"), dict) else {}
+    market_universe = status.get("market_universe") if isinstance(status.get("market_universe"), dict) else {}
     account_data_circuit = status.get("account_data_circuit") if isinstance(status.get("account_data_circuit"), dict) else {}
     if not account_data_circuit and isinstance(gateway.get("broker"), dict):
         broker_circuit = gateway["broker"].get("account_data_circuit")
@@ -818,6 +902,93 @@ def set_runtime_status_metrics(status: dict[str, Any] | None = None, *, environm
         1.0 if bool(websocket.get("ready") or websocket.get("connected")) else 0.0,
     )
     _gauge_set(ACCOUNT_DATA_CIRCUIT_ACTIVE, (service, env), 1.0 if bool(account_data_circuit.get("active")) else 0.0)
+
+    active_subscription_count = _first_number(
+        market_universe.get("active_subscription_count"),
+        _safe_len(market_universe.get("active_subscription_symbols")),
+    )
+    active_trade_count = _first_number(
+        market_universe.get("active_trade_symbol_count"),
+        market_universe.get("active_target_count"),
+        _safe_len(market_universe.get("active_trade_symbols")),
+    )
+    active_monitor_count = _first_number(
+        market_universe.get("active_monitor_symbol_count"),
+        market_universe.get("market_ws_symbols_ready"),
+    )
+    if active_monitor_count is None and active_subscription_count is not None and active_trade_count is not None:
+        active_monitor_count = max(0.0, active_subscription_count - active_trade_count)
+    ws_subscribed_count = _first_number(
+        websocket.get("subscribed_count"),
+        _safe_len(websocket.get("subscribed_conids")),
+        market_universe.get("market_ws_symbols_ready"),
+    )
+    pending_count = _first_number(
+        websocket.get("pending_count"),
+        _safe_len(websocket.get("pending_conids")),
+        market_universe.get("pending_subscription_count"),
+    )
+    target_limit = _first_number(market_universe.get("target_subscription_limit"))
+    total_limit = _first_number(
+        market_universe.get("total_subscription_limit"),
+        market_universe.get("subscription_limit"),
+        target_limit,
+    )
+    if total_limit is not None and total_limit <= 0 and target_limit is not None:
+        total_limit = target_limit
+    trade_limit = _first_number(
+        market_universe.get("trade_subscription_limit"),
+        market_universe.get("trade_subscription_budget"),
+        target_limit,
+    )
+    monitor_limit = _first_number(
+        market_universe.get("market_monitor_subscription_limit"),
+        market_universe.get("market_ws_symbols_total"),
+        _safe_len(market_universe.get("market_ws_symbols")),
+    )
+    websocket_limit = _first_number(market_universe.get("websocket_subscription_limit"), total_limit)
+    _set_market_data_subscription_metrics(
+        service,
+        env,
+        kind="total",
+        active=active_subscription_count,
+        limit=total_limit,
+        pending=pending_count,
+    )
+    _set_market_data_subscription_metrics(
+        service,
+        env,
+        kind="trade",
+        active=active_trade_count,
+        limit=trade_limit,
+    )
+    _set_market_data_subscription_metrics(
+        service,
+        env,
+        kind="monitor",
+        active=active_monitor_count,
+        limit=monitor_limit,
+    )
+    _set_market_data_subscription_metrics(
+        service,
+        env,
+        kind="websocket",
+        active=ws_subscribed_count,
+        limit=websocket_limit,
+        pending=pending_count,
+    )
+    _gauge_set(MARKET_DATA_WS_LAST_MESSAGE_AGE, (service, env), websocket.get("last_message_age_s"))
+    _gauge_set(MARKET_DATA_WS_LAST_TIC_AGE, (service, env), websocket.get("last_tic_age_s"))
+
+    bar_freshness = market_universe.get("bar_freshness") if isinstance(market_universe.get("bar_freshness"), dict) else {}
+    canonical_5m = status.get("canonical_5m") if isinstance(status.get("canonical_5m"), dict) else {}
+    interval = _sanitize_label(bar_freshness.get("interval") or canonical_5m.get("interval") or "5m")
+    _gauge_set(MARKET_DATA_BAR_LAG, (service, env, interval), _first_number(bar_freshness.get("lag_s"), canonical_5m.get("lag_s")))
+    _gauge_set(
+        MARKET_DATA_BAR_PENDING_SYMBOLS,
+        (service, env, interval),
+        _first_number(bar_freshness.get("pending_symbols_total"), canonical_5m.get("pending_symbols_total")),
+    )
 
 
 def set_account_snapshot_metrics(payload: dict[str, Any] | None = None, *, source: str = "", environment: str = "") -> None:

@@ -62,6 +62,18 @@ def _safe_method_text(service, method_name: str, errors: list[dict]) -> str:
         return ""
 
 
+def _safe_method_int(service, method_name: str, default: int, errors: list[dict]) -> int:
+    method = getattr(service, method_name, None)
+    if not callable(method):
+        return max(0, int(default or 0))
+    try:
+        return max(0, int(method() or 0))
+    except Exception as exc:
+        logger.warning("IBKR service status int helper failed: %s: %s", method_name, exc, exc_info=True)
+        errors.append({"section": method_name, "error": str(exc)})
+        return max(0, int(default or 0))
+
+
 def _safe_list_attr(service, attr_name: str) -> list:
     value = getattr(service, attr_name, [])
     try:
@@ -136,6 +148,21 @@ def _build_minimal_runtime_status(service, error: Exception | None = None) -> di
         trade_universe_status = "no_trade_symbols"
     active_subscription_set = set(active_subscription_symbols)
     market_ws_symbols_ready = len([symbol for symbol in market_ws_symbols if symbol in active_subscription_set])
+    target_subscription_limit = _safe_method_int(service, "_get_target_subscription_limit", 80, errors)
+    total_subscription_limit = _safe_method_int(service, "_get_total_subscription_limit", target_subscription_limit, errors)
+    if total_subscription_limit <= 0:
+        total_subscription_limit = target_subscription_limit
+    entry_temp_subscription_reserve = _safe_method_int(service, "_get_entry_temp_subscription_reserve", 8, errors)
+    trade_budget_method = getattr(service, "_get_trade_subscription_budget", None)
+    try:
+        trade_subscription_limit = trade_budget_method() if callable(trade_budget_method) else target_subscription_limit
+    except Exception as exc:
+        logger.warning("IBKR service trade subscription budget failed: %s", exc, exc_info=True)
+        errors.append({"section": "_get_trade_subscription_budget", "error": str(exc)})
+        trade_subscription_limit = target_subscription_limit
+    if trade_subscription_limit is None:
+        trade_subscription_limit = target_subscription_limit or total_subscription_limit
+    trade_subscription_limit = max(0, int(trade_subscription_limit or 0))
     mode_payload = broker_mode_payload()
     status = {
         "gateway_control_available": True,
@@ -178,6 +205,15 @@ def _build_minimal_runtime_status(service, error: Exception | None = None) -> di
             "observe_target_symbols": observe_target_symbols[:25],
             "no_execution_eligible_targets": no_execution_eligible_targets,
             "active_subscription_count": len(active_subscription_symbols),
+            "active_trade_symbol_count": len(active_trade_symbols),
+            "active_monitor_symbol_count": market_ws_symbols_ready,
+            "target_subscription_limit": target_subscription_limit,
+            "total_subscription_limit": total_subscription_limit,
+            "trade_subscription_limit": trade_subscription_limit,
+            "trade_subscription_budget": trade_subscription_limit,
+            "market_monitor_subscription_limit": len(market_ws_symbols),
+            "websocket_subscription_limit": total_subscription_limit or target_subscription_limit,
+            "entry_temp_subscription_reserve": entry_temp_subscription_reserve,
             "active_target_symbols": active_trade_symbols,
             "active_subscription_symbols": active_subscription_symbols,
             "active_trade_symbols": active_trade_symbols,

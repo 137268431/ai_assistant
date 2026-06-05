@@ -16,14 +16,8 @@ password.
 
 ## Dashboard
 
-`runtime/monitoring/grafana/dashboards/quant-monitoring-overview.json` is a phased request-flow dashboard for Grafana:
+`runtime/monitoring/grafana/dashboards/quant-monitoring-overview.json` is a cockpit-first phased dashboard for Grafana:
 
-1. Service health and scrape readiness.
-2. Inbound HTTP request rate, p95 latency, in-flight requests, and exceptions.
-3. Outbound HTTP dependency rate, p95 latency, in-flight requests, and errors.
-4. Gateway socket and IB API connect/error/disconnect status.
-5. Broker request pressure, pending requests, and error-code table.
-6. History/backfill activity and row throughput.
-7. Signal validation, submission, reverse action, and order tracker outcomes.
-8. Host CPU, memory, filesystem, and systemd state.
-9. Account capital, buying power floors, guard state, and Gateway/account runtime state.
+1. Top trading cockpit for Gateway/auth/WS, market data freshness, signal/order health, account guard, and host resources.
+2. Core trends for account capital, subscription counts, market freshness, and error rates.
+3. Detailed rows for service health, Gateway/session/WebSocket, market data subscriptions, account guard, signals/orders, Broker pressure, history/backfill, HTTP dependencies, host resources, and alert impact counts.

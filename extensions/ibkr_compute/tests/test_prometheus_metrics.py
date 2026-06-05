@@ -413,6 +413,88 @@ class ComputePrometheusMetricsTest(unittest.TestCase):
         self.assertEqual({"service", "environment", "source", "state"}, state_labels)
         self.assertEqual({"service", "environment"}, gateway_labels)
 
+    def test_market_data_subscription_metric_helpers_use_low_cardinality_labels(self):
+        module = _observability_or_skip(
+            self,
+            requiring=("set_runtime_status_metrics",),
+        )
+
+        subscription_metric_names = (
+            "MARKET_DATA_SUBSCRIPTION_ACTIVE",
+            "MARKET_DATA_SUBSCRIPTION_LIMIT",
+            "MARKET_DATA_SUBSCRIPTION_UTILIZATION",
+            "MARKET_DATA_SUBSCRIPTION_PENDING",
+        )
+        subscription_label_sets = [
+            set(getattr(getattr(module, name, None), "_labelnames", None) or ())
+            for name in subscription_metric_names
+        ]
+        websocket_label_sets = [
+            set(getattr(getattr(module, name, None), "_labelnames", None) or ())
+            for name in ("MARKET_DATA_WS_LAST_MESSAGE_AGE", "MARKET_DATA_WS_LAST_TIC_AGE")
+        ]
+        bar_label_sets = [
+            set(getattr(getattr(module, name, None), "_labelnames", None) or ())
+            for name in ("MARKET_DATA_BAR_LAG", "MARKET_DATA_BAR_PENDING_SYMBOLS")
+        ]
+        if (
+            any(not labels for labels in subscription_label_sets)
+            or any(not labels for labels in websocket_label_sets)
+            or any(not labels for labels in bar_label_sets)
+        ):
+            self.skipTest("prometheus_client label schemas are unavailable in this environment")
+
+        denied = _get_denylist(module)
+        for label_set in (*subscription_label_sets, *websocket_label_sets, *bar_label_sets):
+            self.assertFalse(denied.intersection(label_set), label_set)
+        for label_set in subscription_label_sets:
+            self.assertEqual({"service", "environment", "kind"}, label_set)
+        for label_set in websocket_label_sets:
+            self.assertEqual({"service", "environment"}, label_set)
+        for label_set in bar_label_sets:
+            self.assertEqual({"service", "environment", "interval"}, label_set)
+
+    def test_runtime_status_metrics_publish_market_data_subscription_values(self):
+        module = _observability_or_skip(
+            self,
+            requiring=("set_runtime_status_metrics",),
+        )
+        generate_latest = getattr(module, "generate_latest", None)
+        if not callable(generate_latest):
+            self.skipTest("prometheus_client generate_latest is unavailable in this environment")
+
+        environment = "metric_test"
+        module.set_runtime_status_metrics(
+            {
+                "environment": environment,
+                "websocket": {
+                    "ready": True,
+                    "subscribed_count": 5,
+                    "pending_count": 1,
+                    "last_message_age_s": 12,
+                    "last_tic_age_s": 4,
+                },
+                "market_universe": {
+                    "active_subscription_count": 7,
+                    "active_trade_symbol_count": 4,
+                    "active_monitor_symbol_count": 3,
+                    "target_subscription_limit": 10,
+                    "total_subscription_limit": 20,
+                    "trade_subscription_limit": 10,
+                    "market_monitor_subscription_limit": 5,
+                    "bar_freshness": {"lag_s": 45, "pending_symbols_total": 2},
+                },
+            },
+            environment=environment,
+        )
+        metrics_text = generate_latest().decode("utf-8", errors="replace")
+
+        self.assertIn(f'environment="{environment}",kind="total"', metrics_text)
+        self.assertIn('ibkr_market_data_subscription_active_count', metrics_text)
+        self.assertIn('ibkr_market_data_subscription_utilization_pct', metrics_text)
+        self.assertIn('ibkr_market_data_websocket_last_message_age_seconds', metrics_text)
+        self.assertIn('ibkr_market_data_bar_lag_seconds', metrics_text)
+
 
 if __name__ == "__main__":
     unittest.main()

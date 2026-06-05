@@ -31,7 +31,7 @@
     {
       "id": 1,
       "type": "row",
-      "title": "00 - 服务健康 / Service Health",
+      "title": "00 - 核心驾驶舱 / Trading Operations Cockpit",
       "collapsed": false,
       "datasource": {
         "type": "prometheus",
@@ -48,8 +48,8 @@
     {
       "id": 2,
       "type": "stat",
-      "title": "抓取目标在线 / Scrape Targets Up",
-      "description": "在线 scrape 目标数量。低于目标总数时说明 Prometheus 已无法采集部分服务。",
+      "title": "交易入口状态 / Trading Runtime State",
+      "description": "日常盯盘第一判断：Broker ready、登录、行情 WebSocket、Gateway reachable。",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -67,8 +67,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(up{service=~\"$service\"})",
-          "legendFormat": "up",
+          "expr": "max(ibkr_broker_ready{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "broker ready",
           "range": true,
           "refId": "A"
         },
@@ -78,10 +78,32 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "count(up{service=~\"$service\"})",
-          "legendFormat": "targets",
+          "expr": "max(ibkr_gateway_session_authenticated{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "session auth",
           "range": true,
           "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_gateway_websocket_ready{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "ws ready",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_gateway_reachable{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "gateway reachable",
+          "range": true,
+          "refId": "D"
         }
       ],
       "fieldConfig": {
@@ -122,8 +144,8 @@
     {
       "id": 3,
       "type": "stat",
-      "title": "IBKR 服务在线 / IBKR Services Up",
-      "description": "核心 IBKR 应用服务在线数。",
+      "title": "行情订阅利用率 / Market Data Subscription Utilization",
+      "description": "订阅槽位使用率；超过 80% 需关注，超过 95% 可能影响新标的订阅。",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -141,26 +163,30 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(up{stack=\"ibkr\", service=~\"$service\"})",
-          "legendFormat": "",
+          "expr": "max by (kind) (ibkr_market_data_subscription_utilization_pct{service=~\"$service\", environment=~\"$environment\", kind=~\"total|trade|monitor|websocket\"})",
+          "legendFormat": "{{kind}}",
           "range": true,
           "refId": "A"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "unit": "percent",
           "custom": {},
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
+                "color": "green",
                 "value": null
               },
               {
-                "color": "green",
-                "value": 1
+                "color": "yellow",
+                "value": 80
+              },
+              {
+                "color": "red",
+                "value": 95
               }
             ]
           }
@@ -185,8 +211,8 @@
     {
       "id": 4,
       "type": "stat",
-      "title": "监控组件在线 / Monitoring Services Up",
-      "description": "Prometheus/Grafana/node_exporter/飞书 relay 的 scrape 状态。",
+      "title": "行情新鲜度 / Market Data Freshness",
+      "description": "行情消息与 5m bar pipeline 的延迟。regular session 默认 60s/180s 关注。",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -204,26 +230,52 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(up{stack=\"monitoring\"})",
-          "legendFormat": "",
+          "expr": "max(ibkr_market_data_websocket_last_message_age_seconds{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "ws message age",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_market_data_websocket_last_tic_age_seconds{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "ws tic age",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_market_data_bar_lag_seconds{service=~\"$service\", environment=~\"$environment\", interval=\"5m\"})",
+          "legendFormat": "5m bar lag",
+          "range": true,
+          "refId": "C"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "unit": "s",
           "custom": {},
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
+                "color": "green",
                 "value": null
               },
               {
-                "color": "green",
-                "value": 1
+                "color": "yellow",
+                "value": 60
+              },
+              {
+                "color": "red",
+                "value": 180
               }
             ]
           }
@@ -248,8 +300,8 @@
     {
       "id": 5,
       "type": "stat",
-      "title": "Gateway 已连接/就绪 / Gateway Connected & Ready",
-      "description": "Broker 连接和 ready 状态，任一为 0 都会影响交易请求。",
+      "title": "信号与订单健康 / Signal and Order Health",
+      "description": "信号循环、订单失败和严重 IB 错误的核心摘要。",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -267,8 +319,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max(ibkr_broker_connected{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "connected",
+          "expr": "sum(rate(ibkr_signal_events_total{service=~\"$service\", environment=~\"$environment\", stage=\"loop\", result=\"ok\"}[$__rate_interval]))",
+          "legendFormat": "signal loop ok qps",
           "range": true,
           "refId": "A"
         },
@@ -278,10 +330,202 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max(ibkr_broker_ready{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "ready",
+          "expr": "sum(rate(ibkr_signal_events_total{service=~\"$service\", environment=~\"$environment\", stage=\"loop\", result!=\"ok\"}[$__rate_interval]))",
+          "legendFormat": "signal loop not-ok qps",
           "range": true,
           "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", result!~\"ok|synced|seen\"}[5m]))",
+          "legendFormat": "order failures 5m",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(ibkr_broker_error_total{service=~\"$service\", environment=~\"$environment\", severity=~\"error|critical\"}[$__rate_interval]))",
+          "legendFormat": "broker severe qps",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "账户资金核心 / Account Capital Core",
+      "description": "账户净清算值与剩余购买力；只取真实 account snapshot/summary 来源。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 0,
+        "y": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_net_liquidation_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "net liq {{environment}} {{source}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_buying_power_remaining_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "buying power {{environment}} {{source}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "custom": {},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "账户风控状态 / Account Guard Core",
+      "description": "账户快照、买力 guard 和 account data circuit 的核心状态。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 6,
+        "y": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_account_snapshot_available{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "snapshot available",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_account_data_circuit_active{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "account circuit active",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (state) (ibkr_account_buying_power_guard_state{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\", state=\"ok\"})",
+          "legendFormat": "guard ok",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (state) (ibkr_account_buying_power_guard_state{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\", state=~\"warning|blocked|unavailable\"})",
+          "legendFormat": "guard warn/block",
+          "range": true,
+          "refId": "D"
         }
       ],
       "fieldConfig": {
@@ -320,9 +564,194 @@
       }
     },
     {
-      "id": 6,
+      "id": 8,
+      "type": "stat",
+      "title": "服务采集在线 / Service Scrape Health",
+      "description": "Prometheus 能否抓到 IBKR 与监控组件。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 12,
+        "y": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(up{stack=\"ibkr\", service=~\"$service\"})",
+          "legendFormat": "ibkr up",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "count(up{stack=\"ibkr\", service=~\"$service\"})",
+          "legendFormat": "ibkr targets",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(up{stack=\"monitoring\"})",
+          "legendFormat": "monitoring up",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "count(up{stack=\"monitoring\"})",
+          "legendFormat": "monitoring targets",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "主机核心资源 / Host Core Resource",
+      "description": "CPU、内存和关键文件系统剩余百分比。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 18,
+        "y": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "100 - (avg(rate(node_cpu_seconds_total{mode=\"idle\"}[$__rate_interval])) * 100)",
+          "legendFormat": "cpu",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "100 * (1 - (sum(node_memory_MemAvailable_bytes) / sum(node_memory_MemTotal_bytes)))",
+          "legendFormat": "memory",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "min(100 * node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay\", mountpoint=~\"/|/var|/opt\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|overlay\", mountpoint=~\"/|/var|/opt\"})",
+          "legendFormat": "fs free min",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 70
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 10,
       "type": "row",
-      "title": "01 - 入口 HTTP 请求 / Inbound HTTP Requests",
+      "title": "01 - 核心趋势 / Core Trends",
       "collapsed": false,
       "datasource": {
         "type": "prometheus",
@@ -332,15 +761,15 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 6
+        "y": 11
       },
       "panels": []
     },
     {
-      "id": 7,
+      "id": 11,
       "type": "timeseries",
-      "title": "入口 QPS by 服务/路由 / Inbound Request QPS",
-      "description": "QPS 用来看当前压力和被打挂趋势。",
+      "title": "账户资金核心趋势 / Account Capital Core Trend",
+      "description": "净清算值、购买力、可用资金与现金趋势；refId 唯一，避免 Grafana No data。",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -349,7 +778,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 7
+        "y": 12
       },
       "targets": [
         {
@@ -358,15 +787,48 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service, route, status_class) (rate(ibkr_http_server_requests_total{service=~\"$service\"}[$__rate_interval]))",
-          "legendFormat": "{{service}} | {{route}} | {{status_class}}",
+          "expr": "max by (environment, source) (ibkr_account_net_liquidation_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "net liq {{environment}} {{source}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_buying_power_remaining_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "buying power {{environment}} {{source}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_available_funds_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "available funds {{environment}} {{source}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_total_cash_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "cash {{environment}} {{source}}",
+          "range": true,
+          "refId": "D"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps",
+          "unit": "currencyUSD",
           "custom": {
             "drawStyle": "line",
             "lineInterpolation": "linear",
@@ -432,10 +894,10 @@
       }
     },
     {
-      "id": 8,
+      "id": 12,
       "type": "timeseries",
-      "title": "入口 p95 延迟 / Inbound p95 Latency",
-      "description": "入口请求 p95，和 QPS 一起判断拥塞。",
+      "title": "行情新鲜度趋势 / Market Data Freshness Trend",
+      "description": "",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -444,7 +906,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 7
+        "y": 12
       },
       "targets": [
         {
@@ -453,10 +915,32 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, service, route) (rate(ibkr_http_server_request_duration_seconds_bucket{service=~\"$service\"}[$__rate_interval])))",
-          "legendFormat": "{{service}} | {{route}}",
+          "expr": "max by (environment) (ibkr_market_data_websocket_last_message_age_seconds{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "ws message age {{environment}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment) (ibkr_market_data_websocket_last_tic_age_seconds{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "ws tic age {{environment}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, interval) (ibkr_market_data_bar_lag_seconds{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "bar lag {{interval}} {{environment}}",
+          "range": true,
+          "refId": "C"
         }
       ],
       "fieldConfig": {
@@ -500,321 +984,12 @@
                 "value": null
               },
               {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "mean",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "width": 420
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 9,
-      "type": "timeseries",
-      "title": "入口处理中请求 / Inbound In-Flight",
-      "description": "当前正在处理的入口请求数量。",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 0,
-        "y": 14
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum by (service, route) (ibkr_http_server_requests_in_flight{service=~\"$service\"})",
-          "legendFormat": "{{service}} | {{route}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "barAlignment": 0,
-            "lineWidth": 1,
-            "fillOpacity": 8,
-            "gradientMode": "none",
-            "spanNulls": false,
-            "insertNulls": false,
-            "showPoints": "never",
-            "pointSize": 5,
-            "stacking": {
-              "mode": "none",
-              "group": "A"
-            },
-            "axisPlacement": "auto",
-            "axisLabel": "",
-            "axisColorMode": "text",
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
+                "color": "yellow",
+                "value": 60
               },
               {
                 "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "mean",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "width": 420
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 10,
-      "type": "timeseries",
-      "title": "入口异常与 5xx QPS / Inbound Exceptions & 5xx",
-      "description": "异常速率。报警使用比例+最小请求量，避免低流量误报。",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 12,
-        "y": 14
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum by (service, route, exception_class) (rate(ibkr_http_server_exceptions_total{service=~\"$service\"}[$__rate_interval]))",
-          "legendFormat": "{{service}} | {{route}} | {{exception_class}}",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum by (service, route) (rate(ibkr_http_server_requests_total{service=~\"$service\", status_class=\"5xx\"}[$__rate_interval]))",
-          "legendFormat": "{{service}} | {{route}} | 5xx",
-          "range": true,
-          "refId": "B"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "reqps",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "barAlignment": 0,
-            "lineWidth": 1,
-            "fillOpacity": 8,
-            "gradientMode": "none",
-            "spanNulls": false,
-            "insertNulls": false,
-            "showPoints": "never",
-            "pointSize": 5,
-            "stacking": {
-              "mode": "none",
-              "group": "A"
-            },
-            "axisPlacement": "auto",
-            "axisLabel": "",
-            "axisColorMode": "text",
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "mean",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "width": 420
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 11,
-      "type": "row",
-      "title": "02 - 出站依赖请求 / Outbound HTTP Dependencies",
-      "collapsed": false,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 21
-      },
-      "panels": []
-    },
-    {
-      "id": 12,
-      "type": "timeseries",
-      "title": "出站 QPS by 依赖/路由 / Outbound Request QPS",
-      "description": "服务访问 PocketBase、Grafana、外部接口等依赖的请求压力。",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 0,
-        "y": 22
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum by (service, target_service, route, outcome) (rate(ibkr_http_client_requests_total{service=~\"$service\", target_service=~\"$target_service\"}[$__rate_interval]))",
-          "legendFormat": "{{service}} -> {{target_service}} | {{route}} | {{outcome}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "reqps",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "barAlignment": 0,
-            "lineWidth": 1,
-            "fillOpacity": 8,
-            "gradientMode": "none",
-            "spanNulls": false,
-            "insertNulls": false,
-            "showPoints": "never",
-            "pointSize": 5,
-            "stacking": {
-              "mode": "none",
-              "group": "A"
-            },
-            "axisPlacement": "auto",
-            "axisLabel": "",
-            "axisColorMode": "text",
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
+                "value": 180
               }
             ]
           }
@@ -842,8 +1017,8 @@
     {
       "id": 13,
       "type": "timeseries",
-      "title": "出站 p95 延迟 / Outbound p95 Latency",
-      "description": "出站依赖延迟，定位 PocketBase/外部接口慢请求。",
+      "title": "订阅 Active vs Limit / Subscription Active vs Limit",
+      "description": "总订阅、交易标的、监控标的、WebSocket subscribed 与对应 limit。",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -851,8 +1026,8 @@
       "gridPos": {
         "h": 7,
         "w": 12,
-        "x": 12,
-        "y": 22
+        "x": 0,
+        "y": 19
       },
       "targets": [
         {
@@ -861,15 +1036,26 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, service, target_service, route) (rate(ibkr_http_client_request_duration_seconds_bucket{service=~\"$service\", target_service=~\"$target_service\"}[$__rate_interval])))",
-          "legendFormat": "{{service}} -> {{target_service}} | {{route}}",
+          "expr": "max by (kind) (ibkr_market_data_subscription_active_count{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "active {{kind}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (kind) (ibkr_market_data_subscription_limit{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "limit {{kind}}",
+          "range": true,
+          "refId": "B"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "s",
+          "unit": "short",
           "custom": {
             "drawStyle": "line",
             "lineInterpolation": "linear",
@@ -937,102 +1123,7 @@
     {
       "id": 14,
       "type": "timeseries",
-      "title": "出站处理中请求 / Outbound In-Flight",
-      "description": "",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 0,
-        "y": 29
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum by (service, target_service, route) (ibkr_http_client_requests_in_flight{service=~\"$service\", target_service=~\"$target_service\"})",
-          "legendFormat": "{{service}} -> {{target_service}} | {{route}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "barAlignment": 0,
-            "lineWidth": 1,
-            "fillOpacity": 8,
-            "gradientMode": "none",
-            "spanNulls": false,
-            "insertNulls": false,
-            "showPoints": "never",
-            "pointSize": 5,
-            "stacking": {
-              "mode": "none",
-              "group": "A"
-            },
-            "axisPlacement": "auto",
-            "axisLabel": "",
-            "axisColorMode": "text",
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "mean",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "width": 420
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 15,
-      "type": "timeseries",
-      "title": "出站异常与错误 QPS / Outbound Exceptions & Errors",
+      "title": "错误趋势 / Error Trend",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -1042,7 +1133,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 29
+        "y": 19
       },
       "targets": [
         {
@@ -1051,8 +1142,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service, target_service, route, exception_class) (rate(ibkr_http_client_exceptions_total{service=~\"$service\", target_service=~\"$target_service\"}[$__rate_interval]))",
-          "legendFormat": "{{service}} -> {{target_service}} | {{route}} | {{exception_class}}",
+          "expr": "sum by (stage, result) (rate(ibkr_signal_events_total{service=~\"$service\", environment=~\"$environment\", result!=\"ok\"}[$__rate_interval]))",
+          "legendFormat": "signal {{stage}} {{result}}",
           "range": true,
           "refId": "A"
         },
@@ -1062,10 +1153,21 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service, target_service, route, status_class) (rate(ibkr_http_client_requests_total{service=~\"$service\", target_service=~\"$target_service\", outcome!=\"success\"}[$__rate_interval]))",
-          "legendFormat": "{{service}} -> {{target_service}} | {{route}} | {{status_class}}",
+          "expr": "sum by (operation, result) (rate(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", result!~\"ok|synced|seen\"}[$__rate_interval]))",
+          "legendFormat": "order {{operation}} {{result}}",
           "range": true,
           "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (client_role, ib_error_code, severity) (rate(ibkr_broker_error_total{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval]))",
+          "legendFormat": "broker {{client_role}} {{ib_error_code}} {{severity}}",
+          "range": true,
+          "refId": "C"
         }
       ],
       "fieldConfig": {
@@ -1136,9 +1238,9 @@
       }
     },
     {
-      "id": 16,
+      "id": 15,
       "type": "row",
-      "title": "03 - Gateway Socket 与 IB API 连接 / Gateway Socket and IB API Connection",
+      "title": "02 - 服务健康详细 / Service Health Details",
       "collapsed": false,
       "datasource": {
         "type": "prometheus",
@@ -1148,119 +1250,24 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 36
+        "y": 26
       },
       "panels": []
     },
     {
-      "id": 17,
-      "type": "timeseries",
-      "title": "Gateway Socket 监听 / Gateway Socket Listening",
-      "description": "IB Gateway API socket 是否可连接。",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 8,
-        "x": 0,
-        "y": 37
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (service, environment, host, port) (ibkr_gateway_socket_listening{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "{{environment}} | {{host}}:{{port}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "barAlignment": 0,
-            "lineWidth": 1,
-            "fillOpacity": 8,
-            "gradientMode": "none",
-            "spanNulls": false,
-            "insertNulls": false,
-            "showPoints": "never",
-            "pointSize": 5,
-            "stacking": {
-              "mode": "none",
-              "group": "A"
-            },
-            "axisPlacement": "auto",
-            "axisLabel": "",
-            "axisColorMode": "text",
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "mean",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "width": 420
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 18,
-      "type": "timeseries",
-      "title": "Gateway 状态码 / Gateway Status Code",
+      "id": 16,
+      "type": "stat",
+      "title": "抓取目标在线 / Scrape Targets Up",
       "description": "",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "gridPos": {
-        "h": 7,
-        "w": 8,
-        "x": 8,
-        "y": 37
+        "h": 5,
+        "w": 6,
+        "x": 0,
+        "y": 27
       },
       "targets": [
         {
@@ -1269,55 +1276,37 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (service, environment) (ibkr_gateway_status_code{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "{{service}} | {{environment}}",
+          "expr": "sum(up{service=~\"$service\"})",
+          "legendFormat": "up",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "count(up{service=~\"$service\"})",
+          "legendFormat": "targets",
+          "range": true,
+          "refId": "B"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "barAlignment": 0,
-            "lineWidth": 1,
-            "fillOpacity": 8,
-            "gradientMode": "none",
-            "spanNulls": false,
-            "insertNulls": false,
-            "showPoints": "never",
-            "pointSize": 5,
-            "stacking": {
-              "mode": "none",
-              "group": "A"
-            },
-            "axisPlacement": "auto",
-            "axisLabel": "",
-            "axisColorMode": "text",
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
+          "custom": {},
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "red",
                 "value": null
               },
               {
-                "color": "red",
-                "value": 80
+                "color": "green",
+                "value": 1
               }
             ]
           }
@@ -1325,37 +1314,160 @@
         "overrides": []
       },
       "options": {
-        "legend": {
+        "reduceOptions": {
+          "values": false,
           "calcs": [
-            "lastNotNull",
-            "mean",
-            "max"
+            "lastNotNull"
           ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "width": 420
+          "fields": ""
         },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 17,
+      "type": "stat",
+      "title": "IBKR 服务在线 / IBKR Services Up",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 6,
+        "y": 27
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(up{stack=\"ibkr\", service=~\"$service\"})",
+          "legendFormat": "",
+          "range": true,
+          "refId": "A"
         }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 18,
+      "type": "stat",
+      "title": "监控组件在线 / Monitoring Services Up",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 12,
+        "y": 27
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(up{stack=\"monitoring\"})",
+          "legendFormat": "",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
       }
     },
     {
       "id": 19,
       "type": "timeseries",
-      "title": "Gateway 服务运行 / Gateway Service Running",
+      "title": "Systemd 单元状态 / Systemd Unit State",
       "description": "",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "gridPos": {
-        "h": 7,
-        "w": 8,
-        "x": 16,
-        "y": 37
+        "h": 5,
+        "w": 6,
+        "x": 18,
+        "y": 27
       },
       "targets": [
         {
@@ -1364,8 +1476,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (service, environment) (ibkr_gateway_service_running{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "{{service}} | {{environment}}",
+          "expr": "node_systemd_unit_state{name=~\"ibkr.*|prometheus.service|node-exporter.service|grafana-server.service|feishu-alert-relay.service|caddy.service\", state=\"active\"}",
+          "legendFormat": "{{name}} {{state}}",
           "range": true,
           "refId": "A"
         }
@@ -1439,6 +1551,331 @@
     },
     {
       "id": 20,
+      "type": "row",
+      "title": "03 - Gateway、登录与 WebSocket / Gateway Session and WebSocket",
+      "collapsed": false,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 32
+      },
+      "panels": []
+    },
+    {
+      "id": 21,
+      "type": "stat",
+      "title": "Gateway 核心状态 / Gateway Core State",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 0,
+        "y": 33
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_gateway_reachable{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "reachable",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_gateway_session_authenticated{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "authenticated",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_gateway_websocket_ready{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "ws ready",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_broker_ready{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "broker ready",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "Gateway Socket 监听 / Gateway Socket Listening",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 8,
+        "y": 33
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (service, environment, host, port) (ibkr_gateway_socket_listening{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "{{environment}} {{host}}:{{port}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "width": 420
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "Gateway 状态与 Uptime / Gateway Status and Uptime",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 16,
+        "y": 33
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (service, environment) (ibkr_gateway_status_code{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "status {{service}} {{environment}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (service, environment) (ibkr_gateway_service_running{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "running {{service}} {{environment}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (service, environment) (ibkr_gateway_service_uptime_seconds{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "uptime {{service}} {{environment}}",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "width": 420
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 24,
       "type": "timeseries",
       "title": "Broker 连接尝试 QPS / Broker Connect Attempts",
       "description": "",
@@ -1450,7 +1887,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 44
+        "y": 38
       },
       "targets": [
         {
@@ -1460,7 +1897,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, environment, client_role, result, reason_code) (rate(ibkr_broker_connect_attempts_total{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval]))",
-          "legendFormat": "{{client_role}} | {{result}} | {{reason_code}}",
+          "legendFormat": "{{client_role}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "A"
         }
@@ -1533,9 +1970,9 @@
       }
     },
     {
-      "id": 21,
+      "id": 25,
       "type": "timeseries",
-      "title": "Broker 断连与 IB 错误 / Broker Disconnects & IB Errors",
+      "title": "Broker 断连与 IB 错误 / Broker Disconnects and IB Errors",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -1545,7 +1982,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 44
+        "y": 38
       },
       "targets": [
         {
@@ -1555,7 +1992,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, environment, client_role, reason_code) (rate(ibkr_broker_disconnect_total{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval]))",
-          "legendFormat": "disconnect | {{client_role}} | {{reason_code}}",
+          "legendFormat": "disconnect {{client_role}} {{reason_code}}",
           "range": true,
           "refId": "A"
         },
@@ -1566,7 +2003,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, environment, client_role, ib_error_code, severity) (rate(ibkr_broker_error_total{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval]))",
-          "legendFormat": "error | {{client_role}} | {{ib_error_code}} | {{severity}}",
+          "legendFormat": "error {{client_role}} {{ib_error_code}} {{severity}}",
           "range": true,
           "refId": "B"
         }
@@ -1639,9 +2076,171 @@
       }
     },
     {
-      "id": 22,
+      "id": 26,
+      "type": "timeseries",
+      "title": "Gateway Socket Probe p95 / Gateway Socket Probe p95",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 45
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, service, environment, source, result) (rate(ibkr_gateway_socket_probe_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval])))",
+          "legendFormat": "{{source}} {{result}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "width": 420
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 27,
+      "type": "table",
+      "title": "Gateway 最近探测失败 / Gateway Recent Probe Failures",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 45
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (source, result, reason_code) (increase(ibkr_gateway_socket_probe_total{service=~\"$service\", environment=~\"$environment\", result!=\"ok\"}[$__range]))",
+          "legendFormat": "{{source}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        }
+      }
+    },
+    {
+      "id": 28,
       "type": "row",
-      "title": "04 - Broker 请求压力 / Broker Request Pressure",
+      "title": "04 - 行情订阅与数据新鲜度 / Market Data Subscriptions and Freshness",
       "collapsed": false,
       "datasource": {
         "type": "prometheus",
@@ -1651,15 +2250,15 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 51
+        "y": 52
       },
       "panels": []
     },
     {
-      "id": 23,
+      "id": 29,
       "type": "timeseries",
-      "title": "IB API 请求 QPS / IB API Request QPS",
-      "description": "IB API 请求速率，看 Gateway 被打挂前的压力。",
+      "title": "订阅数量 / Subscription Counts",
+      "description": "",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1668,7 +2267,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 52
+        "y": 53
       },
       "targets": [
         {
@@ -1677,8 +2276,1212 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service, environment, client_role, request_kind, result) (rate(ibkr_broker_request_total{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval]))",
-          "legendFormat": "{{client_role}} | {{request_kind}} | {{result}}",
+          "expr": "max by (kind) (ibkr_market_data_subscription_active_count{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "active {{kind}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (kind) (ibkr_market_data_subscription_limit{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "limit {{kind}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (kind) (ibkr_market_data_subscription_pending_count{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "pending {{kind}}",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "width": 420
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 30,
+      "type": "timeseries",
+      "title": "订阅利用率 / Subscription Utilization",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 53
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (kind) (ibkr_market_data_subscription_utilization_pct{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "{{kind}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 80
+              },
+              {
+                "color": "red",
+                "value": 95
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "width": 420
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "WebSocket 消息年龄 / WebSocket Message Age",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 60
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment) (ibkr_market_data_websocket_last_message_age_seconds{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "last message {{environment}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment) (ibkr_market_data_websocket_last_tic_age_seconds{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "last tic {{environment}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 60
+              },
+              {
+                "color": "red",
+                "value": 180
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "width": 420
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 32,
+      "type": "timeseries",
+      "title": "5m Bar Lag / 5m Bar Lag",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 60
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, interval) (ibkr_market_data_bar_lag_seconds{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "lag {{interval}} {{environment}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 60
+              },
+              {
+                "color": "red",
+                "value": 180
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "width": 420
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 33,
+      "type": "timeseries",
+      "title": "Bar Pending Symbols / Bar Pending Symbols",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 60
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, interval) (ibkr_market_data_bar_pending_symbols_count{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "pending symbols {{interval}} {{environment}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "width": 420
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 34,
+      "type": "row",
+      "title": "05 - 账户资金与购买力风控 / Account Capital and Buying Power Guard",
+      "collapsed": false,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 67
+      },
+      "panels": []
+    },
+    {
+      "id": 35,
+      "type": "stat",
+      "title": "账户资金 / Account Capital",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 0,
+        "y": 68
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_net_liquidation_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "net liq {{environment}} {{source}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_buying_power_remaining_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "buying power {{environment}} {{source}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_available_funds_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "available funds {{environment}} {{source}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_excess_liquidity_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "excess liquidity {{environment}} {{source}}",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_total_cash_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "cash {{environment}} {{source}}",
+          "range": true,
+          "refId": "E"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "custom": {},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 36,
+      "type": "timeseries",
+      "title": "保证金与持仓占用 / Margin and Exposure",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 8,
+        "y": 68
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_gross_position_value_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "gross position {{environment}} {{source}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_buying_power_used_exposure_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "used exposure {{environment}} {{source}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_initial_margin_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "initial margin {{environment}} {{source}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_maintenance_margin_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "maintenance margin {{environment}} {{source}}",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "width": 420
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 37,
+      "type": "stat",
+      "title": "购买力阈值 / Buying Power Floors",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 4,
+        "x": 16,
+        "y": 68
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_buying_power_warn_floor_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "warn floor {{environment}} {{source}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_buying_power_block_floor_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "block floor {{environment}} {{source}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "custom": {},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 38,
+      "type": "stat",
+      "title": "账户风控状态 / Account Guard State",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 4,
+        "x": 20,
+        "y": 68
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (state) (ibkr_account_buying_power_guard_state{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "guard {{state}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_account_data_circuit_active{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "account circuit active",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 39,
+      "type": "timeseries",
+      "title": "账户资金趋势 / Account Capital Trend",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 74
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_net_liquidation_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "net liq {{environment}} {{source}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_buying_power_remaining_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "buying power {{environment}} {{source}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_available_funds_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "available funds {{environment}} {{source}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_excess_liquidity_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "excess liquidity {{environment}} {{source}}",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_total_cash_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "cash {{environment}} {{source}}",
+          "range": true,
+          "refId": "E"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "width": 420
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 40,
+      "type": "timeseries",
+      "title": "保证金与敞口趋势 / Margin and Exposure Trend",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 74
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_gross_position_value_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "gross position {{environment}} {{source}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_buying_power_used_exposure_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "used exposure {{environment}} {{source}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_initial_margin_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "initial margin {{environment}} {{source}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_maintenance_margin_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "maintenance margin {{environment}} {{source}}",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "width": 420
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 41,
+      "type": "row",
+      "title": "06 - 信号、反向与订单链路 / Signals Reverse and Orders",
+      "collapsed": false,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 81
+      },
+      "panels": []
+    },
+    {
+      "id": 42,
+      "type": "timeseries",
+      "title": "信号阶段 QPS / Signal Stage QPS",
+      "description": "主图只保留 stage/result，source/reason 明细放到表格，避免图例遮挡。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 82
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (stage, result) (rate(ibkr_signal_events_total{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval]))",
+          "legendFormat": "{{stage}} {{result}}",
           "range": true,
           "refId": "A"
         }
@@ -1751,7 +3554,683 @@
       }
     },
     {
-      "id": 24,
+      "id": 43,
+      "type": "timeseries",
+      "title": "信号阶段 p95 延迟 / Signal Stage p95 Latency",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 82
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, service, environment, stage, result) (rate(ibkr_signal_stage_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval])))",
+          "legendFormat": "{{stage}} {{result}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "width": 420
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 44,
+      "type": "table",
+      "title": "信号结果明细 / Signal Result Details",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 89
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (stage, signal_source, result, reason_code) (increase(ibkr_signal_events_total{service=~\"$service\", environment=~\"$environment\"}[$__range]))",
+          "legendFormat": "{{stage}} {{signal_source}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        }
+      }
+    },
+    {
+      "id": 45,
+      "type": "table",
+      "title": "订单/反向结果个数 / Order and Reverse Counts",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 89
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\"}[$__range]))",
+          "legendFormat": "{{operation}} {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (stage, signal_source, result, reason_code) (increase(ibkr_signal_events_total{stage=~\"reverse_.*\", service=~\"$service\", environment=~\"$environment\"}[$__range]))",
+          "legendFormat": "reverse {{stage}} {{signal_source}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        }
+      }
+    },
+    {
+      "id": 46,
+      "type": "timeseries",
+      "title": "订单事件 QPS / Order Event QPS",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 97
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, order_family_type, result) (rate(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval]))",
+          "legendFormat": "{{operation}} {{order_family_type}} {{result}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "width": 420
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 47,
+      "type": "timeseries",
+      "title": "订单操作 p95 延迟 / Order Operation p95 Latency",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 97
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, service, environment, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval])))",
+          "legendFormat": "{{operation}} {{result}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "width": 420
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 48,
+      "type": "table",
+      "title": "订单命令个数 / Order Command Counts",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 104
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=~\"place_bracket|place_entry|place_take_profit|place_stop_loss|adjust_stop_loss|adjust_take_profit|cancel_order|cancel_take_profit|cancel_stop_loss|modify_manual|ibapi_place|ibapi_cancel|modify|cancel|tracker_update|tracker_poll|tracker_live_orders_fetch|execution_fill|pb_order_sync\"}[$__range]))",
+          "legendFormat": "{{operation}} {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        }
+      }
+    },
+    {
+      "id": 49,
+      "type": "table",
+      "title": "保护单 TP/SL 与调整个数 / TP SL Modify Counts",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 104
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=~\"place_take_profit|place_stop_loss|adjust_stop_loss|adjust_take_profit|cancel_take_profit|cancel_stop_loss|modify_manual|modify|cancel|ibapi_place|ibapi_cancel|pb_order_sync\", order_family_type=~\"entry|take_profit|stop_loss|bracket_oco|partial_harvest_bracket|unknown|mixed\"}[$__range]))",
+          "legendFormat": "{{operation}} {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        }
+      }
+    },
+    {
+      "id": 50,
+      "type": "row",
+      "title": "07 - Broker 请求压力 / Broker Request Pressure",
+      "collapsed": false,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 112
+      },
+      "panels": []
+    },
+    {
+      "id": 51,
+      "type": "timeseries",
+      "title": "IB API 请求 QPS / IB API Request QPS",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 113
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (service, environment, client_role, request_kind, result) (rate(ibkr_broker_request_total{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval]))",
+          "legendFormat": "{{client_role}} {{request_kind}} {{result}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "width": 420
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 52,
       "type": "timeseries",
       "title": "IB API 请求 p95 延迟 / IB API Request p95 Latency",
       "description": "",
@@ -1763,7 +4242,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 52
+        "y": 113
       },
       "targets": [
         {
@@ -1846,7 +4325,7 @@
       }
     },
     {
-      "id": 25,
+      "id": 53,
       "type": "timeseries",
       "title": "IB API Pending 请求 / IB API Pending Requests",
       "description": "",
@@ -1858,7 +4337,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 59
+        "y": 120
       },
       "targets": [
         {
@@ -1868,7 +4347,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, environment, client_role, request_kind) (ibkr_broker_pending_requests{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "{{client_role}} | {{request_kind}}",
+          "legendFormat": "{{client_role}} {{request_kind}}",
           "range": true,
           "refId": "A"
         }
@@ -1941,10 +4420,10 @@
       }
     },
     {
-      "id": 26,
+      "id": 54,
       "type": "table",
       "title": "IB 错误码统计 / IB Error Codes",
-      "description": "当前时间范围内 IB 错误个数，用于看影响规模。",
+      "description": "",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1953,7 +4432,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 59
+        "y": 120
       },
       "targets": [
         {
@@ -1963,7 +4442,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (ib_error_code, request_kind, severity) (increase(ibkr_broker_error_total{service=~\"$service\", environment=~\"$environment\"}[$__range]))",
-          "legendFormat": "{{ib_error_code}} | {{request_kind}} | {{severity}}",
+          "legendFormat": "{{ib_error_code}} {{request_kind}} {{severity}}",
           "range": true,
           "refId": "A"
         }
@@ -2008,9 +4487,9 @@
       }
     },
     {
-      "id": 27,
+      "id": 55,
       "type": "row",
-      "title": "05 - 历史数据与回补 / History and Backfill",
+      "title": "08 - 历史数据与回补 / History and Backfill",
       "collapsed": false,
       "datasource": {
         "type": "prometheus",
@@ -2020,12 +4499,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 66
+        "y": 127
       },
       "panels": []
     },
     {
-      "id": 28,
+      "id": 56,
       "type": "timeseries",
       "title": "历史事件 QPS / History Event QPS",
       "description": "",
@@ -2037,7 +4516,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 67
+        "y": 128
       },
       "targets": [
         {
@@ -2047,7 +4526,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, environment, source, interval, operation, result) (rate(ibkr_history_events_total{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval]))",
-          "legendFormat": "{{source}} | {{interval}} | {{operation}} | {{result}}",
+          "legendFormat": "{{source}} {{interval}} {{operation}} {{result}}",
           "range": true,
           "refId": "A"
         }
@@ -2120,7 +4599,7 @@
       }
     },
     {
-      "id": 29,
+      "id": 57,
       "type": "timeseries",
       "title": "历史操作 p95 延迟 / History p95 Operation Latency",
       "description": "",
@@ -2132,7 +4611,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 67
+        "y": 128
       },
       "targets": [
         {
@@ -2142,7 +4621,7 @@
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.95, sum by (le, service, environment, source, interval, operation) (rate(ibkr_history_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval])))",
-          "legendFormat": "{{source}} | {{interval}} | {{operation}}",
+          "legendFormat": "{{source}} {{interval}} {{operation}}",
           "range": true,
           "refId": "A"
         }
@@ -2215,7 +4694,7 @@
       }
     },
     {
-      "id": 30,
+      "id": 58,
       "type": "timeseries",
       "title": "历史活跃请求 / History Active Requests",
       "description": "",
@@ -2227,7 +4706,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 74
+        "y": 135
       },
       "targets": [
         {
@@ -2237,7 +4716,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, environment, source) (ibkr_history_active_requests{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "{{service}} | {{source}}",
+          "legendFormat": "{{service}} {{source}}",
           "range": true,
           "refId": "A"
         }
@@ -2310,7 +4789,7 @@
       }
     },
     {
-      "id": 31,
+      "id": 59,
       "type": "timeseries",
       "title": "历史行数吞吐 / History Rows Throughput",
       "description": "",
@@ -2322,7 +4801,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 74
+        "y": 135
       },
       "targets": [
         {
@@ -2332,7 +4811,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, environment, source, interval, operation) (rate(ibkr_history_rows_total{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval]))",
-          "legendFormat": "{{source}} | {{interval}} | {{operation}}",
+          "legendFormat": "{{source}} {{interval}} {{operation}}",
           "range": true,
           "refId": "A"
         }
@@ -2405,9 +4884,9 @@
       }
     },
     {
-      "id": 32,
+      "id": 60,
       "type": "row",
-      "title": "06 - 信号处理阶段 / Signal Processing Stages",
+      "title": "09 - HTTP 入口与出站依赖 / HTTP and Dependencies",
       "collapsed": false,
       "datasource": {
         "type": "prometheus",
@@ -2417,14 +4896,14 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 81
+        "y": 142
       },
       "panels": []
     },
     {
-      "id": 33,
+      "id": 61,
       "type": "timeseries",
-      "title": "信号阶段 QPS / Signal Stage QPS",
+      "title": "入口 QPS / Inbound Request QPS",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -2434,7 +4913,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 82
+        "y": 143
       },
       "targets": [
         {
@@ -2443,8 +4922,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service, environment, stage, signal_source, result, reason_code) (rate(ibkr_signal_events_total{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval]))",
-          "legendFormat": "{{stage}} | {{signal_source}} | {{result}} | {{reason_code}}",
+          "expr": "sum by (service, route, status_class) (rate(ibkr_http_server_requests_total{service=~\"$service\"}[$__rate_interval]))",
+          "legendFormat": "{{service}} {{route}} {{status_class}}",
           "range": true,
           "refId": "A"
         }
@@ -2517,9 +4996,9 @@
       }
     },
     {
-      "id": 34,
+      "id": 62,
       "type": "timeseries",
-      "title": "信号阶段 p95 延迟 / Signal Stage p95 Latency",
+      "title": "入口 p95 延迟 / Inbound p95 Latency",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -2529,7 +5008,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 82
+        "y": 143
       },
       "targets": [
         {
@@ -2538,8 +5017,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, service, environment, stage, result) (rate(ibkr_signal_stage_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval])))",
-          "legendFormat": "{{stage}} | {{result}}",
+          "expr": "histogram_quantile(0.95, sum by (le, service, route) (rate(ibkr_http_server_request_duration_seconds_bucket{service=~\"$service\"}[$__rate_interval])))",
+          "legendFormat": "{{service}} {{route}}",
           "range": true,
           "refId": "A"
         }
@@ -2612,93 +5091,9 @@
       }
     },
     {
-      "id": 35,
-      "type": "table",
-      "title": "校验与提交结果个数 / Validation and Submission Counts",
-      "description": "",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 89
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum by (stage, signal_source, result, reason_code) (increase(ibkr_signal_events_total{stage=~\"validation|order_submission|claim|mark_processed\", service=~\"$service\", environment=~\"$environment\"}[$__range]))",
-          "legendFormat": "{{stage}} | {{signal_source}} | {{result}} | {{reason_code}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "auto"
-            },
-            "inspect": false
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "showHeader": true,
-        "cellHeight": "sm",
-        "footer": {
-          "show": false,
-          "reducer": [
-            "sum"
-          ],
-          "countRows": false,
-          "fields": ""
-        }
-      }
-    },
-    {
-      "id": 36,
-      "type": "row",
-      "title": "07 - 反向操作与订单追踪 / Reverse Actions and Order Tracker",
-      "collapsed": false,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 97
-      },
-      "panels": []
-    },
-    {
-      "id": 37,
+      "id": 63,
       "type": "timeseries",
-      "title": "反向操作 QPS / Reverse Action QPS",
+      "title": "出站 QPS / Outbound Request QPS",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -2708,7 +5103,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 98
+        "y": 150
       },
       "targets": [
         {
@@ -2717,8 +5112,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (stage, signal_source, result, reason_code) (rate(ibkr_signal_events_total{stage=~\"reverse_.*\", service=~\"$service\", environment=~\"$environment\"}[$__rate_interval]))",
-          "legendFormat": "{{stage}} | {{signal_source}} | {{result}} | {{reason_code}}",
+          "expr": "sum by (service, target_service, route, outcome) (rate(ibkr_http_client_requests_total{service=~\"$service\", target_service=~\"$target_service\"}[$__rate_interval]))",
+          "legendFormat": "{{service}} -> {{target_service}} {{route}} {{outcome}}",
           "range": true,
           "refId": "A"
         }
@@ -2791,9 +5186,9 @@
       }
     },
     {
-      "id": 38,
+      "id": 64,
       "type": "timeseries",
-      "title": "订单事件 QPS / Order Event QPS",
+      "title": "出站 p95 延迟 / Outbound p95 Latency",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -2803,7 +5198,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 98
+        "y": 150
       },
       "targets": [
         {
@@ -2812,103 +5207,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service, environment, operation, order_family_type, result, reason_code) (rate(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval]))",
-          "legendFormat": "{{operation}} | {{order_family_type}} | {{result}} | {{reason_code}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "reqps",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "barAlignment": 0,
-            "lineWidth": 1,
-            "fillOpacity": 8,
-            "gradientMode": "none",
-            "spanNulls": false,
-            "insertNulls": false,
-            "showPoints": "never",
-            "pointSize": 5,
-            "stacking": {
-              "mode": "none",
-              "group": "A"
-            },
-            "axisPlacement": "auto",
-            "axisLabel": "",
-            "axisColorMode": "text",
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "mean",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "width": 420
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 39,
-      "type": "timeseries",
-      "title": "订单操作 p95 延迟 / Order Operation p95 Latency",
-      "description": "订单追踪/轮询/提交相关操作延迟。右侧图例用于避免长 label 挤占图表。",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 0,
-        "y": 105
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, service, environment, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval])))",
-          "legendFormat": "{{operation}} | {{result}} | {{service}}",
+          "expr": "histogram_quantile(0.95, sum by (le, service, target_service, route) (rate(ibkr_http_client_request_duration_seconds_bucket{service=~\"$service\", target_service=~\"$target_service\"}[$__rate_interval])))",
+          "legendFormat": "{{service}} -> {{target_service}} {{route}}",
           "range": true,
           "refId": "A"
         }
@@ -2981,9 +5281,9 @@
       }
     },
     {
-      "id": 40,
-      "type": "table",
-      "title": "订单/反向结果个数 / Order and Reverse Counts",
+      "id": 65,
+      "type": "timeseries",
+      "title": "入口/出站处理中请求 / In-Flight Requests",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -2992,8 +5292,8 @@
       "gridPos": {
         "h": 7,
         "w": 12,
-        "x": 12,
-        "y": 105
+        "x": 0,
+        "y": 157
       },
       "targets": [
         {
@@ -3002,21 +5302,55 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (operation, order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\"}[$__range]))",
-          "legendFormat": "{{operation}} | {{order_family_type}} | {{result}} | {{reason_code}}",
+          "expr": "sum by (service, route) (ibkr_http_server_requests_in_flight{service=~\"$service\"})",
+          "legendFormat": "inbound {{service}} {{route}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (service, target_service, route) (ibkr_http_client_requests_in_flight{service=~\"$service\", target_service=~\"$target_service\"})",
+          "legendFormat": "outbound {{service}} -> {{target_service}} {{route}}",
+          "range": true,
+          "refId": "B"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "short",
           "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "auto"
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
             },
-            "inspect": false
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
           "thresholds": {
             "mode": "absolute",
@@ -3035,22 +5369,144 @@
         "overrides": []
       },
       "options": {
-        "showHeader": true,
-        "cellHeight": "sm",
-        "footer": {
-          "show": false,
-          "reducer": [
-            "sum"
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
           ],
-          "countRows": false,
-          "fields": ""
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "width": 420
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
         }
       }
     },
     {
-      "id": 41,
+      "id": 66,
+      "type": "timeseries",
+      "title": "HTTP 异常与错误 / HTTP Exceptions and Errors",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 157
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (service, route, exception_class) (rate(ibkr_http_server_exceptions_total{service=~\"$service\"}[$__rate_interval]))",
+          "legendFormat": "inbound {{service}} {{route}} {{exception_class}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (service, target_service, route, exception_class) (rate(ibkr_http_client_exceptions_total{service=~\"$service\", target_service=~\"$target_service\"}[$__rate_interval]))",
+          "legendFormat": "outbound {{service}} -> {{target_service}} {{route}} {{exception_class}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (service, route) (rate(ibkr_http_server_requests_total{service=~\"$service\", status_class=\"5xx\"}[$__rate_interval]))",
+          "legendFormat": "inbound {{service}} {{route}} 5xx",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "width": 420
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 67,
       "type": "row",
-      "title": "08 - 主机与进程资源 / Host and Process Resource",
+      "title": "10 - 主机与进程资源 / Host and Process Resource",
       "collapsed": false,
       "datasource": {
         "type": "prometheus",
@@ -3060,12 +5516,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 112
+        "y": 164
       },
       "panels": []
     },
     {
-      "id": 42,
+      "id": 68,
       "type": "timeseries",
       "title": "CPU 使用率 / CPU Usage",
       "description": "",
@@ -3077,7 +5533,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 113
+        "y": 165
       },
       "targets": [
         {
@@ -3164,7 +5620,7 @@
       }
     },
     {
-      "id": 43,
+      "id": 69,
       "type": "timeseries",
       "title": "内存使用率 / Memory Usage",
       "description": "",
@@ -3176,7 +5632,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 113
+        "y": 165
       },
       "targets": [
         {
@@ -3263,7 +5719,7 @@
       }
     },
     {
-      "id": 44,
+      "id": 70,
       "type": "timeseries",
       "title": "文件系统剩余 / Filesystem Free",
       "description": "",
@@ -3275,7 +5731,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 120
+        "y": 172
       },
       "targets": [
         {
@@ -3285,7 +5741,7 @@
           },
           "editorMode": "code",
           "expr": "100 * node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay\", mountpoint=~\"/|/var|/opt\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|overlay\", mountpoint=~\"/|/var|/opt\"}",
-          "legendFormat": "{{instance}} | {{mountpoint}}",
+          "legendFormat": "{{instance}} {{mountpoint}}",
           "range": true,
           "refId": "A"
         }
@@ -3358,9 +5814,9 @@
       }
     },
     {
-      "id": 45,
+      "id": 71,
       "type": "timeseries",
-      "title": "Systemd 单元状态 / Systemd Unit State",
+      "title": "待执行/积压请求 / Pending and Backlog",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -3370,320 +5826,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 120
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "node_systemd_unit_state{name=~\"ibkr.*|prometheus.service|node-exporter.service|grafana-server.service|feishu-alert-relay.service|caddy.service\", state=\"active\"}",
-          "legendFormat": "{{name}} | {{state}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "barAlignment": 0,
-            "lineWidth": 1,
-            "fillOpacity": 8,
-            "gradientMode": "none",
-            "spanNulls": false,
-            "insertNulls": false,
-            "showPoints": "never",
-            "pointSize": 5,
-            "stacking": {
-              "mode": "none",
-              "group": "A"
-            },
-            "axisPlacement": "auto",
-            "axisLabel": "",
-            "axisColorMode": "text",
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "mean",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "width": 420
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 46,
-      "type": "row",
-      "title": "09 - 订单命令与保护单个数 / Order Commands and Protection Counts",
-      "collapsed": false,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 127
-      },
-      "panels": []
-    },
-    {
-      "id": 47,
-      "type": "table",
-      "title": "订单命令个数 by 操作/类型 / Order Command Counts",
-      "description": "下单、待执行/取消、调整止盈止损、追踪同步等用个数看影响规模；order_family_type 区分 entry/take_profit/stop_loss/bracket_oco 等角色。",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 128
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum by (operation, order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=~\"place_bracket|place_entry|place_take_profit|place_stop_loss|adjust_stop_loss|adjust_take_profit|cancel_order|cancel_take_profit|cancel_stop_loss|modify_manual|ibapi_place|ibapi_cancel|modify|cancel|tracker_update|tracker_poll|tracker_live_orders_fetch|execution_fill|pb_order_sync\"}[$__range]))",
-          "legendFormat": "{{operation}} | {{order_family_type}} | {{result}} | {{reason_code}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "auto"
-            },
-            "inspect": false
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "showHeader": true,
-        "cellHeight": "sm",
-        "footer": {
-          "show": false,
-          "reducer": [
-            "sum"
-          ],
-          "countRows": false,
-          "fields": ""
-        }
-      }
-    },
-    {
-      "id": 48,
-      "type": "table",
-      "title": "保护单 TP/SL 与调整个数 / TP SL Modify Counts",
-      "description": "专门看止盈、止损、调整止盈止损、取消等保护单相关操作的个数。",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 128
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum by (operation, order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=~\"place_take_profit|place_stop_loss|adjust_stop_loss|adjust_take_profit|cancel_take_profit|cancel_stop_loss|modify_manual|modify|cancel|ibapi_place|ibapi_cancel|pb_order_sync\", order_family_type=~\"entry|take_profit|stop_loss|bracket_oco|partial_harvest_bracket|unknown|mixed\"}[$__range]))",
-          "legendFormat": "{{operation}} | {{order_family_type}} | {{result}} | {{reason_code}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "auto"
-            },
-            "inspect": false
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "showHeader": true,
-        "cellHeight": "sm",
-        "footer": {
-          "show": false,
-          "reducer": [
-            "sum"
-          ],
-          "countRows": false,
-          "fields": ""
-        }
-      }
-    },
-    {
-      "id": 49,
-      "type": "table",
-      "title": "最近 5m 订单失败个数 / Order Failure Counts in 5m",
-      "description": "最近 5 分钟失败/未确认订单事件个数，用于报警和影响面判断。",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 136
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum by (operation, order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", result!~\"ok|synced|seen\"}[5m]))",
-          "legendFormat": "{{operation}} | {{order_family_type}} | {{result}} | {{reason_code}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "auto"
-            },
-            "inspect": false
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "showHeader": true,
-        "cellHeight": "sm",
-        "footer": {
-          "show": false,
-          "reducer": [
-            "sum"
-          ],
-          "countRows": false,
-          "fields": ""
-        }
-      }
-    },
-    {
-      "id": 50,
-      "type": "timeseries",
-      "title": "待执行/积压请求 / Pending and Backlog",
-      "description": "待执行和处理中请求用于判断系统是否开始积压。",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 136
+        "y": 172
       },
       "targets": [
         {
@@ -3693,7 +5836,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, environment, client_role, request_kind) (ibkr_broker_pending_requests{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "broker pending | {{client_role}} | {{request_kind}}",
+          "legendFormat": "broker pending {{client_role}} {{request_kind}}",
           "range": true,
           "refId": "A"
         },
@@ -3704,7 +5847,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, route) (ibkr_http_server_requests_in_flight{service=~\"$service\"})",
-          "legendFormat": "http in-flight | {{service}} | {{route}}",
+          "legendFormat": "http in-flight {{service}} {{route}}",
           "range": true,
           "refId": "B"
         }
@@ -3777,404 +5920,7 @@
       }
     },
     {
-      "id": 51,
-      "type": "row",
-      "title": "10 - 全链路阶段耗时 / End-to-End Stage Latency",
-      "collapsed": false,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 144
-      },
-      "panels": []
-    },
-    {
-      "id": 52,
-      "type": "timeseries",
-      "title": "信号阶段 p95 耗时 / Signal Stage p95",
-      "description": "从信号 claim、validation、order_submission、reverse 等阶段看卡点。",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 0,
-        "y": 145
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, service, environment, stage, result) (rate(ibkr_signal_stage_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval])))",
-          "legendFormat": "{{stage}} | {{result}} | {{service}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "barAlignment": 0,
-            "lineWidth": 1,
-            "fillOpacity": 8,
-            "gradientMode": "none",
-            "spanNulls": false,
-            "insertNulls": false,
-            "showPoints": "never",
-            "pointSize": 5,
-            "stacking": {
-              "mode": "none",
-              "group": "A"
-            },
-            "axisPlacement": "auto",
-            "axisLabel": "",
-            "axisColorMode": "text",
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "mean",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "width": 420
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 53,
-      "type": "timeseries",
-      "title": "订单操作 p95 耗时 / Order Operation p95",
-      "description": "下单、取消、修改、追踪同步等操作耗时，用于快速定位订单链路卡点。",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 12,
-        "y": 145
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, service, environment, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval])))",
-          "legendFormat": "{{operation}} | {{result}} | {{service}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "barAlignment": 0,
-            "lineWidth": 1,
-            "fillOpacity": 8,
-            "gradientMode": "none",
-            "spanNulls": false,
-            "insertNulls": false,
-            "showPoints": "never",
-            "pointSize": 5,
-            "stacking": {
-              "mode": "none",
-              "group": "A"
-            },
-            "axisPlacement": "auto",
-            "axisLabel": "",
-            "axisColorMode": "text",
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "mean",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "width": 420
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 54,
-      "type": "timeseries",
-      "title": "Broker 请求 p95 耗时 / Broker Request p95",
-      "description": "",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 0,
-        "y": 152
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, service, environment, request_kind, result) (rate(ibkr_broker_request_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval])))",
-          "legendFormat": "{{request_kind}} | {{result}} | {{service}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "barAlignment": 0,
-            "lineWidth": 1,
-            "fillOpacity": 8,
-            "gradientMode": "none",
-            "spanNulls": false,
-            "insertNulls": false,
-            "showPoints": "never",
-            "pointSize": 5,
-            "stacking": {
-              "mode": "none",
-              "group": "A"
-            },
-            "axisPlacement": "auto",
-            "axisLabel": "",
-            "axisColorMode": "text",
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "mean",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "width": 420
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 55,
-      "type": "timeseries",
-      "title": "历史/回补 p95 耗时 / History and Backfill p95",
-      "description": "",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 12,
-        "y": 152
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, service, environment, source, interval, operation) (rate(ibkr_history_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval])))",
-          "legendFormat": "{{source}} | {{interval}} | {{operation}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "barAlignment": 0,
-            "lineWidth": 1,
-            "fillOpacity": 8,
-            "gradientMode": "none",
-            "spanNulls": false,
-            "insertNulls": false,
-            "showPoints": "never",
-            "pointSize": 5,
-            "stacking": {
-              "mode": "none",
-              "group": "A"
-            },
-            "axisPlacement": "auto",
-            "axisLabel": "",
-            "axisColorMode": "text",
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "mean",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "width": 420
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 56,
+      "id": 72,
       "type": "row",
       "title": "11 - 影响规模与报警辅助 / Impact Counts and Alert Context",
       "collapsed": false,
@@ -4186,15 +5932,15 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 159
+        "y": 179
       },
       "panels": []
     },
     {
-      "id": 57,
+      "id": 73,
       "type": "table",
       "title": "最近 5m 入口请求/错误个数 / Inbound 5m Counts",
-      "description": "个数用于判断影响规模；QPS 用于判断压力。",
+      "description": "",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -4203,7 +5949,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 160
+        "y": 180
       },
       "targets": [
         {
@@ -4213,7 +5959,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, route, status_class) (increase(ibkr_http_server_requests_total{service=~\"$service\"}[5m]))",
-          "legendFormat": "{{service}} | {{route}} | {{status_class}}",
+          "legendFormat": "{{service}} {{route}} {{status_class}}",
           "range": true,
           "refId": "A"
         },
@@ -4224,7 +5970,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, route, exception_class) (increase(ibkr_http_server_exceptions_total{service=~\"$service\"}[5m]))",
-          "legendFormat": "{{service}} | {{route}} | {{exception_class}}",
+          "legendFormat": "{{service}} {{route}} {{exception_class}}",
           "range": true,
           "refId": "B"
         }
@@ -4269,7 +6015,7 @@
       }
     },
     {
-      "id": 58,
+      "id": 74,
       "type": "table",
       "title": "最近 5m Broker/订单错误个数 / Broker and Order 5m Counts",
       "description": "",
@@ -4281,7 +6027,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 160
+        "y": 180
       },
       "targets": [
         {
@@ -4291,7 +6037,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, environment, client_role, ib_error_code, severity) (increase(ibkr_broker_error_total{service=~\"$service\", environment=~\"$environment\"}[5m]))",
-          "legendFormat": "{{client_role}} | {{ib_error_code}} | {{severity}}",
+          "legendFormat": "{{client_role}} {{ib_error_code}} {{severity}}",
           "range": true,
           "refId": "A"
         },
@@ -4302,1077 +6048,9 @@
           },
           "editorMode": "code",
           "expr": "sum by (operation, order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", result!=\"ok\"}[5m]))",
-          "legendFormat": "{{operation}} | {{order_family_type}} | {{result}} | {{reason_code}}",
+          "legendFormat": "{{operation}} {{order_family_type}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "B"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "auto"
-            },
-            "inspect": false
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "showHeader": true,
-        "cellHeight": "sm",
-        "footer": {
-          "show": false,
-          "reducer": [
-            "sum"
-          ],
-          "countRows": false,
-          "fields": ""
-        }
-      }
-    },
-    {
-      "id": 59,
-      "type": "row",
-      "title": "12 - 账户资金与购买力风控 / Account Capital and Buying Power Guard",
-      "collapsed": false,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 168
-      },
-      "panels": []
-    },
-    {
-      "id": 60,
-      "type": "stat",
-      "title": "账户资金 / Account Capital",
-      "description": "所有环境都使用 IBKR account snapshot/summary 的真实账户金额；不再使用独立虚拟风控资金模型。",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 8,
-        "x": 0,
-        "y": 169
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_net_liquidation_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
-          "legendFormat": "net liq {{environment}} {{source}}",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_buying_power_remaining_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
-          "legendFormat": "buying power {{environment}} {{source}}",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_available_funds_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
-          "legendFormat": "available funds {{environment}} {{source}}",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_excess_liquidity_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
-          "legendFormat": "excess liquidity {{environment}} {{source}}",
-          "range": true,
-          "refId": "D"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_total_cash_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
-          "legendFormat": "cash {{environment}} {{source}}",
-          "range": true,
-          "refId": "E"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "currencyUSD",
-          "custom": {},
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 10000
-              },
-              {
-                "color": "green",
-                "value": 15000
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "values": false,
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": ""
-        },
-        "orientation": "auto",
-        "textMode": "auto",
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto"
-      }
-    },
-    {
-      "id": 61,
-      "type": "timeseries",
-      "title": "保证金与持仓占用 / Margin and Exposure",
-      "description": "真实账户的持仓市值、BuyingPower 压力上下文和保证金要求，用于判断账户是否接近开仓限制。",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 8,
-        "x": 8,
-        "y": 169
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_gross_position_value_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
-          "legendFormat": "gross position {{environment}} {{source}}",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_buying_power_used_exposure_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
-          "legendFormat": "used exposure {{environment}} {{source}}",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_initial_margin_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
-          "legendFormat": "initial margin {{environment}} {{source}}",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_maintenance_margin_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
-          "legendFormat": "maintenance margin {{environment}} {{source}}",
-          "range": true,
-          "refId": "D"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "currencyUSD",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "barAlignment": 0,
-            "lineWidth": 1,
-            "fillOpacity": 8,
-            "gradientMode": "none",
-            "spanNulls": false,
-            "insertNulls": false,
-            "showPoints": "never",
-            "pointSize": 5,
-            "stacking": {
-              "mode": "none",
-              "group": "A"
-            },
-            "axisPlacement": "auto",
-            "axisLabel": "",
-            "axisColorMode": "text",
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 90
-              },
-              {
-                "color": "red",
-                "value": 95
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "mean",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "width": 420
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 62,
-      "type": "stat",
-      "title": "购买力阈值 / Buying Power Floors",
-      "description": "基于真实账户 NetLiq 和配置阈值计算的预警/禁止阈值。",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 4,
-        "x": 16,
-        "y": 169
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_buying_power_warn_floor_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
-          "legendFormat": "warn floor {{environment}} {{source}}",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_buying_power_block_floor_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
-          "legendFormat": "block floor {{environment}} {{source}}",
-          "range": true,
-          "refId": "B"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "currencyUSD",
-          "custom": {},
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "values": false,
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": ""
-        },
-        "orientation": "auto",
-        "textMode": "auto",
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto"
-      }
-    },
-    {
-      "id": 63,
-      "type": "stat",
-      "title": "账户风控状态 / Account Guard State",
-      "description": "snapshot available=0、account circuit active=1 或 guard unavailable/blocked 需要立即处理。",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 4,
-        "x": 20,
-        "y": 169
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_snapshot_available{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
-          "legendFormat": "snapshot available {{environment}} {{source}}",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (environment, source, state) (ibkr_account_buying_power_guard_state{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
-          "legendFormat": "guard {{environment}} {{source}} {{state}}",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (environment) (ibkr_account_data_circuit_active{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "account circuit active {{environment}}",
-          "range": true,
-          "refId": "C"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "custom": {},
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 1
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "values": false,
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": ""
-        },
-        "orientation": "auto",
-        "textMode": "auto",
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto"
-      }
-    },
-    {
-      "id": 64,
-      "type": "timeseries",
-      "title": "账户资金趋势 / Account Capital Trend",
-      "description": "真实账户资金、购买力、现金、持仓占用和保证金随时间变化。",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 24,
-        "x": 0,
-        "y": 175
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_net_liquidation_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
-          "legendFormat": "net liq {{environment}} {{source}}",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_buying_power_remaining_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
-          "legendFormat": "buying power {{environment}} {{source}}",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_available_funds_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
-          "legendFormat": "available funds {{environment}} {{source}}",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_excess_liquidity_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
-          "legendFormat": "excess liquidity {{environment}} {{source}}",
-          "range": true,
-          "refId": "D"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_total_cash_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
-          "legendFormat": "cash {{environment}} {{source}}",
-          "range": true,
-          "refId": "E"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_gross_position_value_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
-          "legendFormat": "gross position {{environment}} {{source}}",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_buying_power_used_exposure_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
-          "legendFormat": "used exposure {{environment}} {{source}}",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_initial_margin_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
-          "legendFormat": "initial margin {{environment}} {{source}}",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_maintenance_margin_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
-          "legendFormat": "maintenance margin {{environment}} {{source}}",
-          "range": true,
-          "refId": "D"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "currencyUSD",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "barAlignment": 0,
-            "lineWidth": 1,
-            "fillOpacity": 8,
-            "gradientMode": "none",
-            "spanNulls": false,
-            "insertNulls": false,
-            "showPoints": "never",
-            "pointSize": 5,
-            "stacking": {
-              "mode": "none",
-              "group": "A"
-            },
-            "axisPlacement": "auto",
-            "axisLabel": "",
-            "axisColorMode": "text",
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "mean",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "width": 420
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 65,
-      "type": "row",
-      "title": "13 - Gateway 与账户运行态 / Gateway and Account Runtime State",
-      "collapsed": false,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 182
-      },
-      "panels": []
-    },
-    {
-      "id": 66,
-      "type": "stat",
-      "title": "Gateway 核心状态 / Gateway Core State",
-      "description": "Gateway、认证、行情 WebSocket 和本地 socket 的核心可用性；任一为 0 都会影响交易。",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 8,
-        "x": 0,
-        "y": 183
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (service, environment) (ibkr_gateway_service_running{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "service running {{environment}}",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (service, environment) (ibkr_gateway_reachable{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "reachable {{environment}}",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (service, environment) (ibkr_gateway_session_authenticated{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "session auth {{environment}}",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (service, environment) (ibkr_gateway_websocket_ready{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "ws ready {{environment}}",
-          "range": true,
-          "refId": "D"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (service, environment, host, port) (ibkr_gateway_socket_listening{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "socket {{host}}:{{port}}",
-          "range": true,
-          "refId": "E"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "custom": {},
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "values": false,
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": ""
-        },
-        "orientation": "auto",
-        "textMode": "auto",
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto"
-      }
-    },
-    {
-      "id": 67,
-      "type": "timeseries",
-      "title": "Gateway Uptime / Gateway Uptime",
-      "description": "Gateway systemd 主进程运行时长，用于发现异常重启。",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 8,
-        "x": 8,
-        "y": 183
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (service, environment) (ibkr_gateway_service_uptime_seconds{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "{{service}} {{environment}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "barAlignment": 0,
-            "lineWidth": 1,
-            "fillOpacity": 8,
-            "gradientMode": "none",
-            "spanNulls": false,
-            "insertNulls": false,
-            "showPoints": "never",
-            "pointSize": 5,
-            "stacking": {
-              "mode": "none",
-              "group": "A"
-            },
-            "axisPlacement": "auto",
-            "axisLabel": "",
-            "axisColorMode": "text",
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "mean",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "width": 420
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 68,
-      "type": "stat",
-      "title": "会话/WS/账户数据熔断 / Session WS Account Circuit",
-      "description": "账户数据熔断为 1 时账户快照/购买力可能不可用。",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 8,
-        "x": 16,
-        "y": 183
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (service, environment) (ibkr_gateway_session_authenticated{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "session auth",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (service, environment) (ibkr_gateway_websocket_ready{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "websocket ready",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (service, environment) (ibkr_account_data_circuit_active{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "account circuit active",
-          "range": true,
-          "refId": "C"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "custom": {},
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "values": false,
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": ""
-        },
-        "orientation": "auto",
-        "textMode": "auto",
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto"
-      }
-    },
-    {
-      "id": 69,
-      "type": "timeseries",
-      "title": "Gateway Socket Probe p95 / Gateway Socket Probe p95",
-      "description": "Gateway socket 探测 p95 延迟。",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 0,
-        "y": 189
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, service, environment, source, result) (rate(ibkr_gateway_socket_probe_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval])))",
-          "legendFormat": "{{source}} {{result}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "barAlignment": 0,
-            "lineWidth": 1,
-            "fillOpacity": 8,
-            "gradientMode": "none",
-            "spanNulls": false,
-            "insertNulls": false,
-            "showPoints": "never",
-            "pointSize": 5,
-            "stacking": {
-              "mode": "none",
-              "group": "A"
-            },
-            "axisPlacement": "auto",
-            "axisLabel": "",
-            "axisColorMode": "text",
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "mean",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "width": 420
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 70,
-      "type": "table",
-      "title": "Gateway 最近探测失败 / Gateway Recent Probe Failures",
-      "description": "最近 5 分钟 socket 探测失败次数，用于判断 Gateway 是否正在抖动。",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 12,
-        "y": 189
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum by (service, environment, host, port, source, reason_code) (increase(ibkr_gateway_socket_probe_total{service=~\"$service\", environment=~\"$environment\", result!=\"ok\"}[5m]))",
-          "legendFormat": "{{environment}} {{host}}:{{port}} {{source}} {{reason_code}}",
-          "range": true,
-          "refId": "A"
         }
       ],
       "fieldConfig": {
@@ -5421,6 +6099,7 @@
     "ibkr",
     "prometheus",
     "gateway",
+    "cockpit",
     "phased",
     "中文",
     "feishu-alerts"
@@ -5522,6 +6201,6 @@
   "timezone": "browser",
   "title": "量化监控 - 分阶段请求链路 / Quant Monitoring - Phased Request Flow",
   "uid": "quant-monitoring-overview",
-  "version": 3,
+  "version": 4,
   "weekStart": ""
 }

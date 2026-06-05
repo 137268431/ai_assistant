@@ -210,17 +210,28 @@ class TradingServiceSignalsMixin:
                 if self.session_keeper.is_authenticated:
                     self._process_signals()
                     self.reverse_handler.check_and_process()
-                    record_signal_event(environment=service_mod.ENVIRONMENT, stage="loop", result="ok")
+                    record_signal_event(
+                        environment=service_mod.ENVIRONMENT,
+                        stage="loop",
+                        signal_source="runtime_loop",
+                        result="ok",
+                    )
                 else:
                     service_mod.logger.info(
                         "Skip signal/reverse processing while session is unauthenticated"
                     )
-                    record_signal_event(environment=service_mod.ENVIRONMENT, stage="loop", result="unauthenticated")
+                    record_signal_event(
+                        environment=service_mod.ENVIRONMENT,
+                        stage="loop",
+                        signal_source="runtime_loop",
+                        result="unauthenticated",
+                    )
             except Exception as exc:
                 service_mod.logger.error("Signal loop error: %s", exc)
                 record_signal_event(
                     environment=service_mod.ENVIRONMENT,
                     stage="loop",
+                    signal_source="runtime_loop",
                     result="error",
                     reason_code=exc.__class__.__name__,
                 )

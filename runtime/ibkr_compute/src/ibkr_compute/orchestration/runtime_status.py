@@ -390,6 +390,29 @@ class TradingServiceRuntimeStatusMixin:
         market_ws_ready = bool(websocket_status.get("connected") or websocket_status.get("ready")) and bool(market_ws_symbols) and (
             len(market_ws_subscribed_symbols) >= len(market_ws_symbols)
         )
+
+        def subscription_limit(method_name: str, default: int) -> int:
+            method = getattr(self, method_name, None)
+            if callable(method):
+                try:
+                    return max(0, int(method() or 0))
+                except Exception:
+                    return max(0, int(default or 0))
+            return max(0, int(default or 0))
+
+        target_subscription_limit = subscription_limit("_get_target_subscription_limit", 80)
+        total_subscription_limit = subscription_limit("_get_total_subscription_limit", target_subscription_limit)
+        if total_subscription_limit <= 0:
+            total_subscription_limit = target_subscription_limit
+        entry_temp_subscription_reserve = subscription_limit("_get_entry_temp_subscription_reserve", 8)
+        trade_budget_method = getattr(self, "_get_trade_subscription_budget", None)
+        try:
+            trade_subscription_limit = trade_budget_method() if callable(trade_budget_method) else target_subscription_limit
+        except Exception:
+            trade_subscription_limit = target_subscription_limit
+        if trade_subscription_limit is None:
+            trade_subscription_limit = target_subscription_limit or total_subscription_limit
+        trade_subscription_limit = max(0, int(trade_subscription_limit or 0))
         blocking_canonical_pending_symbols = self._non_monitor_pending_symbols(
             official_5m.get("pending_symbols") or [],
             market_ws_symbols,
@@ -585,6 +608,15 @@ class TradingServiceRuntimeStatusMixin:
                 "observe_target_symbols": list(observe_target_symbols[:25]),
                 "no_execution_eligible_targets": no_execution_eligible_targets,
                 "active_subscription_count": len(active_subscription_symbols),
+                "active_trade_symbol_count": len(self._active_trade_symbols),
+                "active_monitor_symbol_count": len(market_ws_subscribed_symbols),
+                "target_subscription_limit": target_subscription_limit,
+                "total_subscription_limit": total_subscription_limit,
+                "trade_subscription_limit": trade_subscription_limit,
+                "trade_subscription_budget": trade_subscription_limit,
+                "market_monitor_subscription_limit": len(market_ws_symbols),
+                "websocket_subscription_limit": total_subscription_limit or target_subscription_limit,
+                "entry_temp_subscription_reserve": entry_temp_subscription_reserve,
                 "active_target_symbols": list(self._active_trade_symbols),
                 "active_subscription_symbols": list(active_subscription_symbols),
                 "active_trade_symbols": list(self._active_trade_symbols),
