@@ -518,6 +518,11 @@ if _client_available():
         "Buying-power guard state marker; the active state has value 1.",
         ("service", "environment", "source", "state"),
     )
+    RUNTIME_CONFIG_SWITCH_ENABLED = Gauge(
+        "ibkr_runtime_config_switch_enabled",
+        "Effective runtime/trading config switch state; enabled switches have value 1.",
+        ("service", "environment", "runtime_environment", "key", "mode_scope", "importance"),
+    )
     BROKER_CONNECTS = Counter(
         "ibkr_broker_connect_attempts_total",
         "IB API broker connect attempts.",
@@ -602,6 +607,11 @@ if _client_available():
         "Signal processing events.",
         ("service", "environment", "stage", "signal_source", "result", "reason_code"),
     )
+    SIGNAL_RECORDS = Counter(
+        "ibkr_signal_records_total",
+        "Business signal records created in ibkr_signals.",
+        ("service", "environment", "signal_source", "direction", "initial_status"),
+    )
     SIGNAL_DURATION = Histogram(
         "ibkr_signal_stage_duration_seconds",
         "Signal processing stage duration.",
@@ -625,10 +635,11 @@ else:  # pragma: no cover
     ACCOUNT_BUYING_POWER_REMAINING = ACCOUNT_BUYING_POWER_USED_EXPOSURE = ACCOUNT_BUYING_POWER_UTILIZATION = None
     ACCOUNT_BUYING_POWER_REMAINING_SLOTS = ACCOUNT_BUYING_POWER_WARN_FLOOR = ACCOUNT_BUYING_POWER_BLOCK_FLOOR = None
     ACCOUNT_BUYING_POWER_GUARD_STATE = None
+    RUNTIME_CONFIG_SWITCH_ENABLED = None
     BROKER_CONNECTS = BROKER_CONNECT_DURATION = BROKER_READY = BROKER_CONNECTED = BROKER_DISCONNECTS = BROKER_ERRORS = None
     BROKER_REQUESTS = BROKER_REQUEST_DURATION = BROKER_PENDING_REQUESTS = None
     HISTORY_EVENTS = HISTORY_DURATION = HISTORY_ACTIVE = HISTORY_ROWS = None
-    ORDER_EVENTS = ORDER_DURATION = SIGNAL_EVENTS = SIGNAL_DURATION = None
+    ORDER_EVENTS = ORDER_DURATION = SIGNAL_EVENTS = SIGNAL_RECORDS = SIGNAL_DURATION = None
 
 
 def install_flask_metrics(app: Any, service_name: str | None = None) -> None:
@@ -907,6 +918,7 @@ def set_runtime_status_metrics(status: dict[str, Any] | None = None, *, environm
         1.0 if bool(websocket.get("ready") or websocket.get("connected")) else 0.0,
     )
     _gauge_set(ACCOUNT_DATA_CIRCUIT_ACTIVE, (service, env), 1.0 if bool(account_data_circuit.get("active")) else 0.0)
+    set_runtime_config_switch_metrics(status, environment=env)
 
     active_subscription_count = _first_number(
         market_universe.get("active_subscription_count"),
@@ -1021,6 +1033,50 @@ def set_runtime_status_metrics(status: dict[str, Any] | None = None, *, environm
         (service, env, interval),
         _first_number(bar_freshness.get("pending_symbols_total"), canonical_5m.get("pending_symbols_total")),
     )
+
+
+def _switch_enabled_value(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    text = str(value if value is not None else "").strip().lower()
+    if text in {"1", "true", "yes", "on", "enabled", "enable"}:
+        return 1.0
+    if text in {"0", "false", "no", "off", "disabled", "disable"}:
+        return 0.0
+    return _optional_float(value)
+
+
+def set_runtime_config_switch_metrics(status: dict[str, Any] | None = None, *, environment: str = "") -> None:
+    if not _client_available() or RUNTIME_CONFIG_SWITCH_ENABLED is None or not isinstance(status, dict):
+        return
+    payload = status.get("runtime_config_switches")
+    if isinstance(payload, dict):
+        switches = payload.get("items") or payload.get("switches") or []
+    elif isinstance(payload, list):
+        switches = payload
+    else:
+        switches = []
+    if not isinstance(switches, list):
+        return
+    service = resolve_source_service()
+    runtime_env = _metric_environment(environment or status.get("environment") or status.get("broker_mode"))
+    for item in switches:
+        if not isinstance(item, dict):
+            continue
+        enabled_value = _switch_enabled_value(item.get("enabled"))
+        if enabled_value is None:
+            continue
+        key = _sanitize_label(item.get("key"), "")
+        if not key:
+            continue
+        config_env = _metric_environment(item.get("config_environment") or item.get("environment") or runtime_env)
+        mode_scope = _sanitize_label(item.get("mode_scope") or item.get("scope") or "runtime")
+        importance = _sanitize_label(item.get("importance") or "important")
+        _gauge_set(
+            RUNTIME_CONFIG_SWITCH_ENABLED,
+            (service, config_env, runtime_env, key, mode_scope, importance),
+            1.0 if enabled_value > 0 else 0.0,
+        )
 
 
 def set_account_snapshot_metrics(payload: dict[str, Any] | None = None, *, source: str = "", environment: str = "") -> None:
@@ -1202,6 +1258,54 @@ def record_signal_event(*, environment: str = "", stage: str, signal_source: str
         SIGNAL_DURATION.labels(service, env, stage_label, result_label).observe(max(0.0, float(duration_s or 0.0)))
 
 
+def _signal_record_source_label(value: Any) -> str:
+    text = _sanitize_label(value, "unknown").lower()
+    if text in {"tv", "tradingview", "webhook_tv", "tv_webhook", "tradingview_webhook", "signal"}:
+        return "tradingview"
+    if text in {
+        "ibkr",
+        "ibkr_compute",
+        "ibkr_runtime",
+        "ibkr_compute_realtime",
+        "ibkr_compute_timeline",
+        "ibkr_history_recompute",
+        "timeline",
+        "chart_timeline",
+        "history_repair",
+        "recompute",
+        "backfill_recompute",
+    }:
+        return "ibkr_compute"
+    if text in {"manual", "manual_order", "runtime_page", "account_page"}:
+        return "manual"
+    return "unknown"
+
+
+def _signal_record_direction_label(value: Any) -> str:
+    text = _sanitize_label(value, "unknown").lower()
+    return text if text in {"long", "short"} else "unknown"
+
+
+def record_signal_record_created(
+    *,
+    environment: str = "",
+    signal_source: str = "unknown",
+    direction: str = "unknown",
+    initial_status: str = "unknown",
+) -> None:
+    if not _client_available() or SIGNAL_RECORDS is None:
+        return
+    service = resolve_source_service()
+    env = _sanitize_label(environment or os.environ.get("IBKR_BROKER_MODE") or "unknown")
+    SIGNAL_RECORDS.labels(
+        service,
+        env,
+        _signal_record_source_label(signal_source),
+        _signal_record_direction_label(direction),
+        _sanitize_reason_code(initial_status or "unknown", "unknown"),
+    ).inc()
+
+
 instrument_flask_app = install_flask_metrics
 register_flask_metrics = install_flask_metrics
 register_prometheus_metrics = install_flask_metrics
@@ -1231,6 +1335,7 @@ __all__ = [
     "record_history_event",
     "record_order_event",
     "record_signal_event",
+    "record_signal_record_created",
     "register_flask_metrics",
     "register_prometheus_metrics",
     "resolve_source_service",
@@ -1242,6 +1347,7 @@ __all__ = [
     "set_broker_pending",
     "set_gateway_status",
     "set_history_active",
+    "set_runtime_config_switch_metrics",
     "set_runtime_status_metrics",
     "setup_prometheus_metrics",
 ]

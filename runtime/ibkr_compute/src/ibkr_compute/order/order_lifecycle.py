@@ -484,6 +484,8 @@ class OrderLifecycle:
                 entry_order_unique_id=str(link_context.get("entry_order_unique_id") or ""),
                 signal_id=str(link_context.get("signal_id") or ""),
                 source="eod_force_close",
+                close_reason="force_flat_eod",
+                close_reason_human="EOD 平仓",
                 wait_for_fill=True,
                 fill_timeout=max(1.0, self._get_config_float("eod_close_fill_timeout_sec", 5.0)),
             )
@@ -2022,6 +2024,8 @@ class OrderLifecycle:
         limit_price: float = 0.0,
         wait_for_fill: bool = False,
         fill_timeout: float = 5.0,
+        close_reason: str = "",
+        close_reason_human: str = "",
     ) -> dict:
         if self.order_placer and hasattr(self.order_placer, "place_market_close"):
             return self.order_placer.place_market_close(
@@ -2038,6 +2042,8 @@ class OrderLifecycle:
                 limit_price=limit_price,
                 wait_for_fill=wait_for_fill,
                 fill_timeout=fill_timeout,
+                close_reason=close_reason or source,
+                close_reason_human=close_reason_human,
             )
         return self.broker.place_market_close(
             conid=conid,

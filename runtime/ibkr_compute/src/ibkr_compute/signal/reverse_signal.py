@@ -1260,6 +1260,11 @@ class ReverseSignalHandler:
             or self._signal_value(signal, "source_signal_id")
             or ""
         ).strip()
+        close_reason = str(
+            self._signal_value(signal, "exit_reason")
+            or self._signal_value(signal, "reason")
+            or "reverse_signal_close"
+        ).strip()
         result = self.order_placer.place_market_close(
             conid,
             symbol,
@@ -1269,6 +1274,7 @@ class ReverseSignalHandler:
             entry_order_unique_id=str(self._signal_value(signal, "entry_order_unique_id") or "").strip(),
             signal_id=origin_signal_id,
             source="reverse_signal_close",
+            close_reason=close_reason,
         )
         detail["close_old_position"] = "submitted" if result.get("ok") else "failed"
         detail["close_result"] = dict(result or {})

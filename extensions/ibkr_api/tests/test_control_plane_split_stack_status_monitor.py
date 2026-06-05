@@ -617,6 +617,8 @@ class ControlPlaneSplitStackStatusMonitorTest(unittest.TestCase):
         self.assertEqual(payload["ibkr_runtime"]["proxy_upstream"], "http://runtime/ibkr/status")
         self.assertEqual(payload["recent_events"][0]["id"], "evt-1")
         self.assertIn("ibkr-api", payload["service_topology"]["services"])
+        self.assertTrue(payload["service_monitor"]["services"]["ibkr-runtime"]["session_authenticated"])
+        self.assertTrue(payload["service_topology"]["services"]["ibkr-runtime"]["session_authenticated"])
 
     def test_system_healthz_route_uses_native_monitor_summary(self):
         monitor_payload = {
@@ -974,6 +976,7 @@ class ControlPlaneSplitStackStatusMonitorTest(unittest.TestCase):
         self.assertEqual(services["ibkr-api"]["status"], "running")
         self.assertEqual(services["ibkr-runtime"]["status"], "starting")
         self.assertEqual(services["ibkr-runtime"]["readiness_phase"], "auth_pending")
+        self.assertFalse(services["ibkr-runtime"]["session_authenticated"])
         self.assertEqual(monitor_services["ibkr-runtime"]["status"], services["ibkr-runtime"]["status"])
 
     def test_statusz_route_requests_full_compute_status_when_full_requested(self):

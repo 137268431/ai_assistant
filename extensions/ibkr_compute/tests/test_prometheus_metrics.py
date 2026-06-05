@@ -457,6 +457,104 @@ class ComputePrometheusMetricsTest(unittest.TestCase):
         for label_set in bar_label_sets:
             self.assertEqual({"service", "environment", "interval"}, label_set)
 
+    def test_signal_record_counter_uses_low_cardinality_labels(self):
+        module = _observability_or_skip(
+            self,
+            requiring=("record_signal_record_created",),
+        )
+        generate_latest = getattr(module, "generate_latest", None)
+        if not callable(generate_latest):
+            self.skipTest("prometheus_client generate_latest is unavailable in this environment")
+
+        label_names = set(getattr(getattr(module, "SIGNAL_RECORDS", None), "_labelnames", None) or ())
+        if not label_names:
+            self.skipTest("prometheus_client label schemas are unavailable in this environment")
+
+        denied = _get_denylist(module)
+        self.assertFalse(denied.intersection(label_names), label_names)
+        self.assertEqual({"service", "environment", "signal_source", "direction", "initial_status"}, label_names)
+
+        environment = "metric_signal_records_test"
+        with mock.patch.dict(
+            os.environ,
+            {"IBKR_SERVICE_PROFILE": "api", "IBKR_SERVICE_NAME": "", "IBKR_BROKER_MODE": ""},
+            clear=False,
+        ):
+            module.record_signal_record_created(
+                environment=environment,
+                signal_source="tradingview_webhook",
+                direction="long",
+                initial_status="pending",
+            )
+        metrics_text = generate_latest().decode("utf-8", errors="replace")
+
+        self.assertIn("ibkr_signal_records_total", metrics_text)
+        self.assertIn('service="ibkr-api"', metrics_text)
+        self.assertIn(f'environment="{environment}"', metrics_text)
+        self.assertIn('signal_source="tradingview"', metrics_text)
+        self.assertIn('direction="long"', metrics_text)
+        self.assertIn('initial_status="pending"', metrics_text)
+
+    def test_runtime_config_switch_gauge_uses_low_cardinality_labels(self):
+        module = _observability_or_skip(
+            self,
+            requiring=("set_runtime_config_switch_metrics",),
+        )
+        generate_latest = getattr(module, "generate_latest", None)
+        if not callable(generate_latest):
+            self.skipTest("prometheus_client generate_latest is unavailable in this environment")
+
+        label_names = set(getattr(getattr(module, "RUNTIME_CONFIG_SWITCH_ENABLED", None), "_labelnames", None) or ())
+        if not label_names:
+            self.skipTest("prometheus_client label schemas are unavailable in this environment")
+
+        denied = _get_denylist(module)
+        self.assertFalse(denied.intersection(label_names), label_names)
+        self.assertEqual(
+            {"service", "environment", "runtime_environment", "key", "mode_scope", "importance"},
+            label_names,
+        )
+
+        environment = "metric_switch_config_test"
+        with mock.patch.dict(
+            os.environ,
+            {"IBKR_SERVICE_PROFILE": "runtime", "IBKR_SERVICE_NAME": "", "IBKR_BROKER_MODE": ""},
+            clear=False,
+        ):
+            module.set_runtime_config_switch_metrics(
+                {
+                    "environment": "paper",
+                    "runtime_config_switches": {
+                        "items": [
+                            {
+                                "key": "ibkr_trading_enabled",
+                                "enabled": True,
+                                "mode_scope": "broker",
+                                "config_environment": environment,
+                                "importance": "critical",
+                            },
+                            {
+                                "key": "ibkr_order_flow_enabled",
+                                "enabled": False,
+                                "mode_scope": "broker",
+                                "config_environment": environment,
+                                "importance": "optional",
+                            },
+                        ]
+                    },
+                },
+                environment="paper",
+            )
+        metrics_text = generate_latest().decode("utf-8", errors="replace")
+
+        self.assertIn("ibkr_runtime_config_switch_enabled", metrics_text)
+        self.assertIn('service="ibkr-runtime"', metrics_text)
+        self.assertIn(f'environment="{environment}"', metrics_text)
+        self.assertIn('runtime_environment="paper"', metrics_text)
+        self.assertIn('key="ibkr_trading_enabled"', metrics_text)
+        self.assertIn('mode_scope="broker"', metrics_text)
+        self.assertIn('importance="critical"', metrics_text)
+
     def test_runtime_status_metrics_publish_market_data_subscription_values(self):
         module = _observability_or_skip(
             self,

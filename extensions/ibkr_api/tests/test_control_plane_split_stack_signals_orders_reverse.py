@@ -1,5 +1,9 @@
 from control_plane_split_stack_helpers import *
-from ibkr_api.orders.notifications import sync_order_callback_ledger_notification, sync_order_status_notification
+from ibkr_api.orders.notifications import (
+    build_order_callback_ledger_card,
+    sync_order_callback_ledger_notification,
+    sync_order_status_notification,
+)
 from ibkr_api.orders.upsert import build_order_record_payload
 
 
@@ -1161,7 +1165,7 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
         self.assertIn("亏损 -$10.00", title)
         self.assertEqual("red", card["header"]["template"])
         self.assertIn("**实际盈亏**: 亏损 -$10.00", content)
-        self.assertIn("平仓 @99.00", content)
+        self.assertIn("平仓（原因未记录） @99.00", content)
         self.assertIn("10股", content)
         self.assertIn("未计手续费", content)
 
@@ -1239,7 +1243,7 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
         self.assertIn("盈利 +$20.00", card["header"]["title"]["content"])
         self.assertEqual("green", card["header"]["template"])
         self.assertIn("**实际盈亏**: 盈利 +$20.00", content)
-        self.assertIn("平仓 @95.00", content)
+        self.assertIn("平仓（原因未记录） @95.00", content)
 
     def test_sync_order_callback_ledger_notification_uses_position_cost_for_unlinked_close(self):
         class _LedgerPB:
@@ -1299,7 +1303,114 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
         self.assertIn("盈利 +$14.74", card["header"]["title"]["content"])
         self.assertIn("**状态**: 已成交", content)
         self.assertIn("**实际盈亏**: 盈利 +$14.74", content)
-        self.assertIn("平仓 @435.66", content)
+        self.assertIn("平仓（原因未记录） @435.66", content)
+
+    def test_order_callback_ledger_labels_runner_stop_close_reason(self):
+        order = {
+            "id": "order-close",
+            "unique_id": "close_TSLA_runner",
+            "order_type": "MKT",
+            "symbol": "TSLA",
+            "environment": "paper",
+            "status": "Filled",
+            "role": "close",
+            "broker_order_id": "216",
+            "trade_group_id": "BATS_TSLA_short_20260605_0946_2_mr_sdUpper",
+            "entry_order_unique_id": "BATS_TSLA_short_20260605_0946_2_mr_sdUpper",
+            "signal_id": "BATS_TSLA_short_20260605_0946_2_mr_sdUpper",
+            "direction": "short",
+            "quantity": 12,
+            "filled_qty": 12,
+            "fill_price": 403.38,
+            "extra": {
+                "environment": "paper",
+                "close_reason": "runner_stop",
+                "ib_callback_type": "execDetails",
+            },
+        }
+
+        card = build_order_callback_ledger_card(order, {"event_type": "fill", "status": "Filled", "filled_qty": 12, "fill_delta": 12})
+        content = card["elements"][0]["content"]
+
+        self.assertIn("Runner 止损", card["header"]["title"]["content"])
+        self.assertIn("**角色 / 类型 / 方向**: Runner 止损 / MKT / short", content)
+        self.assertIn("**平仓原因**: Runner 止损（runner_stop）", content)
+
+    def test_order_callback_ledger_labels_eod_close_from_source(self):
+        order = {
+            "id": "order-close",
+            "unique_id": "eod_force_close_AAPL_20260605_155500",
+            "order_type": "MKT",
+            "symbol": "AAPL",
+            "environment": "paper",
+            "status": "Filled",
+            "role": "close",
+            "broker_order_id": "301",
+            "direction": "long",
+            "quantity": 3,
+            "filled_qty": 3,
+            "fill_price": 190.0,
+            "extra": {
+                "environment": "paper",
+                "source": "eod_force_close",
+                "ib_callback_type": "execDetails",
+            },
+        }
+
+        card = build_order_callback_ledger_card(order, {"event_type": "fill", "status": "Filled", "filled_qty": 3, "fill_delta": 3})
+        content = card["elements"][0]["content"]
+
+        self.assertIn("EOD 平仓", card["header"]["title"]["content"])
+        self.assertIn("**平仓原因**: EOD 平仓（force_flat_eod）", content)
+
+    def test_order_callback_ledger_uses_related_order_flow_reason_for_close(self):
+        entry = {
+            "id": "order-entry",
+            "unique_id": "sig-flow_entry",
+            "order_type": "Entry",
+            "symbol": "AAPL",
+            "environment": "live",
+            "status": "Closed",
+            "role": "entry",
+            "trade_group_id": "sig-flow_entry",
+            "entry_order_unique_id": "sig-flow_entry",
+            "direction": "long",
+            "quantity": 10,
+            "filled_qty": 10,
+            "fill_price": 100.0,
+            "extra": {
+                "reason": "order_flow_adverse_delta_exit",
+                "order_flow_decision": {"reason": "order_flow_adverse_delta_exit"},
+            },
+        }
+        close = {
+            "id": "order-close",
+            "unique_id": "sig-flow_close",
+            "order_type": "MKT",
+            "symbol": "AAPL",
+            "environment": "live",
+            "status": "Filled",
+            "role": "close",
+            "broker_order_id": "302",
+            "trade_group_id": "sig-flow_entry",
+            "entry_order_unique_id": "sig-flow_entry",
+            "direction": "sell",
+            "quantity": 10,
+            "filled_qty": 10,
+            "fill_price": 99.0,
+            "extra": {"environment": "live", "ib_callback_type": "execDetails"},
+        }
+
+        card = build_order_callback_ledger_card(
+            close,
+            {"event_type": "fill", "status": "Filled", "filled_qty": 10, "fill_delta": 10},
+            related_rows=[entry],
+        )
+        content = card["elements"][0]["content"]
+
+        self.assertIn("订单流提前平仓", card["header"]["title"]["content"])
+        self.assertIn("**平仓原因**: 订单流提前平仓（order_flow_adverse_delta_exit）", content)
+        self.assertIn("订单流提前平仓 @99.00", content)
 
     def test_sync_order_callback_ledger_notification_skips_submitted_open_order_noise(self):
         class _LedgerPB:

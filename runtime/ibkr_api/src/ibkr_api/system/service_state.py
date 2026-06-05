@@ -247,6 +247,10 @@ def derive_runtime_state(runtime: dict[str, Any], *, observed_at: str) -> dict[s
         "last_observed_at": observed_at,
         "stale": bool(payload.get("stale", False)),
         "detail": detail,
+        "gateway_running": bool(gateway.get("running")),
+        "gateway_reachable": bool(gateway.get("reachable")),
+        "session_authenticated": session_ready,
+        "websocket_ready": websocket_ready,
     }
     if client_id:
         state["ib_gateway_client_id"] = client_id

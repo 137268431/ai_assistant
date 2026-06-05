@@ -980,19 +980,22 @@ class TradingServiceSignalsMixin:
             if not record:
                 return
             signal_extra = sig.get("extra") if isinstance(sig.get("extra"), dict) else self._signal_extra(sig)
+            lifecycle_extra = {
+                **signal_extra,
+                "tv_direct_entry": True,
+                "tv_direct_rejected": True,
+                "tv_direct_rejected_reason": status_reason,
+                "tv_direct_rejected_at": self._now_iso(),
+                "status_reason": status_reason,
+                "execution_state": "tv_direct_rejected",
+            }
+            if self._ack_signal_lifecycle_update(sig, status, status_reason, lifecycle_extra):
+                return
             patch = self._signal_broker_patch(
                 status,
                 status_reason,
                 existing_extra,
-                {
-                    **signal_extra,
-                    "tv_direct_entry": True,
-                    "tv_direct_rejected": True,
-                    "tv_direct_rejected_reason": status_reason,
-                    "tv_direct_rejected_at": self._now_iso(),
-                    "status_reason": status_reason,
-                    "execution_state": "tv_direct_rejected",
-                },
+                lifecycle_extra,
             )
             self.pb.update_record("ibkr_signals", record["id"], patch)
         except Exception as exc:
@@ -2005,6 +2008,35 @@ class TradingServiceSignalsMixin:
             patch.update({"status": status_text, "note": note_text})
         return patch
 
+    def _ack_signal_lifecycle_update(self, sig: dict, status: str, note: str, extra: dict | None = None) -> bool:
+        service_mod = _service_mod()
+        ack = getattr(self.pb, "ack_ibkr_signal", None)
+        signal_id = str(sig.get("signal_id") or "").strip()
+        if not callable(ack) or not signal_id:
+            return False
+        try:
+            ack(
+                signal_id=signal_id,
+                status=status,
+                note=note,
+                environment=service_mod.ENVIRONMENT,
+                extra=dict(extra or {}),
+                lifecycle_update=True,
+            )
+            return True
+        except TypeError:
+            # Older test doubles or clients may not yet support lifecycle-only ack.
+            return False
+        except Exception as exc:
+            service_mod.logger.warning(
+                "Canonical signal lifecycle ack failed; using fallback patch: signal_id=%s status=%s note=%s error=%s",
+                signal_id,
+                status,
+                note,
+                exc,
+            )
+            return False
+
     def _mark_signal_order_flow_waiting(self, sig: dict, decision: dict):
         service_mod = _service_mod()
         if not self.pb:
@@ -2051,19 +2083,22 @@ class TradingServiceSignalsMixin:
             record, existing_extra = self._load_signal_record_and_extra(sig)
             if not record:
                 return
+            lifecycle_extra = {
+                **self._signal_extra(sig),
+                "status_reason": reason,
+                "execution_state": "order_flow_rejected",
+                "order_flow_rejected": True,
+                "order_flow_rejected_at": self._now_iso(),
+                "order_flow": dict(decision or {}),
+                "order_flow_shadow": dict(decision or {}),
+            }
+            if self._ack_signal_lifecycle_update(sig, status, reason, lifecycle_extra):
+                return
             patch = self._signal_broker_patch(
                 status,
                 reason,
                 existing_extra,
-                {
-                    **self._signal_extra(sig),
-                    "status_reason": reason,
-                    "execution_state": "order_flow_rejected",
-                    "order_flow_rejected": True,
-                    "order_flow_rejected_at": self._now_iso(),
-                    "order_flow": dict(decision or {}),
-                    "order_flow_shadow": dict(decision or {}),
-                },
+                lifecycle_extra,
             )
             self.pb.update_record("ibkr_signals", record["id"], patch)
         except Exception as exc:
@@ -2118,18 +2153,21 @@ class TradingServiceSignalsMixin:
             getter = getattr(lifecycle, "_fixed_position_symbols", None)
             if callable(getter):
                 fixed_symbols = sorted(getter())
+            lifecycle_extra = {
+                "status_reason": "fixed_position_symbol_blocked",
+                "execution_state": "blocked",
+                "fixed_position_symbol_blocked": True,
+                "fixed_position_symbol": str(sig.get("symbol") or "").strip().upper(),
+                "fixed_position_symbols": fixed_symbols,
+                "blocked_at": self._now_iso(),
+            }
+            if self._ack_signal_lifecycle_update(sig, "rejected", "fixed_position_symbol_blocked", lifecycle_extra):
+                return
             patch = self._signal_broker_patch(
                 "rejected",
                 "fixed_position_symbol_blocked",
                 existing_extra,
-                {
-                    "status_reason": "fixed_position_symbol_blocked",
-                    "execution_state": "blocked",
-                    "fixed_position_symbol_blocked": True,
-                    "fixed_position_symbol": str(sig.get("symbol") or "").strip().upper(),
-                    "fixed_position_symbols": fixed_symbols,
-                    "blocked_at": self._now_iso(),
-                },
+                lifecycle_extra,
             )
             self.pb.update_record("ibkr_signals", record["id"], patch)
         except Exception as exc:
@@ -2153,18 +2191,21 @@ class TradingServiceSignalsMixin:
             if not record:
                 return
             signal_extra = sig.get("extra") if isinstance(sig.get("extra"), dict) else {}
+            lifecycle_extra = {
+                **signal_extra,
+                **self._buying_power_extra_fields(guard),
+                "status_reason": "buying_power_blocked",
+                "execution_state": "blocked",
+                "buying_power_blocked": True,
+                "buying_power_blocked_at": self._now_iso(),
+            }
+            if self._ack_signal_lifecycle_update(sig, "rejected", "buying_power_blocked", lifecycle_extra):
+                return
             patch = self._signal_broker_patch(
                 "rejected",
                 "buying_power_blocked",
                 existing_extra,
-                {
-                    **signal_extra,
-                    **self._buying_power_extra_fields(guard),
-                    "status_reason": "buying_power_blocked",
-                    "execution_state": "blocked",
-                    "buying_power_blocked": True,
-                    "buying_power_blocked_at": self._now_iso(),
-                },
+                lifecycle_extra,
             )
             self.pb.update_record("ibkr_signals", record["id"], patch)
         except Exception as exc:
@@ -2265,15 +2306,18 @@ class TradingServiceSignalsMixin:
             if not record:
                 return
             status_reason = str(reason or "validation_rejected").strip() or "validation_rejected"
+            lifecycle_extra = {
+                **self._validation_rejection_extra(sig, status_reason),
+                "validation_rejected": True,
+                "validation_rejected_at": self._now_iso(),
+            }
+            if self._ack_signal_lifecycle_update(sig, "rejected", status_reason, lifecycle_extra):
+                return
             patch = self._signal_broker_patch(
                 "rejected",
                 status_reason,
                 existing_extra,
-                {
-                    **self._validation_rejection_extra(sig, status_reason),
-                    "validation_rejected": True,
-                    "validation_rejected_at": self._now_iso(),
-                },
+                lifecycle_extra,
             )
             self.pb.update_record("ibkr_signals", record["id"], patch)
         except Exception as exc:
@@ -2301,6 +2345,14 @@ class TradingServiceSignalsMixin:
                     status="expired",
                     note="signal_expired",
                     environment=service_mod.ENVIRONMENT,
+                    extra={
+                        "status_reason": "signal_expired",
+                        "expired_by": "ibkr_compute_validation",
+                        "expired_at": self._now_iso(),
+                        "validation_expired": True,
+                        "validation_expired_at": self._now_iso(),
+                    },
+                    lifecycle_update=True,
                 )
                 return
             except Exception as exc:
@@ -2365,16 +2417,19 @@ class TradingServiceSignalsMixin:
                 return
 
             guard_extra = sig.get("extra") if isinstance(sig.get("extra"), dict) else {}
+            lifecycle_extra = {
+                **guard_extra,
+                "status_reason": status_reason,
+                "entry_guard_rejected": True,
+                "entry_guard_rejected_at": self._now_iso(),
+            }
+            if self._ack_signal_lifecycle_update(sig, "rejected", status_reason, lifecycle_extra):
+                return
             patch = self._signal_broker_patch(
                 "rejected",
                 status_reason,
                 existing_extra,
-                {
-                    **guard_extra,
-                    "status_reason": status_reason,
-                    "entry_guard_rejected": True,
-                    "entry_guard_rejected_at": self._now_iso(),
-                },
+                lifecycle_extra,
             )
             self.pb.update_record("ibkr_signals", record["id"], patch)
         except Exception as exc:
@@ -2406,27 +2461,30 @@ class TradingServiceSignalsMixin:
                 or broker_order.get("orderRef")
                 or ""
             ).strip()
+            lifecycle_extra = {
+                "status_reason": "duplicate_existing_broker_order",
+                "duplicate_broker_order_detected": True,
+                "duplicate_broker_order_id": broker_order_id,
+                "duplicate_broker_order_status": str(broker_order.get("status") or "").strip(),
+                "duplicate_broker_order_price": broker_order.get("price"),
+                "duplicate_broker_order_quantity": (
+                    broker_order.get("totalSize")
+                    if broker_order.get("totalSize") is not None
+                    else broker_order.get("quantity")
+                ),
+                "duplicate_broker_order_side": str(broker_order.get("side") or "").strip(),
+                "duplicate_broker_order_type": str(broker_order.get("orderType") or "").strip(),
+                "duplicate_broker_order_coid": broker_coid,
+                "duplicate_detected_at": self._now_iso(),
+                "duplicate_action": "skip_submit_existing_broker_order",
+            }
+            if self._ack_signal_lifecycle_update(sig, "rejected", "duplicate_existing_broker_order", lifecycle_extra):
+                return
             patch = self._signal_broker_patch(
                 "rejected",
                 "duplicate_existing_broker_order",
                 existing_extra,
-                {
-                    "status_reason": "duplicate_existing_broker_order",
-                    "duplicate_broker_order_detected": True,
-                    "duplicate_broker_order_id": broker_order_id,
-                    "duplicate_broker_order_status": str(broker_order.get("status") or "").strip(),
-                    "duplicate_broker_order_price": broker_order.get("price"),
-                    "duplicate_broker_order_quantity": (
-                        broker_order.get("totalSize")
-                        if broker_order.get("totalSize") is not None
-                        else broker_order.get("quantity")
-                    ),
-                    "duplicate_broker_order_side": str(broker_order.get("side") or "").strip(),
-                    "duplicate_broker_order_type": str(broker_order.get("orderType") or "").strip(),
-                    "duplicate_broker_order_coid": broker_coid,
-                    "duplicate_detected_at": self._now_iso(),
-                    "duplicate_action": "skip_submit_existing_broker_order",
-                },
+                lifecycle_extra,
             )
             self.pb.update_record("ibkr_signals", record["id"], patch)
         except Exception as exc:
@@ -2469,28 +2527,31 @@ class TradingServiceSignalsMixin:
                 else {}
             )
             protection_fields = self._protection_fields(result or {}, diagnostic)
+            lifecycle_extra = {
+                "status_reason": status_reason,
+                "submit_failed": not protection_incomplete,
+                "submit_failed_error": error_text,
+                "submit_failed_at": self._now_iso(),
+                "submit_failed_order_ids": list((result or {}).get("order_ids") or []),
+                "submit_failed_bracket_group": str((result or {}).get("bracket_group") or ""),
+                "submit_failed_entry_error_code": entry_error.get("code"),
+                "submit_failed_entry_error": str(entry_error.get("error") or ""),
+                "submit_failed_entry_details": entry_error,
+                "protection_incomplete": protection_incomplete,
+                "protection_complete": False if protection_incomplete else bool((result or {}).get("protection_complete")),
+                "missing_order_ids": list((result or {}).get("missing_order_ids") or []),
+                **protection_fields,
+                "protection_incomplete_diagnostic": diagnostic,
+                "safety_cancel_recommended": bool(diagnostic.get("cancel_recommended")) if diagnostic else False,
+                "submit_failed_cancel_sync": cancel_sync,
+            }
+            if self._ack_signal_lifecycle_update(sig, status, note, lifecycle_extra):
+                return
             patch = self._signal_broker_patch(
                 status,
                 note,
                 existing_extra,
-                {
-                    "status_reason": status_reason,
-                    "submit_failed": not protection_incomplete,
-                    "submit_failed_error": error_text,
-                    "submit_failed_at": self._now_iso(),
-                    "submit_failed_order_ids": list((result or {}).get("order_ids") or []),
-                    "submit_failed_bracket_group": str((result or {}).get("bracket_group") or ""),
-                    "submit_failed_entry_error_code": entry_error.get("code"),
-                    "submit_failed_entry_error": str(entry_error.get("error") or ""),
-                    "submit_failed_entry_details": entry_error,
-                    "protection_incomplete": protection_incomplete,
-                    "protection_complete": False if protection_incomplete else bool((result or {}).get("protection_complete")),
-                    "missing_order_ids": list((result or {}).get("missing_order_ids") or []),
-                    **protection_fields,
-                    "protection_incomplete_diagnostic": diagnostic,
-                    "safety_cancel_recommended": bool(diagnostic.get("cancel_recommended")) if diagnostic else False,
-                    "submit_failed_cancel_sync": cancel_sync,
-                },
+                lifecycle_extra,
             )
             self.pb.update_record("ibkr_signals", record["id"], patch)
         except Exception as exc:

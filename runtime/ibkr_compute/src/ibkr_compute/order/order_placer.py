@@ -597,7 +597,7 @@ class OrderPlacer:
             payload["symbol"] = str(payload.get("symbol") or "").upper()
         if "direction" in payload:
             payload["direction"] = str(payload.get("direction") or "").lower()
-        for name in ("signal_id", "trade_group_id", "entry_order_unique_id"):
+        for name in ("signal_id", "trade_group_id", "entry_order_unique_id", "close_reason"):
             if kwargs.get(name):
                 payload[name] = kwargs.get(name)
         return payload
@@ -619,6 +619,8 @@ class OrderPlacer:
         position_snapshot: Dict[str, Any] | None = None,
         wait_for_fill: bool = False,
         fill_timeout: float = 5.0,
+        close_reason: str = "",
+        close_reason_human: str = "",
     ) -> Dict[str, Any]:
         acct_id = self.get_active_account_id(use_paper)
         symbol = str(symbol or "").upper()
@@ -689,6 +691,8 @@ class OrderPlacer:
                 result=result,
                 submission_unconfirmed=submission_unconfirmed,
                 submission_error=submission_error,
+                close_reason=close_reason,
+                close_reason_human=close_reason_human,
             )
         return result
 
@@ -734,6 +738,14 @@ class OrderPlacer:
                 "submission_error": str(kwargs.get("submission_error") or ""),
                 "market_close_result": dict(kwargs.get("result") or {}),
             }
+            close_reason = str(kwargs.get("close_reason") or "").strip()
+            close_reason_human = str(kwargs.get("close_reason_human") or "").strip()
+            if close_reason:
+                extra["reason"] = close_reason
+                extra["close_reason"] = close_reason
+                extra["close_reason_code"] = close_reason
+            if close_reason_human:
+                extra["close_reason_human"] = close_reason_human
             if position_snapshot:
                 extra["position_snapshot"] = position_snapshot
             if position_avg_cost > 0:

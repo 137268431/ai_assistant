@@ -492,6 +492,8 @@ class PBClient:
         order: Optional[Dict[str, Any]] = None,
         child_orders: Optional[List[Dict[str, Any]]] = None,
         environment: Optional[str] = None,
+        extra: Optional[Dict[str, Any]] = None,
+        lifecycle_update: bool = False,
     ) -> Dict[str, Any]:
         runtime_environment = normalize_broker_mode(environment, configured_broker_mode())
         data_environment = resolve_market_data_mode(None)
@@ -503,6 +505,10 @@ class PBClient:
             "market_data_mode": data_environment,
             "data_environment": data_environment,
         }
+        if extra:
+            payload["extra"] = dict(extra)
+        if lifecycle_update:
+            payload["lifecycle_update"] = True
         if order:
             payload["order"] = order
         if child_orders:
@@ -547,6 +553,7 @@ class PBClient:
                 **broker_execution,
                 "status": status,
                 "note": note,
+                "status_reason": str((extra or {}).get("status_reason") or note or status),
                 "data_environment": data_environment,
                 "source": "ibkr_compute_fallback",
                 "updated_at_ms": int(time.time() * 1000),
@@ -563,6 +570,7 @@ class PBClient:
                 )
             patch["extra"] = {
                 **existing_extra,
+                **(dict(extra) if isinstance(extra, dict) else {}),
                 "execution_by_mode": execution_by_mode,
                 "signal_ack_fallback": True,
                 "signal_ack_fallback_at": int(time.time() * 1000),

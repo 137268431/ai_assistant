@@ -3,6 +3,7 @@ import re
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SERVICE_SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_api" / "src"
 COMPUTE_SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "src"
@@ -10,8 +11,10 @@ for src_root in (SERVICE_SRC_ROOT, COMPUTE_SRC_ROOT):
     if str(src_root) not in sys.path:
         sys.path.insert(0, str(src_root))
 
+from ibkr_api.signals.api import build_signals_ack_response
 from ibkr_api.signals.ingest import build_signal_ingest_response, build_signals_ingest_response
 from ibkr_api.signals.ingest_payloads import build_signal_record_payload, normalize_risk_reward_value
+from ibkr_api.signals.ingest_store import upsert_signal_record
 from ibkr_api.signals.notifications import build_signal_notification_card, build_signal_status_card
 from ibkr_api.orders.notifications import build_order_group_status_card, build_order_status_card
 
@@ -164,6 +167,75 @@ class SignalIngressBuildersTest(unittest.TestCase):
 
         self.assertEqual("", error)
         self.assertEqual("", record["rr"])
+
+    def test_signal_record_metric_only_fires_for_created_records(self):
+        pb = _FakePB(
+            [
+                {
+                    "id": "sig-row-1",
+                    "signal_id": "sig-existing",
+                    "environment": "live",
+                    "symbol": "AAPL",
+                    "direction": "long",
+                    "status": "pending",
+                    "entry": 100.0,
+                    "extra": {"signal_source": "tradingview_webhook"},
+                }
+            ]
+        )
+
+        with mock.patch("ibkr_api.signals.ingest_store.record_signal_record_created") as metric_mock:
+            created_row, created_action = upsert_signal_record(
+                pb,
+                None,
+                {
+                    "signal_id": "sig-created",
+                    "environment": "live",
+                    "symbol": "MSFT",
+                    "direction": "long",
+                    "status": "pending",
+                    "entry": 300.0,
+                    "extra": {"signal_source": "tradingview_webhook"},
+                },
+            )
+            updated_row, updated_action = upsert_signal_record(
+                pb,
+                pb.signals["sig-row-1"],
+                {
+                    "signal_id": "sig-existing",
+                    "environment": "live",
+                    "symbol": "AAPL",
+                    "direction": "long",
+                    "status": "pending",
+                    "entry": 101.0,
+                    "extra": {"signal_source": "tradingview_webhook"},
+                },
+            )
+            skipped_row, skipped_action = upsert_signal_record(
+                pb,
+                updated_row,
+                {
+                    "signal_id": "sig-existing",
+                    "environment": "live",
+                    "symbol": "AAPL",
+                    "direction": "long",
+                    "status": "pending",
+                    "entry": 101.0,
+                    "extra": {"signal_source": "tradingview_webhook"},
+                },
+            )
+
+        self.assertEqual("created", created_action)
+        self.assertEqual("sig-created", created_row["signal_id"])
+        self.assertEqual("updated", updated_action)
+        self.assertEqual("skipped", skipped_action)
+        self.assertEqual("sig-existing", skipped_row["signal_id"])
+        metric_mock.assert_called_once_with(
+            environment="live",
+            signal_source="tradingview_webhook",
+            direction="long",
+            initial_status="pending",
+        )
 
     def test_signal_ingest_creates_signal_with_manual_confirm_and_notification_metadata(self):
         pb = _FakePB()
@@ -448,6 +520,143 @@ class SignalIngressBuildersTest(unittest.TestCase):
             self.assertIn("**入场限价 / 止盈 / 止损**: 100.10 / 104.10 / 98.10", content)
             self.assertIn("**实际成交价**: 100.08", content)
             self.assertNotIn("**入场 / 止盈 / 止损**", content)
+
+    def test_signal_cards_fallback_reference_price_to_tv_entry(self):
+        record = {
+            "id": "sig-row-tv-reference",
+            "signal_id": "sig-tv-reference",
+            "symbol": "IESC",
+            "direction": "long",
+            "environment": "live",
+            "status": "pending",
+            "entry": 737.22,
+            "stop_loss": 725.72,
+            "take_profit": 754.47,
+            "shares": 6,
+            "extra": {
+                "broker_mode": "paper",
+                "data_environment": "live",
+                "reference_entry": 737.22,
+                "reference_stop_loss": 725.72,
+                "reference_take_profit": 754.47,
+                "submitted_entry_limit_price": 738.33,
+            },
+        }
+
+        notification_card = build_signal_notification_card(record, console_base_url="https://console.example.com")
+        status_card = build_signal_status_card(record, message="信号已确认，等待执行", console_base_url="https://console.example.com")
+
+        for card in (notification_card, status_card):
+            content = card["elements"][0]["content"]
+            self.assertIn("**参考价**: 737.22 (tv_reference_entry)", content)
+            self.assertIn("**入场限价 / 止盈 / 止损**: 738.33 / 754.47 / 725.72", content)
+
+    def test_rejected_signal_card_shows_not_submitted_status(self):
+        record = {
+            "id": "sig-row-rejected",
+            "signal_id": "sig-rejected",
+            "symbol": "MRVL",
+            "direction": "long",
+            "environment": "live",
+            "status": "pending",
+            "entry": 296.37,
+            "stop_loss": 289.58,
+            "take_profit": 306.56,
+            "shares": 16,
+            "extra": {
+                "broker_mode": "paper",
+                "data_environment": "live",
+                "execution_by_mode": {
+                    "paper": {
+                        "status": "rejected",
+                        "note": "trading_disabled",
+                        "status_reason": "trading_disabled",
+                        "data_environment": "live",
+                    }
+                },
+                "reference_entry": 296.37,
+                "submitted_entry_limit_price": 296.82,
+            },
+        }
+
+        notification_card = build_signal_notification_card(record, console_base_url="https://console.example.com")
+        status_card = build_signal_status_card(record, message="trading_disabled", console_base_url="https://console.example.com")
+
+        self.assertIn("已拒绝", notification_card["header"]["title"]["content"])
+        self.assertEqual("red", notification_card["header"]["template"])
+        markdown_lines = "\n".join(element.get("content", "") for element in notification_card["elements"] if element.get("tag") == "markdown")
+        self.assertIn("**已拒绝** · 未提交新订单", markdown_lines)
+        self.assertIn("**状态原因**: trading_disabled", markdown_lines)
+        self.assertNotIn("信号已提交，等待执行", markdown_lines)
+        self.assertIn("**状态**: 已拒绝", status_card["elements"][0]["content"])
+        self.assertIn("**原因**: trading_disabled", status_card["elements"][0]["content"])
+
+    def test_signal_ack_without_order_syncs_rejected_notification(self):
+        pb = _FakePB(
+            [
+                {
+                    "id": "sig-row-rejected-ack",
+                    "signal_id": "sig-rejected-ack",
+                    "symbol": "MRVL",
+                    "direction": "long",
+                    "environment": "live",
+                    "status": "pending",
+                    "entry": 296.37,
+                    "stop_loss": 289.58,
+                    "take_profit": 306.56,
+                    "shares": 16,
+                    "extra": {
+                        "broker_mode": "paper",
+                        "data_environment": "live",
+                        "feishu_signal_message_id": "msg-old",
+                        "reference_entry": 296.37,
+                    },
+                }
+            ]
+        )
+        update_calls = []
+
+        def fail_order_upsert(*_args, **_kwargs):
+            raise AssertionError("order upsert should not be called for lifecycle-only ack")
+
+        payload, status_code = build_signals_ack_response(
+            pb,
+            payload={
+                "signal_id": "sig-rejected-ack",
+                "broker_mode": "paper",
+                "market_data_mode": "live",
+                "data_environment": "live",
+                "status": "rejected",
+                "note": "trading_disabled",
+                "lifecycle_update": True,
+                "extra": {
+                    "status_reason": "trading_disabled",
+                    "execution_state": "tv_direct_rejected",
+                    "tv_direct_rejected": True,
+                },
+            },
+            normalize_environment=self.normalize_environment,
+            escape_filter_string=self.escape_filter_string,
+            order_upsert_builder=fail_order_upsert,
+            send_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "msg-new"},
+            update_interactive=lambda *args, **_kwargs: update_calls.append(args) or {"success": True, "message_id": "msg-old"},
+            signal_chat_id_fn=self.signal_chat_id_fn,
+            console_base_url="https://console.example.com",
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["success"])
+        self.assertEqual("rejected", payload["signal_status"])
+        self.assertEqual(1, len(update_calls))
+        self.assertEqual("msg-old", update_calls[0][0])
+        card = update_calls[0][1]
+        self.assertIn("已拒绝", card["header"]["title"]["content"])
+        self.assertIn("**原因**: trading_disabled", card["elements"][0]["content"])
+        updated_extra = pb.signals["sig-row-rejected-ack"]["extra"]
+        self.assertEqual("rejected", updated_extra["execution_by_mode"]["paper"]["status"])
+        self.assertEqual("trading_disabled", updated_extra["execution_by_mode"]["paper"]["status_reason"])
+        self.assertEqual("rejected", updated_extra["feishu_signal_notify_last_status"])
+        self.assertEqual("success", updated_extra["feishu_signal_notify_last_result"])
 
     def test_signal_cards_omit_market_context_metrics(self):
         record = {
@@ -1890,46 +2099,47 @@ class SignalIngressBuildersTest(unittest.TestCase):
             ]
         )
 
-        payload, status_code = build_signals_ingest_response(
-            pb,
-            payload={
-                "environment": "live",
-                "items": [
-                    {
-                        "symbol": "MSFT",
-                        "signal_id": "sig-2",
-                        "direction": "long",
-                        "entry": 300.0,
-                        "stop_loss": 295.0,
-                        "take_profit": 310.0,
-                        "bar_time_ms": 1713798000000,
-                    },
-                    {
-                        "symbol": "AAPL",
-                        "signal_id": "sig-dup",
-                        "direction": "long",
-                        "entry": 180.0,
-                        "stop_loss": 178.0,
-                        "take_profit": 184.0,
-                        "bar_time_ms": 1713797700000,
-                        "interval": "5m",
-                        "chart_tf": "5m",
-                        "script_tag": "main",
-                    },
-                    {
-                        "symbol": "NVDA",
-                        "direction": "long",
-                    },
-                ],
-            },
-            normalize_environment=self.normalize_environment,
-            escape_filter_string=self.escape_filter_string,
-            config_value=lambda key, default, environment: "false" if key == "signal_manual_confirm_enabled" else default,
-            send_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "batch-msg"},
-            update_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "batch-msg"},
-            signal_chat_id_fn=self.signal_chat_id_fn,
-            console_base_url="https://console.example.com",
-        )
+        with mock.patch("ibkr_api.signals.ingest_store.record_signal_record_created") as metric_mock:
+            payload, status_code = build_signals_ingest_response(
+                pb,
+                payload={
+                    "environment": "live",
+                    "items": [
+                        {
+                            "symbol": "MSFT",
+                            "signal_id": "sig-2",
+                            "direction": "long",
+                            "entry": 300.0,
+                            "stop_loss": 295.0,
+                            "take_profit": 310.0,
+                            "bar_time_ms": 1713798000000,
+                        },
+                        {
+                            "symbol": "AAPL",
+                            "signal_id": "sig-dup",
+                            "direction": "long",
+                            "entry": 180.0,
+                            "stop_loss": 178.0,
+                            "take_profit": 184.0,
+                            "bar_time_ms": 1713797700000,
+                            "interval": "5m",
+                            "chart_tf": "5m",
+                            "script_tag": "main",
+                        },
+                        {
+                            "symbol": "NVDA",
+                            "direction": "long",
+                        },
+                    ],
+                },
+                normalize_environment=self.normalize_environment,
+                escape_filter_string=self.escape_filter_string,
+                config_value=lambda key, default, environment: "false" if key == "signal_manual_confirm_enabled" else default,
+                send_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "batch-msg"},
+                update_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "batch-msg"},
+                signal_chat_id_fn=self.signal_chat_id_fn,
+                console_base_url="https://console.example.com",
+            )
 
         self.assertEqual(status_code, 200)
         self.assertEqual(payload["received"], 3)
@@ -1941,6 +2151,12 @@ class SignalIngressBuildersTest(unittest.TestCase):
         created_row = pb.signals["ibkr_signals-1"]
         self.assertEqual(created_row["status"], "pending")
         self.assertEqual(created_row["extra"]["signal_confirmation_mode"], "auto")
+        metric_mock.assert_called_once_with(
+            environment="live",
+            signal_source="ibkr_compute_realtime",
+            direction="long",
+            initial_status="pending",
+        )
 
 
 if __name__ == "__main__":

@@ -30,6 +30,15 @@ if "flask" not in sys.modules:
                 return func
             return decorator
 
+        def before_request(self, func):
+            return func
+
+        def after_request(self, func):
+            return func
+
+        def teardown_request(self, func):
+            return func
+
     flask_stub.Flask = _FakeFlask
     flask_stub.Response = object
     flask_stub.jsonify = lambda payload: payload

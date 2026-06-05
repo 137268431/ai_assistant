@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from ibkr_api.orders.values import to_float, to_text
+from ibkr_compute.observability.prometheus import record_signal_record_created
 
 
 VOLATILE_COMPARE_KEYS = {
@@ -57,6 +58,33 @@ def _record_needs_update(record: dict[str, Any], next_payload: dict[str, Any]) -
     return any(not _values_equal(record.get(key), next_payload.get(key)) for key in next_payload)
 
 
+def _as_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if text:
+            try:
+                parsed = json.loads(text)
+                return dict(parsed) if isinstance(parsed, dict) else {}
+            except Exception:
+                return {}
+    return {}
+
+
+def _record_created_signal_metric(row: dict[str, Any]) -> None:
+    extra = _as_object(row.get("extra"))
+    try:
+        record_signal_record_created(
+            environment=to_text(row.get("environment")),
+            signal_source=to_text(extra.get("signal_source") or extra.get("source") or row.get("source")),
+            direction=to_text(row.get("direction")),
+            initial_status=to_text(row.get("status") or "unknown"),
+        )
+    except Exception:
+        pass
+
+
 def upsert_signal_record(pb: Any, existing_row: dict[str, Any] | None, next_payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
     existing = dict(existing_row or {})
     if existing.get("id"):
@@ -65,7 +93,9 @@ def upsert_signal_record(pb: Any, existing_row: dict[str, Any] | None, next_payl
         updated = pb.update_record("ibkr_signals", to_text(existing.get("id")), next_payload)
         return dict(updated) if isinstance(updated, dict) else {**existing, **next_payload}, "updated"
     created = pb.create_record("ibkr_signals", next_payload)
-    return dict(created) if isinstance(created, dict) else {**next_payload}, "created"
+    created_row = dict(created) if isinstance(created, dict) else {**next_payload}
+    _record_created_signal_metric(created_row)
+    return created_row, "created"
 
 
 __all__ = ["upsert_signal_record"]

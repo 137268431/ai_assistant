@@ -6,6 +6,23 @@ from datetime import datetime
 BAR_PIPELINE_DISABLED_STATUS = "disabled_tv_primary"
 BAR_PIPELINE_DISABLED_STATUSES = {"disabled", BAR_PIPELINE_DISABLED_STATUS, "legacy_bar_pipeline_disabled"}
 FALSE_TEXT = {"0", "false", "no", "off", "disabled", "disable"}
+RUNTIME_CONFIG_SWITCH_DEFINITIONS = (
+    ("ibkr_trading_enabled", "broker", True, "critical", "自动交易总开关"),
+    ("ibkr_live_trading_enabled", "broker", True, "critical", "LIVE 交易总开关"),
+    ("tv_webhook_ingest_enabled", "broker", True, "critical", "TradingView webhook 入站"),
+    ("ibkr_compute_enabled", "market_data", True, "critical", "compute / scan 调度"),
+    ("pb_scheduler_enabled", "market_data", True, "critical", "PB scheduler 调度"),
+    ("ibkr_bar_publish_enabled", "market_data", True, "critical", "bars 写入发布"),
+    ("ibkr_market_ws_enabled", "market_data", True, "critical", "行情 WebSocket"),
+    ("ibkr_account_snapshot_refresh_enabled", "broker", True, "guard", "账户快照刷新"),
+    ("ibkr_buying_power_guard_enabled", "broker", True, "guard", "买力保护"),
+    ("ibkr_gateway_order_serial_enabled", "broker", True, "guard", "Gateway 下单串行"),
+    ("ibkr_order_question_suppress_enabled", "broker", False, "optional", "IBKR 订单问题自动抑制"),
+    ("ibkr_order_flow_enabled", "broker", False, "optional", "Order Flow 总开关"),
+    ("ibkr_order_flow_auto_entry_enabled", "broker", True, "optional", "Order Flow 自动入场"),
+    ("ibkr_order_flow_auto_exit_enabled", "broker", True, "optional", "Order Flow 自动出场"),
+    ("ibkr_order_flow_stop_tighten_enabled", "broker", True, "optional", "Order Flow 止损收紧"),
+)
 
 
 def _service_mod():
@@ -51,6 +68,54 @@ def _resolve_bar_pipeline_status(*payloads) -> dict:
 
 
 class TradingServiceRuntimeStatusMixin:
+    def _runtime_config_switch_status(self, service_mod) -> dict:
+        config = getattr(self, "config", None)
+        broker_env = str(getattr(service_mod, "BROKER_MODE", "") or getattr(service_mod, "ENVIRONMENT", "") or "paper")
+        data_env = str(getattr(service_mod, "DATA_ENVIRONMENT", "") or broker_env or "live")
+        items = []
+        critical_enabled = True
+        guard_enabled = True
+        for key, mode_scope, default, importance, label in RUNTIME_CONFIG_SWITCH_DEFINITIONS:
+            config_environment = data_env if mode_scope == "market_data" else broker_env
+            effective_importance = importance
+            if key == "ibkr_live_trading_enabled" and broker_env.strip().lower() != "live":
+                effective_importance = "live_only"
+            enabled = bool(default)
+            raw_value = "TRUE" if enabled else "FALSE"
+            if config is not None and hasattr(config, "get_bool_for_environment"):
+                try:
+                    enabled = bool(config.get_bool_for_environment(key, config_environment, bool(default)))
+                except Exception:
+                    enabled = bool(default)
+            if config is not None and hasattr(config, "get_for_environment"):
+                try:
+                    raw_value = str(config.get_for_environment(key, config_environment, raw_value))
+                except Exception:
+                    raw_value = "TRUE" if enabled else "FALSE"
+            if effective_importance == "critical" and not enabled:
+                critical_enabled = False
+            if effective_importance == "guard" and not enabled:
+                guard_enabled = False
+            items.append(
+                {
+                    "key": key,
+                    "label": label,
+                    "enabled": enabled,
+                    "value": raw_value,
+                    "mode_scope": mode_scope,
+                    "config_environment": config_environment,
+                    "importance": effective_importance,
+                }
+            )
+        return {
+            "broker_mode": broker_env,
+            "data_environment": data_env,
+            "items": items,
+            "critical_enabled": critical_enabled,
+            "guard_enabled": guard_enabled,
+            "all_required_enabled": bool(critical_enabled and guard_enabled),
+        }
+
     def _market_calendar_contract_args(self, service_mod) -> dict[str, str]:
         config = getattr(self, "config", None)
         environment = str(getattr(service_mod, "DATA_ENVIRONMENT", "live") or "live")
@@ -484,6 +549,7 @@ class TradingServiceRuntimeStatusMixin:
         watchlist_idle_topup = self._watchlist_idle_topup_status()
         order_lifecycle_status = self.order_lifecycle.status()
         gateway_status = self.gateway_manager.status()
+        runtime_config_switches = self._runtime_config_switch_status(service_mod)
         broker_status = gateway_status.get("broker") if isinstance(gateway_status.get("broker"), dict) else {}
         account_data_circuit = (
             broker_status.get("account_data_circuit")
@@ -530,6 +596,7 @@ class TradingServiceRuntimeStatusMixin:
             "broker_client_id": broker_client_id,
             "market_session": market_session,
             "gateway": gateway_status,
+            "runtime_config_switches": runtime_config_switches,
             "account_data_circuit": account_data_circuit,
             "auth_recovery": auth_recovery,
             "session": session_status,

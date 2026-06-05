@@ -244,6 +244,14 @@ def _positive_price(record_or_data: Any, *fields: str) -> float | None:
     return None
 
 
+def _positive_price_with_field(record_or_data: Any, *fields: str) -> tuple[float | None, str]:
+    for field in fields:
+        parsed = to_float(_record_or_extra_value(record_or_data, field))
+        if parsed is not None and parsed > 0:
+            return parsed, field
+    return None, ""
+
+
 def _tv_reference_prices(record_or_data: Any) -> tuple[float | None, float | None, float | None]:
     return (
         _positive_price(
@@ -497,11 +505,18 @@ def _adaptive_priority_lines(record_or_data: Any) -> list[str]:
 def _price_plan_lines(record_or_data: Any) -> list[str]:
     extra = get_signal_extra(record_or_data)
     tv_entry, tv_sl, tv_tp = _tv_reference_prices(record_or_data)
-    reference_price = _positive_price(
+    reference_price, reference_field = _positive_price_with_field(
         record_or_data,
         "pre_submit_reference_price",
         "reference_price",
         "last_price",
+        "signal_reference_price",
+        "reference_entry",
+        "reference_entry_price",
+        "tv_reference_entry",
+        "tv_reference_entry_price",
+        "original_entry",
+        "entry",
     )
     entry_limit = _positive_price(
         record_or_data,
@@ -514,6 +529,16 @@ def _price_plan_lines(record_or_data: Any) -> list[str]:
     )
     actual_fill = _actual_fill_price(record_or_data)
     reference_source = to_text(extra.get("pre_submit_reference_source") or extra.get("reference_source"))
+    if reference_price is not None and not reference_source:
+        reference_source = {
+            "signal_reference_price": "signal_reference_price",
+            "reference_entry": "tv_reference_entry",
+            "reference_entry_price": "tv_reference_entry",
+            "tv_reference_entry": "tv_reference_entry",
+            "tv_reference_entry_price": "tv_reference_entry",
+            "original_entry": "original_entry",
+            "entry": "entry",
+        }.get(reference_field, "")
     reference_suffix = f" ({reference_source})" if reference_price is not None and reference_source else ""
     lines = []
     if tv_entry is not None:
@@ -1030,6 +1055,38 @@ def _reconfirm_required(record_or_data: Any) -> bool:
     return status == "awaiting_confirm" and bool(extra.get("followup_requires_reconfirm") or extra.get("confirmation_stale"))
 
 
+def _notification_title_prefix(status: str, *, needs_reconfirm: bool) -> str:
+    if needs_reconfirm:
+        return "🔁 信号已更新，需重新确认"
+    if status == "awaiting_confirm":
+        return "🔔 新交易信号"
+    if status == "pending":
+        return "⚙️ 自动确认"
+    meta = _status_meta(status)
+    return f"{meta['emoji']} {meta['text']}"
+
+
+def _auto_status_line(status: str) -> str:
+    meta = _status_meta(status)
+    if status == "pending":
+        return "⚙️ **自动确认** · 已进入等待执行队列，尚未提交订单"
+    if status in {"submitted", "submitted_waiting_fill"}:
+        return f"{meta['emoji']} **{meta['text']}** · 等待成交/执行回报"
+    if status in {
+        "rejected",
+        "expired",
+        "cancelled",
+        "canceled",
+        "entry_missed_limit_cap",
+        "ignored_no_broker_position",
+        "stale_signal",
+        "signal_clock_skew",
+        "stale_signal/signal_clock_skew",
+    }:
+        return f"{meta['emoji']} **{meta['text']}** · 未提交新订单"
+    return f"{meta['emoji']} **{meta['text']}**"
+
+
 def _followup_lines(record_or_data: Any) -> list[str]:
     extra = get_signal_extra(record_or_data)
     lines: list[str] = []
@@ -1157,7 +1214,7 @@ def build_signal_notification_card(record_or_data: Any, *, console_base_url: str
         elements.append(
             {
                 "tag": "markdown",
-                "content": "⚙️ **自动确认** · 信号已提交，等待执行",
+                "content": _auto_status_line(status),
             }
         )
 
@@ -1185,11 +1242,11 @@ def build_signal_notification_card(record_or_data: Any, *, console_base_url: str
             "title": {
                 "tag": "plain_text",
                 "content": (
-                    f"{'🔁 信号已更新，需重新确认' if needs_reconfirm else ('🔔 新交易信号' if status == 'awaiting_confirm' else '⚙️ 自动确认')}"
+                    f"{_notification_title_prefix(status, needs_reconfirm=needs_reconfirm)}"
                     f" · {broker_badge} · {symbol} · {to_text(record_value(record_or_data, 'us_time') or '')}"
                 ),
             },
-            "template": "green" if direction == "long" else "red",
+            "template": _status_meta(status)["template"] if status not in {"awaiting_confirm", "pending"} else ("green" if direction == "long" else "red"),
         },
         "elements": elements,
     }

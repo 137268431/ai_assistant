@@ -49,6 +49,23 @@ class _Config:
     def get_bool_for_environment(self, _key, _environment, default=False):
         return default
 
+    def get_for_environment(self, _key, _environment, default=""):
+        return default
+
+
+class _SwitchConfig(_Config):
+    def __init__(self, values):
+        self.values = dict(values)
+
+    def get_bool_for_environment(self, key, environment, default=False):
+        return bool(self.values.get((key, environment), default))
+
+    def get_for_environment(self, key, environment, default=""):
+        value = self.values.get((key, environment), default)
+        if isinstance(value, bool):
+            return "TRUE" if value else "FALSE"
+        return value
+
 
 class _Runtime(TradingServiceRuntimeStatusMixin):
     def __init__(self):
@@ -184,6 +201,30 @@ def test_runtime_status_uses_lightweight_strategy_capacity(monkeypatch):
         "error": "omitted_from_status_snapshot",
     }
     assert payload["order_lifecycle"]["max_strategy_open_positions"] == 12
+
+
+def test_runtime_config_switch_status_does_not_mark_paper_live_only_switch_required():
+    fake_service_mod = types.SimpleNamespace(
+        ENVIRONMENT="paper",
+        BROKER_MODE="paper",
+        DATA_ENVIRONMENT="live",
+    )
+    runtime = _Runtime()
+    runtime.config = _SwitchConfig(
+        {
+            ("ibkr_live_trading_enabled", "paper"): False,
+            ("ibkr_order_question_suppress_enabled", "paper"): False,
+        }
+    )
+
+    payload = runtime._runtime_config_switch_status(fake_service_mod)
+    items = {item["key"]: item for item in payload["items"]}
+
+    assert payload["all_required_enabled"] is True
+    assert items["ibkr_live_trading_enabled"]["enabled"] is False
+    assert items["ibkr_live_trading_enabled"]["importance"] == "live_only"
+    assert items["ibkr_order_question_suppress_enabled"]["enabled"] is False
+    assert items["ibkr_order_question_suppress_enabled"]["importance"] == "optional"
 
 
 def test_service_status_snapshot_can_refresh_calendar_without_auth():

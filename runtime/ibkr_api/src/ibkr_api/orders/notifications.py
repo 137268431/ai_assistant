@@ -56,6 +56,43 @@ ORDER_ROLE_LABELS = {
     "reverse_close": "反向平仓",
 }
 
+EXIT_REASON_LABELS = {
+    "take_profit": "止盈",
+    "tp": "止盈",
+    "repair_tp": "修复止盈",
+    "stop_loss": "止损",
+    "sl": "止损",
+    "repair_sl": "修复止损",
+    "closed_by_stop_loss": "止损",
+    "runner_stop": "Runner 止损",
+    "force_flat_eod": "EOD 平仓",
+    "eod": "EOD 平仓",
+    "eod_force_close": "EOD 平仓",
+    "order_flow_adverse_delta_exit": "订单流提前平仓",
+    "order_flow_full_exit": "订单流风控平仓",
+    "order_flow_close_pending": "订单流风控平仓",
+    "intraday_harvest_full_exit": "日内收割平仓",
+    "intraday_harvest_partial_exit": "日内收割平仓",
+    "reverse_signal_close": "反向平仓",
+    "closed_by_reverse_signal": "反向平仓",
+    "closed_by_reverse_close": "反向平仓",
+    "manual_close": "手动平仓",
+    "market_close": "手动平仓",
+    "positions_close": "手动平仓",
+}
+
+EXIT_SOURCE_REASON_LABELS = {
+    "eod_force_close": ("force_flat_eod", "EOD 平仓"),
+    "order_flow_full_exit": ("order_flow_full_exit", "订单流风控平仓"),
+    "intraday_harvest_full_exit": ("intraday_harvest_full_exit", "日内收割平仓"),
+    "intraday_harvest_partial_exit": ("intraday_harvest_partial_exit", "日内收割平仓"),
+    "reverse_signal_close": ("reverse_signal_close", "反向平仓"),
+    "positions_close": ("positions_close", "手动平仓"),
+    "manual_close": ("manual_close", "手动平仓"),
+}
+
+UNKNOWN_CLOSE_LABEL = "平仓（原因未记录）"
+
 EXIT_ORDER_ROLES = {
     "take_profit",
     "repair_tp",
@@ -762,7 +799,7 @@ def _realized_group_pnl_model(rows: list[dict[str, Any]]) -> dict[str, Any] | No
 
 def _realized_pnl_detail(model: dict[str, Any]) -> str:
     parts: list[str] = []
-    role = ORDER_ROLE_LABELS.get(to_text(model.get("exit_role")), "退出")
+    role = to_text(model.get("exit_label")) or ORDER_ROLE_LABELS.get(to_text(model.get("exit_role")), "退出")
     exit_price = model.get("exit_price")
     quantity = model.get("quantity")
     if exit_price is not None:
@@ -869,6 +906,117 @@ def _reason_label(reason: Any) -> str:
     if "order canceled" in lowered or "order cancelled" in lowered:
         return f"保护单已被券商取消（{normalized}）"
     return ORDER_GROUP_REASON_LABELS.get(normalized, f"系统记录原因 {normalized}")
+
+
+def _normalized_exit_reason(reason: Any) -> str:
+    normalized = to_text(reason).strip()
+    if not normalized:
+        return ""
+    lowered = normalized.lower()
+    if lowered.startswith("closed_by_reverse_"):
+        return "closed_by_reverse_close" if lowered.endswith("_close") else "closed_by_reverse_signal"
+    if lowered.startswith("closed_by_tv_execution_action"):
+        return "tv_execution_action_close"
+    return lowered
+
+
+def _exit_reason_label(reason: Any, *, fallback: str = "") -> str:
+    code = _normalized_exit_reason(reason)
+    if not code:
+        return fallback
+    if code in EXIT_REASON_LABELS:
+        return EXIT_REASON_LABELS[code]
+    if code == "tv_execution_action_close":
+        return "TV 退出平仓"
+    if code.startswith("force_flat") or "eod" in code:
+        return "EOD 平仓"
+    if "runner_stop" in code:
+        return "Runner 止损"
+    if "take_profit" in code or code.endswith("_tp") or code == "tp":
+        return "止盈"
+    if "stop_loss" in code or code.endswith("_sl") or code == "sl":
+        return "止损"
+    if "reverse" in code:
+        return "反向平仓"
+    if "order_flow" in code and "exit" in code:
+        return "订单流平仓"
+    if "harvest" in code and "exit" in code:
+        return "日内收割平仓"
+    if "manual" in code or "positions_close" in code:
+        return "手动平仓"
+    return fallback or _reason_label(code)
+
+
+def _direct_exit_reason(row: dict[str, Any]) -> str:
+    for field in (
+        "exit_reason",
+        "close_reason",
+        "close_reason_code",
+        "status_reason",
+        "reason",
+        "last_status_reason",
+    ):
+        reason = to_text(_record_or_extra_value(row, field))
+        if reason and reason not in GENERIC_ENTRY_REASONS:
+            return reason
+    return ""
+
+
+def _source_exit_reason(row: dict[str, Any]) -> tuple[str, str]:
+    source = to_text(_record_or_extra_value(row, "source", "submitted_via")).lower()
+    if source in EXIT_SOURCE_REASON_LABELS:
+        return EXIT_SOURCE_REASON_LABELS[source]
+    coid = to_text(_record_or_extra_value(row, "coid", "order_ref", "orderRef", "unique_id")).lower()
+    for prefix, model in EXIT_SOURCE_REASON_LABELS.items():
+        if prefix and coid.startswith(prefix):
+            return model
+    return "", ""
+
+
+def _exit_reason_model(
+    row: dict[str, Any],
+    *,
+    related_rows: list[dict[str, Any]] | None = None,
+) -> dict[str, str] | None:
+    normalized = normalize_order_row(row)
+    role = normalized.get("role") or to_text(_record_or_extra_value(row, "role"))
+    if role in PROTECTION_TP_ROLES:
+        return {"code": "take_profit", "label": ORDER_ROLE_LABELS.get(role, "止盈"), "source": "role"}
+    if role in PROTECTION_SL_ROLES:
+        reason = _direct_exit_reason(row)
+        label = _exit_reason_label(reason, fallback=ORDER_ROLE_LABELS.get(role, "止损"))
+        return {"code": _normalized_exit_reason(reason) or "stop_loss", "label": label, "source": "role"}
+    if role not in ACTIVE_CLOSE_ROLES:
+        return None
+
+    reason = _direct_exit_reason(row)
+    if reason:
+        return {"code": _normalized_exit_reason(reason), "label": _exit_reason_label(reason, fallback=UNKNOWN_CLOSE_LABEL), "source": "row"}
+
+    reason_model = _reason_source_for_row(row)
+    reason = to_text((reason_model or {}).get("reason"))
+    if reason and reason not in GENERIC_ENTRY_REASONS:
+        return {
+            "code": _normalized_exit_reason(reason),
+            "label": _exit_reason_label(reason, fallback=UNKNOWN_CLOSE_LABEL),
+            "source": to_text((reason_model or {}).get("source")) or "row",
+        }
+
+    group_rows = dedupe_order_rows([row, *(related_rows or [])])
+    group_reason_model = _order_group_reason_model(group_rows)
+    group_reason = to_text((group_reason_model or {}).get("reason"))
+    if group_reason and group_reason not in GENERIC_ENTRY_REASONS:
+        return {
+            "code": _normalized_exit_reason(group_reason),
+            "label": _exit_reason_label(group_reason, fallback=UNKNOWN_CLOSE_LABEL),
+            "source": to_text((group_reason_model or {}).get("source")) or "group",
+        }
+
+    source_code, source_label = _source_exit_reason(row)
+    if source_label:
+        return {"code": source_code, "label": source_label, "source": "source"}
+
+    return {"code": "", "label": UNKNOWN_CLOSE_LABEL, "source": "missing"}
 
 
 def _reason_source_for_row(row: dict[str, Any]) -> dict[str, Any] | None:
@@ -1212,6 +1360,15 @@ def _trade_ledger_role_label(order_record: Any) -> str:
     return ORDER_ROLE_LABELS.get(role, role or "-")
 
 
+def _trade_ledger_display_role_label(
+    order_record: dict[str, Any],
+    *,
+    related_rows: list[dict[str, Any]] | None = None,
+) -> str:
+    exit_model = _exit_reason_model(order_record, related_rows=related_rows)
+    return to_text((exit_model or {}).get("label")) or _trade_ledger_role_label(order_record)
+
+
 def _trade_ledger_callback_type(order_record: Any) -> str:
     return to_text(_record_or_extra_value(order_record, "ib_callback_type", "callback_type")) or "broker_callback"
 
@@ -1498,6 +1655,10 @@ def build_order_callback_ledger_card(
     if previous_filled_qty and previous_filled_qty > 0 and fill_delta > 0:
         fill_line = f"{fill_line}（前次 {_format_quantity(previous_filled_qty)}）"
     pnl_model = _trade_ledger_exit_pnl_model(order_record, event_model, related_rows=related_rows)
+    exit_model = _exit_reason_model(order_record, related_rows=related_rows)
+    display_role_label = to_text((exit_model or {}).get("label")) or _trade_ledger_role_label(order_record)
+    if pnl_model and exit_model:
+        pnl_model = {**pnl_model, "exit_label": display_role_label}
     pnl_line = _realized_pnl_line(pnl_model)
     title_pnl = f" · {_pnl_outcome_label(pnl_model.get('value'))} {_format_signed_money(pnl_model.get('value'))}" if pnl_model else ""
 
@@ -1508,11 +1669,17 @@ def build_order_callback_ledger_card(
         f"**Symbol / Broker**: {symbol} / {broker_badge}",
         f"**Broker订单ID**: {broker_order_id or '-'}",
         f"**信号ID / 交易组**: {signal_id or '-'} / {trade_group_id or '-'}",
-        f"**角色 / 类型 / 方向**: {_trade_ledger_role_label(order_record)} / {order_type or '-'} / {direction or '-'}",
+        f"**角色 / 类型 / 方向**: {display_role_label} / {order_type or '-'} / {direction or '-'}",
         f"**数量 / 已成交**: {_format_quantity(_record_or_extra_value(order_record, 'quantity'))} / {_format_quantity(filled_qty)}",
         f"**均价 / 最新成交价**: {_format_price(_trade_ledger_fill_price(order_record))} / {_format_price(_record_or_extra_value(order_record, 'last_fill_price', 'lastFillPrice', 'execution_price'))}",
         fill_line,
     ]
+    if exit_model:
+        exit_code = to_text(exit_model.get("code"))
+        exit_label = to_text(exit_model.get("label"))
+        if exit_label:
+            suffix = f"（{exit_code}）" if exit_code else ""
+            body_lines.append(f"**平仓原因**: {exit_label}{suffix}")
     if pnl_line:
         body_lines.append(pnl_line)
     exec_id = to_text(event_model.get("exec_id"))
@@ -1530,7 +1697,7 @@ def build_order_callback_ledger_card(
         "header": {
             "title": {
                 "tag": "plain_text",
-                "content": f"🧾 订单真实回调 · {broker_badge} · {_trade_ledger_role_label(order_record)} · {event_label}{title_pnl} · {symbol}",
+                "content": f"🧾 订单真实回调 · {broker_badge} · {display_role_label} · {event_label}{title_pnl} · {symbol}",
             },
             "template": _trade_ledger_template(event_model, status, pnl_model.get("value") if pnl_model else None),
         },

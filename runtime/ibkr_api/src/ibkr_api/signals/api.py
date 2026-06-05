@@ -257,7 +257,7 @@ def _with_broker_execution(
         **broker_payload,
         "status": status,
         "note": note,
-        "status_reason": note,
+        "status_reason": str(merged.get("status_reason") or note or status).strip() or status,
         "data_environment": data_environment,
         "updated_at": _utc_now_iso(),
         "source": "ibkr-api",
@@ -500,6 +500,7 @@ def build_signals_ack_response(
         existing_extra = ensure_object(signal_record.get("extra"))
         order_input = ensure_object(payload.get("order"))
         order_extra = ensure_object(order_input.get("extra"))
+        payload_extra = ensure_object(payload.get("extra"))
         if _signal_consumed_for_broker(signal_record, existing_extra, broker_mode, data_environment):
             broker_status = _broker_execution_status(existing_extra, broker_mode)
             top_level_status = str((signal_record or {}).get("status") or "").strip().lower()
@@ -525,6 +526,7 @@ def build_signals_ack_response(
                 }, 200
         signal_extra = {
             **existing_extra,
+            **payload_extra,
             "last_ack_status": status,
             "last_ack_note": note,
             "last_ack_source": "ibkr-api",

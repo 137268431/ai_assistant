@@ -373,6 +373,8 @@ def _build_ibkr_close_position_response(service, payload: dict) -> tuple[dict, i
         signal_id=_text(payload.get("signal_id")),
         source=_text(payload.get("source")) or "positions_close",
         position_snapshot=position_snapshot,
+        close_reason=_text(payload.get("close_reason")) or "positions_close",
+        close_reason_human=_text(payload.get("close_reason_human")) or "手动平仓",
     )
     if result.get("ok") and cancel_after_close:
         protection_cancel = _cancel_protection_orders(service, protection_order_ids)

@@ -13,6 +13,8 @@ from ibkr_api.system.monitor_support import derive_monitor_service_map
 from ibkr_api.system.scheduler_support import build_scheduler_summary
 from ibkr_api.system.scheduler_support import scheduler_status
 from ibkr_api.system.service_state import derive_compute_state
+from ibkr_api.system.service_state import derive_runtime_state
+from ibkr_api.system.service_state import canonicalize_topology
 
 
 def _raise(message):
@@ -749,6 +751,48 @@ class SystemMonitorSupportTest(unittest.TestCase):
         self.assertEqual(runtime["status"], "starting")
         self.assertEqual(runtime["readiness_phase"], "auth_pending")
         self.assertFalse(runtime["ready"])
+
+    def test_runtime_state_overrides_stale_session_authenticated_field(self):
+        state = derive_runtime_state(
+            {
+                "runtime_phase": "running",
+                "gateway": {"running": True, "reachable": True},
+                "session": {"authenticated": True},
+                "websocket": {"connected": True, "ready": True},
+            },
+            observed_at="2026-06-05T14:51:00+00:00",
+        )
+
+        self.assertEqual(state["status"], "running")
+        self.assertTrue(state["ready"])
+        self.assertTrue(state["session_authenticated"])
+        self.assertTrue(state["gateway_reachable"])
+        self.assertTrue(state["websocket_ready"])
+
+    def test_canonical_topology_overrides_stale_runtime_session_field(self):
+        topology, service_monitor = canonicalize_topology(
+            "paper",
+            {
+                "services": {
+                    "ibkr-runtime": {
+                        "service_name": "ibkr-runtime",
+                        "status": "peer",
+                        "session_authenticated": False,
+                    }
+                }
+            },
+            {
+                "runtime_phase": "running",
+                "gateway": {"running": True, "reachable": True},
+                "session": {"authenticated": True},
+                "websocket": {"connected": True, "ready": True},
+            },
+            observed_at="2026-06-05T14:51:00+00:00",
+        )
+
+        self.assertTrue(service_monitor["services"]["ibkr-runtime"]["session_authenticated"])
+        self.assertTrue(topology["services"]["ibkr-runtime"]["session_authenticated"])
+        self.assertEqual(service_monitor["services"]["ibkr-runtime"]["status"], "running")
 
     def test_canonical_monitor_clears_ready_when_probe_marks_service_offline(self):
         service_monitor = derive_monitor_service_map(

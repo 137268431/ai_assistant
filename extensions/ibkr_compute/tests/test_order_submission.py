@@ -121,6 +121,29 @@ class FakeSignalPBClient:
 
     def ack_ibkr_signal(self, **kwargs):
         self.acks.append(dict(kwargs))
+        if kwargs.get("lifecycle_update") and not kwargs.get("order"):
+            mode = str(kwargs.get("environment") or "paper")
+            existing_extra = dict(self.record.get("extra") or {})
+            execution_by_mode = dict(existing_extra.get("execution_by_mode") or {})
+            broker_execution = dict(execution_by_mode.get(mode) or {})
+            status = kwargs.get("status")
+            note = kwargs.get("note")
+            extra = dict(kwargs.get("extra") or {})
+            execution_by_mode[mode] = {
+                **broker_execution,
+                "status": status,
+                "note": note,
+                "status_reason": extra.get("status_reason") or note or status,
+                "data_environment": "live",
+            }
+            patch = {
+                "extra": {
+                    **existing_extra,
+                    **extra,
+                    "execution_by_mode": execution_by_mode,
+                }
+            }
+            self.update_record("ibkr_signals", self.record.get("id"), patch)
         return {"status": kwargs.get("status"), "fallback": False}
 
     def notify_system_event(self, title, detail=None, **kwargs):
@@ -1217,6 +1240,8 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
             trade_group_id="NFLX_short_harvest",
             entry_order_unique_id="entry_NFLX_short_harvest",
             source="order_flow_full_exit",
+            close_reason="order_flow_full_exit",
+            close_reason_human="订单流风控平仓",
             position_snapshot={"avg_cost": 103.0, "market_price": 101.5, "unrealized_pnl": 10.5},
         )
 
@@ -1229,6 +1254,9 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
         self.assertEqual("Submitted", close_row["status"])
         self.assertEqual("active", close_row["relation_status"])
         self.assertEqual("LMT", close_row["extra"]["market_close_result"]["order_type"])
+        self.assertEqual("order_flow_full_exit", close_row["extra"]["close_reason"])
+        self.assertEqual("order_flow_full_exit", close_row["extra"]["reason"])
+        self.assertEqual("订单流风控平仓", close_row["extra"]["close_reason_human"])
         self.assertEqual(103.0, close_row["extra"]["position_avg_cost"])
         self.assertEqual(103.0, close_row["extra"]["entry_price_for_pnl"])
         self.assertEqual(10.5, close_row["extra"]["position_snapshot"]["unrealized_pnl"])
@@ -1621,6 +1649,8 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         self.assertEqual(["sig-aapl"], service.signal_router.processed)
         self.assertEqual([], service.signal_router.released)
         self.assertEqual([], service.order_placer.calls)
+        self.assertEqual("expired", pb.acks[-1]["status"])
+        self.assertTrue(pb.acks[-1]["lifecycle_update"])
         patch = pb.updates[-1][2]
         self.assertEqual("expired", _broker_execution(patch)["status"])
         self.assertEqual("stale_signal", patch["extra"]["status_reason"])
