@@ -1298,8 +1298,8 @@
           "isPaused": false
         },
         {
-          "uid": "paper_bp_guard_unavailable",
-          "title": "PaperBuyingPowerGuardUnavailable",
+          "uid": "account_bp_guard_unavailable",
+          "title": "AccountBuyingPowerGuardUnavailable",
           "condition": "B",
           "data": [
             {
@@ -1316,7 +1316,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "max by (service, environment, source) (ibkr_account_buying_power_guard_state{source=\"paper_config\", state=\"unavailable\"}) > 0",
+                "expr": "max by (service, environment, source) (ibkr_account_buying_power_guard_state{source=~\"account_snapshot|account_summary|account_data_circuit\", state=\"unavailable\"}) > 0",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -1374,8 +1374,8 @@
           "execErrState": "Error",
           "for": "2m",
           "annotations": {
-            "summary": "Paper 购买力风控不可用",
-            "description": "Paper 自动开仓购买力风控不可用，自动开仓会暂停。"
+            "summary": "账户购买力风控不可用",
+            "description": "账户购买力风控不可用，自动开仓会暂停。"
           },
           "labels": {
             "severity": "critical",
@@ -1384,8 +1384,8 @@
           "isPaused": false
         },
         {
-          "uid": "paper_bp_remaining_critical",
-          "title": "PaperBuyingPowerRemainingCritical",
+          "uid": "account_bp_remaining_critical",
+          "title": "AccountBuyingPowerRemainingCritical",
           "condition": "B",
           "data": [
             {
@@ -1402,7 +1402,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "(max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=\"paper_config\"}) < 10000) and (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=\"paper_config\"}) >= 0)",
+                "expr": "(max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=~\"account_snapshot|account_summary|account_data_circuit\"}) < max by (service, environment, source) (ibkr_account_buying_power_block_floor_usd{source=~\"account_snapshot|account_summary|account_data_circuit\"})) and (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=~\"account_snapshot|account_summary|account_data_circuit\"}) >= 0)",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -1460,8 +1460,8 @@
           "execErrState": "Error",
           "for": "2m",
           "annotations": {
-            "summary": "Paper 剩余购买力低于禁止阈值",
-            "description": "Paper 剩余购买力低于 10k，新的自动开仓应被阻止。"
+            "summary": "账户剩余购买力低于禁止阈值",
+            "description": "账户剩余购买力低于禁止阈值，新的自动开仓应被阻止。"
           },
           "labels": {
             "severity": "critical",
@@ -1470,8 +1470,8 @@
           "isPaused": false
         },
         {
-          "uid": "paper_bp_remaining_low",
-          "title": "PaperBuyingPowerRemainingLow",
+          "uid": "account_bp_remaining_low",
+          "title": "AccountBuyingPowerRemainingLow",
           "condition": "B",
           "data": [
             {
@@ -1488,7 +1488,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "(max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=\"paper_config\"}) < 15000) and (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=\"paper_config\"}) >= 10000)",
+                "expr": "(max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=~\"account_snapshot|account_summary|account_data_circuit\"}) < max by (service, environment, source) (ibkr_account_buying_power_warn_floor_usd{source=~\"account_snapshot|account_summary|account_data_circuit\"})) and (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=~\"account_snapshot|account_summary|account_data_circuit\"}) >= max by (service, environment, source) (ibkr_account_buying_power_block_floor_usd{source=~\"account_snapshot|account_summary|account_data_circuit\"}))",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -1546,8 +1546,8 @@
           "execErrState": "Error",
           "for": "2m",
           "annotations": {
-            "summary": "Paper 剩余购买力接近禁止阈值",
-            "description": "Paper 剩余购买力低于 15k 预警阈值但尚未低于 10k 禁止阈值。"
+            "summary": "账户剩余购买力接近禁止阈值",
+            "description": "账户剩余购买力低于预警阈值但尚未低于禁止阈值。"
           },
           "labels": {
             "severity": "warning",
@@ -1574,7 +1574,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "max by (service, environment, source) (ibkr_account_snapshot_available{source=~\"paper_config|account_snapshot\"}) == 0",
+                "expr": "max by (service, environment, source) (ibkr_account_snapshot_available{source=~\"account_snapshot|account_summary|account_data_circuit\"}) == 0",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -1633,7 +1633,7 @@
           "for": "2m",
           "annotations": {
             "summary": "账户快照不可用",
-            "description": "账户或 Paper 风控快照不可用，购买力、NetLiq 或剩余开仓数可能不可信。"
+            "description": "账户快照不可用，购买力、NetLiq 或保证金信息可能不可信。"
           },
           "labels": {
             "severity": "warning",

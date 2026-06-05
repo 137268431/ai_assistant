@@ -4349,7 +4349,7 @@
     {
       "id": 59,
       "type": "row",
-      "title": "12 - 账户资金与 Paper 风控 / Account Capital and Paper Risk",
+      "title": "12 - 账户资金与购买力风控 / Account Capital and Buying Power Guard",
       "collapsed": false,
       "datasource": {
         "type": "prometheus",
@@ -4366,8 +4366,8 @@
     {
       "id": 60,
       "type": "stat",
-      "title": "Paper 风控资金 / Paper Risk Capital",
-      "description": "Paper 自动开仓使用的配置化购买力模型；用于最大化资金利用率但保留 10k 禁止阈值。",
+      "title": "账户资金 / Account Capital",
+      "description": "所有环境都使用 IBKR account snapshot/summary 的真实账户金额；不再使用独立虚拟风控资金模型。",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -4385,8 +4385,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_buying_power_configured_usd{service=~\"$service\", environment=~\"$environment\", source=\"paper_config\"})",
-          "legendFormat": "configured {{environment}}",
+          "expr": "max by (environment, source) (ibkr_account_net_liquidation_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
+          "legendFormat": "net liq {{environment}} {{source}}",
           "range": true,
           "refId": "A"
         },
@@ -4396,8 +4396,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_buying_power_remaining_usd{service=~\"$service\", environment=~\"$environment\", source=\"paper_config\"})",
-          "legendFormat": "remaining {{environment}}",
+          "expr": "max by (environment, source) (ibkr_account_buying_power_remaining_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
+          "legendFormat": "buying power {{environment}} {{source}}",
           "range": true,
           "refId": "B"
         },
@@ -4407,8 +4407,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_buying_power_used_exposure_usd{service=~\"$service\", environment=~\"$environment\", source=\"paper_config\"})",
-          "legendFormat": "used {{environment}}",
+          "expr": "max by (environment, source) (ibkr_account_available_funds_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
+          "legendFormat": "available funds {{environment}} {{source}}",
           "range": true,
           "refId": "C"
         },
@@ -4418,8 +4418,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_buying_power_warn_floor_usd{service=~\"$service\", environment=~\"$environment\", source=\"paper_config\"})",
-          "legendFormat": "warn floor {{environment}}",
+          "expr": "max by (environment, source) (ibkr_account_excess_liquidity_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
+          "legendFormat": "excess liquidity {{environment}} {{source}}",
           "range": true,
           "refId": "D"
         },
@@ -4429,8 +4429,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_buying_power_block_floor_usd{service=~\"$service\", environment=~\"$environment\", source=\"paper_config\"})",
-          "legendFormat": "block floor {{environment}}",
+          "expr": "max by (environment, source) (ibkr_account_total_cash_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
+          "legendFormat": "cash {{environment}} {{source}}",
           "range": true,
           "refId": "E"
         }
@@ -4477,8 +4477,8 @@
     {
       "id": 61,
       "type": "timeseries",
-      "title": "Paper 风控利用率 / Paper Risk Utilization",
-      "description": "配置购买力已使用比例；目标是接近但不要击穿 10k 剩余购买力。",
+      "title": "保证金与持仓占用 / Margin and Exposure",
+      "description": "真实账户的持仓市值、BuyingPower 压力上下文和保证金要求，用于判断账户是否接近开仓限制。",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -4496,15 +4496,48 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_buying_power_utilization_pct{service=~\"$service\", environment=~\"$environment\", source=\"paper_config\"})",
-          "legendFormat": "{{environment}} {{source}}",
+          "expr": "max by (environment, source) (ibkr_account_gross_position_value_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
+          "legendFormat": "gross position {{environment}} {{source}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_buying_power_used_exposure_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
+          "legendFormat": "used exposure {{environment}} {{source}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_initial_margin_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
+          "legendFormat": "initial margin {{environment}} {{source}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_maintenance_margin_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
+          "legendFormat": "maintenance margin {{environment}} {{source}}",
+          "range": true,
+          "refId": "D"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "percent",
+          "unit": "currencyUSD",
           "custom": {
             "drawStyle": "line",
             "lineInterpolation": "linear",
@@ -4576,8 +4609,8 @@
     {
       "id": 62,
       "type": "stat",
-      "title": "Paper 剩余可开仓数 / Paper Remaining Slots",
-      "description": "按默认单笔占用估算的剩余可开仓数量。",
+      "title": "购买力阈值 / Buying Power Floors",
+      "description": "基于真实账户 NetLiq 和配置阈值计算的预警/禁止阈值。",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -4595,15 +4628,26 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_buying_power_remaining_slots{service=~\"$service\", environment=~\"$environment\", source=\"paper_config\"})",
-          "legendFormat": "{{environment}} slots",
+          "expr": "max by (environment, source) (ibkr_account_buying_power_warn_floor_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
+          "legendFormat": "warn floor {{environment}} {{source}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_buying_power_block_floor_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
+          "legendFormat": "block floor {{environment}} {{source}}",
+          "range": true,
+          "refId": "B"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "unit": "currencyUSD",
           "custom": {},
           "thresholds": {
             "mode": "absolute",
@@ -4639,8 +4683,8 @@
     {
       "id": 63,
       "type": "stat",
-      "title": "Paper 风控状态 / Paper Guard State",
-      "description": "当前状态为 1，其余状态为 0。unavailable/blocked 需要立即处理。",
+      "title": "账户风控状态 / Account Guard State",
+      "description": "snapshot available=0、account circuit active=1 或 guard unavailable/blocked 需要立即处理。",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -4658,10 +4702,32 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (environment, source, state) (ibkr_account_buying_power_guard_state{service=~\"$service\", environment=~\"$environment\", source=\"paper_config\"})",
-          "legendFormat": "{{environment}} {{state}}",
+          "expr": "max by (environment, source) (ibkr_account_snapshot_available{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
+          "legendFormat": "snapshot available {{environment}} {{source}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source, state) (ibkr_account_buying_power_guard_state{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
+          "legendFormat": "guard {{environment}} {{source}} {{state}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment) (ibkr_account_data_circuit_active{service=~\"$service\", environment=~\"$environment\"})",
+          "legendFormat": "account circuit active {{environment}}",
+          "range": true,
+          "refId": "C"
         }
       ],
       "fieldConfig": {
@@ -4702,8 +4768,8 @@
     {
       "id": 64,
       "type": "timeseries",
-      "title": "账户快照与实际账户资金 / Account Snapshot and Actual Capital",
-      "description": "同时显示真实账户快照与 Paper 风控模型，避免误把 Paper 账户几百万 BuyingPower 当作风控额度。",
+      "title": "账户资金趋势 / Account Capital Trend",
+      "description": "真实账户资金、购买力、现金、持仓占用和保证金随时间变化。",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -4721,8 +4787,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_snapshot_available{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "snapshot available {{source}}",
+          "expr": "max by (environment, source) (ibkr_account_net_liquidation_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
+          "legendFormat": "net liq {{environment}} {{source}}",
           "range": true,
           "refId": "A"
         },
@@ -4732,8 +4798,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_net_liquidation_usd{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "net liq {{source}}",
+          "expr": "max by (environment, source) (ibkr_account_buying_power_remaining_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
+          "legendFormat": "buying power {{environment}} {{source}}",
           "range": true,
           "refId": "B"
         },
@@ -4743,15 +4809,81 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_buying_power_remaining_usd{service=~\"$service\", environment=~\"$environment\", source=\"account_snapshot\"})",
-          "legendFormat": "account BP {{source}}",
+          "expr": "max by (environment, source) (ibkr_account_available_funds_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
+          "legendFormat": "available funds {{environment}} {{source}}",
           "range": true,
           "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_excess_liquidity_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
+          "legendFormat": "excess liquidity {{environment}} {{source}}",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_total_cash_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
+          "legendFormat": "cash {{environment}} {{source}}",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_gross_position_value_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
+          "legendFormat": "gross position {{environment}} {{source}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_buying_power_used_exposure_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
+          "legendFormat": "used exposure {{environment}} {{source}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_initial_margin_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
+          "legendFormat": "initial margin {{environment}} {{source}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment, source) (ibkr_account_maintenance_margin_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary|account_data_circuit\"})",
+          "legendFormat": "maintenance margin {{environment}} {{source}}",
+          "range": true,
+          "refId": "D"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "unit": "currencyUSD",
           "custom": {
             "drawStyle": "line",
             "lineInterpolation": "linear",

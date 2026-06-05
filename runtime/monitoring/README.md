@@ -26,3 +26,4 @@ password.
 6. History/backfill activity and row throughput.
 7. Signal validation, submission, reverse action, and order tracker outcomes.
 8. Host CPU, memory, filesystem, and systemd state.
+9. Account capital, buying power floors, guard state, and Gateway/account runtime state.

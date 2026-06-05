@@ -387,15 +387,29 @@ class ComputePrometheusMetricsTest(unittest.TestCase):
         )
 
         account_labels = set(getattr(getattr(module, "ACCOUNT_BUYING_POWER_REMAINING", None), "_labelnames", None) or ())
+        capital_metric_names = (
+            "ACCOUNT_AVAILABLE_FUNDS",
+            "ACCOUNT_EXCESS_LIQUIDITY",
+            "ACCOUNT_TOTAL_CASH",
+            "ACCOUNT_GROSS_POSITION_VALUE",
+            "ACCOUNT_INITIAL_MARGIN",
+            "ACCOUNT_MAINTENANCE_MARGIN",
+        )
+        capital_label_sets = [
+            set(getattr(getattr(module, name, None), "_labelnames", None) or ())
+            for name in capital_metric_names
+        ]
         state_labels = set(getattr(getattr(module, "ACCOUNT_BUYING_POWER_GUARD_STATE", None), "_labelnames", None) or ())
         gateway_labels = set(getattr(getattr(module, "GATEWAY_SESSION_AUTHENTICATED", None), "_labelnames", None) or ())
-        if not account_labels or not state_labels or not gateway_labels:
+        if not account_labels or any(not labels for labels in capital_label_sets) or not state_labels or not gateway_labels:
             self.skipTest("prometheus_client label schemas are unavailable in this environment")
 
         denied = _get_denylist(module)
-        for label_set in (account_labels, state_labels, gateway_labels):
+        for label_set in (account_labels, *capital_label_sets, state_labels, gateway_labels):
             self.assertFalse(denied.intersection(label_set), label_set)
         self.assertEqual({"service", "environment", "source"}, account_labels)
+        for label_set in capital_label_sets:
+            self.assertEqual({"service", "environment", "source"}, label_set)
         self.assertEqual({"service", "environment", "source", "state"}, state_labels)
         self.assertEqual({"service", "environment"}, gateway_labels)
 

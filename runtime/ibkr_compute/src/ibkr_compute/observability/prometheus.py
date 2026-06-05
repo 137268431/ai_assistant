@@ -400,32 +400,62 @@ if _client_available():
     )
     ACCOUNT_NET_LIQUIDATION = Gauge(
         "ibkr_account_net_liquidation_usd",
-        "Account or paper risk-model net liquidation in USD.",
+        "Account net liquidation in USD.",
+        ("service", "environment", "source"),
+    )
+    ACCOUNT_AVAILABLE_FUNDS = Gauge(
+        "ibkr_account_available_funds_usd",
+        "Account available funds in USD.",
+        ("service", "environment", "source"),
+    )
+    ACCOUNT_EXCESS_LIQUIDITY = Gauge(
+        "ibkr_account_excess_liquidity_usd",
+        "Account excess liquidity in USD.",
+        ("service", "environment", "source"),
+    )
+    ACCOUNT_TOTAL_CASH = Gauge(
+        "ibkr_account_total_cash_usd",
+        "Account total cash value in USD.",
+        ("service", "environment", "source"),
+    )
+    ACCOUNT_GROSS_POSITION_VALUE = Gauge(
+        "ibkr_account_gross_position_value_usd",
+        "Account gross position value in USD.",
+        ("service", "environment", "source"),
+    )
+    ACCOUNT_INITIAL_MARGIN = Gauge(
+        "ibkr_account_initial_margin_usd",
+        "Account initial margin requirement in USD.",
+        ("service", "environment", "source"),
+    )
+    ACCOUNT_MAINTENANCE_MARGIN = Gauge(
+        "ibkr_account_maintenance_margin_usd",
+        "Account maintenance margin requirement in USD.",
         ("service", "environment", "source"),
     )
     ACCOUNT_BUYING_POWER_CONFIGURED = Gauge(
         "ibkr_account_buying_power_configured_usd",
-        "Configured paper risk-model buying power in USD.",
+        "Deprecated configured buying-power model value in USD.",
         ("service", "environment", "source"),
     )
     ACCOUNT_BUYING_POWER_REMAINING = Gauge(
         "ibkr_account_buying_power_remaining_usd",
-        "Remaining account or paper risk-model buying power in USD.",
+        "Remaining account buying power in USD.",
         ("service", "environment", "source"),
     )
     ACCOUNT_BUYING_POWER_USED_EXPOSURE = Gauge(
         "ibkr_account_buying_power_used_exposure_usd",
-        "Strategy exposure already consuming paper risk-model buying power.",
+        "Account gross exposure used as buying-power pressure context.",
         ("service", "environment", "source"),
     )
     ACCOUNT_BUYING_POWER_UTILIZATION = Gauge(
         "ibkr_account_buying_power_utilization_pct",
-        "Buying-power utilization percentage for account or paper risk model.",
+        "Approximate buying-power utilization percentage.",
         ("service", "environment", "source"),
     )
     ACCOUNT_BUYING_POWER_REMAINING_SLOTS = Gauge(
         "ibkr_account_buying_power_remaining_slots",
-        "Estimated remaining entry slots under the paper risk model.",
+        "Deprecated estimated remaining entry slots.",
         ("service", "environment", "source"),
     )
     ACCOUNT_BUYING_POWER_WARN_FLOOR = Gauge(
@@ -540,7 +570,9 @@ else:  # pragma: no cover
     GATEWAY_SOCKET_PROBES = GATEWAY_SOCKET_DURATION = GATEWAY_SOCKET_LISTENING = None
     GATEWAY_SERVICE_ACTIONS = GATEWAY_SERVICE_RUNNING = GATEWAY_SERVICE_UPTIME = GATEWAY_STATUS_CODE = None
     GATEWAY_REACHABLE = GATEWAY_SESSION_AUTHENTICATED = GATEWAY_WEBSOCKET_READY = ACCOUNT_DATA_CIRCUIT_ACTIVE = None
-    ACCOUNT_SNAPSHOT_AVAILABLE = ACCOUNT_NET_LIQUIDATION = ACCOUNT_BUYING_POWER_CONFIGURED = None
+    ACCOUNT_SNAPSHOT_AVAILABLE = ACCOUNT_NET_LIQUIDATION = ACCOUNT_AVAILABLE_FUNDS = ACCOUNT_EXCESS_LIQUIDITY = None
+    ACCOUNT_TOTAL_CASH = ACCOUNT_GROSS_POSITION_VALUE = ACCOUNT_INITIAL_MARGIN = ACCOUNT_MAINTENANCE_MARGIN = None
+    ACCOUNT_BUYING_POWER_CONFIGURED = None
     ACCOUNT_BUYING_POWER_REMAINING = ACCOUNT_BUYING_POWER_USED_EXPOSURE = ACCOUNT_BUYING_POWER_UTILIZATION = None
     ACCOUNT_BUYING_POWER_REMAINING_SLOTS = ACCOUNT_BUYING_POWER_WARN_FLOOR = ACCOUNT_BUYING_POWER_BLOCK_FLOOR = None
     ACCOUNT_BUYING_POWER_GUARD_STATE = None
@@ -799,7 +831,8 @@ def set_account_snapshot_metrics(payload: dict[str, Any] | None = None, *, sourc
 
     health = payload.get("account_snapshot_health") if isinstance(payload.get("account_snapshot_health"), dict) else {}
     guard_available = guard.get("available")
-    available = bool(payload.get("ok", True)) and str(health.get("health") or "ok").lower() != "unavailable"
+    health_state = str(health.get("state") or health.get("health") or "ok").lower()
+    available = bool(payload.get("ok", True)) and health_state != "unavailable"
     if guard_available is False:
         available = False
     if ACCOUNT_SNAPSHOT_AVAILABLE is not None:
@@ -808,6 +841,12 @@ def set_account_snapshot_metrics(payload: dict[str, Any] | None = None, *, sourc
     net_liq = _optional_float(guard.get("net_liquidation"))
     if net_liq is None:
         net_liq = _optional_float(summary.get("net_liquidation"))
+    available_funds = _optional_float(summary.get("available_funds"))
+    excess_liquidity = _optional_float(summary.get("excess_liquidity"))
+    total_cash = _optional_float(summary.get("total_cash_value"))
+    gross_position_value = _optional_float(summary.get("gross_position_value"))
+    initial_margin = _optional_float(summary.get("initial_margin"))
+    maintenance_margin = _optional_float(summary.get("maintenance_margin"))
     remaining = _optional_float(guard.get("remaining"))
     if remaining is None:
         remaining = _optional_float(summary.get("remaining_buying_power"))
@@ -818,9 +857,15 @@ def set_account_snapshot_metrics(payload: dict[str, Any] | None = None, *, sourc
     if used is None and configured is not None and remaining is not None:
         used = max(0.0, configured - remaining)
     elif used is None:
-        used = _optional_float(summary.get("gross_position_value"))
+        used = gross_position_value
 
     _gauge_set(ACCOUNT_NET_LIQUIDATION, (service, env, src), net_liq)
+    _gauge_set(ACCOUNT_AVAILABLE_FUNDS, (service, env, src), available_funds)
+    _gauge_set(ACCOUNT_EXCESS_LIQUIDITY, (service, env, src), excess_liquidity)
+    _gauge_set(ACCOUNT_TOTAL_CASH, (service, env, src), total_cash)
+    _gauge_set(ACCOUNT_GROSS_POSITION_VALUE, (service, env, src), gross_position_value)
+    _gauge_set(ACCOUNT_INITIAL_MARGIN, (service, env, src), initial_margin)
+    _gauge_set(ACCOUNT_MAINTENANCE_MARGIN, (service, env, src), maintenance_margin)
     _gauge_set(ACCOUNT_BUYING_POWER_CONFIGURED, (service, env, src), configured)
     _gauge_set(ACCOUNT_BUYING_POWER_REMAINING, (service, env, src), remaining)
     _gauge_set(ACCOUNT_BUYING_POWER_USED_EXPOSURE, (service, env, src), used)
@@ -833,8 +878,10 @@ def set_account_snapshot_metrics(payload: dict[str, Any] | None = None, *, sourc
         utilization = max(0.0, min(100.0, used / configured * 100.0))
     elif utilization is None and remaining is not None:
         buying_power = _optional_float(summary.get("buying_power"))
-        if buying_power is not None and buying_power > 0:
+        if buying_power is not None and buying_power > 0 and abs(buying_power - remaining) > 1e-9:
             utilization = max(0.0, min(100.0, (buying_power - remaining) / buying_power * 100.0))
+        elif used is not None and remaining + used > 0:
+            utilization = max(0.0, min(100.0, used / (remaining + used) * 100.0))
     _gauge_set(ACCOUNT_BUYING_POWER_UTILIZATION, (service, env, src), utilization)
 
     state = _sanitize_label(str(guard.get("state") or "unknown").strip().lower() or "unknown")

@@ -118,10 +118,8 @@ class _SnapshotService:
         self.order_lifecycle = lifecycle
 
 
-class _BrokerSourceConfig:
+class _DefaultConfig:
     def get_for_environment(self, key, _environment, default=None):
-        if key == "ibkr_buying_power_guard_paper_source":
-            return "broker"
         return default
 
     def get_bool_for_environment(self, _key, _environment, default=False):
@@ -164,7 +162,7 @@ class _BuyingPowerLifecycle:
 
 
 class _BuyingPowerService(_SnapshotService):
-    config = _BrokerSourceConfig()
+    config = _DefaultConfig()
 
     def __init__(self, lifecycle: _BuyingPowerLifecycle, *, circuit: dict | None = None):
         super().__init__(lifecycle)
@@ -254,7 +252,7 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         buying_power = _with_fake_api_app(app, lambda: _build_ibkr_account_buying_power_snapshot(service))
 
         self.assertTrue(full_snapshot["summary_available"])
-        self.assertEqual("account_snapshot_cache", buying_power["source"])
+        self.assertEqual("account_snapshot", buying_power["source"])
         self.assertEqual(1, lifecycle.snapshot_calls)
         self.assertEqual(0, lifecycle.summary_calls)
         self.assertEqual("ok", buying_power["account_snapshot_health"]["state"])

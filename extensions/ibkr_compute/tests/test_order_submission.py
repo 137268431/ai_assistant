@@ -656,6 +656,49 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
         self.assertEqual(1, tp_order.ocaType)
         self.assertEqual(1, sl_order.ocaType)
 
+    def test_place_bracket_order_smart_routes_us_stock_with_primary_exchange(self):
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeClient(
+            submission_result={
+                "ok": True,
+                "orders": {"101": {"ok": True}, "102": {"ok": True}, "103": {"ok": True}},
+                "missing_order_ids": [],
+            }
+        )
+        adapter.resolve_contract = lambda **kwargs: {
+            "conid": 123,
+            "symbol": "DDOG",
+            "sec_type": "STK",
+            "exchange": "NASDAQ",
+            "currency": "USD",
+        }
+
+        original_order = ib_gateway.Order
+        original_contract = ib_gateway.Contract
+        try:
+            ib_gateway.Order = FakeOrder
+            ib_gateway.Contract = FakeContract
+            result = ib_gateway.BrokerAdapter.place_bracket_order(
+                adapter,
+                conid=123,
+                symbol="DDOG",
+                direction="long",
+                quantity=20,
+                entry_price=243.91,
+                take_profit_price=250.0,
+                stop_loss_price=240.0,
+            )
+        finally:
+            ib_gateway.Order = original_order
+            ib_gateway.Contract = original_contract
+
+        self.assertTrue(result["ok"])
+        contracts = [contract for contract, _ in adapter.client.placed_orders]
+        self.assertEqual(3, len(contracts))
+        for contract in contracts:
+            self.assertEqual("SMART", contract.exchange)
+            self.assertEqual("NASDAQ", contract.primaryExchange)
+
     def test_place_bracket_order_sets_adaptive_algo_on_entry_limit(self):
         adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
         adapter.client = FakeClient(
@@ -882,6 +925,70 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
         self.assertEqual("U123456", close_order.account)
         self.assertEqual("SELL", close_order.action)
         self.assertEqual("MKT", close_order.orderType)
+
+    def test_place_market_close_smart_routes_us_stock_with_primary_exchange(self):
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeClient({"ok": True})
+        adapter.resolve_contract = lambda **kwargs: {
+            "conid": 123,
+            "symbol": "BWA",
+            "sec_type": "STK",
+            "exchange": "NYSE",
+            "currency": "USD",
+        }
+
+        original_order = ib_gateway.Order
+        original_contract = ib_gateway.Contract
+        try:
+            ib_gateway.Order = FakeOrder
+            ib_gateway.Contract = FakeContract
+            result = ib_gateway.BrokerAdapter.place_market_close(
+                adapter,
+                conid=123,
+                symbol="BWA",
+                direction="long",
+                quantity=66,
+            )
+        finally:
+            ib_gateway.Order = original_order
+            ib_gateway.Contract = original_contract
+
+        self.assertTrue(result["ok"])
+        contract = adapter.client.placed_orders[0][0]
+        self.assertEqual("SMART", contract.exchange)
+        self.assertEqual("NYSE", contract.primaryExchange)
+
+    def test_place_market_close_preserves_non_us_stock_exchange(self):
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeClient({"ok": True})
+        adapter.resolve_contract = lambda **kwargs: {
+            "conid": 123,
+            "symbol": "VOD",
+            "sec_type": "STK",
+            "exchange": "LSE",
+            "currency": "GBP",
+        }
+
+        original_order = ib_gateway.Order
+        original_contract = ib_gateway.Contract
+        try:
+            ib_gateway.Order = FakeOrder
+            ib_gateway.Contract = FakeContract
+            result = ib_gateway.BrokerAdapter.place_market_close(
+                adapter,
+                conid=123,
+                symbol="VOD",
+                direction="long",
+                quantity=10,
+            )
+        finally:
+            ib_gateway.Order = original_order
+            ib_gateway.Contract = original_contract
+
+        self.assertTrue(result["ok"])
+        contract = adapter.client.placed_orders[0][0]
+        self.assertEqual("LSE", contract.exchange)
+        self.assertEqual("", getattr(contract, "primaryExchange", ""))
 
     def test_place_market_close_can_use_marketable_limit_protection(self):
         adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)

@@ -60,10 +60,6 @@ TV_PRIMARY_DEFAULTS = {
     "max_strategy_open_positions": "0",
     "intraday_symbol_daily_entry_limit": "3",
     "position_limit_max": "36",
-    "ibkr_buying_power_guard_paper_source": "config",
-    "ibkr_paper_risk_buying_power_usd": "194388.61",
-    "ibkr_paper_risk_net_liquidation_usd": "61398",
-    "ibkr_paper_risk_default_entry_exposure_usd": "5000",
     "entry_pre_submit_temp_subscription_limit": "8",
     "tv_max_active_targets": "100",
     "tv_max_same_direction_targets": "0",
@@ -77,6 +73,13 @@ TV_PRIMARY_DEFAULTS = {
     "tv_risk_update_never_widen_stop": "true",
     "tv_risk_update_missing_child_order_retry_pending": "true",
     "tv_risk_update_retry_missing_child_orders": "true",
+}
+
+DEPRECATED_PAPER_RISK_CONFIG_KEYS = {
+    "ibkr_buying_power_guard_paper_source",
+    "ibkr_paper_risk_buying_power_usd",
+    "ibkr_paper_risk_net_liquidation_usd",
+    "ibkr_paper_risk_default_entry_exposure_usd",
 }
 
 
@@ -180,6 +183,8 @@ def test_tv_primary_defaults_are_widened_and_hardened() -> None:
 
     for key, expected in TV_PRIMARY_DEFAULTS.items():
         assert Config.DEFAULTS[key] == expected
+    for key in DEPRECATED_PAPER_RISK_CONFIG_KEYS:
+        assert key not in Config.DEFAULTS
 
     cfg = Config()
     assert cfg.get_bool("ibkr_require_target_direction_alignment", True) is False
@@ -204,3 +209,5 @@ def test_tv_primary_seed_values_match_defaults() -> None:
         seed_value, seed_default = seed_values[key]
         assert seed_value.lower() == expected.lower()
         assert seed_default.lower() == expected.lower()
+    for key in DEPRECATED_PAPER_RISK_CONFIG_KEYS:
+        assert key not in seed_values

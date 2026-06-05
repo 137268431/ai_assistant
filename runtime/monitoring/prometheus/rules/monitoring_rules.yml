@@ -49,26 +49,27 @@ groups:
       summary: Disk free space is below 8%
       description: instance={{ $labels.instance }} mountpoint={{ $labels.mountpoint
         }}.
-  - alert: PaperBuyingPowerGuardUnavailable
-    expr: max by (service, environment, source) (ibkr_account_buying_power_guard_state{source="paper_config",
+  - alert: AccountBuyingPowerGuardUnavailable
+    expr: max by (service, environment, source) (ibkr_account_buying_power_guard_state{source=~"account_snapshot|account_summary|account_data_circuit",
       state="unavailable"}) > 0
     for: 2m
     labels:
       severity: critical
     annotations:
-      summary: Paper buying-power guard is unavailable
-      description: Paper 自动开仓购买力风控不可用，自动开仓会暂停。service={{ $labels.service }} environment={{
+      summary: Account buying-power guard is unavailable
+      description: 账户购买力风控不可用，自动开仓会暂停。service={{ $labels.service }} environment={{
         $labels.environment }}.
-  - alert: PaperBuyingPowerRemainingCritical
-    expr: (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source="paper_config"})
-      < 10000) and (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source="paper_config"})
+  - alert: AccountBuyingPowerRemainingCritical
+    expr: (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=~"account_snapshot|account_summary|account_data_circuit"})
+      < max by (service, environment, source) (ibkr_account_buying_power_block_floor_usd{source=~"account_snapshot|account_summary|account_data_circuit"}))
+      and (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=~"account_snapshot|account_summary|account_data_circuit"})
       >= 0)
     for: 2m
     labels:
       severity: critical
     annotations:
-      summary: Paper buying power is below block floor
-      description: Paper 剩余购买力低于 10k 禁止阈值，新的自动开仓应被阻止。remaining={{ $value }}.
+      summary: Account buying power is below block floor
+      description: 账户剩余购买力低于禁止阈值，新的自动开仓应被阻止。remaining={{ $value }}.
   - alert: GatewayRuntimeStateDown
     expr: (ibkr_gateway_reachable == 0) or (ibkr_gateway_session_authenticated ==
       0) or (ibkr_gateway_websocket_ready == 0)
@@ -183,25 +184,26 @@ groups:
     annotations:
       summary: Host CPU usage is high
       description: instance={{ $labels.instance }}.
-  - alert: PaperBuyingPowerRemainingLow
-    expr: (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source="paper_config"})
-      < 15000) and (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source="paper_config"})
-      >= 10000)
+  - alert: AccountBuyingPowerRemainingLow
+    expr: (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=~"account_snapshot|account_summary|account_data_circuit"})
+      < max by (service, environment, source) (ibkr_account_buying_power_warn_floor_usd{source=~"account_snapshot|account_summary|account_data_circuit"}))
+      and (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=~"account_snapshot|account_summary|account_data_circuit"})
+      >= max by (service, environment, source) (ibkr_account_buying_power_block_floor_usd{source=~"account_snapshot|account_summary|account_data_circuit"}))
     for: 2m
     labels:
       severity: warning
     annotations:
-      summary: Paper buying power is near the block floor
-      description: Paper 剩余购买力低于 15k 预警阈值但尚未低于 10k 禁止阈值。remaining={{ $value }}.
+      summary: Account buying power is near the block floor
+      description: 账户剩余购买力低于预警阈值但尚未低于禁止阈值。remaining={{ $value }}.
   - alert: AccountSnapshotUnavailable
-    expr: max by (service, environment, source) (ibkr_account_snapshot_available{source=~"paper_config|account_snapshot"})
+    expr: max by (service, environment, source) (ibkr_account_snapshot_available{source=~"account_snapshot|account_summary|account_data_circuit"})
       == 0
     for: 2m
     labels:
       severity: warning
     annotations:
       summary: Account snapshot is unavailable
-      description: 账户或 Paper 风控快照不可用，购买力、NetLiq 或剩余开仓数可能不可信。source={{ $labels.source
+      description: 账户快照不可用，购买力、NetLiq 或保证金信息可能不可信。source={{ $labels.source
         }}.
   - alert: AccountDataCircuitActive
     expr: ibkr_account_data_circuit_active == 1

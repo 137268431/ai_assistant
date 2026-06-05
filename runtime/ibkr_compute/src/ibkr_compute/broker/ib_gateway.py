@@ -82,6 +82,7 @@ ACCOUNT_DATA_CIRCUIT_WINDOW_SECONDS = 120.0
 ACCOUNT_DATA_CIRCUIT_COOLDOWN_SECONDS = 60.0
 ACCOUNT_DATA_CIRCUIT_MIN_FAILURES = 4
 ACCOUNT_DATA_EXPECTED_UNSUBSCRIBE_GRACE_SECONDS = 5.0
+SMART_ROUTED_US_SEC_TYPES = {"STK", "ETF", "WAR"}
 
 
 def _env_float(name: str, default: float, *, minimum: float = 0.0) -> float:
@@ -2089,6 +2090,34 @@ class BrokerAdapter:
         return details
 
     @staticmethod
+    def _contract_text(value: Any) -> str:
+        return str(value or "").strip().upper()
+
+    @classmethod
+    def _build_order_contract(cls, contract_info: dict, *, conid: int = 0, symbol: str = "") -> Any:
+        contract_payload = dict(contract_info or {})
+        contract = Contract()
+        contract.conId = int(contract_payload.get("conid") or conid or 0)
+        contract.symbol = str(contract_payload.get("symbol") or symbol or "").strip()
+        contract.secType = cls._contract_text(contract_payload.get("sec_type") or "STK")
+        contract.currency = cls._contract_text(contract_payload.get("currency") or "USD")
+
+        requested_exchange = cls._contract_text(contract_payload.get("exchange") or "SMART")
+        primary_exchange = cls._contract_text(
+            contract_payload.get("primary_exchange") or contract_payload.get("listing_exchange")
+        )
+        if not primary_exchange and requested_exchange and requested_exchange != "SMART":
+            primary_exchange = requested_exchange
+
+        if contract.secType in SMART_ROUTED_US_SEC_TYPES and contract.currency == "USD":
+            contract.exchange = "SMART"
+            if primary_exchange and primary_exchange != "SMART":
+                contract.primaryExchange = primary_exchange
+        else:
+            contract.exchange = requested_exchange or primary_exchange or "SMART"
+        return contract
+
+    @staticmethod
     def _contract_exchange_values(item: dict) -> set[str]:
         values: set[str] = set()
         for key in ("exchange", "primary_exchange", "listing_exchange"):
@@ -2992,12 +3021,7 @@ class BrokerAdapter:
         contract_info = self.resolve_contract(symbol=symbol, conid=conid)
         if not contract_info:
             return {"ok": False, "error": "contract_not_found"}
-        contract = Contract()
-        contract.conId = int(contract_info.get("conid") or conid)
-        contract.symbol = str(contract_info.get("symbol") or symbol)
-        contract.secType = str(contract_info.get("sec_type") or "STK")
-        contract.exchange = str(contract_info.get("exchange") or "SMART")
-        contract.currency = str(contract_info.get("currency") or "USD")
+        contract = self._build_order_contract(contract_info, conid=conid, symbol=symbol)
 
         order_ids = self._next_bracket_order_ids()
         side = "BUY" if str(direction).lower() == "long" else "SELL"
@@ -3243,12 +3267,7 @@ class BrokerAdapter:
         contract_info = self.resolve_contract(symbol=symbol, conid=conid)
         if not contract_info:
             return {"ok": False, "error": "contract_not_found"}
-        contract = Contract()
-        contract.conId = int(contract_info.get("conid") or conid)
-        contract.symbol = str(contract_info.get("symbol") or symbol)
-        contract.secType = str(contract_info.get("sec_type") or "STK")
-        contract.exchange = str(contract_info.get("exchange") or "SMART")
-        contract.currency = str(contract_info.get("currency") or "USD")
+        contract = self._build_order_contract(contract_info, conid=conid, symbol=symbol)
         order_id = self.client.next_order_ids(1)[0]
         side = "SELL" if str(direction).lower() == "long" else "BUY"
         order = Order()

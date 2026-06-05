@@ -38,9 +38,15 @@ class FakePaperSnapshotApiApp:
 
 
 class FakePaperLifecycle:
-    def __init__(self, positions=None, entry_orders=None):
+    def __init__(self, account_summary=None, positions=None, entry_orders=None):
+        self.account_summary = dict(account_summary or {})
         self.positions = list(positions or [])
         self.entry_orders = list(entry_orders or [])
+        self.summary_calls = 0
+
+    def get_account_summary(self, _account_id):
+        self.summary_calls += 1
+        return dict(self.account_summary)
 
     def get_positions(self):
         return list(self.positions)
@@ -53,9 +59,13 @@ class FakePaperSnapshotService:
     is_running = True
     is_starting = False
 
-    def __init__(self, config=None, positions=None, entry_orders=None):
+    def __init__(self, config=None, account_summary=None, positions=None, entry_orders=None):
         self.config = config or FakeConfig()
-        self.order_lifecycle = FakePaperLifecycle(positions=positions, entry_orders=entry_orders)
+        self.order_lifecycle = FakePaperLifecycle(
+            account_summary=account_summary,
+            positions=positions,
+            entry_orders=entry_orders,
+        )
         self.order_tracker = object()
 
 
@@ -148,7 +158,7 @@ class BuyingPowerGuardHelperTest(unittest.TestCase):
         self.assertEqual(1040, exposure)
 
 
-class PaperConfigBuyingPowerSnapshotTest(unittest.TestCase):
+class PaperAccountBuyingPowerSnapshotTest(unittest.TestCase):
     def setUp(self):
         self.old_context = snapshot_payload.build_snapshot_context
         self.api_app = FakePaperSnapshotApiApp()
@@ -167,7 +177,7 @@ class PaperConfigBuyingPowerSnapshotTest(unittest.TestCase):
     def tearDown(self):
         snapshot_payload.build_snapshot_context = self.old_context
 
-    def test_paper_mode_uses_configured_buying_power_and_deducts_strategy_exposure(self):
+    def test_paper_mode_uses_account_summary_even_when_legacy_paper_config_exists(self):
         service = FakePaperSnapshotService(
             config=FakeConfig(
                 {
@@ -177,6 +187,13 @@ class PaperConfigBuyingPowerSnapshotTest(unittest.TestCase):
                     "ibkr_paper_risk_default_entry_exposure_usd": "5000",
                 }
             ),
+            account_summary={
+                "AccountCode": {"value": "DU-PAPER", "currency": "USD"},
+                "NetLiquidation": {"value": "61398", "currency": "USD"},
+                "BuyingPower": {"value": "50000", "currency": "USD"},
+                "AvailableFunds": {"value": "25000", "currency": "USD"},
+                "ExcessLiquidity": {"value": "20000", "currency": "USD"},
+            },
             positions=[{"ticker": "AAPL", "position": 50, "mktPrice": 100}],
             entry_orders=[{"symbol": "MSFT", "remainingQuantity": 25, "price": 200}],
         )
@@ -184,32 +201,30 @@ class PaperConfigBuyingPowerSnapshotTest(unittest.TestCase):
         snapshot = snapshot_payload._build_ibkr_account_buying_power_snapshot(service)
 
         self.assertTrue(snapshot["ok"])
-        self.assertEqual("paper_config", snapshot["source"])
-        self.assertAlmostEqual(184388.61, snapshot["summary"]["buying_power"])
-        self.assertAlmostEqual(10000.0, snapshot["buying_power_guard"]["risk_model_used_exposure"])
-        self.assertEqual(34, snapshot["buying_power_guard"]["risk_model_remaining_slots"])
+        self.assertEqual("account_summary", snapshot["source"])
+        self.assertAlmostEqual(50000.0, snapshot["summary"]["buying_power"])
+        self.assertAlmostEqual(61398.0, snapshot["buying_power_guard"]["net_liquidation"])
+        self.assertNotIn("configured_buying_power", snapshot["buying_power_guard"])
+        self.assertNotIn("risk_model_used_exposure", snapshot["buying_power_guard"])
 
-    def test_paper_mode_fails_closed_when_configured_buying_power_is_missing(self):
+    def test_paper_mode_fails_closed_when_account_summary_is_missing(self):
         service = FakePaperSnapshotService(config=FakeConfig({"ibkr_buying_power_guard_paper_source": "config"}))
 
         snapshot = snapshot_payload._build_ibkr_account_buying_power_snapshot(service)
 
         self.assertFalse(snapshot["ok"])
         self.assertEqual("unavailable", snapshot["buying_power_guard"]["state"])
-        self.assertEqual("paper_risk_buying_power_config_unavailable", snapshot["buying_power_guard"]["reason"])
+        self.assertEqual("account_snapshot_unavailable", snapshot["buying_power_guard"]["reason"])
 
-    def test_default_thresholds_warn_and_block_against_configured_paper_buying_power(self):
-        config = FakeConfig(
-            {
-                "ibkr_buying_power_guard_paper_source": "config",
-                "ibkr_paper_risk_buying_power_usd": "194388.61",
-                "ibkr_paper_risk_net_liquidation_usd": "61398",
-                "ibkr_paper_risk_default_entry_exposure_usd": "5000",
-            }
-        )
+    def test_default_thresholds_warn_and_block_against_account_buying_power(self):
+        config = FakeConfig()
         warning_service = FakePaperSnapshotService(
             config=config,
-            positions=[{"ticker": "AAPL", "position": 1650, "mktPrice": 100}],
+            account_summary={
+                "AccountCode": {"value": "DU-PAPER"},
+                "NetLiquidation": {"value": "100000"},
+                "BuyingPower": {"value": "29000"},
+            },
         )
         warning_snapshot = snapshot_payload._build_ibkr_account_buying_power_snapshot(warning_service)
         warning_guard = build_buying_power_guard(
@@ -223,7 +238,11 @@ class PaperConfigBuyingPowerSnapshotTest(unittest.TestCase):
         self.api_app = FakePaperSnapshotApiApp()
         blocked_service = FakePaperSnapshotService(
             config=config,
-            positions=[{"ticker": "AAPL", "position": 1800, "mktPrice": 100}],
+            account_summary={
+                "AccountCode": {"value": "DU-PAPER"},
+                "NetLiquidation": {"value": "100000"},
+                "BuyingPower": {"value": "12000"},
+            },
         )
         blocked_snapshot = snapshot_payload._build_ibkr_account_buying_power_snapshot(blocked_service)
         blocked_guard = build_buying_power_guard(
