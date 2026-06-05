@@ -76,6 +76,7 @@ from ibkr_api.callbacks.runtime_dispatch import (
     build_dispatch_feishu_order_callback,
     build_dispatch_feishu_signal_callback,
 )
+from ibkr_api.home.current_metrics import publish_current_signal_metrics
 from ibkr_api.compat.bootstrap import build_compat_proxy_deps
 from ibkr_api.control.runtime_guard import (
     build_runtime_environment_mismatch_payload,
@@ -621,6 +622,17 @@ def _fetch_compute_monitor(environment: str) -> dict[str, Any]:
 
 def _time_strings(now_ts: float | None = None) -> dict[str, str]:
     return _time_strings_support(now_ts=now_ts, et_tz=ET, cn_tz=CN)
+
+
+@app.before_request
+def _refresh_api_business_metrics_for_prometheus():
+    if request.path != "/metrics":
+        return None
+    try:
+        publish_current_signal_metrics(pb, payload={}, time_strings=_time_strings)
+    except Exception as exc:
+        app.logger.debug("Failed to refresh API business metrics for Prometheus: %s", exc)
+    return None
 
 
 def _environment_tag(environment: str) -> str:

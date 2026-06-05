@@ -61,9 +61,15 @@ TV_FLOW_CONFIG_KEYS = (
     "tv_flow_failed_lookback_min",
     "tv_flow_pending_lookback_min",
     "tv_flow_record_sample_limit",
+    "tv_command_reconcile_enabled",
+    "tv_command_reconcile_lookback_min",
+    "tv_command_reconcile_max_wait_sec",
+    "tv_command_reconcile_pending_warn_min",
+    "tv_command_reconcile_conservative_resubmit",
     "eod_close_time",
 )
 FALSE_TEXT = {"0", "false", "no", "off", "disabled", "disable"}
+TV_COMMAND_ASYNC_WAIT_STATES = {"submitted_wait_confirm", "deferred", "pending_executable"}
 BAR_PIPELINE_DISABLED_STATUSES = {"disabled", "disabled_tv_primary", "legacy_bar_pipeline_disabled"}
 TV_PRIMARY_SIGNAL_SOURCES = {"tv", "tradingview", "webhook_tv", "tv_webhook"}
 TV_FLOW_SOURCE_VALUES = {"tv", "tradingview", "tv_webhook", "webhook_tv", "tradingview_webhook"}
@@ -187,6 +193,21 @@ def _bounded_config_int(
 ) -> int:
     value = _to_int(config_map.get(key), default)
     return max(int(minimum), min(int(maximum), value))
+
+
+def _bounded_config_int_from_keys(
+    config_map: dict[str, Any],
+    keys: tuple[str, ...],
+    default: int,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    for key in keys:
+        value = config_map.get(key)
+        if _to_text(value):
+            return max(int(minimum), min(int(maximum), _to_int(value, default)))
+    return max(int(minimum), min(int(maximum), int(default)))
 
 
 def _escape_filter_value(value: Any) -> str:
@@ -521,18 +542,21 @@ def _is_failed_processed_tv_action(row: dict[str, Any]) -> bool:
     blocked_detail = _as_object(extra.get("reentry_blocked"))
     status = _to_text(row.get("status")).lower()
     result_status = _to_text(row.get("result_status") or extra.get("result_status")).lower()
+    execution_state = _to_text(extra.get("execution_state")).lower()
     reason = _to_text(row.get("reason") or extra.get("reason")).lower()
     if (
         _to_text(extra.get("invalidated_by") or runtime_detail.get("invalidated_by")) == "real_order_preflight"
         and bool(extra.get("gateway_request_blocked") or runtime_detail.get("gateway_request_blocked"))
     ):
         return False
+    if result_status == "pending_retry" or execution_state in TV_COMMAND_ASYNC_WAIT_STATES:
+        return False
     failure_markers = (extra.get("flow_error_code"), extra.get("error"))
     if any(_to_text(marker) for marker in failure_markers):
         return True
     if extra.get("blocked") is True:
         return True
-    if result_status in {"failed", "reentry_blocked", "pending_retry", "blocked"}:
+    if result_status in {"failed", "reentry_blocked", "blocked"}:
         return True
     if status == "confirmed":
         return False
@@ -599,9 +623,9 @@ def build_tv_flow_monitor_summary(
         minimum=1,
         maximum=240,
     )
-    action_stuck_min = _bounded_config_int(
+    action_stuck_min = _bounded_config_int_from_keys(
         config_values,
-        "tv_flow_action_pending_stuck_warn_min",
+        ("tv_flow_action_pending_stuck_warn_min", "tv_command_reconcile_pending_warn_min"),
         TV_FLOW_ACTION_PENDING_STUCK_DEFAULT_MIN,
         minimum=1,
         maximum=24 * 60,
@@ -613,9 +637,9 @@ def build_tv_flow_monitor_summary(
         minimum=1,
         maximum=7 * 24 * 60,
     )
-    pending_lookback_min = _bounded_config_int(
+    pending_lookback_min = _bounded_config_int_from_keys(
         config_values,
-        "tv_flow_pending_lookback_min",
+        ("tv_flow_pending_lookback_min", "tv_command_reconcile_lookback_min"),
         TV_FLOW_PENDING_LOOKBACK_DEFAULT_MIN,
         minimum=1,
         maximum=7 * 24 * 60,

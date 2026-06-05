@@ -2,7 +2,10 @@ from __future__ import annotations
 
 try:
     from ibapi.client import EClient
-    from ibapi.commission_report import CommissionReport
+    try:
+        from ibapi.commission_report import CommissionReport
+    except Exception:
+        from ibapi.commission_and_fees_report import CommissionAndFeesReport as CommissionReport
     from ibapi.contract import Contract
     from ibapi.execution import ExecutionFilter
     from ibapi.order import Order

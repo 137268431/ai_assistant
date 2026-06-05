@@ -912,7 +912,7 @@
             return currency === 'USD' ? `$${text}` : `${currency} ${text}`;
         }
 
-        function getFlatPositionCommissionPayload(position) {
+        function getPositionCommissionPayload(position) {
             const relation = position?.relation || {};
             const raw = position?.raw || {};
             return {
@@ -1930,7 +1930,7 @@
                 detailParts.push(`filled=${formatQty(relation.entry_filled_qty)}->${formatQty(relation.exit_filled_qty)}`);
             }
             const detailsCopy = detailParts.length ? detailParts.join(' · ') : 'details=--';
-            const commissionPayload = getFlatPositionCommissionPayload(position);
+            const commissionPayload = getPositionCommissionPayload(position);
             return `
                 <div class="flat-position-row">
                     <div class="flat-position-main">
@@ -2013,6 +2013,7 @@
                             <div class="metric-item"><div class="metric-label">Unrealized</div><div class="metric-value ${valueClass(position.unrealized_pnl)}">${escapeHtml(formatSignedMoney(position.unrealized_pnl))}</div></div>
                             <div class="metric-item"><div class="metric-label">Unrealized %</div><div class="metric-value ${valueClass(positionUnrealizedPct(position))}">${escapeHtml(positionUnrealizedPct(position) === null ? '--' : formatPercent(positionUnrealizedPct(position), 2))}</div></div>
                             <div class="metric-item"><div class="metric-label">Realized</div><div class="metric-value ${valueClass(position.realized_pnl)}">${escapeHtml(formatSignedMoney(position.realized_pnl))}</div></div>
+                            <div class="metric-item"><div class="metric-label">Fees</div><div class="metric-value">${escapeHtml(formatOrderCommission(getPositionCommissionPayload(position)))}</div></div>
                         </div>
                         <div class="record-actions">
                             ${position?.relation?.signal_id ? `<button class="action-btn view" type="button" onclick="viewSignal(${escapeHtml(toJsStringLiteral(position.relation.signal_id))})">信号页</button>` : ''}

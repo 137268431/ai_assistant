@@ -7,6 +7,7 @@
 - adjust_bracket: 同时或单边调整止损/止盈
 """
 
+import copy
 import json
 import logging
 import math
@@ -75,6 +76,11 @@ TRACEABLE_CANCEL_ORDER_STATUSES = REAL_ACTIVE_ORDER_STATUSES | {
 }
 REVERSE_CONFIRM_ATTEMPTS = max(1, int(os.environ.get("IBKR_REVERSE_CONFIRM_ATTEMPTS", "3") or "3"))
 REVERSE_CONFIRM_POLL_SECONDS = max(0.0, float(os.environ.get("IBKR_REVERSE_CONFIRM_POLL_SECONDS", "0.25") or 0.25))
+ADJUST_PRICE_FIELDS_BY_SIDE = {
+    "stop_loss": ("auxPrice", "aux_price", "stopPrice", "stop_price", "price"),
+    "take_profit": ("price", "lmtPrice", "limitPrice", "limit_price", "takeProfit", "take_profit"),
+}
+ADJUST_PRICE_MATCH_TOLERANCE = 0.005
 
 
 class ReverseSignalHandler:
@@ -94,12 +100,7 @@ class ReverseSignalHandler:
     def check_and_process(self):
         started = time.perf_counter()
         try:
-            records = self.pb_client.get_records(
-                REVERSE_SIGNAL_COLLECTION,
-                filter=f'status = "pending" && environment = "{self.environment}"',
-                sort="-priority,-bar_time_ms",
-                per_page=50,
-            )
+            records = self._load_processable_reverse_records()
             record_signal_event(
                 environment=self.environment,
                 stage="reverse_poll",
@@ -112,6 +113,16 @@ class ReverseSignalHandler:
             for r in records:
                 rid = r.get("id", "")
                 if rid in self._processed_ids:
+                    continue
+
+                if self._is_cancelled_flat_not_confirmed_tv_close_candidate(r):
+                    result = self._self_heal_cancelled_flat_not_confirmed_close(r)
+                    if result:
+                        self._processed_ids.add(rid)
+                        try:
+                            self._ack_reverse_signal(r, "close", result)
+                        except Exception as e:
+                            logger.debug("Failed to self-heal cancelled TV close action: %s", e)
                     continue
 
                 if not self._is_tradingview_reverse_signal(r):
@@ -146,6 +157,34 @@ class ReverseSignalHandler:
                 duration_s=time.perf_counter() - started,
             )
             logger.error("Reverse signal check failed: %s", e)
+
+    def _load_processable_reverse_records(self) -> List[Dict[str, Any]]:
+        pending = self.pb_client.get_records(
+            REVERSE_SIGNAL_COLLECTION,
+            filter=f'status = "pending" && environment = "{self.environment}"',
+            sort="-priority,-bar_time_ms",
+            per_page=50,
+        )
+        records = [dict(row) for row in (pending or [])]
+        try:
+            cancelled = self.pb_client.get_records(
+                REVERSE_SIGNAL_COLLECTION,
+                filter=f'status = "cancelled" && environment = "{self.environment}"',
+                sort="-processed_time,-bar_time_ms",
+                per_page=100,
+            )
+        except Exception as exc:
+            logger.debug("Failed to load cancelled reverse self-heal candidates: %s", exc)
+            cancelled = []
+
+        seen = {str(row.get("id") or "") for row in records}
+        for row in cancelled or []:
+            rid = str(row.get("id") or "")
+            if rid in seen or not self._is_cancelled_flat_not_confirmed_tv_close_candidate(row):
+                continue
+            records.append(dict(row))
+            seen.add(rid)
+        return records
 
     @staticmethod
     def _escape_filter_value(value: str) -> str:
@@ -907,6 +946,11 @@ class ReverseSignalHandler:
             )
             return payload
 
+        if self._is_tradingview_reverse_signal(signal):
+            self_heal_result = self._attempt_tv_async_self_heal(signal, action, detail)
+            if self_heal_result is not None:
+                return _finish(self_heal_result)
+
         if self._has_protection_incomplete(signal):
             return _finish(self._mark_blocked(
                 detail,
@@ -1289,15 +1333,13 @@ class ReverseSignalHandler:
                 runtime_detail["close_submission_unconfirmed"] = True
                 runtime_detail["pending_close_order_ids"] = list(pending_order_ids)
                 runtime_detail["pending_close_order_ref"] = pending_order_ref
-                blocked = self._mark_blocked(
+                pending = self._self_heal_close_by_flat(
+                    signal,
                     detail,
                     "close_order_submission_unconfirmed",
-                    error=str((result or {}).get("error") or ""),
-                    pending_close_order_ids=pending_order_ids,
-                    pending_close_order_ref=pending_order_ref,
                 )
-                blocked["reason"] = "close_order_submission_unconfirmed"
-                return blocked
+                if pending is not None:
+                    return pending
             return self._mark_blocked(
                 detail,
                 "close_order_failed",
@@ -1309,7 +1351,7 @@ class ReverseSignalHandler:
         detail["wait_flat"] = "confirmed" if flat_confirmed else "unconfirmed"
         detail["flat_confirmation"] = flat_detail
         if not flat_confirmed:
-            return self._mark_blocked(
+            return self._mark_retryable_blocked(
                 detail,
                 "flat_not_confirmed",
                 position_qty=flat_detail.get("position_qty"),
@@ -1479,7 +1521,7 @@ class ReverseSignalHandler:
         detail["cancel_confirmation"] = confirmation
         if not confirmed:
             detail["cancel_old_order"] = "unconfirmed"
-            return self._mark_blocked(
+            return self._mark_retryable_blocked(
                 detail,
                 "cancel_not_confirmed",
                 active_order_ids=confirmation.get("active_order_ids"),
@@ -1509,6 +1551,22 @@ class ReverseSignalHandler:
         detail["result_status"] = "ok" if result.get("ok") else "failed"
         if not result.get("ok"):
             return self._mark_blocked(detail, "adjust_sl_failed", error=str(result.get("error") or ""))
+        confirmed, confirmation = self._confirm_adjust_child_order_target_price(
+            signal,
+            order_id=order_id,
+            side="stop_loss",
+            expected_price=new_price,
+            modify_result=result,
+        )
+        detail["adjust_confirmation"] = confirmation
+        if not confirmed:
+            return self._mark_retryable_blocked(
+                detail,
+                "adjust_sl_not_confirmed",
+                order_id=order_id,
+                new_price=new_price,
+                confirmation_source=confirmation.get("source"),
+            )
         return {
             "ok": True,
             "ack_status": "confirmed",
@@ -1529,6 +1587,22 @@ class ReverseSignalHandler:
         detail["result_status"] = "ok" if result.get("ok") else "failed"
         if not result.get("ok"):
             return self._mark_blocked(detail, "adjust_tp_failed", error=str(result.get("error") or ""))
+        confirmed, confirmation = self._confirm_adjust_child_order_target_price(
+            signal,
+            order_id=order_id,
+            side="take_profit",
+            expected_price=new_price,
+            modify_result=result,
+        )
+        detail["adjust_confirmation"] = confirmation
+        if not confirmed:
+            return self._mark_retryable_blocked(
+                detail,
+                "adjust_tp_not_confirmed",
+                order_id=order_id,
+                new_price=new_price,
+                confirmation_source=confirmation.get("source"),
+            )
         return {
             "ok": True,
             "ack_status": "confirmed",
@@ -1608,6 +1682,382 @@ class ReverseSignalHandler:
     @classmethod
     def _is_order_flow_signal(cls, signal: dict) -> bool:
         return any("order_flow" in token for token in cls._source_tokens(signal))
+
+    def _is_cancelled_flat_not_confirmed_tv_close_candidate(self, signal: dict) -> bool:
+        if str((signal or {}).get("status") or "").strip().lower() != "cancelled":
+            return False
+        if str((signal or {}).get("action_type") or "").strip().lower() != "close":
+            return False
+        if not self._is_tradingview_reverse_signal(signal):
+            return False
+        extra = self._signal_extra(signal)
+        blocked = self._as_dict(extra.get("reentry_blocked"))
+        text = " ".join(
+            str(value or "").strip().lower()
+            for value in (
+                signal.get("reason"),
+                extra.get("reason"),
+                extra.get("result_status"),
+                extra.get("reverse_state"),
+                extra.get("wait_flat"),
+                extra.get("execution_blocked_reason"),
+                blocked.get("reason"),
+            )
+        )
+        return "flat_not_confirmed" in text
+
+    def _attempt_tv_async_self_heal(
+        self,
+        signal: dict,
+        action: str,
+        detail: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        if action == "close" and self._has_tv_close_submission_evidence(signal):
+            return self._self_heal_close_by_flat(signal, detail, "flat_not_confirmed")
+        if action == "cancel" and self._has_tv_cancel_submission_evidence(signal):
+            return self._self_heal_cancel_by_inactive(signal, detail)
+        if action in {"adjust_sl", "adjust_tp"} and self._has_tv_adjust_submission_evidence(signal, action):
+            return self._self_heal_adjust_by_price(signal, action, detail)
+        if action == "adjust_bracket" and self._has_tv_adjust_submission_evidence(signal, action):
+            return self._self_heal_adjust_bracket_by_price(signal, detail)
+        return None
+
+    def _has_tv_close_submission_evidence(self, signal: dict) -> bool:
+        extra = self._signal_extra(signal)
+        close_result = self._as_dict(extra.get("close_result"))
+        submission_unconfirmed, pending_order_ids, pending_order_ref = self._close_submission_unconfirmed_fields(close_result)
+        blocked = self._as_dict(extra.get("reentry_blocked"))
+        text = " ".join(
+            str(value or "").strip().lower()
+            for value in (
+                signal.get("reason"),
+                extra.get("result_status"),
+                extra.get("reverse_state"),
+                extra.get("close_old_position"),
+                extra.get("wait_flat"),
+                blocked.get("reason"),
+            )
+        )
+        if bool(extra.get("close_submission_unconfirmed")) or submission_unconfirmed:
+            return True
+        if pending_order_ids or pending_order_ref:
+            return True
+        if self._signal_list(extra, "pending_close_order_ids", "submitted_close_order_ids"):
+            return True
+        if str(extra.get("close_old_position") or "").strip().lower() in {"submitted", "submission_unconfirmed"}:
+            return True
+        return "flat_not_confirmed" in text or "close_order_submission_unconfirmed" in text
+
+    def _has_tv_cancel_submission_evidence(self, signal: dict) -> bool:
+        extra = self._signal_extra(signal)
+        confirmation = self._as_dict(extra.get("cancel_confirmation"))
+        blocked = self._as_dict(extra.get("reentry_blocked"))
+        cancel_results = extra.get("cancel_results")
+        text = " ".join(
+            str(value or "").strip().lower()
+            for value in (
+                signal.get("reason"),
+                extra.get("result_status"),
+                extra.get("reverse_state"),
+                extra.get("cancel_old_order"),
+                blocked.get("reason"),
+            )
+        )
+        if isinstance(cancel_results, list) and cancel_results:
+            return True
+        if confirmation and not confirmation.get("confirmed"):
+            return True
+        return "cancel_not_confirmed" in text
+
+    def _has_tv_adjust_submission_evidence(self, signal: dict, action: str) -> bool:
+        extra = self._signal_extra(signal)
+        blocked = self._as_dict(extra.get("reentry_blocked"))
+        text = " ".join(
+            str(value or "").strip().lower()
+            for value in (
+                signal.get("reason"),
+                extra.get("result_status"),
+                extra.get("reverse_state"),
+                extra.get("adjust_bracket"),
+                blocked.get("reason"),
+            )
+        )
+        if action in {"adjust_sl", "adjust_tp"}:
+            adjust_result = self._as_dict(extra.get("adjust_result"))
+            confirmation = self._as_dict(extra.get("adjust_confirmation"))
+            return bool(adjust_result.get("ok") or confirmation or "adjust_price_not_confirmed" in text)
+
+        adjust_results = extra.get("adjust_results")
+        if not isinstance(adjust_results, dict):
+            return "adjust_bracket_not_confirmed" in text or "adjust_price_not_confirmed" in text
+        for side_detail in adjust_results.values():
+            if not isinstance(side_detail, dict):
+                continue
+            result = self._as_dict(side_detail.get("result"))
+            if side_detail.get("skipped"):
+                continue
+            if result.get("ok") or str(side_detail.get("reason") or "") == "adjust_price_not_confirmed":
+                return True
+        return False
+
+    def _self_heal_cancelled_flat_not_confirmed_close(self, signal: dict) -> Optional[Dict[str, Any]]:
+        detail = self._base_reverse_detail(signal, "close")
+        detail["historical_self_heal"] = {
+            "enabled": True,
+            "previous_status": str(signal.get("status") or ""),
+            "previous_reason": str(signal.get("reason") or ""),
+            "source": "cancelled_flat_not_confirmed_tv_close",
+        }
+        return self._self_heal_close_by_flat(
+            signal,
+            detail,
+            "historical_flat_not_confirmed",
+            pending_on_unconfirmed=False,
+        )
+
+    def _self_heal_close_by_flat(
+        self,
+        signal: dict,
+        detail: Dict[str, Any],
+        reason: str,
+        *,
+        pending_on_unconfirmed: bool = True,
+    ) -> Optional[Dict[str, Any]]:
+        extra = self._signal_extra(signal)
+        for key in (
+            "close_result",
+            "close_submission_unconfirmed",
+            "close_old_position",
+            "wait_flat",
+            "pending_close_order_ids",
+            "pending_close_order_ref",
+            "position_qty_before_close",
+        ):
+            if key in extra and (key not in detail or detail.get(key) in ("", "skipped")):
+                detail[key] = copy.deepcopy(extra.get(key))
+
+        detail["async_self_heal"] = {
+            "enabled": True,
+            "action": "close",
+            "confirmation": "broker_position_flat",
+            "reason": reason,
+            "duplicate_submit_blocked": True,
+        }
+        symbol = str(self._signal_value(signal, "symbol") or detail.get("symbol") or "").upper()
+        if not self.order_lifecycle:
+            if not pending_on_unconfirmed:
+                return None
+            detail["wait_flat"] = "unconfirmed"
+            return self._mark_retryable_blocked(
+                detail,
+                str(reason or "flat_not_confirmed"),
+                error="order_lifecycle_missing",
+            )
+        flat_confirmed, flat_detail = self._confirm_flat(symbol)
+        detail["wait_flat"] = "confirmed" if flat_confirmed else "unconfirmed"
+        detail["flat_confirmation"] = flat_detail
+        if not flat_confirmed:
+            detail["close_old_position"] = detail.get("close_old_position") or extra.get("close_old_position") or "submitted"
+            if not pending_on_unconfirmed:
+                return None
+            return self._mark_retryable_blocked(
+                detail,
+                str(reason or "flat_not_confirmed"),
+                position_qty=flat_detail.get("position_qty"),
+                attempts=flat_detail.get("attempts"),
+            )
+
+        detail["close_old_position"] = "confirmed"
+        return self._start_cooldown_and_ready(signal, symbol, detail, "close_self_healed_flat_ready_reentry")
+
+    def _cancel_self_heal_targets(self, signal: dict) -> Tuple[str, List[str]]:
+        extra = self._signal_extra(signal)
+        target = self._as_dict(extra.get("cancel_target"))
+        confirmation = self._as_dict(extra.get("cancel_confirmation"))
+        trade_group_id = str(
+            self._related_trade_group_id(signal)
+            or target.get("trade_group_id")
+            or confirmation.get("trade_group_id")
+            or ""
+        ).strip()
+        order_ids: List[str] = []
+        order_ids.extend(self._related_order_ids_from_signal(signal))
+        for payload in (target, confirmation):
+            order_ids.extend(self._signal_list(payload, "order_ids", "active_order_ids", "active_pb_order_ids"))
+        for item in extra.get("cancel_results") or []:
+            if isinstance(item, dict):
+                order_ids.append(str(item.get("order_id") or item.get("broker_order_id") or "").strip())
+        return trade_group_id, self._unique_nonempty(order_ids)
+
+    def _self_heal_cancel_by_inactive(self, signal: dict, detail: Dict[str, Any]) -> Dict[str, Any]:
+        extra = self._signal_extra(signal)
+        for key in ("cancel_results", "cancel_target", "cancel_confirmation"):
+            if key in extra:
+                detail[key] = extra.get(key)
+        detail["async_self_heal"] = {
+            "enabled": True,
+            "action": "cancel",
+            "confirmation": "target_orders_inactive",
+            "duplicate_submit_blocked": True,
+        }
+        runtime_environment = normalize_broker_mode(
+            self._signal_value(signal, "broker_mode") or self._signal_value(signal, "environment"),
+            self.environment,
+        )
+        trade_group_id, order_ids = self._cancel_self_heal_targets(signal)
+        if not trade_group_id and not order_ids:
+            detail["cancel_old_order"] = "unconfirmed"
+            return self._mark_retryable_blocked(detail, "cancel_target_missing")
+
+        pb_orders = self._fetch_related_orders(
+            trade_group_id=trade_group_id,
+            order_ids=order_ids,
+            environment=runtime_environment,
+        )
+        confirmed, confirmation = self._confirm_related_orders_inactive(
+            trade_group_id=trade_group_id,
+            order_ids=order_ids,
+            environment=runtime_environment,
+            pb_orders=pb_orders,
+        )
+        detail["cancel_confirmation"] = confirmation
+        if not confirmed:
+            detail["cancel_old_order"] = "unconfirmed"
+            return self._mark_retryable_blocked(
+                detail,
+                "cancel_not_confirmed",
+                active_order_ids=confirmation.get("active_order_ids"),
+                confirmation_source=confirmation.get("source"),
+            )
+
+        detail["cancel_old_order"] = "confirmed"
+        return self._mark_ready_reentry(signal, detail, "cancel_self_healed_inactive_ready_reentry")
+
+    def _self_heal_adjust_by_price(self, signal: dict, action: str, detail: Dict[str, Any]) -> Dict[str, Any]:
+        side = "stop_loss" if action == "adjust_sl" else "take_profit"
+        order_key = "sl_order_id" if side == "stop_loss" else "tp_order_id"
+        price_key = "new_sl" if side == "stop_loss" else "new_tp"
+        extra = self._signal_extra(signal)
+        adjust_result = self._as_dict(extra.get("adjust_result"))
+        order_id = str(self._signal_value(signal, order_key) or adjust_result.get("order_id") or "").strip()
+        price = self._coerce_adjust_price(self._signal_value(signal, price_key, adjust_result.get("price", 0)))
+        detail["adjust_result"] = adjust_result
+        detail["async_self_heal"] = {
+            "enabled": True,
+            "action": action,
+            "confirmation": "active_child_order_target_price",
+            "duplicate_submit_blocked": True,
+        }
+        if not order_id or price <= 0:
+            return self._mark_retryable_blocked(
+                detail,
+                "adjust_child_order_id_or_price_missing",
+                order_id=order_id,
+                new_price=price,
+            )
+
+        confirmed, confirmation = self._confirm_adjust_child_order_target_price(
+            signal,
+            order_id=order_id,
+            side=side,
+            expected_price=price,
+            modify_result=adjust_result,
+        )
+        detail["adjust_confirmation"] = confirmation
+        if not confirmed:
+            detail["result_status"] = "pending_retry"
+            return self._mark_retryable_blocked(
+                detail,
+                f"{action}_not_confirmed",
+                order_id=order_id,
+                new_price=price,
+                confirmation_source=confirmation.get("source"),
+            )
+        detail["result_status"] = "ok"
+        return {
+            "ok": True,
+            "ack_status": "confirmed",
+            "reason": f"{action}_confirmed",
+            "detail": detail,
+        }
+
+    def _self_heal_adjust_bracket_by_price(self, signal: dict, detail: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        extra = self._signal_extra(signal)
+        previous_results = extra.get("adjust_results")
+        if not isinstance(previous_results, dict):
+            return None
+
+        results: Dict[str, Dict[str, Any]] = {}
+        attempted_sides: List[str] = []
+        succeeded_sides: List[str] = []
+        unconfirmed_sides: List[str] = []
+        missing_sides: List[str] = []
+        for side in ("stop_loss", "take_profit"):
+            side_detail = dict(previous_results.get(side) or {})
+            results[side] = side_detail
+            if side_detail.get("skipped"):
+                continue
+            modify_result = self._as_dict(side_detail.get("result"))
+            if not modify_result.get("ok") and str(side_detail.get("reason") or "") != "adjust_price_not_confirmed":
+                continue
+            attempted_sides.append(side)
+            order_id = str(side_detail.get("order_id") or modify_result.get("order_id") or "").strip()
+            price = self._coerce_adjust_price(side_detail.get("new_price") or modify_result.get("price") or 0)
+            if not order_id or price <= 0:
+                missing_sides.append(side)
+                side_detail.update({"ok": False, "reason": "adjust_child_order_id_or_price_missing"})
+                continue
+            confirmed, confirmation = self._confirm_adjust_child_order_target_price(
+                signal,
+                order_id=order_id,
+                side=side,
+                expected_price=price,
+                modify_result=modify_result,
+            )
+            side_detail["confirmation"] = confirmation
+            if confirmed:
+                side_detail.update({"ok": True, "reason": "confirmed"})
+                succeeded_sides.append(side)
+            else:
+                side_detail.update({"ok": False, "reason": "adjust_price_not_confirmed"})
+                unconfirmed_sides.append(side)
+
+        if not attempted_sides:
+            return None
+
+        detail["async_self_heal"] = {
+            "enabled": True,
+            "action": "adjust_bracket",
+            "confirmation": "active_child_order_target_price",
+            "duplicate_submit_blocked": True,
+        }
+        detail["adjust_results"] = results
+        detail["adjust_bracket_result"] = {
+            "attempted_sides": attempted_sides,
+            "succeeded_sides": succeeded_sides,
+            "failed_sides": [],
+            "unconfirmed_sides": unconfirmed_sides,
+            "missing_sides": missing_sides,
+        }
+
+        if unconfirmed_sides or missing_sides:
+            detail["adjust_bracket"] = "pending_confirmation"
+            return self._mark_retryable_blocked(
+                detail,
+                "adjust_bracket_not_confirmed",
+                unconfirmed_sides=unconfirmed_sides,
+                missing_sides=missing_sides,
+            )
+
+        detail["adjust_bracket"] = "confirmed"
+        detail["result_status"] = "ok"
+        self._persist_risk_update_state(signal, detail, results)
+        return {
+            "ok": True,
+            "ack_status": "confirmed",
+            "reason": "adjust_bracket_confirmed",
+            "detail": detail,
+        }
 
     def _missing_child_order_retry_pending_enabled(self, signal: dict) -> bool:
         if not self._is_tv_risk_update_signal(signal):
@@ -2952,15 +3402,28 @@ class ReverseSignalHandler:
                 {
                     "ok": ok,
                     "skipped": False,
-                    "reason": "confirmed" if ok else "broker_update_failed",
+                    "reason": "broker_update_submitted" if ok else "broker_update_failed",
                     "result": dict(modify_result or {}),
                 }
             )
-            results[side] = side_detail
             if ok:
-                succeeded_sides.append(side)
+                confirmed, confirmation = self._confirm_adjust_child_order_target_price(
+                    signal,
+                    order_id=order_id,
+                    side=side,
+                    expected_price=price,
+                    modify_result=modify_result,
+                )
+                side_detail["confirmation"] = confirmation
+                side_detail["ok"] = bool(confirmed)
+                side_detail["reason"] = "confirmed" if confirmed else "adjust_price_not_confirmed"
+                if confirmed:
+                    succeeded_sides.append(side)
+                else:
+                    failed_sides.append(side)
             else:
                 failed_sides.append(side)
+            results[side] = side_detail
 
         detail["adjust_bracket"] = "started"
         detail["adjust_results"] = results
@@ -2985,6 +3448,20 @@ class ReverseSignalHandler:
                 failed_sides=failed_sides,
             )
         if failed_sides:
+            unconfirmed_sides = [
+                side
+                for side in failed_sides
+                if str((results.get(side) or {}).get("reason") or "") == "adjust_price_not_confirmed"
+            ]
+            if unconfirmed_sides and len(unconfirmed_sides) == len(failed_sides):
+                detail["adjust_bracket"] = "pending_confirmation"
+                detail["adjust_bracket_result"]["unconfirmed_sides"] = unconfirmed_sides
+                return self._mark_retryable_blocked(
+                    detail,
+                    "adjust_bracket_not_confirmed",
+                    unconfirmed_sides=unconfirmed_sides,
+                    succeeded_sides=succeeded_sides,
+                )
             partial = bool(succeeded_sides)
             detail["adjust_bracket"] = "partial_failed" if partial else "failed"
             return self._mark_blocked(
@@ -3129,6 +3606,201 @@ class ReverseSignalHandler:
                 return True, confirmation
             if attempt < REVERSE_CONFIRM_ATTEMPTS:
                 time.sleep(REVERSE_CONFIRM_POLL_SECONDS)
+        return False, confirmation
+
+    @classmethod
+    def _order_payload_candidates(cls, payload: Any, depth: int = 0) -> List[Dict[str, Any]]:
+        if depth > 5 or payload in (None, ""):
+            return []
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                return []
+        if isinstance(payload, (list, tuple)):
+            rows: List[Dict[str, Any]] = []
+            for item in payload:
+                rows.extend(cls._order_payload_candidates(item, depth + 1))
+            return rows
+        if not isinstance(payload, dict):
+            return []
+
+        rows = [dict(payload)]
+        extra = cls._as_dict(payload.get("extra"))
+        if extra:
+            rows.append(extra)
+        for key in ("order", "payload", "result", "detail", "details", "confirm"):
+            rows.extend(cls._order_payload_candidates(payload.get(key), depth + 1))
+            if extra:
+                rows.extend(cls._order_payload_candidates(extra.get(key), depth + 1))
+        return rows
+
+    @classmethod
+    def _is_confirmable_active_child_order(cls, order: Dict[str, Any]) -> bool:
+        return cls._order_status_key(order or {}) in REAL_ACTIVE_ORDER_STATUSES
+
+    @classmethod
+    def _order_matches_ref(cls, order: Dict[str, Any], order_id: str) -> bool:
+        target = str(order_id or "").strip()
+        return bool(target and target in set(cls._order_ref_values(order or {})))
+
+    @classmethod
+    def _order_price_match_detail(
+        cls,
+        order: Dict[str, Any],
+        side: str,
+        expected_price: float,
+    ) -> Tuple[bool, Dict[str, Any]]:
+        fields = ADJUST_PRICE_FIELDS_BY_SIDE.get(side, ())
+        extra = cls._as_dict((order or {}).get("extra"))
+        expected = float(expected_price or 0.0)
+        for field in fields:
+            raw = (order or {}).get(field)
+            if raw in (None, ""):
+                raw = extra.get(field)
+            actual = cls._coerce_float(raw, 0.0)
+            if actual > 0 and math.isfinite(actual) and abs(actual - expected) <= ADJUST_PRICE_MATCH_TOLERANCE:
+                return True, {
+                    "matched_field": field,
+                    "actual_price": actual,
+                    "expected_price": expected,
+                    "tolerance": ADJUST_PRICE_MATCH_TOLERANCE,
+                }
+        return False, {
+            "matched_field": "",
+            "actual_price": 0.0,
+            "expected_price": expected,
+            "tolerance": ADJUST_PRICE_MATCH_TOLERANCE,
+            "checked_fields": list(fields),
+        }
+
+    def _confirm_adjust_price_from_orders(
+        self,
+        orders: List[Dict[str, Any]],
+        *,
+        order_id: str,
+        side: str,
+        expected_price: float,
+        source: str,
+    ) -> Tuple[bool, Dict[str, Any]]:
+        inspected: List[Dict[str, Any]] = []
+        for order in orders or []:
+            if not self._order_matches_ref(order, order_id):
+                continue
+            active = self._is_confirmable_active_child_order(order)
+            matched, price_detail = self._order_price_match_detail(order, side, expected_price)
+            item = {
+                "order_id": self._order_id(order),
+                "status": self._order_status(order),
+                "active": active,
+                **price_detail,
+            }
+            inspected.append(item)
+            if active and matched:
+                return True, {
+                    "confirmed": True,
+                    "source": source,
+                    "order_id": str(order_id),
+                    "side": side,
+                    **item,
+                }
+        return False, {
+            "confirmed": False,
+            "source": source,
+            "order_id": str(order_id),
+            "side": side,
+            "expected_price": float(expected_price or 0.0),
+            "inspected_orders": inspected,
+        }
+
+    def _confirm_adjust_child_order_target_price(
+        self,
+        signal: dict,
+        *,
+        order_id: str,
+        side: str,
+        expected_price: float,
+        modify_result: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[bool, Dict[str, Any]]:
+        order_id = str(order_id or "").strip()
+        expected_price = self._coerce_adjust_price(expected_price)
+        confirmation: Dict[str, Any] = {
+            "confirmed": False,
+            "order_id": order_id,
+            "side": side,
+            "expected_price": expected_price,
+            "source": "unavailable",
+        }
+        if not order_id or expected_price <= 0:
+            confirmation["reason"] = "order_id_or_expected_price_missing"
+            return False, confirmation
+
+        modify_candidates = self._order_payload_candidates(modify_result or {})
+        confirmed, source_detail = self._confirm_adjust_price_from_orders(
+            modify_candidates,
+            order_id=order_id,
+            side=side,
+            expected_price=expected_price,
+            source="modify_result",
+        )
+        if confirmed:
+            return True, {**confirmation, **source_detail}
+        if source_detail.get("inspected_orders"):
+            confirmation["modify_result"] = source_detail
+
+        runtime_environment = normalize_broker_mode(
+            self._signal_value(signal, "broker_mode") or self._signal_value(signal, "environment"),
+            self.environment,
+        )
+        trade_group_id = self._related_trade_group_id(signal)
+        last_details: List[Dict[str, Any]] = []
+        for attempt in range(1, REVERSE_CONFIRM_ATTEMPTS + 1):
+            pb_orders = self._fetch_related_orders(
+                trade_group_id="",
+                order_ids=[order_id],
+                environment=runtime_environment,
+            )
+            confirmed, pb_detail = self._confirm_adjust_price_from_orders(
+                pb_orders,
+                order_id=order_id,
+                side=side,
+                expected_price=expected_price,
+                source="pb_orders",
+            )
+            pb_detail["attempts"] = attempt
+            if confirmed:
+                return True, {**confirmation, **pb_detail}
+            if pb_detail.get("inspected_orders"):
+                last_details.append(pb_detail)
+
+            live_checked, live_orders, live_error = self._load_live_open_orders()
+            live_detail: Dict[str, Any] = {
+                "confirmed": False,
+                "source": "broker_open_orders",
+                "attempts": attempt,
+                "live_open_orders_checked": bool(live_checked),
+                "trade_group_id": trade_group_id,
+            }
+            if live_error:
+                live_detail["broker_error"] = live_error
+            if live_checked:
+                confirmed, live_match_detail = self._confirm_adjust_price_from_orders(
+                    live_orders,
+                    order_id=order_id,
+                    side=side,
+                    expected_price=expected_price,
+                    source="broker_open_orders",
+                )
+                live_detail.update(live_match_detail)
+                if confirmed:
+                    return True, {**confirmation, **live_detail}
+            last_details.append(live_detail)
+            if attempt < REVERSE_CONFIRM_ATTEMPTS:
+                time.sleep(REVERSE_CONFIRM_POLL_SECONDS)
+
+        confirmation["attempts"] = REVERSE_CONFIRM_ATTEMPTS
+        confirmation["details"] = last_details[-3:]
+        confirmation["reason"] = "active_child_order_target_price_not_confirmed"
         return False, confirmation
 
     def _load_live_open_orders(self) -> Tuple[bool, List[Dict[str, Any]], str]:

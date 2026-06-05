@@ -540,6 +540,16 @@ if _client_available():
         "Buying-power guard state marker; the active state has value 1.",
         ("service", "environment", "source", "state"),
     )
+    POSITION_CURRENT_COUNT = Gauge(
+        "ibkr_position_current_count",
+        "Current Gateway position counts by low-cardinality direction bucket.",
+        ("service", "environment", "direction"),
+    )
+    ORDER_CURRENT_COUNT = Gauge(
+        "ibkr_order_current_count",
+        "Current live open order counts by low-cardinality kind.",
+        ("service", "environment", "kind"),
+    )
     RUNTIME_CONFIG_SWITCH_ENABLED = Gauge(
         "ibkr_runtime_config_switch_enabled",
         "Effective runtime/trading config switch state; enabled switches have value 1.",
@@ -643,6 +653,11 @@ if _client_available():
         "Business signal records created in ibkr_signals.",
         ("service", "environment", "signal_source", "direction", "initial_status"),
     )
+    SIGNAL_CURRENT_COUNT = Gauge(
+        "ibkr_signal_current_count",
+        "Current active business signal counts by direction and state.",
+        ("service", "environment", "direction", "state"),
+    )
     SIGNAL_DURATION = Histogram(
         "ibkr_signal_stage_duration_seconds",
         "Signal processing stage duration.",
@@ -666,6 +681,7 @@ else:  # pragma: no cover
     ACCOUNT_BUYING_POWER_REMAINING = ACCOUNT_BUYING_POWER_USED_EXPOSURE = ACCOUNT_BUYING_POWER_UTILIZATION = None
     ACCOUNT_BUYING_POWER_REMAINING_SLOTS = ACCOUNT_BUYING_POWER_WARN_FLOOR = ACCOUNT_BUYING_POWER_BLOCK_FLOOR = None
     ACCOUNT_BUYING_POWER_GUARD_STATE = None
+    POSITION_CURRENT_COUNT = ORDER_CURRENT_COUNT = SIGNAL_CURRENT_COUNT = None
     RUNTIME_CONFIG_SWITCH_ENABLED = None
     BROKER_CONNECTS = BROKER_CONNECT_DURATION = BROKER_READY = BROKER_CONNECTED = BROKER_DISCONNECTS = BROKER_ERRORS = None
     BROKER_REQUESTS = BROKER_REQUEST_DURATION = BROKER_PENDING_REQUESTS = None
@@ -1153,6 +1169,165 @@ def set_runtime_config_switch_metrics(status: dict[str, Any] | None = None, *, e
         )
 
 
+def _metric_truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _current_position_counts(payload: dict[str, Any]) -> dict[str, int]:
+    positions_value = payload.get("positions")
+    if not isinstance(positions_value, list):
+        counts = payload.get("counts") if isinstance(payload.get("counts"), dict) else {}
+        long_count = max(0, int(_first_number(counts.get("long_positions"), counts.get("positions_long")) or 0))
+        short_count = max(0, int(_first_number(counts.get("short_positions"), counts.get("positions_short")) or 0))
+        total_count = max(
+            long_count + short_count,
+            int(_first_number(counts.get("open_positions"), counts.get("positions"), long_count + short_count) or 0),
+        )
+        return {"total": total_count, "long": long_count, "short": short_count}
+    positions = positions_value
+    long_count = 0
+    short_count = 0
+    for item in positions:
+        if not isinstance(item, dict):
+            continue
+        quantity = _first_number(item.get("quantity"), item.get("position"), item.get("position_qty"))
+        if quantity is None:
+            direction = str(item.get("direction") or "").strip().lower()
+            if direction == "long":
+                long_count += 1
+            elif direction == "short":
+                short_count += 1
+            continue
+        if quantity > 0:
+            long_count += 1
+        elif quantity < 0:
+            short_count += 1
+    return {"total": long_count + short_count, "long": long_count, "short": short_count}
+
+
+def _current_order_group_key(order: dict[str, Any], index: int) -> str:
+    for field_name in (
+        "trade_group_id",
+        "entry_order_unique_id",
+        "linked_trade_group_id",
+        "linked_entry_order_unique_id",
+        "parent_order_unique_id",
+        "parent_id",
+        "parent_order_id",
+        "parentId",
+    ):
+        value = str(order.get(field_name) or "").strip()
+        if value:
+            return value
+    for field_name in ("order_id", "orderId", "id", "client_order_id", "unique_id", "coid", "order_ref", "orderRef"):
+        value = str(order.get(field_name) or "").strip()
+        if value:
+            return value
+    return f"row-{index}"
+
+
+def _current_order_group_counts(groups: Any) -> dict[str, int] | None:
+    if not isinstance(groups, list):
+        return None
+    open_groups = 0
+    open_legs = 0
+    cancelable = 0
+    editable = 0
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        open_groups += 1
+        orders = group.get("orders") if isinstance(group.get("orders"), list) else []
+        leg_count = int(_first_number(group.get("live_order_count"), group.get("order_count")) or 0)
+        if leg_count <= 0 and orders:
+            leg_count = len([order for order in orders if isinstance(order, dict)])
+        if leg_count <= 0:
+            leg_count = 1
+        open_legs += leg_count
+
+        cancelable_count = _first_number(group.get("cancelable_orders"))
+        if cancelable_count is not None:
+            cancelable += max(0, int(cancelable_count))
+        elif orders:
+            cancelable += len([order for order in orders if isinstance(order, dict) and _metric_truthy(order.get("can_cancel"))])
+
+        editable_count = _first_number(group.get("editable_orders"))
+        if editable_count is not None:
+            editable += max(0, int(editable_count))
+        elif orders:
+            editable += len([order for order in orders if isinstance(order, dict) and _metric_truthy(order.get("can_modify"))])
+    return {"open_legs": open_legs, "open_groups": open_groups, "cancelable": cancelable, "editable": editable}
+
+
+def _current_order_counts(payload: dict[str, Any]) -> dict[str, int]:
+    counts = payload.get("counts") if isinstance(payload.get("counts"), dict) else {}
+    group_counts = _current_order_group_counts(payload.get("live_order_groups"))
+    live_orders = payload.get("live_open_orders") if isinstance(payload.get("live_open_orders"), list) else None
+    if live_orders is None:
+        if group_counts is not None:
+            return group_counts
+        open_legs = int(_first_number(counts.get("open_orders"), counts.get("orders"), (group_counts or {}).get("open_legs")) or 0)
+        return {
+            "open_legs": max(0, open_legs),
+            "open_groups": max(0, int(_first_number(counts.get("open_order_groups"), counts.get("order_groups"), (group_counts or {}).get("open_groups"), open_legs) or 0)),
+            "cancelable": max(0, int(_first_number(counts.get("cancelable_orders"), (group_counts or {}).get("cancelable")) or 0)),
+            "editable": max(0, int(_first_number(counts.get("editable_orders"), (group_counts or {}).get("editable")) or 0)),
+        }
+
+    groups: dict[str, dict[str, bool]] = {}
+    cancelable = 0
+    editable = 0
+    for index, order in enumerate(live_orders):
+        if not isinstance(order, dict):
+            continue
+        if _metric_truthy(order.get("can_cancel")):
+            cancelable += 1
+        if _metric_truthy(order.get("can_modify")):
+            editable += 1
+        group = groups.setdefault(_current_order_group_key(order, index), {"cancelable": False, "editable": False})
+        group["cancelable"] = bool(group["cancelable"] or _metric_truthy(order.get("can_cancel")))
+        group["editable"] = bool(group["editable"] or _metric_truthy(order.get("can_modify")))
+    return {
+        "open_legs": len([item for item in live_orders if isinstance(item, dict)]),
+        "open_groups": (group_counts or {}).get("open_groups") or len(groups),
+        "cancelable": cancelable,
+        "editable": editable,
+    }
+
+
+def _has_current_account_snapshot(payload: dict[str, Any]) -> bool:
+    if any(isinstance(payload.get(field_name), list) for field_name in ("positions", "live_open_orders", "live_order_groups")):
+        return True
+    counts = payload.get("counts") if isinstance(payload.get("counts"), dict) else {}
+    return any(
+        key in counts
+        for key in (
+            "open_positions",
+            "positions",
+            "open_orders",
+            "orders",
+            "open_order_groups",
+            "order_groups",
+            "cancelable_orders",
+            "editable_orders",
+        )
+    )
+
+
+def _set_account_current_count_metrics(service: str, env: str, payload: dict[str, Any]) -> None:
+    position_counts = _current_position_counts(payload)
+    for direction in ("total", "long", "short"):
+        _gauge_set(POSITION_CURRENT_COUNT, (service, env, direction), position_counts.get(direction, 0))
+
+    order_counts = _current_order_counts(payload)
+    for kind in ("open_legs", "open_groups", "cancelable", "editable"):
+        _gauge_set(ORDER_CURRENT_COUNT, (service, env, kind), order_counts.get(kind, 0))
+
+
 def set_account_snapshot_metrics(payload: dict[str, Any] | None = None, *, source: str = "", environment: str = "") -> None:
     if not _client_available() or not isinstance(payload, dict):
         return
@@ -1221,6 +1396,8 @@ def set_account_snapshot_metrics(payload: dict[str, Any] | None = None, *, sourc
     if ACCOUNT_BUYING_POWER_GUARD_STATE is not None:
         for candidate in ("ok", "warning", "blocked", "unavailable", "disabled", "unknown"):
             ACCOUNT_BUYING_POWER_GUARD_STATE.labels(service, env, src, candidate).set(1.0 if state == candidate else 0.0)
+    if _has_current_account_snapshot(payload):
+        _set_account_current_count_metrics(service, env, payload)
 
 
 def record_broker_connect(obj: Any = None, *, result: str, duration_s: float, status_code: Any = 0, reason_code: str = "") -> None:
@@ -1370,6 +1547,24 @@ def _signal_record_direction_label(value: Any) -> str:
     return text if text in {"long", "short"} else "unknown"
 
 
+def set_current_signal_count_metrics(
+    counts: dict[str, Any] | None = None,
+    *,
+    environment: str = "",
+    state: str = "active",
+    service_name: str | None = None,
+) -> None:
+    if not _client_available() or SIGNAL_CURRENT_COUNT is None:
+        return
+    service = resolve_source_service(service_name)
+    env = _sanitize_label(environment or os.environ.get("IBKR_MARKET_DATA_MODE") or os.environ.get("IBKR_BROKER_MODE") or "unknown")
+    state_label = _sanitize_label(str(state or "active").strip().lower() or "active")
+    source = counts if isinstance(counts, dict) else {}
+    for direction in ("long", "short"):
+        value = _first_number(source.get(direction), source.get(direction.upper()), 0)
+        SIGNAL_CURRENT_COUNT.labels(service, env, direction, state_label).set(max(0.0, float(value or 0.0)))
+
+
 def record_signal_record_created(
     *,
     environment: str = "",
@@ -1430,6 +1625,7 @@ __all__ = [
     "sanitize_metric_labels",
     "set_account_snapshot_metrics",
     "set_broker_pending",
+    "set_current_signal_count_metrics",
     "set_gateway_status",
     "set_history_active",
     "set_runtime_config_switch_metrics",

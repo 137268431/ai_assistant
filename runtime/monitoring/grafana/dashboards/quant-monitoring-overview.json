@@ -442,6 +442,330 @@
     },
     {
       "id": 6,
+      "type": "stat",
+      "title": "当前信号多空 / Current Active Signals",
+      "description": "实时有效信号多空数；只统计当前交易日非终态 ibkr_signals，closed/expired/rejected/cancelled 不计入。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 0,
+        "y": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (direction) (ibkr_signal_current_count{service=~\"$service\", environment=~\"$environment\", state=\"active\", direction=\"long\"})",
+          "legendFormat": "active long",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (direction) (ibkr_signal_current_count{service=~\"$service\", environment=~\"$environment\", state=\"active\", direction=\"short\"})",
+          "legendFormat": "active short",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "当前订单 / Current Open Orders",
+      "description": "Gateway live_open_orders 快照；open legs 是订单腿，open groups 优先使用 live_order_groups，缺失时按 parent/trade group 聚合。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 6,
+        "y": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_order_current_count{service=~\"$service\", environment=~\"$environment\", kind=\"open_legs\"})",
+          "legendFormat": "open legs",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_order_current_count{service=~\"$service\", environment=~\"$environment\", kind=\"open_groups\"})",
+          "legendFormat": "open groups",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_order_current_count{service=~\"$service\", environment=~\"$environment\", kind=\"cancelable\"})",
+          "legendFormat": "cancelable",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_order_current_count{service=~\"$service\", environment=~\"$environment\", kind=\"editable\"})",
+          "legendFormat": "editable",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "当前持仓 / Current Positions",
+      "description": "Gateway positions 当前非零持仓数；flat 行不计入 total。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 12,
+        "y": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_position_current_count{service=~\"$service\", environment=~\"$environment\", direction=\"total\"})",
+          "legendFormat": "total",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_position_current_count{service=~\"$service\", environment=~\"$environment\", direction=\"long\"})",
+          "legendFormat": "long",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_position_current_count{service=~\"$service\", environment=~\"$environment\", direction=\"short\"})",
+          "legendFormat": "short",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "可用金额 / Available Capital",
+      "description": "交易可用金额主看 Remaining Buying Power；AvailableFunds 和 Cash 仅作对照。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 18,
+        "y": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (source) (ibkr_account_buying_power_remaining_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "remaining BP {{source}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (source) (ibkr_account_available_funds_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "available funds {{source}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (source) (ibkr_account_total_cash_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
+          "legendFormat": "cash {{source}}",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "custom": {},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 10,
       "type": "table",
       "title": "当前异常摘要 / Active Issues",
       "description": "最近 5 分钟只展示真实异常；benign、empty、正常轮询下沉到诊断区。",
@@ -453,7 +777,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 6
+        "y": 11
       },
       "targets": [
         {
@@ -462,8 +786,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service, environment, client_role, ib_error_code, ib_error_cn, ib_error_action_cn, severity) (increase(ibkr_broker_error_total{service=~\"$service\", environment=~\"$environment\", severity!=\"benign\"}[5m])) > 0",
-          "legendFormat": "IB {{client_role}} {{ib_error_code}} {{ib_error_cn}} · {{ib_error_action_cn}} {{severity}}",
+          "expr": "sum by (service, environment, client_role, ib_error_code, severity) (increase(ibkr_broker_error_total{service=~\"$service\", environment=~\"$environment\", severity!=\"benign\"}[5m])) > 0",
+          "legendFormat": "IB {{client_role}} {{ib_error_code}} {{severity}}",
           "range": true,
           "refId": "A"
         },
@@ -499,17 +823,6 @@
           "legendFormat": "order {{operation}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "D"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum by (stage, result, reason_code) (increase(ibkr_signal_events_total{service=~\"$service\", environment=~\"$environment\", result=~\"error|rejected|blocked|deferred|unauthenticated\"}[5m])) > 0",
-          "legendFormat": "signal {{stage}} {{result}} {{reason_code}}",
-          "range": true,
-          "refId": "E"
         }
       ],
       "fieldConfig": {
@@ -531,7 +844,7 @@
               },
               {
                 "color": "red",
-                "value": 1
+                "value": 80
               }
             ]
           }
@@ -552,7 +865,7 @@
       }
     },
     {
-      "id": 7,
+      "id": 11,
       "type": "stat",
       "title": "服务采集与版本 / Scrape and Version Health",
       "description": "Prometheus 是否能抓到 IBKR 与监控组件；同时展示 ibapi/Gateway 版本标记。",
@@ -564,7 +877,7 @@
         "h": 7,
         "w": 6,
         "x": 12,
-        "y": 6
+        "y": 11
       },
       "targets": [
         {
@@ -659,7 +972,7 @@
       }
     },
     {
-      "id": 8,
+      "id": 12,
       "type": "stat",
       "title": "主机核心资源 / Host Core Resource",
       "description": "CPU、内存和关键文件系统剩余百分比。",
@@ -671,7 +984,7 @@
         "h": 7,
         "w": 6,
         "x": 18,
-        "y": 6
+        "y": 11
       },
       "targets": [
         {
@@ -748,7 +1061,7 @@
       }
     },
     {
-      "id": 55,
+      "id": 13,
       "type": "row",
       "title": "00A - 交易运行开关 / Trading Runtime Switches",
       "collapsed": false,
@@ -760,12 +1073,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 13
+        "y": 18
       },
       "panels": []
     },
     {
-      "id": 56,
+      "id": 14,
       "type": "stat",
       "title": "关键开关关闭数 / Disabled Required Switches",
       "description": "只统计会影响自动交易、行情写入、调度与保护链路的 critical/guard 开关；正常应为 0。",
@@ -777,7 +1090,7 @@
         "h": 5,
         "w": 6,
         "x": 0,
-        "y": 14
+        "y": 19
       },
       "targets": [
         {
@@ -850,7 +1163,7 @@
       }
     },
     {
-      "id": 57,
+      "id": 15,
       "type": "stat",
       "title": "交易入口开关 / Trading Entry Switches",
       "description": "开仓/信号入站相关的核心开关；PAPER 环境不把 live 二次开关计入 required 关闭数。",
@@ -862,7 +1175,7 @@
         "h": 5,
         "w": 6,
         "x": 6,
-        "y": 14
+        "y": 19
       },
       "targets": [
         {
@@ -926,35 +1239,7 @@
                 "value": 1
               }
             ]
-          },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "color": "red",
-                  "index": 0,
-                  "text": "OFF"
-                },
-                "1": {
-                  "color": "green",
-                  "index": 1,
-                  "text": "ON"
-                }
-              }
-            },
-            {
-              "type": "special",
-              "options": {
-                "match": "null",
-                "result": {
-                  "color": "gray",
-                  "index": 2,
-                  "text": "N/A"
-                }
-              }
-            }
-          ]
+          }
         },
         "overrides": []
       },
@@ -974,7 +1259,7 @@
       }
     },
     {
-      "id": 58,
+      "id": 16,
       "type": "stat",
       "title": "行情与调度开关 / Market and Scheduler Switches",
       "description": "compute / scheduler / bars / WebSocket 四个行情与扫描总控，任何一个关闭都会造成信号链路缺数据或不执行。",
@@ -986,7 +1271,7 @@
         "h": 5,
         "w": 6,
         "x": 12,
-        "y": 14
+        "y": 19
       },
       "targets": [
         {
@@ -1050,35 +1335,7 @@
                 "value": 1
               }
             ]
-          },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "color": "red",
-                  "index": 0,
-                  "text": "OFF"
-                },
-                "1": {
-                  "color": "green",
-                  "index": 1,
-                  "text": "ON"
-                }
-              }
-            },
-            {
-              "type": "special",
-              "options": {
-                "match": "null",
-                "result": {
-                  "color": "gray",
-                  "index": 2,
-                  "text": "N/A"
-                }
-              }
-            }
-          ]
+          }
         },
         "overrides": []
       },
@@ -1098,7 +1355,7 @@
       }
     },
     {
-      "id": 59,
+      "id": 17,
       "type": "stat",
       "title": "执行保护/可选开关 / Guards and Optional Switches",
       "description": "展示下单串行、IB 问题抑制与 Order Flow 等辅助开关；可选开关关闭不直接判定为故障。",
@@ -1110,7 +1367,7 @@
         "h": 5,
         "w": 6,
         "x": 18,
-        "y": 14
+        "y": 19
       },
       "targets": [
         {
@@ -1188,43 +1445,11 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
-                "value": null
-              },
-              {
                 "color": "green",
-                "value": 1
+                "value": null
               }
             ]
-          },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "color": "red",
-                  "index": 0,
-                  "text": "OFF"
-                },
-                "1": {
-                  "color": "green",
-                  "index": 1,
-                  "text": "ON"
-                }
-              }
-            },
-            {
-              "type": "special",
-              "options": {
-                "match": "null",
-                "result": {
-                  "color": "gray",
-                  "index": 2,
-                  "text": "N/A"
-                }
-              }
-            }
-          ]
+          }
         },
         "overrides": []
       },
@@ -1244,7 +1469,7 @@
       }
     },
     {
-      "id": 60,
+      "id": 18,
       "type": "table",
       "title": "关闭的关键/保护开关 / Disabled Critical and Guard Switches",
       "description": "只列出 critical/guard 且当前为 OFF 的开关；用于快速判断是自锁开关导致，还是 Gateway/账户链路问题。",
@@ -1256,7 +1481,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 19
+        "y": 24
       },
       "targets": [
         {
@@ -1293,35 +1518,7 @@
                 "value": 1
               }
             ]
-          },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "color": "green",
-                  "index": 0,
-                  "text": "OK"
-                },
-                "1": {
-                  "color": "red",
-                  "index": 1,
-                  "text": "OFF"
-                }
-              }
-            },
-            {
-              "type": "special",
-              "options": {
-                "match": "null",
-                "result": {
-                  "color": "gray",
-                  "index": 2,
-                  "text": "N/A"
-                }
-              }
-            }
-          ]
+          }
         },
         "overrides": []
       },
@@ -1339,7 +1536,7 @@
       }
     },
     {
-      "id": 61,
+      "id": 19,
       "type": "table",
       "title": "全部交易运行开关明细 / All Trading Runtime Switches",
       "description": "按 config environment、runtime environment、scope、importance、key 展示 0/1；key 是固定白名单，避免高基数标签。",
@@ -1351,7 +1548,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 19
+        "y": 24
       },
       "targets": [
         {
@@ -1380,43 +1577,11 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
-                "value": null
-              },
-              {
                 "color": "green",
-                "value": 1
+                "value": null
               }
             ]
-          },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "color": "red",
-                  "index": 0,
-                  "text": "OFF"
-                },
-                "1": {
-                  "color": "green",
-                  "index": 1,
-                  "text": "ON"
-                }
-              }
-            },
-            {
-              "type": "special",
-              "options": {
-                "match": "null",
-                "result": {
-                  "color": "gray",
-                  "index": 2,
-                  "text": "N/A"
-                }
-              }
-            }
-          ]
+          }
         },
         "overrides": []
       },
@@ -1434,7 +1599,7 @@
       }
     },
     {
-      "id": 9,
+      "id": 20,
       "type": "row",
       "title": "01 - 行情与订阅 / Market Data Details",
       "collapsed": false,
@@ -1446,12 +1611,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 26
+        "y": 31
       },
       "panels": []
     },
     {
-      "id": 10,
+      "id": 21,
       "type": "timeseries",
       "title": "监控池数量 / Universe Symbol Counts",
       "description": "context ws 是固定上下文行情，不代表完整监控池；完整监控池看 pool/trade watchlist。",
@@ -1463,7 +1628,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 27
+        "y": 32
       },
       "targets": [
         {
@@ -1571,13 +1736,13 @@
         "legend": {
           "calcs": [
             "lastNotNull",
+            "mean",
             "max"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
+          "width": 420
         },
         "tooltip": {
           "mode": "multi",
@@ -1586,7 +1751,7 @@
       }
     },
     {
-      "id": 11,
+      "id": 22,
       "type": "timeseries",
       "title": "订阅容量 / Subscription Capacity",
       "description": "context ws 是固定上下文行情订阅；完整监控池看左侧 Universe。",
@@ -1598,7 +1763,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 27
+        "y": 32
       },
       "targets": [
         {
@@ -1732,13 +1897,13 @@
         "legend": {
           "calcs": [
             "lastNotNull",
+            "mean",
             "max"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
+          "width": 420
         },
         "tooltip": {
           "mode": "multi",
@@ -1747,7 +1912,7 @@
       }
     },
     {
-      "id": 12,
+      "id": 23,
       "type": "timeseries",
       "title": "订阅利用率 / Subscription Utilization",
       "description": "容量利用率只看 total/trade/websocket；不再把 context ws 的 3/3 显示成 monitor 100%。",
@@ -1759,7 +1924,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 27
+        "y": 32
       },
       "targets": [
         {
@@ -1853,13 +2018,13 @@
         "legend": {
           "calcs": [
             "lastNotNull",
+            "mean",
             "max"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
+          "width": 420
         },
         "tooltip": {
           "mode": "multi",
@@ -1868,7 +2033,7 @@
       }
     },
     {
-      "id": 13,
+      "id": 24,
       "type": "timeseries",
       "title": "行情延迟趋势 / Market Freshness Trend",
       "description": "",
@@ -1880,7 +2045,7 @@
         "h": 7,
         "w": 16,
         "x": 0,
-        "y": 34
+        "y": 39
       },
       "targets": [
         {
@@ -1974,13 +2139,13 @@
         "legend": {
           "calcs": [
             "lastNotNull",
+            "mean",
             "max"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
+          "width": 420
         },
         "tooltip": {
           "mode": "multi",
@@ -1989,7 +2154,7 @@
       }
     },
     {
-      "id": 14,
+      "id": 25,
       "type": "timeseries",
       "title": "Bar Pending Symbols / Bar Pending Symbols",
       "description": "",
@@ -2001,7 +2166,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 34
+        "y": 39
       },
       "targets": [
         {
@@ -2069,13 +2234,13 @@
         "legend": {
           "calcs": [
             "lastNotNull",
+            "mean",
             "max"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
+          "width": 420
         },
         "tooltip": {
           "mode": "multi",
@@ -2084,7 +2249,7 @@
       }
     },
     {
-      "id": 15,
+      "id": 26,
       "type": "row",
       "title": "02 - Gateway 与 IB API / Gateway and IB API",
       "collapsed": false,
@@ -2096,12 +2261,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 41
+        "y": 46
       },
       "panels": []
     },
     {
-      "id": 16,
+      "id": 27,
       "type": "stat",
       "title": "Gateway 状态 / Gateway State",
       "description": "合并 Gateway reachable、登录会话、行情 WS、Broker ready、socket listening，避免分散重复。",
@@ -2113,7 +2278,7 @@
         "h": 5,
         "w": 8,
         "x": 0,
-        "y": 42
+        "y": 47
       },
       "targets": [
         {
@@ -2208,7 +2373,7 @@
       }
     },
     {
-      "id": 17,
+      "id": 28,
       "type": "timeseries",
       "title": "IB API 普通请求 p95 / IB API Normal Request p95",
       "description": "普通 IB 请求延迟，不含 account_pnl；用于判断 Gateway 是否整体变慢。",
@@ -2220,7 +2385,7 @@
         "h": 5,
         "w": 8,
         "x": 8,
-        "y": 42
+        "y": 47
       },
       "targets": [
         {
@@ -2288,13 +2453,13 @@
         "legend": {
           "calcs": [
             "lastNotNull",
+            "mean",
             "max"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
+          "width": 420
         },
         "tooltip": {
           "mode": "multi",
@@ -2303,7 +2468,7 @@
       }
     },
     {
-      "id": 18,
+      "id": 29,
       "type": "timeseries",
       "title": "账户 PnL 请求 / Account PnL Request",
       "description": "account_pnl 高通常是 IB reqPnL 回调超时，不代表 Gateway 全局变慢；timeout 次数同图展示。",
@@ -2315,7 +2480,7 @@
         "h": 5,
         "w": 8,
         "x": 16,
-        "y": 42
+        "y": 47
       },
       "targets": [
         {
@@ -2398,13 +2563,13 @@
         "legend": {
           "calcs": [
             "lastNotNull",
+            "mean",
             "max"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
+          "width": 420
         },
         "tooltip": {
           "mode": "multi",
@@ -2413,7 +2578,7 @@
       }
     },
     {
-      "id": 19,
+      "id": 30,
       "type": "timeseries",
       "title": "IB API 请求 QPS / IB API Request QPS",
       "description": "",
@@ -2425,7 +2590,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 47
+        "y": 52
       },
       "targets": [
         {
@@ -2493,13 +2658,13 @@
         "legend": {
           "calcs": [
             "lastNotNull",
+            "mean",
             "max"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
+          "width": 420
         },
         "tooltip": {
           "mode": "multi",
@@ -2508,7 +2673,7 @@
       }
     },
     {
-      "id": 20,
+      "id": 31,
       "type": "timeseries",
       "title": "IB 非良性错误 / Non-Benign IB Errors",
       "description": "主错误面板只看 severity!=benign；2100/2104/2107/2158 等良性消息在诊断区。",
@@ -2520,7 +2685,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 47
+        "y": 52
       },
       "targets": [
         {
@@ -2529,8 +2694,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (client_role, ib_error_code, ib_error_cn, ib_error_action_cn, request_kind, severity) (rate(ibkr_broker_error_total{service=~\"$service\", environment=~\"$environment\", severity!=\"benign\"}[$__rate_interval]))",
-          "legendFormat": "{{client_role}} {{ib_error_code}} {{ib_error_cn}} · {{ib_error_action_cn}} {{request_kind}} {{severity}}",
+          "expr": "sum by (client_role, ib_error_code, request_kind, severity) (rate(ibkr_broker_error_total{service=~\"$service\", environment=~\"$environment\", severity!=\"benign\"}[$__rate_interval]))",
+          "legendFormat": "{{client_role}} {{ib_error_code}} {{request_kind}} {{severity}}",
           "range": true,
           "refId": "A"
         }
@@ -2588,13 +2753,13 @@
         "legend": {
           "calcs": [
             "lastNotNull",
+            "mean",
             "max"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
+          "width": 420
         },
         "tooltip": {
           "mode": "multi",
@@ -2603,7 +2768,7 @@
       }
     },
     {
-      "id": 21,
+      "id": 32,
       "type": "timeseries",
       "title": "IB API Pending 请求 / IB API Pending Requests",
       "description": "",
@@ -2615,7 +2780,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 47
+        "y": 52
       },
       "targets": [
         {
@@ -2683,13 +2848,13 @@
         "legend": {
           "calcs": [
             "lastNotNull",
+            "mean",
             "max"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
+          "width": 420
         },
         "tooltip": {
           "mode": "multi",
@@ -2698,7 +2863,7 @@
       }
     },
     {
-      "id": 22,
+      "id": 33,
       "type": "row",
       "title": "03 - 信号链路 / Signal Pipeline",
       "collapsed": false,
@@ -2710,12 +2875,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 54
+        "y": 59
       },
       "panels": []
     },
     {
-      "id": 23,
+      "id": 34,
       "type": "stat",
       "title": "信号核心个数 / Signal Core Counts",
       "description": "近 5 分钟信号处理个数，加上近 24 小时真实业务信号创建数；正常 empty 轮询下沉诊断。",
@@ -2727,7 +2892,7 @@
         "h": 5,
         "w": 8,
         "x": 0,
-        "y": 55
+        "y": 60
       },
       "targets": [
         {
@@ -2807,36 +2972,15 @@
               {
                 "color": "green",
                 "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
               }
             ]
           }
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "attention 5m"
-            },
-            "properties": [
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "green",
-                      "value": null
-                    },
-                    {
-                      "color": "red",
-                      "value": 1
-                    }
-                  ]
-                }
-              }
-            ]
-          }
-        ]
+        "overrides": []
       },
       "options": {
         "reduceOptions": {
@@ -2854,7 +2998,7 @@
       }
     },
     {
-      "id": 24,
+      "id": 35,
       "type": "timeseries",
       "title": "信号阶段个数趋势 / Signal Stage Count Trend",
       "description": "按 5 分钟滚动窗口展示信号阶段事件个数；过滤 empty 轮询避免误读。",
@@ -2866,7 +3010,7 @@
         "h": 5,
         "w": 8,
         "x": 8,
-        "y": 55
+        "y": 60
       },
       "targets": [
         {
@@ -2934,13 +3078,13 @@
         "legend": {
           "calcs": [
             "lastNotNull",
+            "mean",
             "max"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
+          "width": 420
         },
         "tooltip": {
           "mode": "multi",
@@ -2949,7 +3093,7 @@
       }
     },
     {
-      "id": 25,
+      "id": 36,
       "type": "timeseries",
       "title": "信号阶段 p95 延迟 / Signal Stage p95 Latency",
       "description": "",
@@ -2961,7 +3105,7 @@
         "h": 5,
         "w": 8,
         "x": 16,
-        "y": 55
+        "y": 60
       },
       "targets": [
         {
@@ -3029,13 +3173,13 @@
         "legend": {
           "calcs": [
             "lastNotNull",
+            "mean",
             "max"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
+          "width": 420
         },
         "tooltip": {
           "mode": "multi",
@@ -3044,7 +3188,7 @@
       }
     },
     {
-      "id": 26,
+      "id": 37,
       "type": "timeseries",
       "title": "信号需关注个数趋势 / Signal Attention Count Trend",
       "description": "按 5 分钟滚动窗口展示 rejected、blocked、deferred、unauthenticated、error 等需关注信号事件个数。",
@@ -3056,7 +3200,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 60
+        "y": 65
       },
       "targets": [
         {
@@ -3124,13 +3268,13 @@
         "legend": {
           "calcs": [
             "lastNotNull",
+            "mean",
             "max"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
+          "width": 420
         },
         "tooltip": {
           "mode": "multi",
@@ -3139,7 +3283,7 @@
       }
     },
     {
-      "id": 52,
+      "id": 38,
       "type": "table",
       "title": "信号处理明细 / Signal Processing Diagnostics",
       "description": "当前 dashboard 时间范围内的信号事件累计个数；例如 reverse_poll reverse ok empty 表示反向轮询正常但无待处理项。",
@@ -3151,7 +3295,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 60
+        "y": 65
       },
       "targets": [
         {
@@ -3182,6 +3326,10 @@
               {
                 "color": "green",
                 "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
               }
             ]
           }
@@ -3202,7 +3350,7 @@
       }
     },
     {
-      "id": 53,
+      "id": 39,
       "type": "timeseries",
       "title": "每日真实信号趋势 / Daily Signal Record Trend",
       "description": "按 1 天窗口统计 ibkr_signals 新创建的真实业务信号；从指标上线后开始累计，不回填历史记录。",
@@ -3214,7 +3362,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 67
+        "y": 72
       },
       "targets": [
         {
@@ -3226,27 +3374,25 @@
           "expr": "sum by (direction) (increase(ibkr_signal_records_total{service=~\"$service\", environment=~\"$environment\"}[1d]))",
           "legendFormat": "{{direction}}",
           "range": true,
-          "refId": "A",
-          "interval": "1d"
+          "refId": "A"
         }
       ],
-      "timeFrom": "15d",
       "fieldConfig": {
         "defaults": {
           "unit": "short",
           "custom": {
-            "drawStyle": "bars",
+            "drawStyle": "line",
             "lineInterpolation": "linear",
             "barAlignment": 0,
             "lineWidth": 1,
-            "fillOpacity": 55,
+            "fillOpacity": 8,
             "gradientMode": "none",
             "spanNulls": false,
             "insertNulls": false,
             "showPoints": "never",
             "pointSize": 5,
             "stacking": {
-              "mode": "normal",
+              "mode": "none",
               "group": "A"
             },
             "axisPlacement": "auto",
@@ -3270,6 +3416,10 @@
               {
                 "color": "green",
                 "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
               }
             ]
           }
@@ -3295,7 +3445,7 @@
       }
     },
     {
-      "id": 54,
+      "id": 40,
       "type": "table",
       "title": "真实信号来源明细 / Signal Record Source Breakdown",
       "description": "选定时间范围内按来源、方向、初始状态聚合真实业务信号创建数；不包含更新、重复、合并或抑制的 follow-up。",
@@ -3307,7 +3457,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 67
+        "y": 72
       },
       "targets": [
         {
@@ -3322,7 +3472,6 @@
           "refId": "A"
         }
       ],
-      "timeFrom": "15d",
       "fieldConfig": {
         "defaults": {
           "unit": "short",
@@ -3339,6 +3488,10 @@
               {
                 "color": "green",
                 "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
               }
             ]
           }
@@ -3359,7 +3512,7 @@
       }
     },
     {
-      "id": 27,
+      "id": 41,
       "type": "row",
       "title": "04 - 订单链路 / Order Pipeline",
       "collapsed": false,
@@ -3371,12 +3524,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 74
+        "y": 79
       },
       "panels": []
     },
     {
-      "id": 28,
+      "id": 42,
       "type": "timeseries",
       "title": "真实订单命令 QPS / Real Order Command QPS",
       "description": "只展示真实下单、改价、撤单、保护单操作；不含 tracker 轮询。",
@@ -3388,7 +3541,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 75
+        "y": 80
       },
       "targets": [
         {
@@ -3456,13 +3609,13 @@
         "legend": {
           "calcs": [
             "lastNotNull",
+            "mean",
             "max"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
+          "width": 420
         },
         "tooltip": {
           "mode": "multi",
@@ -3471,7 +3624,7 @@
       }
     },
     {
-      "id": 29,
+      "id": 43,
       "type": "table",
       "title": "订单失败 / Order Failures",
       "description": "只显示 result 非 ok/synced/seen 的可行动失败。",
@@ -3483,7 +3636,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 75
+        "y": 80
       },
       "targets": [
         {
@@ -3517,7 +3670,7 @@
               },
               {
                 "color": "red",
-                "value": 1
+                "value": 80
               }
             ]
           }
@@ -3538,7 +3691,7 @@
       }
     },
     {
-      "id": 30,
+      "id": 44,
       "type": "timeseries",
       "title": "真实订单操作 p95 / Real Order Operation p95",
       "description": "真实订单操作延迟；tracker 轮询延迟单独放右下诊断。",
@@ -3550,7 +3703,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 75
+        "y": 80
       },
       "targets": [
         {
@@ -3618,13 +3771,13 @@
         "legend": {
           "calcs": [
             "lastNotNull",
+            "mean",
             "max"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
+          "width": 420
         },
         "tooltip": {
           "mode": "multi",
@@ -3633,7 +3786,7 @@
       }
     },
     {
-      "id": 31,
+      "id": 45,
       "type": "table",
       "title": "真实订单命令累计 / Real Order Command Counts",
       "description": "这里才是下单/改价/撤单类命令累计；tracker_live_orders_fetch 不再放入订单命令。",
@@ -3645,7 +3798,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 82
+        "y": 87
       },
       "targets": [
         {
@@ -3676,6 +3829,10 @@
               {
                 "color": "green",
                 "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
               }
             ]
           }
@@ -3696,7 +3853,7 @@
       }
     },
     {
-      "id": 32,
+      "id": 46,
       "type": "table",
       "title": "订单追踪轮询 / Order Tracker Polling",
       "description": "轮询/同步不是下单数量；empty 表示正常但无待处理订单。",
@@ -3708,7 +3865,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 82
+        "y": 87
       },
       "targets": [
         {
@@ -3761,6 +3918,10 @@
               {
                 "color": "green",
                 "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
               }
             ]
           }
@@ -3781,7 +3942,7 @@
       }
     },
     {
-      "id": 33,
+      "id": 47,
       "type": "timeseries",
       "title": "订单追踪 p95 / Order Tracker p95",
       "description": "tracker 正常毫秒级；偶发尖刺用于诊断，不作为真实下单慢的结论。",
@@ -3793,7 +3954,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 82
+        "y": 87
       },
       "targets": [
         {
@@ -3861,13 +4022,13 @@
         "legend": {
           "calcs": [
             "lastNotNull",
+            "mean",
             "max"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
+          "width": 420
         },
         "tooltip": {
           "mode": "multi",
@@ -3876,7 +4037,7 @@
       }
     },
     {
-      "id": 34,
+      "id": 48,
       "type": "row",
       "title": "05 - HTTP 与依赖 / HTTP and Dependencies",
       "collapsed": false,
@@ -3888,12 +4049,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 90
+        "y": 95
       },
       "panels": []
     },
     {
-      "id": 35,
+      "id": 49,
       "type": "timeseries",
       "title": "业务 HTTP 错误 / Business HTTP Errors",
       "description": "真实业务 HTTP 错误；健康检查和状态接口单独拆出去。",
@@ -3905,7 +4066,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 91
+        "y": 96
       },
       "targets": [
         {
@@ -3984,13 +4145,13 @@
         "legend": {
           "calcs": [
             "lastNotNull",
+            "mean",
             "max"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
+          "width": 420
         },
         "tooltip": {
           "mode": "multi",
@@ -3999,7 +4160,7 @@
       }
     },
     {
-      "id": 36,
+      "id": 50,
       "type": "timeseries",
       "title": "状态接口超时 / Status Endpoint Timeouts",
       "description": "/ibkr/status ReadTimeout 是服务间状态接口读取超时；修复后用于确认是否仍有状态构建慢、回环或依赖阻塞。",
@@ -4011,7 +4172,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 91
+        "y": 96
       },
       "targets": [
         {
@@ -4079,13 +4240,13 @@
         "legend": {
           "calcs": [
             "lastNotNull",
+            "mean",
             "max"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
+          "width": 420
         },
         "tooltip": {
           "mode": "multi",
@@ -4094,7 +4255,7 @@
       }
     },
     {
-      "id": 37,
+      "id": 51,
       "type": "timeseries",
       "title": "HTTP p95 延迟 / HTTP p95 Latency",
       "description": "",
@@ -4106,7 +4267,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 91
+        "y": 96
       },
       "targets": [
         {
@@ -4185,13 +4346,13 @@
         "legend": {
           "calcs": [
             "lastNotNull",
+            "mean",
             "max"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
+          "width": 420
         },
         "tooltip": {
           "mode": "multi",
@@ -4200,7 +4361,7 @@
       }
     },
     {
-      "id": 38,
+      "id": 52,
       "type": "timeseries",
       "title": "入口 QPS / Inbound Request QPS",
       "description": "",
@@ -4212,7 +4373,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 98
+        "y": 103
       },
       "targets": [
         {
@@ -4280,13 +4441,13 @@
         "legend": {
           "calcs": [
             "lastNotNull",
+            "mean",
             "max"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
+          "width": 420
         },
         "tooltip": {
           "mode": "multi",
@@ -4295,7 +4456,7 @@
       }
     },
     {
-      "id": 39,
+      "id": 53,
       "type": "timeseries",
       "title": "出站 QPS / Outbound Request QPS",
       "description": "",
@@ -4307,7 +4468,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 98
+        "y": 103
       },
       "targets": [
         {
@@ -4375,13 +4536,13 @@
         "legend": {
           "calcs": [
             "lastNotNull",
+            "mean",
             "max"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
+          "width": 420
         },
         "tooltip": {
           "mode": "multi",
@@ -4390,7 +4551,7 @@
       }
     },
     {
-      "id": 40,
+      "id": 54,
       "type": "row",
       "title": "06 - 账户、历史与主机 / Account History and Host",
       "collapsed": false,
@@ -4402,12 +4563,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 105
+        "y": 110
       },
       "panels": []
     },
     {
-      "id": 41,
+      "id": 55,
       "type": "stat",
       "title": "账户资金 / Account Capital",
       "description": "",
@@ -4419,7 +4580,7 @@
         "h": 6,
         "w": 8,
         "x": 0,
-        "y": 106
+        "y": 111
       },
       "targets": [
         {
@@ -4477,6 +4638,10 @@
               {
                 "color": "green",
                 "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
               }
             ]
           }
@@ -4499,7 +4664,7 @@
       }
     },
     {
-      "id": 42,
+      "id": 56,
       "type": "timeseries",
       "title": "保证金与敞口 / Margin and Exposure",
       "description": "",
@@ -4511,7 +4676,7 @@
         "h": 6,
         "w": 8,
         "x": 8,
-        "y": 106
+        "y": 111
       },
       "targets": [
         {
@@ -4612,13 +4777,13 @@
         "legend": {
           "calcs": [
             "lastNotNull",
+            "mean",
             "max"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
+          "width": 420
         },
         "tooltip": {
           "mode": "multi",
@@ -4627,7 +4792,7 @@
       }
     },
     {
-      "id": 43,
+      "id": 57,
       "type": "timeseries",
       "title": "主机资源 / Host Resource",
       "description": "",
@@ -4639,7 +4804,7 @@
         "h": 6,
         "w": 8,
         "x": 16,
-        "y": 106
+        "y": 111
       },
       "targets": [
         {
@@ -4733,13 +4898,13 @@
         "legend": {
           "calcs": [
             "lastNotNull",
+            "mean",
             "max"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
+          "width": 420
         },
         "tooltip": {
           "mode": "multi",
@@ -4748,7 +4913,7 @@
       }
     },
     {
-      "id": 44,
+      "id": 58,
       "type": "timeseries",
       "title": "账户资金趋势 / Account Capital Trend",
       "description": "",
@@ -4760,7 +4925,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 112
+        "y": 117
       },
       "targets": [
         {
@@ -4861,13 +5026,13 @@
         "legend": {
           "calcs": [
             "lastNotNull",
+            "mean",
             "max"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
+          "width": 420
         },
         "tooltip": {
           "mode": "multi",
@@ -4876,7 +5041,7 @@
       }
     },
     {
-      "id": 45,
+      "id": 59,
       "type": "timeseries",
       "title": "历史数据与回补 / History and Backfill",
       "description": "",
@@ -4888,7 +5053,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 112
+        "y": 117
       },
       "targets": [
         {
@@ -4967,13 +5132,13 @@
         "legend": {
           "calcs": [
             "lastNotNull",
+            "mean",
             "max"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
+          "width": 420
         },
         "tooltip": {
           "mode": "multi",
@@ -4982,7 +5147,7 @@
       }
     },
     {
-      "id": 46,
+      "id": 60,
       "type": "row",
       "title": "99 - 诊断明细 / Diagnostics",
       "collapsed": false,
@@ -4994,12 +5159,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 119
+        "y": 124
       },
       "panels": []
     },
     {
-      "id": 47,
+      "id": 61,
       "type": "table",
       "title": "良性 IB 消息 / Benign IB Messages",
       "description": "例如 2100 benign 通常是账户数据订阅取消/切换；不放主错误趋势。",
@@ -5011,7 +5176,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 120
+        "y": 125
       },
       "targets": [
         {
@@ -5020,8 +5185,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (client_role, ib_error_code, ib_error_cn, ib_error_action_cn, request_kind, severity) (increase(ibkr_broker_error_total{service=~\"$service\", environment=~\"$environment\", severity=\"benign\"}[$__range]))",
-          "legendFormat": "良性 IB {{client_role}} {{ib_error_code}} {{ib_error_cn}} {{request_kind}}",
+          "expr": "sum by (client_role, ib_error_code, request_kind, severity) (increase(ibkr_broker_error_total{service=~\"$service\", environment=~\"$environment\", severity=\"benign\"}[$__range]))",
+          "legendFormat": "良性 IB {{client_role}} {{ib_error_code}} {{request_kind}}",
           "range": true,
           "refId": "A"
         }
@@ -5042,6 +5207,10 @@
               {
                 "color": "green",
                 "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
               }
             ]
           }
@@ -5062,7 +5231,7 @@
       }
     },
     {
-      "id": 48,
+      "id": 62,
       "type": "table",
       "title": "空轮询与后台任务 / Empty Polling and Background Jobs",
       "description": "empty 表示正常后台轮询但没有待处理项，用于排障，不作为业务结果。",
@@ -5074,7 +5243,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 120
+        "y": 125
       },
       "targets": [
         {
@@ -5116,6 +5285,10 @@
               {
                 "color": "green",
                 "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
               }
             ]
           }
@@ -5136,7 +5309,7 @@
       }
     },
     {
-      "id": 49,
+      "id": 63,
       "type": "timeseries",
       "title": "Gateway Probe p95 / Gateway Probe p95",
       "description": "Gateway socket 探测延迟，保留在诊断区，避免与 Gateway 状态重复。",
@@ -5148,7 +5321,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 120
+        "y": 125
       },
       "targets": [
         {
@@ -5216,13 +5389,13 @@
         "legend": {
           "calcs": [
             "lastNotNull",
+            "mean",
             "max"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true,
-          "sortBy": "Max",
-          "sortDesc": true
+          "width": 420
         },
         "tooltip": {
           "mode": "multi",
@@ -5231,7 +5404,7 @@
       }
     },
     {
-      "id": 50,
+      "id": 64,
       "type": "table",
       "title": "状态接口影响规模 / Status Endpoint Impact",
       "description": "状态页/监控拉取超时的最近 5m 影响规模，和业务 HTTP 错误分开。",
@@ -5243,7 +5416,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 128
+        "y": 133
       },
       "targets": [
         {
@@ -5277,7 +5450,7 @@
               },
               {
                 "color": "red",
-                "value": 1
+                "value": 80
               }
             ]
           }
@@ -5298,7 +5471,7 @@
       }
     },
     {
-      "id": 51,
+      "id": 65,
       "type": "table",
       "title": "最近 5m 真实错误影响 / Real Error Impact 5m",
       "description": "只统计真实错误影响；benign 和 empty 已下沉到诊断明细。",
@@ -5310,7 +5483,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 128
+        "y": 133
       },
       "targets": [
         {
@@ -5319,8 +5492,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service, environment, client_role, ib_error_code, ib_error_cn, ib_error_action_cn, severity) (increase(ibkr_broker_error_total{service=~\"$service\", environment=~\"$environment\", severity!=\"benign\"}[5m])) > 0",
-          "legendFormat": "IB {{client_role}} {{ib_error_code}} {{ib_error_cn}} · {{ib_error_action_cn}} {{severity}}",
+          "expr": "sum by (service, environment, client_role, ib_error_code, severity) (increase(ibkr_broker_error_total{service=~\"$service\", environment=~\"$environment\", severity!=\"benign\"}[5m])) > 0",
+          "legendFormat": "IB {{client_role}} {{ib_error_code}} {{severity}}",
           "range": true,
           "refId": "A"
         },
@@ -5355,7 +5528,7 @@
               },
               {
                 "color": "red",
-                "value": 1
+                "value": 80
               }
             ]
           }
@@ -5485,6 +5658,6 @@
   "timezone": "browser",
   "title": "量化监控 - 分阶段请求链路 / Quant Monitoring - Phased Request Flow",
   "uid": "quant-monitoring-overview",
-  "version": 6,
+  "version": 5,
   "weekStart": ""
 }

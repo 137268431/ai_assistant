@@ -76,6 +76,21 @@ class _FakePB:
             if str(order_id) in ids:
                 row["status"] = status
 
+    def set_order_price(self, order_id, side, price):
+        updated = None
+        for row in self.records["orders"]:
+            ids = {str(row.get("broker_order_id") or ""), str(row.get("order_id") or ""), str(row.get("orderId") or "")}
+            if str(order_id) not in ids:
+                continue
+            row["status"] = row.get("status") or "Submitted"
+            if side == "stop_loss":
+                row["auxPrice"] = float(price)
+            else:
+                row["price"] = float(price)
+                row["lmtPrice"] = float(price)
+            updated = copy.deepcopy(row)
+        return updated
+
     @staticmethod
     def _matches(row, filter_text):
         if not filter_text:
@@ -95,6 +110,26 @@ class _FakeBroker:
         self.calls.append({"include_all": include_all})
         return [copy.deepcopy(row) for row in self.open_orders]
 
+    def set_order_price(self, order_id, side, price):
+        updated = None
+        for row in self.open_orders:
+            ids = {
+                str(row.get("broker_order_id") or ""),
+                str(row.get("order_id") or ""),
+                str(row.get("orderId") or ""),
+                str(row.get("id") or ""),
+            }
+            if str(order_id) not in ids:
+                continue
+            row["status"] = row.get("status") or "Submitted"
+            if side == "stop_loss":
+                row["auxPrice"] = float(price)
+            else:
+                row["price"] = float(price)
+                row["lmtPrice"] = float(price)
+            updated = copy.deepcopy(row)
+        return updated
+
 
 class _FakeOrderModifier:
     def __init__(self, pb, *, broker=None, ok=True, update_failures=None):
@@ -106,7 +141,7 @@ class _FakeOrderModifier:
         self.stop_updates = []
         self.take_profit_updates = []
 
-    def cancel_order(self, order_id):
+    def cancel_order(self, order_id, *args, **kwargs):
         self.cancelled.append(str(order_id))
         if not self.ok:
             return {"ok": False, "error": "cancel rejected", "order_id": str(order_id)}
@@ -117,13 +152,38 @@ class _FakeOrderModifier:
         self.stop_updates.append((str(order_id), float(new_sl_price)))
         if "stop_loss" in self.update_failures:
             return {"ok": False, "error": "stop update rejected", "order_id": str(order_id)}
-        return {"ok": True, "order_id": str(order_id), "price": float(new_sl_price)}
+        order = self.pb.set_order_price(order_id, "stop_loss", new_sl_price)
+        broker_order = getattr(self.broker, "set_order_price", lambda *_args: None)(order_id, "stop_loss", new_sl_price)
+        return {
+            "ok": True,
+            "order_id": str(order_id),
+            "price": float(new_sl_price),
+            "order": broker_order or order or {
+                "orderId": str(order_id),
+                "status": "Submitted",
+                "role": "stop_loss",
+                "auxPrice": float(new_sl_price),
+            },
+        }
 
     def update_take_profit(self, order_id, new_tp_price):
         self.take_profit_updates.append((str(order_id), float(new_tp_price)))
         if "take_profit" in self.update_failures:
             return {"ok": False, "error": "take profit update rejected", "order_id": str(order_id)}
-        return {"ok": True, "order_id": str(order_id), "price": float(new_tp_price)}
+        order = self.pb.set_order_price(order_id, "take_profit", new_tp_price)
+        broker_order = getattr(self.broker, "set_order_price", lambda *_args: None)(order_id, "take_profit", new_tp_price)
+        return {
+            "ok": True,
+            "order_id": str(order_id),
+            "price": float(new_tp_price),
+            "order": broker_order or order or {
+                "orderId": str(order_id),
+                "status": "Submitted",
+                "role": "take_profit",
+                "price": float(new_tp_price),
+                "lmtPrice": float(new_tp_price),
+            },
+        }
 
 
 class _FakeOrderLifecycle:
@@ -448,7 +508,7 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
         self.assertEqual([], placer.calls)
         self.assertEqual("cancelled", pb.acks[0]["status"])
 
-    def test_close_submission_unconfirmed_marks_cancelled_without_retrying(self):
+    def test_close_submission_unconfirmed_stays_pending_and_self_heals_without_resubmit(self):
         reverse = {
             "id": "rev-close-unconfirmed",
             "symbol": "AAPL",
@@ -479,7 +539,15 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
             }
         ]
         pb = _FakePB(reverse_rows=[reverse], signal_rows=signals)
-        lifecycle = _FakeOrderLifecycle([[{"ticker": "AAPL", "position": 10}]])
+        lifecycle = _FakeOrderLifecycle(
+            [
+                [{"ticker": "AAPL", "position": 10}],
+                [{"ticker": "AAPL", "position": 10}],
+                [{"ticker": "AAPL", "position": 10}],
+                [{"ticker": "AAPL", "position": 10}],
+                [{"ticker": "AAPL", "position": 0}],
+            ]
+        )
         placer = _FakeOrderPlacer(result=close_result)
         handler = ReverseSignalHandler(
             pb,
@@ -489,27 +557,36 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
         )
 
         handler.check_and_process()
+        first_update = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        first_extra = first_update["extra"]
+        self.assertEqual("pending", first_update["status"])
+        self.assertIn("close_order_submission_unconfirmed", first_update["reason"])
+        self.assertEqual("submission_unconfirmed", first_extra["close_old_position"])
+        self.assertEqual("unconfirmed", first_extra["wait_flat"])
+        self.assertTrue(first_extra["close_submission_unconfirmed"])
+        self.assertEqual("pending_retry", first_extra["result_status"])
+        self.assertEqual(["157"], first_extra["pending_close_order_ids"])
+        self.assertEqual("close_AAPL_20260603_101500", first_extra["pending_close_order_ref"])
+        self.assertEqual("pending", pb.acks[0]["status"])
+
         handler.check_and_process()
 
         self.assertEqual(1, len(placer.calls))
         updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
         extra = updated["extra"]
-        self.assertEqual("cancelled", updated["status"])
-        self.assertEqual("close_order_submission_unconfirmed", updated["reason"])
-        self.assertEqual("submission_unconfirmed", extra["close_old_position"])
+        self.assertEqual("confirmed", updated["status"])
+        self.assertEqual("confirmed", extra["close_old_position"])
+        self.assertEqual("confirmed", extra["wait_flat"])
+        self.assertTrue(extra["flat_confirmation"]["confirmed"])
+        self.assertTrue(extra["async_self_heal"]["duplicate_submit_blocked"])
         self.assertTrue(extra["close_submission_unconfirmed"])
         self.assertEqual(["157"], extra["pending_close_order_ids"])
         self.assertEqual("close_AAPL_20260603_101500", extra["pending_close_order_ref"])
         self.assertEqual(close_result, extra["close_result"])
-        self.assertTrue(extra["blocked"])
-        self.assertEqual("close_order_submission_unconfirmed", extra["reentry_blocked"]["reason"])
-        self.assertEqual(["157"], extra["reentry_blocked"]["pending_close_order_ids"])
-        self.assertEqual("close_AAPL_20260603_101500", extra["reentry_blocked"]["pending_close_order_ref"])
-        self.assertEqual("blocked", extra["ack_status_original"])
-        self.assertEqual("cancelled", extra["ack_status_normalized"])
-        self.assertEqual(1, len(pb.acks))
-        self.assertEqual("cancelled", pb.acks[0]["status"])
-        self.assertEqual("close_order_submission_unconfirmed", pb.acks[0]["reason"])
+        self.assertFalse(extra["blocked"])
+        self.assertEqual(2, len(pb.acks))
+        self.assertEqual("confirmed", pb.acks[1]["status"])
+        self.assertEqual("tv_exit_confirmed_no_reentry", pb.acks[1]["reason"])
 
     def test_protection_incomplete_blocks_without_broker_actions(self):
         reverse = {
@@ -1447,6 +1524,151 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
         self.assertEqual("stop_widen_blocked", extra["adjust_results"]["stop_loss"]["reason"])
         self.assertEqual([], modifier.stop_updates)
         self.assertEqual("cancelled", pb.acks[0]["status"])
+
+    def test_cancel_unconfirmed_stays_pending_and_self_heals_without_second_cancel(self):
+        reverse = {
+            "id": "rev-cancel-unconfirmed",
+            "symbol": "AAPL",
+            "source": "tradingview",
+            "action_type": "cancel",
+            "status": "pending",
+            "environment": "live",
+            "priority": 10,
+            "bar_time_ms": 1,
+            "extra": {"trade_group_id": "grp-1", "new_direction": "short"},
+        }
+        orders = [
+            {
+                "id": "entry",
+                "broker_order_id": "1001",
+                "order_id": "1001",
+                "trade_group_id": "grp-1",
+                "status": "Submitted",
+                "environment": "live",
+            }
+        ]
+        broker = _FakeBroker(open_orders=[{"orderId": "1001", "status": "Submitted"}])
+        pb = _FakePB(reverse_rows=[reverse], order_rows=orders)
+        modifier = _FakeOrderModifier(pb, broker=broker)
+        handler = ReverseSignalHandler(pb, order_modifier=modifier, environment="live")
+
+        handler.check_and_process()
+
+        first_update = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        first_extra = first_update["extra"]
+        self.assertEqual("pending", first_update["status"])
+        self.assertEqual(["1001"], modifier.cancelled)
+        self.assertEqual("unconfirmed", first_extra["cancel_old_order"])
+        self.assertEqual("pending_retry", first_extra["result_status"])
+        self.assertEqual("pending", pb.acks[0]["status"])
+
+        broker.open_orders = []
+        handler.check_and_process()
+
+        updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        extra = updated["extra"]
+        self.assertEqual("confirmed", updated["status"])
+        self.assertEqual(["1001"], modifier.cancelled)
+        self.assertEqual("confirmed", extra["cancel_old_order"])
+        self.assertTrue(extra["cancel_confirmation"]["confirmed"])
+        self.assertTrue(extra["async_self_heal"]["duplicate_submit_blocked"])
+        self.assertEqual("confirmed", pb.acks[1]["status"])
+
+    def test_adjust_bracket_pending_price_confirmation_self_heals_without_second_modify(self):
+        reverse = {
+            "id": "rev-adjust-confirm-pending",
+            "symbol": "AAPL",
+            "source": "tradingview",
+            "action_type": "adjust_bracket",
+            "status": "pending",
+            "environment": "live",
+            "priority": 10,
+            "bar_time_ms": 1,
+            "extra": {
+                "sl_order_id": "sl-1003",
+                "new_sl": 181.25,
+                "adjust_results": {
+                    "stop_loss": {
+                        "requested": True,
+                        "order_id": "sl-1003",
+                        "new_price": 181.25,
+                        "skipped": False,
+                        "reason": "adjust_price_not_confirmed",
+                        "result": {
+                            "ok": True,
+                            "order_id": "sl-1003",
+                            "order": {"orderId": "sl-1003", "status": "Submitted", "auxPrice": 180.0},
+                        },
+                    },
+                    "take_profit": {"requested": False, "skipped": True, "reason": "not_requested"},
+                },
+                "adjust_bracket_result": {
+                    "attempted_sides": ["stop_loss"],
+                    "succeeded_sides": [],
+                    "failed_sides": ["stop_loss"],
+                    "unconfirmed_sides": ["stop_loss"],
+                },
+            },
+        }
+        orders = _submitted_child_orders("sl-1003")
+        orders[0]["auxPrice"] = 180.0
+        pb = _FakePB(reverse_rows=[reverse], order_rows=orders)
+        modifier = _FakeOrderModifier(pb)
+        handler = ReverseSignalHandler(pb, order_modifier=modifier, environment="live")
+
+        handler.check_and_process()
+
+        first_update = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        first_extra = first_update["extra"]
+        self.assertEqual("pending", first_update["status"])
+        self.assertEqual("pending_retry", first_extra["result_status"])
+        self.assertEqual("adjust_price_not_confirmed", first_extra["adjust_results"]["stop_loss"]["reason"])
+        self.assertEqual([], modifier.stop_updates)
+        self.assertEqual("pending", pb.acks[0]["status"])
+
+        pb.set_order_price("sl-1003", "stop_loss", 181.25)
+        handler.check_and_process()
+
+        updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        extra = updated["extra"]
+        self.assertEqual("confirmed", updated["status"])
+        self.assertEqual("adjust_bracket_confirmed", updated["reason"])
+        self.assertEqual([], modifier.stop_updates)
+        self.assertEqual(["stop_loss"], extra["adjust_bracket_result"]["succeeded_sides"])
+        self.assertTrue(extra["adjust_results"]["stop_loss"]["confirmation"]["confirmed"])
+        self.assertTrue(extra["async_self_heal"]["duplicate_submit_blocked"])
+        self.assertEqual("confirmed", pb.acks[1]["status"])
+
+    def test_historical_cancelled_flat_not_confirmed_tv_close_self_heals_when_flat(self):
+        reverse = {
+            "id": "rev-historical-flat",
+            "symbol": "AAPL",
+            "source": "tradingview",
+            "action_type": "close",
+            "status": "cancelled",
+            "reason": "reverse blocked: flat_not_confirmed",
+            "environment": "live",
+            "priority": 10,
+            "bar_time_ms": 1,
+            "extra": {
+                "close_old_position": "submitted",
+                "wait_flat": "unconfirmed",
+                "reentry_blocked": {"reason": "flat_not_confirmed"},
+            },
+        }
+        pb = _FakePB(reverse_rows=[reverse])
+        lifecycle = _FakeOrderLifecycle([[{"ticker": "AAPL", "position": 0}]])
+
+        ReverseSignalHandler(pb, order_lifecycle=lifecycle, environment="live").check_and_process()
+
+        updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        extra = updated["extra"]
+        self.assertEqual("confirmed", updated["status"])
+        self.assertEqual("confirmed", extra["close_old_position"])
+        self.assertEqual("confirmed", extra["wait_flat"])
+        self.assertTrue(extra["flat_confirmation"]["confirmed"])
+        self.assertTrue(extra["historical_self_heal"]["enabled"])
+        self.assertEqual("confirmed", pb.acks[0]["status"])
 
     def test_non_tv_pending_execution_action_expires_without_broker_actions(self):
         reverse = {

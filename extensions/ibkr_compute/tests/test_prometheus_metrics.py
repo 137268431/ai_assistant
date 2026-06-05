@@ -400,17 +400,39 @@ class ComputePrometheusMetricsTest(unittest.TestCase):
             for name in capital_metric_names
         ]
         state_labels = set(getattr(getattr(module, "ACCOUNT_BUYING_POWER_GUARD_STATE", None), "_labelnames", None) or ())
+        position_current_labels = set(getattr(getattr(module, "POSITION_CURRENT_COUNT", None), "_labelnames", None) or ())
+        order_current_labels = set(getattr(getattr(module, "ORDER_CURRENT_COUNT", None), "_labelnames", None) or ())
+        signal_current_labels = set(getattr(getattr(module, "SIGNAL_CURRENT_COUNT", None), "_labelnames", None) or ())
         gateway_labels = set(getattr(getattr(module, "GATEWAY_SESSION_AUTHENTICATED", None), "_labelnames", None) or ())
-        if not account_labels or any(not labels for labels in capital_label_sets) or not state_labels or not gateway_labels:
+        if (
+            not account_labels
+            or any(not labels for labels in capital_label_sets)
+            or not state_labels
+            or not position_current_labels
+            or not order_current_labels
+            or not signal_current_labels
+            or not gateway_labels
+        ):
             self.skipTest("prometheus_client label schemas are unavailable in this environment")
 
         denied = _get_denylist(module)
-        for label_set in (account_labels, *capital_label_sets, state_labels, gateway_labels):
+        for label_set in (
+            account_labels,
+            *capital_label_sets,
+            state_labels,
+            position_current_labels,
+            order_current_labels,
+            signal_current_labels,
+            gateway_labels,
+        ):
             self.assertFalse(denied.intersection(label_set), label_set)
         self.assertEqual({"service", "environment", "source"}, account_labels)
         for label_set in capital_label_sets:
             self.assertEqual({"service", "environment", "source"}, label_set)
         self.assertEqual({"service", "environment", "source", "state"}, state_labels)
+        self.assertEqual({"service", "environment", "direction"}, position_current_labels)
+        self.assertEqual({"service", "environment", "kind"}, order_current_labels)
+        self.assertEqual({"service", "environment", "direction", "state"}, signal_current_labels)
         self.assertEqual({"service", "environment"}, gateway_labels)
 
     def test_market_data_subscription_metric_helpers_use_low_cardinality_labels(self):
@@ -554,6 +576,81 @@ class ComputePrometheusMetricsTest(unittest.TestCase):
         self.assertIn('key="ibkr_trading_enabled"', metrics_text)
         self.assertIn('mode_scope="broker"', metrics_text)
         self.assertIn('importance="critical"', metrics_text)
+
+    def test_account_snapshot_metrics_publish_current_position_and_order_counts(self):
+        module = _observability_or_skip(
+            self,
+            requiring=("set_account_snapshot_metrics",),
+        )
+        generate_latest = getattr(module, "generate_latest", None)
+        if not callable(generate_latest):
+            self.skipTest("prometheus_client generate_latest is unavailable in this environment")
+
+        environment = "metric_current_snapshot_test"
+        with mock.patch.dict(
+            os.environ,
+            {"IBKR_SERVICE_PROFILE": "runtime", "IBKR_SERVICE_NAME": "", "IBKR_BROKER_MODE": ""},
+            clear=False,
+        ):
+            module.set_account_snapshot_metrics(
+                {
+                    "ok": True,
+                    "environment": environment,
+                    "summary": {
+                        "available_funds": 10000,
+                        "total_cash_value": 12000,
+                        "remaining_buying_power": 50000,
+                    },
+                    "buying_power_guard": {"state": "ok", "source": "account_snapshot"},
+                    "positions": [
+                        {"symbol": "AAPL", "quantity": 10},
+                        {"symbol": "MSFT", "quantity": -5},
+                        {"symbol": "FLAT", "quantity": 0},
+                    ],
+                    "live_open_orders": [
+                        {"order_id": "9001", "can_cancel": True, "can_modify": True},
+                        {"order_id": "9002", "parent_id": "9001", "can_cancel": True, "can_modify": False},
+                        {"order_id": "9003", "parent_id": "9001", "can_cancel": False, "can_modify": True},
+                        {"order_id": "9004", "can_cancel": False, "can_modify": False},
+                    ],
+                    "live_order_groups": [
+                        {"group_key": "runtime-group", "live_order_count": 4, "cancelable_orders": 2, "editable_orders": 2},
+                    ],
+                },
+                source="account_snapshot",
+                environment=environment,
+            )
+        metrics_text = generate_latest().decode("utf-8", errors="replace")
+
+        self.assertRegex(metrics_text, rf'ibkr_position_current_count\{{(?=[^}}]*service="ibkr-runtime")(?=[^}}]*environment="{environment}")(?=[^}}]*direction="total")[^}}]*\}} 2\.0')
+        self.assertRegex(metrics_text, rf'ibkr_position_current_count\{{(?=[^}}]*environment="{environment}")(?=[^}}]*direction="long")[^}}]*\}} 1\.0')
+        self.assertRegex(metrics_text, rf'ibkr_position_current_count\{{(?=[^}}]*environment="{environment}")(?=[^}}]*direction="short")[^}}]*\}} 1\.0')
+        self.assertRegex(metrics_text, rf'ibkr_order_current_count\{{(?=[^}}]*environment="{environment}")(?=[^}}]*kind="open_legs")[^}}]*\}} 4\.0')
+        self.assertRegex(metrics_text, rf'ibkr_order_current_count\{{(?=[^}}]*environment="{environment}")(?=[^}}]*kind="open_groups")[^}}]*\}} 1\.0')
+        self.assertRegex(metrics_text, rf'ibkr_order_current_count\{{(?=[^}}]*environment="{environment}")(?=[^}}]*kind="cancelable")[^}}]*\}} 2\.0')
+        self.assertRegex(metrics_text, rf'ibkr_order_current_count\{{(?=[^}}]*environment="{environment}")(?=[^}}]*kind="editable")[^}}]*\}} 2\.0')
+        self.assertIn("ibkr_account_buying_power_remaining_usd", metrics_text)
+
+    def test_current_signal_count_gauge_publishes_long_short_snapshot(self):
+        module = _observability_or_skip(
+            self,
+            requiring=("set_current_signal_count_metrics",),
+        )
+        generate_latest = getattr(module, "generate_latest", None)
+        if not callable(generate_latest):
+            self.skipTest("prometheus_client generate_latest is unavailable in this environment")
+
+        environment = "metric_current_signal_test"
+        module.set_current_signal_count_metrics(
+            {"long": 2, "short": 1},
+            environment=environment,
+            state="active",
+            service_name="ibkr-api",
+        )
+        metrics_text = generate_latest().decode("utf-8", errors="replace")
+
+        self.assertRegex(metrics_text, rf'ibkr_signal_current_count\{{(?=[^}}]*service="ibkr-api")(?=[^}}]*environment="{environment}")(?=[^}}]*direction="long")(?=[^}}]*state="active")[^}}]*\}} 2\.0')
+        self.assertRegex(metrics_text, rf'ibkr_signal_current_count\{{(?=[^}}]*service="ibkr-api")(?=[^}}]*environment="{environment}")(?=[^}}]*direction="short")(?=[^}}]*state="active")[^}}]*\}} 1\.0')
 
     def test_runtime_status_metrics_publish_market_data_subscription_values(self):
         module = _observability_or_skip(

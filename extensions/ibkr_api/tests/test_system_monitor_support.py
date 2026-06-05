@@ -1341,6 +1341,109 @@ class SystemMonitorSupportTest(unittest.TestCase):
         self.assertEqual(summary["actions"]["tv_failed_count"], 0)
         self.assertEqual(summary["actions"]["tv_failed_raw_count"], 0)
 
+    def test_tv_flow_async_reconcile_states_are_not_execution_failures(self):
+        pb = _FakePocketBase(
+            {
+                "tv_webhook_events": [],
+                "ibkr_signals": [],
+                "ibkr_reverse_signals": [
+                    {
+                        "id": "rev_retryable_missing_child",
+                        "symbol": "AAPL",
+                        "status": "cancelled",
+                        "source": "tradingview",
+                        "environment": "paper",
+                        "action_type": "adjust_bracket",
+                        "reason": "reverse pending retry: missing_child_order",
+                        "created": "2026-06-02 13:50:00Z",
+                        "updated": "2026-06-02 13:51:00Z",
+                        "extra": {
+                            "result_status": "pending_retry",
+                            "blocked": True,
+                            "reentry_blocked": {"reason": "missing_child_order", "retryable": True},
+                        },
+                    },
+                    {
+                        "id": "rev_wait_confirm",
+                        "symbol": "MSFT",
+                        "status": "cancelled",
+                        "source": "tradingview",
+                        "environment": "paper",
+                        "action_type": "close",
+                        "reason": "execution action blocked: waiting for order confirmation",
+                        "created": "2026-06-02 13:49:00Z",
+                        "updated": "2026-06-02 13:50:00Z",
+                        "extra": {
+                            "result_status": "blocked",
+                            "execution_state": "submitted_wait_confirm",
+                            "flow_error_code": "order_confirmation_pending",
+                        },
+                    },
+                    {
+                        "id": "rev_deferred",
+                        "symbol": "NVDA",
+                        "status": "expired",
+                        "source": "tradingview",
+                        "environment": "paper",
+                        "action_type": "close",
+                        "reason": "execution action blocked: deferred until broker state settles",
+                        "created": "2026-06-02 13:48:00Z",
+                        "updated": "2026-06-02 13:49:00Z",
+                        "extra": {
+                            "execution_state": "deferred",
+                            "reverse_runtime_detail": {"blocked_reason": "broker_state_deferred"},
+                        },
+                    },
+                    {
+                        "id": "rev_pending_executable",
+                        "symbol": "TSLA",
+                        "status": "cancelled",
+                        "source": "tradingview",
+                        "environment": "paper",
+                        "action_type": "close",
+                        "reason": "execution action blocked: pending executable command",
+                        "created": "2026-06-02 13:47:00Z",
+                        "updated": "2026-06-02 13:48:00Z",
+                        "extra": {
+                            "blocked": True,
+                            "execution_state": "pending_executable",
+                            "reentry_blocked": {"reason": "pending_executable"},
+                        },
+                    },
+                    {
+                        "id": "rev_real_blocked",
+                        "symbol": "META",
+                        "status": "cancelled",
+                        "source": "tradingview",
+                        "environment": "paper",
+                        "action_type": "close",
+                        "reason": "execution action blocked: conid_unresolved",
+                        "created": "2026-06-02 13:46:00Z",
+                        "updated": "2026-06-02 13:47:00Z",
+                        "extra": {
+                            "result_status": "blocked",
+                            "reverse_runtime_detail": {"blocked_reason": "conid_unresolved"},
+                        },
+                    },
+                ],
+            }
+        )
+
+        summary = build_tv_flow_monitor_summary(
+            pb,
+            data_environment="live",
+            runtime_environment="paper",
+            config_map={"tv_flow_failed_lookback_min": "120", "eod_close_time": "15:55"},
+            now_ms=_utc_ms(2026, 6, 2, 14, 0),
+        )
+
+        self.assertEqual(summary["status"], "error")
+        self.assertIn("tv_flow_execution_action_failed", {item["code"] for item in summary["flags"]})
+        self.assertEqual(summary["actions"]["reverse"]["processed_recent_count"], 5)
+        self.assertEqual(summary["actions"]["tv_failed_count"], 1)
+        self.assertEqual(summary["actions"]["tv_failed_raw_count"], 1)
+        self.assertEqual(summary["actions"]["tv_failed"][0]["id"], "rev_real_blocked")
+
     def test_tv_flow_execution_failure_is_suppressed_after_eod(self):
         pb = _FakePocketBase(
             {
@@ -1491,6 +1594,40 @@ class SystemMonitorSupportTest(unittest.TestCase):
         self.assertEqual(summary["actions"]["tv_pending_count"], 0)
         self.assertEqual(summary["actions"]["tv_pending_raw_count"], 1)
         self.assertEqual(summary["actions"]["tv_pending_suppressed_after_eod_count"], 1)
+        self.assertNotIn("tv_flow_tv_action_pending_stuck", {item["code"] for item in summary["flags"]})
+
+    def test_tv_flow_pending_warn_uses_tv_command_reconcile_threshold(self):
+        pb = _FakePocketBase(
+            {
+                "tv_webhook_events": [],
+                "ibkr_signals": [],
+                "ibkr_reverse_signals": [
+                    {
+                        "id": "rev_pending",
+                        "symbol": "SMCI",
+                        "status": "pending",
+                        "source": "tradingview",
+                        "environment": "paper",
+                        "action_type": "close",
+                        "created": "2026-06-02 13:40:00Z",
+                        "updated": "2026-06-02 13:40:00Z",
+                    }
+                ],
+            }
+        )
+
+        summary = build_tv_flow_monitor_summary(
+            pb,
+            data_environment="live",
+            runtime_environment="paper",
+            config_map={"tv_command_reconcile_pending_warn_min": "30", "eod_close_time": "15:55"},
+            now_ms=_utc_ms(2026, 6, 2, 14, 0),
+        )
+
+        self.assertEqual(summary["status"], "ok")
+        self.assertEqual(summary["thresholds"]["action_pending_stuck_warn_min"], 30)
+        self.assertEqual(summary["actions"]["tv_pending_count"], 1)
+        self.assertEqual(summary["actions"]["tv_pending_stuck_count"], 0)
         self.assertNotIn("tv_flow_tv_action_pending_stuck", {item["code"] for item in summary["flags"]})
 
     def test_monitor_payload_merges_tv_flow_flags_from_pb_client_alias(self):

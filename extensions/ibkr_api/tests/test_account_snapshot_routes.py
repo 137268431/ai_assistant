@@ -56,6 +56,7 @@ class _FakePB:
                     "fill_price": 101.2,
                     "commission": 1.23,
                     "commission_currency": "USD",
+                    "commission_fill_count": 1,
                     "updated": "2026-04-23 09:40:00",
                 }
             ],
@@ -160,7 +161,13 @@ class AccountSnapshotRoutesTest(unittest.TestCase):
 
         enriched = enrich_account_snapshot(pb, payload, "live")
 
-        self.assertEqual("system_managed", enriched["positions"][0]["relation"]["status"])
+        relation = enriched["positions"][0]["relation"]
+        self.assertEqual("system_managed", relation["status"])
+        self.assertAlmostEqual(1.23, relation["commission"])
+        self.assertEqual("USD", relation["commission_currency"])
+        self.assertTrue(relation["commission_known"])
+        self.assertEqual("orders", relation["commission_source"])
+        self.assertEqual(1, relation["commission_fill_count"])
         self.assertEqual(1, enriched["counts"]["system_managed_positions"])
         self.assertEqual(1, enriched["order_reconciliation"]["broker_matched_orders"])
         self.assertEqual(1, len(enriched["matched_order_groups"]))

@@ -188,6 +188,10 @@ const mockSnapshot = enrichAccountSnapshot(
           entry_order_unique_id: 'coid-1',
           last_order_status: 'Filled',
           order_updated: '2026-04-10T09:31:30Z',
+          commission: 2.5,
+          commission_currency: 'USD',
+          commission_known: true,
+          commission_fill_count: 1,
         },
         raw: {},
       },
@@ -539,6 +543,7 @@ html = html.replace(/<link href="https:\/\/fonts\.googleapis\.com[^"]+" rel="sty
     pageTopText: document.getElementById('pageTopSection')?.innerText || '',
     contextText: document.getElementById('contextBar')?.innerText || '',
     positionsText: document.getElementById('positionsArea')?.innerText || '',
+    openPositionCardText: document.querySelector('.position-grid .surface-card')?.innerText || '',
     flatSectionText: document.querySelector('.flat-position-section')?.innerText || '',
     summaryText: document.getElementById('ordersSummary')?.innerText || '',
     areaText: document.getElementById('ordersArea')?.innerText || '',
@@ -570,6 +575,8 @@ html = html.replace(/<link href="https:\/\/fonts\.googleapis\.com[^"]+" rel="sty
     && result.contextText.includes('24 active')
     && result.positionsMeta.includes('1 open · 1 flat rows')
     && result.positionsText.includes('Unrealized %')
+    && result.openPositionCardText.includes('Fees')
+    && result.openPositionCardText.includes('$2.50')
     && result.flatSectionText.includes('今日已闭合 / FLAT')
     && result.flatSectionText.includes('ABNB')
     && result.flatSectionText.includes('不是当前 IBKR live open order')

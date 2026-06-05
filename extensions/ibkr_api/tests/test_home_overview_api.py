@@ -12,6 +12,7 @@ for src_root in SERVICE_SRC_ROOTS:
         sys.path.insert(0, str(src_root))
 
 from ibkr_api.home.dashboard import build_home_dashboard_response
+from ibkr_api.home.current_metrics import publish_current_signal_metrics, summarize_current_signal_counts
 from ibkr_api.home.market import build_home_market_response
 from ibkr_api.app_core.route_cache import RouteSWRCache, request_cache_bypass, canonical_cache_key
 
@@ -151,6 +152,56 @@ def _nested_runtime_account_request(*, positions=None, live_open_orders=None, li
 
 
 class HomeOverviewApiTest(unittest.TestCase):
+    def test_current_signal_summary_excludes_terminal_statuses_by_broker_mode(self):
+        rows = [
+            {"direction": "long", "status": "pending"},
+            {"direction": "short", "status": "awaiting_confirm", "extra": {"execution_by_mode": {"paper": {"status": "submitted"}}}},
+            {"direction": "long", "status": "closed"},
+            {"direction": "short", "status": "entry_missed_limit_cap"},
+            {"direction": "long", "status": "pending", "note": "closed_by_manual_close"},
+            {"direction": "buy", "status": "protection_incomplete"},
+            {"direction": "sell", "status": "rejected"},
+        ]
+
+        counts = summarize_current_signal_counts(rows, broker_mode="paper")
+
+        self.assertEqual(counts, {"long": 2, "short": 1})
+
+    def test_publish_current_signal_metrics_counts_today_active_signal_directions(self):
+        start_ms = 1776916800000  # 2026-04-23 00:00 ET
+        pb = _HomePB(
+            {
+                "ibkr_signals": [
+                    {"environment": "live", "direction": "long", "status": "pending", "bar_time_ms": start_ms + 1, "created": "2026-04-23 09:35:00"},
+                    {
+                        "environment": "live",
+                        "direction": "short",
+                        "status": "awaiting_confirm",
+                        "extra": {"execution_by_mode": {"paper": {"status": "submitted"}}},
+                        "us_time": "2026-04-23 09:40:00",
+                        "bar_time_ms": 0,
+                        "created": "2026-04-23 09:40:02",
+                    },
+                    {"environment": "live", "direction": "long", "status": "closed", "bar_time_ms": start_ms + 3, "created": "2026-04-23 09:45:00"},
+                    {"environment": "live", "direction": "short", "status": "entry_missed_limit_cap", "bar_time_ms": start_ms + 4, "created": "2026-04-23 09:46:00"},
+                    {"environment": "paper", "direction": "long", "status": "pending", "bar_time_ms": start_ms + 5, "created": "2026-04-23 09:47:00"},
+                    {"environment": "live", "direction": "long", "status": "pending", "bar_time_ms": start_ms - 1, "created": "2026-04-22 15:55:00"},
+                ]
+            }
+        )
+
+        counts = publish_current_signal_metrics(
+            pb,
+            payload={"broker_mode": "paper", "market_data_mode": "live", "market_date": "2026-04-23"},
+            time_strings=lambda: {"date": "2026-04-23"},
+        )
+
+        self.assertEqual(counts, {"long": 1, "short": 1})
+        signal_calls = [call for call in pb.calls if call["type"] == "records" and call["collection"] == "ibkr_signals"]
+        self.assertTrue(signal_calls)
+        self.assertIn('environment = "live"', signal_calls[0]["filter"])
+        self.assertIn("bar_time_ms", signal_calls[0]["filter"])
+
     def test_dashboard_aligns_signal_order_and_gateway_position_counts(self):
         start_ms = 1776916800000  # 2026-04-23 00:00 ET
         rows = {

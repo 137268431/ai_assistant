@@ -65,6 +65,29 @@ class TradingServiceSignalsMixin:
         "local_reserved_order_ids",
         "local_reservation_state_key",
     )
+    TV_ENTRY_WORKING_ORDER_STATUSES = {
+        "active",
+        "apipending",
+        "apisent",
+        "held",
+        "open",
+        "pending",
+        "pendingsubmit",
+        "presubmitted",
+        "submitted",
+        "working",
+    }
+    TV_ENTRY_FILLED_ORDER_STATUSES = {"executed", "filled"}
+    TV_ENTRY_TERMINAL_ORDER_STATUSES = {
+        "apicancelled",
+        "canceled",
+        "cancelled",
+        "executed",
+        "expired",
+        "filled",
+        "inactive",
+        "rejected",
+    }
 
     @staticmethod
     def _is_protection_incomplete_result(result: dict) -> bool:
@@ -301,6 +324,18 @@ class TradingServiceSignalsMixin:
                             hard_safety_reason,
                         )
                         self._mark_signal_tv_direct_rejected(sig, hard_safety_reason)
+                        self.signal_router.mark_processed(signal_id)
+                        finalized = True
+                        continue
+                    reconcile_result = self._reconcile_tv_direct_entry_before_submit(sig)
+                    if reconcile_result.get("handled"):
+                        service_mod.logger.warning(
+                            "TV direct signal reconciled before duplicate submit: signal_id=%s symbol=%s status=%s source=%s",
+                            signal_id,
+                            sig.get("symbol"),
+                            reconcile_result.get("status") or "-",
+                            reconcile_result.get("source") or "-",
+                        )
                         self.signal_router.mark_processed(signal_id)
                         finalized = True
                         continue
@@ -1005,6 +1040,802 @@ class TradingServiceSignalsMixin:
                 status_reason,
                 exc,
             )
+
+    @staticmethod
+    def _tv_entry_safe_extra(value) -> dict:
+        if isinstance(value, dict):
+            return dict(value)
+        if isinstance(value, str) and value.strip():
+            try:
+                parsed = json.loads(value)
+            except Exception:
+                parsed = {}
+            return dict(parsed) if isinstance(parsed, dict) else {}
+        return {}
+
+    @staticmethod
+    def _tv_entry_escape_filter_value(value) -> str:
+        return str(value or "").replace("\\", "\\\\").replace('"', '\\"')
+
+    @staticmethod
+    def _tv_entry_normalized_status(value) -> str:
+        return str(value or "").strip().lower().replace("_", "").replace(" ", "")
+
+    @staticmethod
+    def _tv_entry_dedupe(values) -> list[str]:
+        seen = set()
+        result = []
+        for value in values or []:
+            text = str(value or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            result.append(text)
+        return result
+
+    @classmethod
+    def _tv_entry_order_extra(cls, order: dict) -> dict:
+        return cls._tv_entry_safe_extra((order or {}).get("extra"))
+
+    @classmethod
+    def _tv_entry_order_status(cls, order: dict) -> str:
+        return str((order or {}).get("status") or (order or {}).get("order_status") or "").strip()
+
+    @classmethod
+    def _tv_entry_order_broker_id(cls, order: dict) -> str:
+        extra = cls._tv_entry_order_extra(order or {})
+        return str(
+            (order or {}).get("broker_order_id")
+            or (order or {}).get("order_id")
+            or (order or {}).get("orderId")
+            or (order or {}).get("id")
+            or extra.get("broker_order_id")
+            or ""
+        ).strip()
+
+    @classmethod
+    def _tv_entry_order_unique_id(cls, order: dict) -> str:
+        extra = cls._tv_entry_order_extra(order or {})
+        return str(
+            (order or {}).get("unique_id")
+            or (order or {}).get("cOID")
+            or (order or {}).get("coid")
+            or (order or {}).get("orderRef")
+            or (order or {}).get("order_ref")
+            or extra.get("unique_id")
+            or extra.get("cOID")
+            or extra.get("coid")
+            or extra.get("orderRef")
+            or extra.get("order_ref")
+            or ""
+        ).strip()
+
+    @classmethod
+    def _tv_entry_order_group(cls, order: dict) -> str:
+        extra = cls._tv_entry_order_extra(order or {})
+        for key in ("trade_group_id", "bracket_group", "oca_group"):
+            text = str((order or {}).get(key) or extra.get(key) or "").strip()
+            if text:
+                return text
+        for ref in (
+            cls._tv_entry_order_unique_id(order or {}),
+            str((order or {}).get("orderRef") or (order or {}).get("order_ref") or "").strip(),
+        ):
+            lowered = str(ref or "").strip().lower()
+            for prefix in ("entry_", "tp_", "sl_"):
+                if lowered.startswith(prefix):
+                    return str(ref or "").strip()[len(prefix) :]
+        return ""
+
+    @classmethod
+    def _tv_entry_order_role(cls, order: dict) -> str:
+        extra = cls._tv_entry_order_extra(order or {})
+        raw_role = str(
+            (order or {}).get("role")
+            or extra.get("role")
+            or (order or {}).get("order_type")
+            or (order or {}).get("orderType")
+            or extra.get("order_type")
+            or ""
+        ).strip().lower()
+        normalized = raw_role.replace("_", "").replace(" ", "")
+        if normalized in {"entry", "parent"}:
+            return "entry"
+        if normalized in {"tp", "takeprofit", "profittarget", "target"}:
+            return "take_profit"
+        if normalized in {"sl", "stop", "stoploss"}:
+            return "stop_loss"
+
+        unique_id = cls._tv_entry_order_unique_id(order or {}).lower()
+        if unique_id.startswith("entry_"):
+            return "entry"
+        if unique_id.startswith("tp_"):
+            return "take_profit"
+        if unique_id.startswith("sl_"):
+            return "stop_loss"
+
+        parent_id = str((order or {}).get("parentId") or (order or {}).get("parent_id") or "").strip()
+        order_type = str((order or {}).get("orderType") or (order or {}).get("order_type") or "").strip().upper()
+        if parent_id:
+            return "stop_loss" if order_type in {"STP", "STOP", "STOPLOSS"} else "take_profit"
+        return ""
+
+    @classmethod
+    def _tv_entry_order_is_filled(cls, order: dict) -> bool:
+        status = cls._tv_entry_normalized_status(cls._tv_entry_order_status(order or {}))
+        if status in cls.TV_ENTRY_FILLED_ORDER_STATUSES:
+            return True
+        filled_qty = cls._safe_float(
+            (order or {}).get("filledQuantity")
+            or (order or {}).get("filled_qty")
+            or (order or {}).get("filled")
+            or (order or {}).get("executedQuantity"),
+            0.0,
+        )
+        quantity = cls._safe_float(
+            (order or {}).get("totalSize")
+            if (order or {}).get("totalSize") not in (None, "")
+            else (order or {}).get("quantity"),
+            0.0,
+        )
+        remaining = cls._safe_float(
+            (order or {}).get("remainingQuantity")
+            or (order or {}).get("remaining_qty")
+            or (order or {}).get("remaining"),
+            0.0,
+        )
+        return bool(quantity > 0 and filled_qty >= quantity and remaining <= 0.0001)
+
+    @classmethod
+    def _tv_entry_order_is_working(cls, order: dict) -> bool:
+        if cls._tv_entry_order_is_filled(order or {}):
+            return False
+        status = cls._tv_entry_normalized_status(cls._tv_entry_order_status(order or {}))
+        return bool(status and status in cls.TV_ENTRY_WORKING_ORDER_STATUSES)
+
+    @classmethod
+    def _tv_entry_order_price(cls, order: dict, *keys: str) -> float:
+        extra = cls._tv_entry_order_extra(order or {})
+        for key in keys:
+            value = cls._safe_float((order or {}).get(key), 0.0)
+            if value > 0:
+                return value
+            value = cls._safe_float(extra.get(key), 0.0)
+            if value > 0:
+                return value
+        return 0.0
+
+    def _tv_entry_reconcile_identifiers(self, sig: dict, record: dict | None, existing_extra: dict | None) -> dict:
+        service_mod = _service_mod()
+        signal_id = str((sig or {}).get("signal_id") or (record or {}).get("signal_id") or "").strip()
+        broker_mode = str(service_mod.ENVIRONMENT or "paper").strip().lower() or "paper"
+        raw = (sig or {}).get("raw") if isinstance((sig or {}).get("raw"), dict) else {}
+        raw_extra = self._tv_entry_safe_extra(raw.get("extra"))
+        signal_extra = self._signal_extra(sig or {})
+        existing_extra = existing_extra if isinstance(existing_extra, dict) else {}
+        record_extra = self._tv_entry_safe_extra((record or {}).get("extra"))
+        sources = [sig or {}, raw, record or {}, signal_extra, raw_extra, existing_extra, record_extra]
+
+        for extra in (signal_extra, existing_extra, record_extra):
+            execution_by_mode = extra.get("execution_by_mode") if isinstance(extra, dict) else {}
+            broker_execution = execution_by_mode.get(broker_mode) if isinstance(execution_by_mode, dict) else {}
+            if isinstance(broker_execution, dict):
+                sources.append(broker_execution)
+
+        groups = []
+        order_ids = []
+        unique_ids = []
+
+        def add_text(target: list, value) -> None:
+            text = str(value or "").strip()
+            if text:
+                target.append(text)
+
+        def add_values(target: list, value) -> None:
+            if isinstance(value, str):
+                for part in value.split(","):
+                    add_text(target, part)
+            elif isinstance(value, (list, tuple, set)):
+                for item in value:
+                    add_text(target, item)
+            else:
+                add_text(target, value)
+
+        if signal_id:
+            groups.append(signal_id)
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            for key in ("trade_group_id", "bracket_group", "submit_failed_bracket_group", "oca_group"):
+                add_text(groups, source.get(key))
+            for key in (
+                "order_ids",
+                "submitted_order_ids",
+                "broker_order_ids",
+                "submit_failed_order_ids",
+                "missing_order_ids",
+            ):
+                add_values(order_ids, source.get(key))
+            for key in (
+                "entry_order_id",
+                "tp_order_id",
+                "sl_order_id",
+                "take_profit_order_id",
+                "stop_loss_order_id",
+                "broker_order_id",
+                "entry_broker_order_id",
+                "tp_broker_order_id",
+                "sl_broker_order_id",
+                "duplicate_broker_order_id",
+            ):
+                add_text(order_ids, source.get(key))
+            for key in (
+                "entry_coid",
+                "tp_coid",
+                "sl_coid",
+                "entry_unique_id",
+                "tp_unique_id",
+                "sl_unique_id",
+                "entry_order_unique_id",
+                "tp_order_unique_id",
+                "sl_order_unique_id",
+                "parent_order_unique_id",
+            ):
+                add_text(unique_ids, source.get(key))
+
+        groups = self._tv_entry_dedupe(groups)
+        for group in groups:
+            unique_ids.extend([f"entry_{group}", f"tp_{group}", f"sl_{group}"])
+        return {
+            "signal_id": signal_id,
+            "symbol": str((sig or {}).get("symbol") or (record or {}).get("symbol") or "").strip().upper(),
+            "direction": str((sig or {}).get("direction") or (record or {}).get("direction") or "").strip().lower(),
+            "broker_environment": broker_mode,
+            "data_environment": str(service_mod.DATA_ENVIRONMENT or "live").strip().lower() or "live",
+            "groups": self._tv_entry_dedupe(groups),
+            "order_ids": self._tv_entry_dedupe(order_ids),
+            "unique_ids": self._tv_entry_dedupe(unique_ids),
+        }
+
+    def _tv_entry_identifiers_with_order_rows(self, identifiers: dict, rows: list[dict]) -> dict:
+        merged = dict(identifiers or {})
+        groups = list(merged.get("groups") or [])
+        order_ids = list(merged.get("order_ids") or [])
+        unique_ids = list(merged.get("unique_ids") or [])
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            groups.append(self._tv_entry_order_group(row))
+            order_ids.append(self._tv_entry_order_broker_id(row))
+            unique_ids.append(self._tv_entry_order_unique_id(row))
+            extra = self._tv_entry_order_extra(row)
+            for key in ("trade_group_id", "bracket_group", "oca_group"):
+                groups.append(row.get(key) or extra.get(key))
+            for key in ("entry_order_unique_id", "parent_order_unique_id", "sibling_order_unique_id"):
+                unique_ids.append(row.get(key) or extra.get(key))
+        merged["groups"] = self._tv_entry_dedupe(groups)
+        merged["order_ids"] = self._tv_entry_dedupe(order_ids)
+        merged["unique_ids"] = self._tv_entry_dedupe(unique_ids)
+        return merged
+
+    def _fetch_tv_entry_pb_order_rows(self, identifiers: dict) -> list[dict]:
+        pb = getattr(self, "pb", None)
+        getter = getattr(pb, "get_records", None)
+        if not callable(getter):
+            return []
+
+        environment = self._tv_entry_escape_filter_value((identifiers or {}).get("broker_environment"))
+        filters = []
+        signal_id = str((identifiers or {}).get("signal_id") or "").strip()
+        if signal_id:
+            filters.append(f'signal_id = "{self._tv_entry_escape_filter_value(signal_id)}"')
+        for group in identifiers.get("groups") or []:
+            safe_group = self._tv_entry_escape_filter_value(group)
+            filters.append(f'trade_group_id = "{safe_group}"')
+            filters.append(f'bracket_group = "{safe_group}"')
+        for order_id in identifiers.get("order_ids") or []:
+            safe_order_id = self._tv_entry_escape_filter_value(order_id)
+            filters.append(f'order_id = "{safe_order_id}"')
+            filters.append(f'broker_order_id = "{safe_order_id}"')
+        for unique_id in identifiers.get("unique_ids") or []:
+            safe_unique_id = self._tv_entry_escape_filter_value(unique_id)
+            filters.append(f'unique_id = "{safe_unique_id}"')
+            filters.append(f'entry_order_unique_id = "{safe_unique_id}"')
+
+        rows = []
+        seen = set()
+        for filter_expr in self._tv_entry_dedupe(filters):
+            query = f'{filter_expr} && environment = "{environment}"'
+            try:
+                candidates = getter("orders", filter=query, sort="-updated", per_page=100) or []
+            except Exception as exc:
+                _service_mod().logger.debug("TV direct reconcile PB order query failed: filter=%s error=%s", query, exc)
+                continue
+            for row in candidates:
+                if not isinstance(row, dict):
+                    continue
+                key = str(row.get("id") or row.get("unique_id") or row.get("order_id") or len(seen))
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append(dict(row))
+        return rows
+
+    def _tv_entry_order_matches_identifiers(self, order: dict, identifiers: dict) -> bool:
+        order_ids = {str(item or "").strip() for item in (identifiers or {}).get("order_ids") or [] if str(item or "").strip()}
+        unique_ids = {str(item or "").strip() for item in (identifiers or {}).get("unique_ids") or [] if str(item or "").strip()}
+        groups = {str(item or "").strip() for item in (identifiers or {}).get("groups") or [] if str(item or "").strip()}
+        signal_id = str((identifiers or {}).get("signal_id") or "").strip()
+        extra = self._tv_entry_order_extra(order or {})
+
+        if self._tv_entry_order_broker_id(order or {}) in order_ids:
+            return True
+        unique_id = self._tv_entry_order_unique_id(order or {})
+        if unique_id in unique_ids:
+            return True
+        if signal_id and str((order or {}).get("signal_id") or extra.get("signal_id") or "").strip() == signal_id:
+            return True
+        group = self._tv_entry_order_group(order or {})
+        return bool(group and group in groups)
+
+    def _fetch_tv_entry_live_order_rows(self, identifiers: dict) -> dict:
+        tracker = getattr(self, "order_tracker", None)
+        broker = getattr(self, "broker", None)
+        raw_orders = []
+        coverage = {}
+        diagnostics = {}
+        performed = False
+        error = ""
+
+        complete_getter = getattr(tracker, "get_complete_live_open_orders", None)
+        if callable(complete_getter):
+            performed = True
+            try:
+                payload = complete_getter(
+                    pb_seed_ids=list((identifiers or {}).get("order_ids") or []),
+                    retries=1,
+                    retry_delay=0.1,
+                    force=True,
+                )
+            except TypeError:
+                try:
+                    payload = complete_getter(pb_seed_ids=list((identifiers or {}).get("order_ids") or []))
+                except Exception as exc:
+                    payload = {}
+                    error = str(exc)
+            except Exception as exc:
+                payload = {}
+                error = str(exc)
+            if isinstance(payload, dict):
+                raw_orders.extend([dict(item) for item in (payload.get("orders") or []) if isinstance(item, dict)])
+                coverage = dict(payload.get("coverage") or {})
+                diagnostics = dict(payload.get("diagnostics") or {})
+
+        live_getter = getattr(tracker, "get_live_orders", None)
+        if callable(live_getter):
+            performed = True
+            try:
+                live_orders = live_getter(force=True, include_all=True)
+            except TypeError:
+                try:
+                    live_orders = live_getter(force=True)
+                except TypeError:
+                    try:
+                        live_orders = live_getter()
+                    except Exception as exc:
+                        live_orders = []
+                        error = error or str(exc)
+                except Exception as exc:
+                    live_orders = []
+                    error = error or str(exc)
+            except Exception as exc:
+                live_orders = []
+                error = error or str(exc)
+            raw_orders.extend([dict(item) for item in (live_orders or []) if isinstance(item, dict)])
+        elif callable(getattr(broker, "list_open_orders", None)):
+            performed = True
+            try:
+                live_orders = broker.list_open_orders(include_all=True, force=True)
+            except TypeError:
+                try:
+                    live_orders = broker.list_open_orders(include_all=True)
+                except TypeError:
+                    try:
+                        live_orders = broker.list_open_orders()
+                    except Exception as exc:
+                        live_orders = []
+                        error = error or str(exc)
+                except Exception as exc:
+                    live_orders = []
+                    error = error or str(exc)
+            except Exception as exc:
+                live_orders = []
+                error = error or str(exc)
+            raw_orders.extend([dict(item) for item in (live_orders or []) if isinstance(item, dict)])
+
+        matched = []
+        seen = set()
+        for row in raw_orders:
+            if not self._tv_entry_order_matches_identifiers(row, identifiers):
+                continue
+            key = self._tv_entry_order_broker_id(row) or self._tv_entry_order_unique_id(row) or str(len(seen))
+            if key in seen:
+                continue
+            seen.add(key)
+            matched.append(row)
+        return {
+            "orders": matched,
+            "performed": performed,
+            "coverage": coverage,
+            "diagnostics": diagnostics,
+            "error": error,
+            "raw_count": len(raw_orders),
+        }
+
+    def _tv_entry_row_symbol_matches(self, sig: dict, row: dict) -> bool:
+        symbol = str((sig or {}).get("symbol") or "").strip().upper()
+        if not symbol:
+            return True
+        extra = self._tv_entry_order_extra(row or {})
+        row_symbol = str((row or {}).get("symbol") or (row or {}).get("ticker") or extra.get("symbol") or "").strip().upper()
+        return not row_symbol or row_symbol == symbol
+
+    def _tv_entry_role_summary(self, rows: list[dict]) -> dict:
+        role_rows = {"entry": [], "take_profit": [], "stop_loss": []}
+        role_order_ids = {"entry": [], "take_profit": [], "stop_loss": []}
+        role_unique_ids = {"entry": [], "take_profit": [], "stop_loss": []}
+        role_statuses = {"entry": [], "take_profit": [], "stop_loss": []}
+        for row in rows or []:
+            role = self._tv_entry_order_role(row)
+            if role not in role_rows:
+                continue
+            role_rows[role].append(row)
+            role_order_ids[role].append(self._tv_entry_order_broker_id(row))
+            role_unique_ids[role].append(self._tv_entry_order_unique_id(row))
+            role_statuses[role].append(self._tv_entry_order_status(row))
+        return {
+            "role_rows": role_rows,
+            "role_order_ids": {key: self._tv_entry_dedupe(value) for key, value in role_order_ids.items()},
+            "role_unique_ids": {key: self._tv_entry_dedupe(value) for key, value in role_unique_ids.items()},
+            "role_statuses": {key: self._tv_entry_dedupe(value) for key, value in role_statuses.items()},
+        }
+
+    @staticmethod
+    def _tv_entry_can_use_pb_only_evidence(pb_rows: list[dict], live_payload: dict) -> bool:
+        if not pb_rows:
+            return False
+        if not bool((live_payload or {}).get("performed")):
+            return True
+        if str((live_payload or {}).get("error") or "").strip():
+            return True
+        coverage = (live_payload or {}).get("coverage") if isinstance((live_payload or {}).get("coverage"), dict) else {}
+        return bool(coverage.get("unresolved_order_ids") or coverage.get("unresolved_seed_count"))
+
+    def _classify_tv_entry_reconcile_evidence(
+        self,
+        sig: dict,
+        identifiers: dict,
+        pb_rows: list[dict],
+        live_payload: dict,
+    ) -> dict:
+        live_rows = [row for row in (live_payload or {}).get("orders") or [] if isinstance(row, dict)]
+        usable_rows = [
+            row
+            for row in [*pb_rows, *live_rows]
+            if isinstance(row, dict) and self._tv_entry_order_matches_identifiers(row, identifiers) and self._tv_entry_row_symbol_matches(sig, row)
+        ]
+        if not usable_rows:
+            return {"handled": False, "source": "none"}
+
+        live_order_ids = self._tv_entry_dedupe(self._tv_entry_order_broker_id(row) for row in live_rows)
+        pb_order_ids = self._tv_entry_dedupe(self._tv_entry_order_broker_id(row) for row in pb_rows)
+        has_live_evidence = bool(live_order_ids)
+        if not has_live_evidence and not self._tv_entry_can_use_pb_only_evidence(pb_rows, live_payload):
+            return {
+                "handled": False,
+                "source": "pb_stale_without_broker_evidence",
+                "pb_order_ids": pb_order_ids,
+                "live_order_ids": live_order_ids,
+            }
+
+        summary = self._tv_entry_role_summary(usable_rows)
+        role_rows = summary["role_rows"]
+        entry_filled = any(self._tv_entry_order_is_filled(row) for row in role_rows["entry"])
+        entry_working = any(self._tv_entry_order_is_working(row) for row in role_rows["entry"])
+        take_profit_working = any(self._tv_entry_order_is_working(row) for row in role_rows["take_profit"])
+        stop_loss_working = any(self._tv_entry_order_is_working(row) for row in role_rows["stop_loss"])
+        protection_complete = bool(take_profit_working and stop_loss_working)
+        if not protection_complete:
+            return {
+                "handled": False,
+                "source": "incomplete_bracket_evidence",
+                "pb_order_ids": pb_order_ids,
+                "live_order_ids": live_order_ids,
+                **summary,
+            }
+
+        group = ""
+        for row in usable_rows:
+            group = self._tv_entry_order_group(row)
+            if group:
+                break
+        if not group:
+            groups = identifiers.get("groups") or []
+            group = str(groups[0] or "") if groups else str((identifiers or {}).get("signal_id") or "")
+
+        entry_fill_price = 0.0
+        if entry_filled:
+            for row in role_rows["entry"]:
+                entry_fill_price = self._tv_entry_order_price(
+                    row,
+                    "avgPrice",
+                    "avgFillPrice",
+                    "fill_price",
+                    "filled_price",
+                    "lastFillPrice",
+                    "price",
+                    "limit_price",
+                )
+                if entry_fill_price > 0:
+                    break
+            return {
+                "handled": True,
+                "status": "filled_position",
+                "pb_status": "protected_active",
+                "note": "tv_direct_reconciled_filled_protected",
+                "source": "broker_order" if has_live_evidence else "pb_order",
+                "trade_group_id": group,
+                "bracket_group": group,
+                "protection_complete": True,
+                "entry_fill_price": entry_fill_price,
+                "pb_order_ids": pb_order_ids,
+                "live_order_ids": live_order_ids,
+                "broker_check_performed": bool((live_payload or {}).get("performed")),
+                "broker_check_error": str((live_payload or {}).get("error") or ""),
+                "broker_coverage": dict((live_payload or {}).get("coverage") or {}),
+                **summary,
+            }
+
+        if entry_working:
+            return {
+                "handled": True,
+                "status": "submitted_waiting_fill",
+                "pb_status": "submitted_waiting_fill",
+                "note": "submitted_waiting_fill",
+                "source": "broker_order" if has_live_evidence else "pb_order",
+                "trade_group_id": group,
+                "bracket_group": group,
+                "protection_complete": True,
+                "entry_fill_price": 0.0,
+                "pb_order_ids": pb_order_ids,
+                "live_order_ids": live_order_ids,
+                "broker_check_performed": bool((live_payload or {}).get("performed")),
+                "broker_check_error": str((live_payload or {}).get("error") or ""),
+                "broker_coverage": dict((live_payload or {}).get("coverage") or {}),
+                **summary,
+            }
+        return {
+            "handled": False,
+            "source": "entry_not_open_or_filled",
+            "pb_order_ids": pb_order_ids,
+            "live_order_ids": live_order_ids,
+            **summary,
+        }
+
+    def _tv_entry_reconcile_order_result(self, sig: dict, evidence: dict) -> dict:
+        role_order_ids = evidence.get("role_order_ids") if isinstance(evidence.get("role_order_ids"), dict) else {}
+        role_unique_ids = evidence.get("role_unique_ids") if isinstance(evidence.get("role_unique_ids"), dict) else {}
+        group = str(evidence.get("trade_group_id") or evidence.get("bracket_group") or sig.get("signal_id") or "").strip()
+
+        def first_role_value(payload: dict, role: str, fallback: str = "") -> str:
+            values = payload.get(role) if isinstance(payload, dict) else []
+            for value in values or []:
+                text = str(value or "").strip()
+                if text:
+                    return text
+            return fallback
+
+        entry_coid = first_role_value(role_unique_ids, "entry", f"entry_{group}" if group else "")
+        tp_coid = first_role_value(role_unique_ids, "take_profit", f"tp_{group}" if group else "")
+        sl_coid = first_role_value(role_unique_ids, "stop_loss", f"sl_{group}" if group else "")
+        order_ids = [
+            first_role_value(role_order_ids, "entry"),
+            first_role_value(role_order_ids, "take_profit"),
+            first_role_value(role_order_ids, "stop_loss"),
+        ]
+        order_ids = [str(item or "").strip() for item in order_ids]
+        return {
+            "ok": True,
+            "order_ids": order_ids,
+            "bracket_group": group,
+            "trade_group_id": group,
+            "oca_group": group,
+            "order_family_type": "bracket_oco",
+            "quantity": int(sig.get("shares") or 0),
+            "take_profit_quantity": int(sig.get("shares") or 0),
+            "stop_loss_quantity": int(sig.get("shares") or 0),
+            "entry_coid": entry_coid,
+            "tp_coid": tp_coid,
+            "sl_coid": sl_coid,
+            "entry_price": sig.get("entry"),
+            "take_profit_price": sig.get("take_profit"),
+            "stop_loss_price": sig.get("stop_loss"),
+            "protection_complete": bool(evidence.get("protection_complete")),
+            "protection_incomplete": not bool(evidence.get("protection_complete")),
+            "order_extra": {},
+        }
+
+    def _tv_entry_reconcile_extra(self, sig: dict, evidence: dict, result: dict) -> dict:
+        status = str(evidence.get("status") or "").strip()
+        note = str(evidence.get("note") or status or "tv_direct_reconciled").strip()
+        order_ids = [str(item or "").strip() for item in (result or {}).get("order_ids") or [] if str(item or "").strip()]
+        group = str((result or {}).get("trade_group_id") or (result or {}).get("bracket_group") or "").strip()
+        role_statuses = evidence.get("role_statuses") if isinstance(evidence.get("role_statuses"), dict) else {}
+        extra = {
+            **self._signal_extra(sig),
+            "status_reason": note,
+            "execution_state": "tv_direct_reconciled",
+            "tv_direct_reconciled": True,
+            "tv_direct_reconcile_at": self._now_iso(),
+            "tv_direct_reconcile_action": "skip_duplicate_submit",
+            "tv_direct_reconcile_status": status,
+            "tv_direct_reconcile_source": str(evidence.get("source") or ""),
+            "tv_direct_reconcile_broker_checked": bool(evidence.get("broker_check_performed")),
+            "tv_direct_reconcile_broker_error": str(evidence.get("broker_check_error") or ""),
+            "tv_direct_reconcile_broker_coverage": dict(evidence.get("broker_coverage") or {}),
+            "tv_direct_reconcile_pb_order_ids": list(evidence.get("pb_order_ids") or []),
+            "tv_direct_reconcile_live_order_ids": list(evidence.get("live_order_ids") or []),
+            "submitted_order_ids": order_ids,
+            "trade_group_id": group,
+            "bracket_group": group,
+            "entry_order_id": order_ids[0] if len(order_ids) > 0 else "",
+            "tp_order_id": order_ids[1] if len(order_ids) > 1 else "",
+            "sl_order_id": order_ids[2] if len(order_ids) > 2 else "",
+            "entry_coid": (result or {}).get("entry_coid") or "",
+            "tp_coid": (result or {}).get("tp_coid") or "",
+            "sl_coid": (result or {}).get("sl_coid") or "",
+            "order_family_type": (result or {}).get("order_family_type") or "bracket_oco",
+            "protection_complete": bool(evidence.get("protection_complete")),
+            "protection_incomplete": not bool(evidence.get("protection_complete")),
+            "missing_protection_roles": [],
+            "protection_order_statuses": {
+                "take_profit": list(role_statuses.get("take_profit") or []),
+                "stop_loss": list(role_statuses.get("stop_loss") or []),
+            },
+            "protection_orders_checked": sum(len(value or []) for value in role_statuses.values()),
+            "signal_lifecycle_status": status,
+        }
+        if status == "filled_position":
+            entry_order_id = order_ids[0] if order_ids else ""
+            fill_price = self._safe_float(evidence.get("entry_fill_price"), 0.0)
+            extra.update(
+                {
+                    "entry_fill_detected_by": "tv_direct_pre_submit_reconcile",
+                    "entry_fill_broker_order_id": entry_order_id,
+                    "entry_fill_price": fill_price,
+                    "executed_price": fill_price,
+                    "entry_fill_status": "Filled",
+                    "final_stop_loss": sig.get("stop_loss"),
+                    "final_take_profit": sig.get("take_profit"),
+                }
+            )
+        return extra
+
+    def _mark_signal_tv_direct_reconciled(self, sig: dict, evidence: dict, result: dict) -> None:
+        if not self.pb:
+            return
+        service_mod = _service_mod()
+        signal_id = str(sig.get("signal_id") or "").strip()
+        if not signal_id:
+            return
+        try:
+            record, existing_extra = self._load_signal_record_and_extra(sig)
+            if not record:
+                return
+            broker_status = str(evidence.get("status") or "submitted_waiting_fill").strip() or "submitted_waiting_fill"
+            pb_status = str(evidence.get("pb_status") or broker_status).strip() or broker_status
+            note = str(evidence.get("note") or broker_status).strip() or broker_status
+            lifecycle_extra = self._tv_entry_reconcile_extra(sig, evidence, result)
+            patch = self._signal_broker_patch(pb_status, note, existing_extra, lifecycle_extra)
+            broker_mode = str(service_mod.ENVIRONMENT or "paper").strip().lower() or "paper"
+            data_environment = str(service_mod.DATA_ENVIRONMENT or "live").strip().lower() or "live"
+            execution_by_mode = patch["extra"].get("execution_by_mode")
+            if not isinstance(execution_by_mode, dict):
+                execution_by_mode = {}
+            broker_execution = execution_by_mode.get(broker_mode)
+            if not isinstance(broker_execution, dict):
+                broker_execution = {}
+            execution_by_mode[broker_mode] = {
+                **broker_execution,
+                "status": broker_status,
+                "note": note,
+                "status_reason": note,
+                "data_environment": data_environment,
+                "source": "ibkr_compute_tv_direct_reconcile",
+                "trade_group_id": result.get("trade_group_id") or "",
+                "bracket_group": result.get("bracket_group") or "",
+                "order_ids": [str(item or "").strip() for item in (result.get("order_ids") or []) if str(item or "").strip()],
+                "entry_order_id": lifecycle_extra.get("entry_order_id") or "",
+                "tp_order_id": lifecycle_extra.get("tp_order_id") or "",
+                "sl_order_id": lifecycle_extra.get("sl_order_id") or "",
+                "entry_coid": result.get("entry_coid") or "",
+                "tp_coid": result.get("tp_coid") or "",
+                "sl_coid": result.get("sl_coid") or "",
+                "protection_complete": bool(evidence.get("protection_complete")),
+                "updated_at": self._now_iso(),
+            }
+            patch["extra"]["execution_by_mode"] = execution_by_mode
+            self.pb.update_record("ibkr_signals", record["id"], patch)
+        except Exception as exc:
+            service_mod.logger.error(
+                "Failed to mark TV direct signal reconciled: signal_id=%s error=%s",
+                signal_id,
+                exc,
+            )
+
+    def _apply_tv_direct_entry_reconcile(self, sig: dict, evidence: dict) -> None:
+        service_mod = _service_mod()
+        result = self._tv_entry_reconcile_order_result(sig, evidence)
+        reconcile_extra = self._tv_entry_reconcile_extra(sig, evidence, result)
+        result["order_extra"] = dict(reconcile_extra)
+        sig_for_ack = copy.deepcopy(sig)
+        sig_for_ack["extra"] = reconcile_extra
+        if str(evidence.get("status") or "") == "submitted_waiting_fill":
+            try:
+                self._ack_signal_after_order_submission(sig_for_ack, result)
+            except Exception as ack_err:
+                service_mod.logger.warning(
+                    "TV direct reconcile order ack failed; applying lifecycle patch only: signal_id=%s error=%s",
+                    sig.get("signal_id"),
+                    ack_err,
+                )
+            try:
+                self._register_submitted_order_result(result, sig_for_ack, str(sig.get("symbol") or ""))
+            except Exception as track_err:
+                service_mod.logger.debug("TV direct reconcile order tracker register failed: %s", track_err)
+            try:
+                self.signal_processor.register_pending_entry(
+                    sig.get("symbol"),
+                    {
+                        "direction": sig.get("direction"),
+                        "bracket_group": result.get("bracket_group"),
+                        "signal_id": sig.get("signal_id"),
+                        "reconciled_existing_order": True,
+                    },
+                )
+            except Exception:
+                pass
+        self._mark_signal_tv_direct_reconciled(sig_for_ack, evidence, result)
+
+    def _reconcile_tv_direct_entry_before_submit(self, sig: dict) -> dict:
+        service_mod = _service_mod()
+        signal_id = str((sig or {}).get("signal_id") or "").strip()
+        if not signal_id or not getattr(self, "pb", None):
+            return {"handled": False, "source": "unavailable"}
+        try:
+            record, existing_extra = self._load_signal_record_and_extra(sig)
+            identifiers = self._tv_entry_reconcile_identifiers(sig, record, existing_extra)
+            pb_rows = self._fetch_tv_entry_pb_order_rows(identifiers)
+            identifiers = self._tv_entry_identifiers_with_order_rows(identifiers, pb_rows)
+            live_payload = self._fetch_tv_entry_live_order_rows(identifiers)
+            live_rows = list(live_payload.get("orders") or [])
+            if live_rows and callable(getattr(getattr(self, "order_tracker", None), "sync_live_orders_snapshot", None)):
+                try:
+                    self.order_tracker.sync_live_orders_snapshot(live_rows)
+                except Exception as sync_err:
+                    service_mod.logger.debug("TV direct reconcile live-order sync failed: %s", sync_err)
+            evidence = self._classify_tv_entry_reconcile_evidence(sig, identifiers, pb_rows, live_payload)
+            if not evidence.get("handled"):
+                return evidence
+            self._apply_tv_direct_entry_reconcile(sig, evidence)
+            return evidence
+        except Exception as exc:
+            service_mod.logger.warning(
+                "TV direct pre-submit reconcile failed; continuing normal submission flow: signal_id=%s error=%s",
+                signal_id,
+                exc,
+            )
+            return {"handled": False, "source": "error", "error": str(exc)}
 
     def _config_bool(self, key: str, default: bool) -> bool:
         getter = getattr(getattr(self, "config", None), "get_bool_for_environment", None)

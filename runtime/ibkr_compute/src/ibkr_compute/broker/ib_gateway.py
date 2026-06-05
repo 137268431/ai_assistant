@@ -493,7 +493,18 @@ class _IBGatewayApp(EWrapper, EClient):
             self._managed_accounts = str(accountsList or "")
             self._last_message_at = time.time()
 
-    def error(self, reqId: int, errorCode: int, errorString: str, _advancedOrderRejectJson: str = ""):  # noqa: N802
+    def error(self, reqId: int, *args):  # noqa: N802
+        if len(args) >= 4:
+            _error_time, errorCode, errorString, _advancedOrderRejectJson = args[:4]
+        elif len(args) >= 3:
+            errorCode, errorString, _advancedOrderRejectJson = args[:3]
+        elif len(args) >= 2:
+            errorCode, errorString = args[:2]
+            _advancedOrderRejectJson = ""
+        else:
+            errorCode = 0
+            errorString = args[0] if args else ""
+            _advancedOrderRejectJson = ""
         expected_account_unsubscribe = self._is_expected_account_updates_unsubscribe_error(int(errorCode or 0))
         pending_ctx = self._pending_requests.get(int(reqId or 0))
         severity = "benign" if int(errorCode or 0) in BENIGN_ERROR_CODES or expected_account_unsubscribe else "warning"
@@ -1259,8 +1270,12 @@ class _IBGatewayApp(EWrapper, EClient):
             return
         realized_pnl = _safe_float(getattr(commissionReport, "realizedPNL", 0), 0.0)
         realized_known = math.isfinite(realized_pnl) and abs(realized_pnl) < 1e100
+        commission = _safe_float(
+            getattr(commissionReport, "commission", getattr(commissionReport, "commissionAndFees", 0)),
+            0.0,
+        )
         payload = {
-            "commission": abs(_safe_float(getattr(commissionReport, "commission", 0), 0.0)),
+            "commission": abs(commission),
             "commission_currency": str(getattr(commissionReport, "currency", "") or ""),
             "commission_known": True,
             "realized_pnl": realized_pnl if realized_known else 0.0,
@@ -1307,6 +1322,9 @@ class _IBGatewayApp(EWrapper, EClient):
             self._emit_execution_fill_update(execution_update)
         if order_update:
             self._emit_order_update(order_update)
+
+    def commissionAndFeesReport(self, commissionAndFeesReport: CommissionReport):  # noqa: N802
+        self.commissionReport(commissionAndFeesReport)
 
     def _emit_order_update(self, payload: dict):
         with self._listener_lock:
