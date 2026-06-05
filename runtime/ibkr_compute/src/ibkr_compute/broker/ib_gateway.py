@@ -21,6 +21,7 @@ from ibkr_compute.broker.ib_gateway_compat import (
     IBAPI_AVAILABLE,
     IBAPI_IMPORT_ERROR,
     Order,
+    OrderCancel,
     TagValue,
 )
 from ibkr_compute.broker.ib_gateway_support import (
@@ -1837,7 +1838,14 @@ class _IBGatewayApp(EWrapper, EClient):
         started = time.perf_counter()
         self._ensure_ready(timeout, "cancel_open_order")
         try:
-            self.cancelOrder(int(order_id))
+            if OrderCancel is not None:
+                try:
+                    self.cancelOrder(int(order_id), OrderCancel())
+                except TypeError:
+                    # Older ibapi releases only accept orderId.
+                    self.cancelOrder(int(order_id))
+            else:
+                self.cancelOrder(int(order_id))
         except Exception as exc:
             record_order_event(
                 operation="ibapi_cancel",

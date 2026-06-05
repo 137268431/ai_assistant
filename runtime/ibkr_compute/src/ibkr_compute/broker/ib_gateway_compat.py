@@ -9,6 +9,10 @@ try:
     from ibapi.contract import Contract
     from ibapi.execution import ExecutionFilter
     from ibapi.order import Order
+    try:
+        from ibapi.order_cancel import OrderCancel
+    except Exception:
+        OrderCancel = None  # type: ignore[assignment]
     from ibapi.tag_value import TagValue
     from ibapi.wrapper import EWrapper
 
@@ -31,6 +35,8 @@ except Exception as exc:  # pragma: no cover - import availability depends on ru
     class Order:  # type: ignore[override]
         pass
 
+    OrderCancel = None  # type: ignore[assignment]
+
     class CommissionReport:  # type: ignore[override]
         pass
 
@@ -52,5 +58,6 @@ __all__ = [
     "IBAPI_AVAILABLE",
     "IBAPI_IMPORT_ERROR",
     "Order",
+    "OrderCancel",
     "TagValue",
 ]
