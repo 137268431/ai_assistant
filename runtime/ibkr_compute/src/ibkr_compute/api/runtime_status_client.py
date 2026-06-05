@@ -70,6 +70,7 @@ def get_remote_runtime_status(*, force_refresh: bool = False) -> dict:
     try:
         response = requests.get(
             f"{get_runtime_internal_url()}/ibkr/status",
+            params={"skip_compute_status": "1"},
             timeout=RUNTIME_STATUS_TIMEOUT_SECONDS,
         )
         if response.ok:

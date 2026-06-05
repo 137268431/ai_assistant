@@ -11,6 +11,14 @@ from ibkr_compute.api.startup_preload import get_compute_startup_preload_state
 
 
 def _build_topology_payload(app_mod, requested_environment: str) -> dict:
+    if _skip_runtime_status_lookup():
+        payload = build_service_topology(
+            service_status={"environment": requested_environment},
+            fetch_runtime_status=False,
+        )
+        payload["runtime_status_lookup_skipped"] = True
+        return payload
+
     resolver = getattr(app_mod, "_get_runtime_status_snapshot", None)
     if callable(resolver):
         try:
@@ -20,6 +28,18 @@ def _build_topology_payload(app_mod, requested_environment: str) -> dict:
         if isinstance(payload, dict) and payload:
             return build_service_topology(service_status=payload)
     return build_service_topology()
+
+
+def _skip_runtime_status_lookup() -> bool:
+    try:
+        args = request.args or {}
+    except Exception:
+        return False
+    if coerce_request_bool(args.get("skip_runtime_status"), False):
+        return True
+    if coerce_request_bool(args.get("skip_runtime"), False):
+        return True
+    return str(args.get("topology") or "").strip().lower() in {"local", "static", "shallow"}
 
 
 def _include_engines_in_status() -> bool:

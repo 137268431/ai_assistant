@@ -40,7 +40,7 @@ if "flask" not in sys.modules:
 
 from ibkr_compute.api.monitor.runtime.compute import _build_compute_summary
 from ibkr_compute.api.ops.common import _snapshot_engine_items
-from ibkr_compute.api.ops.status_views import build_status_response
+from ibkr_compute.api.ops.status_views import _build_topology_payload, build_status_response
 
 
 class _GuardedLock:
@@ -182,6 +182,28 @@ class OpsStatusViewsTest(unittest.TestCase):
         self.assertEqual(payload["status_mode"], "full")
         self.assertEqual(payload["engines"]["live/AAPL/5m"]["last_close"], 210.5)
         self.assertEqual(payload["engines"]["live/MSFT/15m"]["bar_count"], 180)
+
+    def test_topology_skip_runtime_status_does_not_call_runtime_resolver(self):
+        resolver = mock.Mock(return_value={"session": {"authenticated": True}})
+        fake_app = SimpleNamespace(_get_runtime_status_snapshot=resolver)
+
+        with mock.patch.dict(
+            "os.environ",
+            {
+                "IBKR_SERVICE_PROFILE": "compute",
+                "IBKR_RUNTIME_MODE": "remote",
+                "IBKR_TOPOLOGY_FETCH_RUNTIME_STATUS": "true",
+            },
+            clear=False,
+        ):
+            with mock.patch("ibkr_compute.api.service_topology.get_remote_runtime_status") as remote_status_mock:
+                with mock.patch("ibkr_compute.api.ops.status_views.request", SimpleNamespace(args={"skip_runtime_status": "1"})):
+                    topology = _build_topology_payload(fake_app, "live")
+
+        resolver.assert_not_called()
+        remote_status_mock.assert_not_called()
+        self.assertTrue(topology["runtime_status_lookup_skipped"])
+        self.assertEqual("expected_remote", topology["services"]["ibkr-runtime"]["status"])
 
     def test_monitor_compute_summary_snapshots_engines_before_counting(self):
         fake_app = _build_fake_app()

@@ -83,9 +83,12 @@ def get_remote_compute_status(
 
     payload: dict[str, Any] = {}
     base_params = {"full": "1"} if include_engines else {"lite": "1"}
+    # Runtime calls compute status while building its own status payload; do not
+    # let compute call back into runtime topology and form a status loop.
+    base_params["skip_runtime_status"] = "1"
     if requested_symbols:
         base_params["symbols"] = ",".join(requested_symbols)
-    fallback_params = {"full": "1"}
+    fallback_params = {"full": "1", "skip_runtime_status": "1"}
     if requested_symbols:
         fallback_params["symbols"] = ",".join(requested_symbols)
     query_plan = [base_params] if include_engines else [base_params, fallback_params]

@@ -90,8 +90,12 @@ class _FakeRequest:
     args = _FakeArgs()
     headers = _FakeHeaders()
 
-    def __init__(self, body=b'{"ok": true}'):
+    def __init__(self, body=b'{"ok": true}', method=None, args=None):
         self._body = body
+        if method is not None:
+            self.method = method
+        if args is not None:
+            self.args = args
 
     def get_data(self, cache=True):
         return self._body
@@ -109,7 +113,14 @@ class _ImmediateThread:
 
 
 class RuntimeProxyTimeoutTest(unittest.TestCase):
-    def _proxy_once(self, path: str):
+    def _clear_status_cache(self):
+        with runtime_proxy._RUNTIME_STATUS_PROXY_CACHE_LOCK:
+            runtime_proxy._RUNTIME_STATUS_PROXY_CACHE["payload"] = None
+            runtime_proxy._RUNTIME_STATUS_PROXY_CACHE["cached_at"] = 0.0
+            runtime_proxy._RUNTIME_STATUS_PROXY_CACHE["cache_key"] = ""
+            runtime_proxy._RUNTIME_STATUS_PROXY_CACHE["entries"] = {}
+
+    def _proxy_once(self, path: str, *, method: str = "GET"):
         env = {
             key: value
             for key, value in os.environ.items()
@@ -117,19 +128,28 @@ class RuntimeProxyTimeoutTest(unittest.TestCase):
             not in {
                 "IBKR_COMPUTE_RUNTIME_PROXY_TIMEOUT_SEC",
                 "IBKR_COMPUTE_RUNTIME_PROXY_REPAIR_TIMEOUT_SEC",
+                "IBKR_COMPUTE_RUNTIME_STATUS_PROXY_TIMEOUT_SEC",
+                "IBKR_COMPUTE_RUNTIME_STATUS_PROXY_CACHE_TTL_SEC",
             }
         }
+        self._clear_status_cache()
         with mock.patch.dict(os.environ, env, clear=True):
             with mock.patch.object(runtime_proxy, "get_runtime_internal_url", return_value="http://runtime.internal"):
                 with mock.patch.object(runtime_proxy, "Response", _FlaskResponse):
                     with mock.patch.object(runtime_proxy, "jsonify", _jsonify):
                         with mock.patch.object(runtime_proxy.requests, "request", return_value=_FakeResponse()) as request_mock:
-                            with mock.patch.object(runtime_proxy, "request", _FakeRequest()):
+                            with mock.patch.object(runtime_proxy, "request", _FakeRequest(method=method)):
                                 response = runtime_proxy.proxy_runtime_request(path)
         return response, request_mock
 
-    def test_default_runtime_proxy_timeout_remains_short(self):
+    def test_runtime_status_proxy_uses_short_status_timeout(self):
         _, request_mock = self._proxy_once("/ibkr/status")
+
+        self.assertEqual(3, request_mock.call_args.kwargs["timeout"])
+        self.assertIn(("skip_compute_status", "1"), request_mock.call_args.kwargs["params"])
+
+    def test_default_runtime_proxy_timeout_remains_standard_for_non_status(self):
+        _, request_mock = self._proxy_once("/ibkr/history")
 
         self.assertEqual(60, request_mock.call_args.kwargs["timeout"])
 
@@ -147,6 +167,32 @@ class RuntimeProxyTimeoutTest(unittest.TestCase):
         _, request_mock = self._proxy_once("/ibkr/data-quality/tv-indicator-audit")
 
         self.assertEqual(300, request_mock.call_args.kwargs["timeout"])
+
+    def test_runtime_status_proxy_reuses_short_success_cache(self):
+        self._clear_status_cache()
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if key
+            not in {
+                "IBKR_COMPUTE_RUNTIME_PROXY_TIMEOUT_SEC",
+                "IBKR_COMPUTE_RUNTIME_PROXY_REPAIR_TIMEOUT_SEC",
+                "IBKR_COMPUTE_RUNTIME_STATUS_PROXY_TIMEOUT_SEC",
+                "IBKR_COMPUTE_RUNTIME_STATUS_PROXY_CACHE_TTL_SEC",
+            }
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            with mock.patch.object(runtime_proxy, "get_runtime_internal_url", return_value="http://runtime.internal"):
+                with mock.patch.object(runtime_proxy, "Response", _FlaskResponse):
+                    with mock.patch.object(runtime_proxy, "jsonify", _jsonify):
+                        with mock.patch.object(runtime_proxy.requests, "request", return_value=_FakeResponse({"ok": True, "environment": "paper"})) as request_mock:
+                            with mock.patch.object(runtime_proxy, "request", _FakeRequest(method="GET")):
+                                first = runtime_proxy.proxy_runtime_request("/ibkr/status")
+                                second = runtime_proxy.proxy_runtime_request("/ibkr/status")
+
+        self.assertEqual(1, request_mock.call_count)
+        self.assertEqual(200, first.status_code)
+        self.assertIn(b"runtime_status_proxy_cache_hit", second.content)
 
     def test_data_quality_repair_async_returns_accepted_and_persists_status(self):
         runtime_proxy._ASYNC_OPERATION_STATES.clear()

@@ -1,5 +1,6 @@
 import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -149,6 +150,67 @@ class BrokerReadyGuardTest(unittest.TestCase):
 
         self.assertEqual([{"ticker": "SPY", "position": 1}], positions)
         app.cancelPositions.assert_called_once()
+
+    def test_account_data_requests_are_serialized_across_kinds(self):
+        app = _IBGatewayApp("127.0.0.1", 4001, 31)
+        app._managed_accounts = "DU123"
+        app._ensure_ready = mock.Mock(return_value={"ready": True})
+        events = []
+        positions_started = threading.Event()
+        release_positions = threading.Event()
+
+        def req_positions():
+            events.append("positions_start")
+            positions_started.set()
+            self.assertTrue(release_positions.wait(timeout=2.0))
+            app.positionEnd()
+            events.append("positions_end")
+
+        def req_summary(req_id, _group, _tags):
+            events.append("summary_start")
+            app.accountSummary(req_id, "DU123", "BuyingPower", "100000", "USD")
+            app.accountSummaryEnd(req_id)
+            events.append("summary_end")
+
+        app.reqPositions = mock.Mock(side_effect=req_positions)
+        app.cancelPositions = mock.Mock()
+        app.reqAccountSummary = mock.Mock(side_effect=req_summary)
+        app.cancelAccountSummary = mock.Mock()
+
+        positions_result = []
+        summary_result = {}
+        positions_thread = threading.Thread(target=lambda: positions_result.extend(app.request_positions(timeout=2)))
+        summary_thread = threading.Thread(target=lambda: summary_result.update(app.request_account_summary(timeout=2)))
+
+        positions_thread.start()
+        self.assertTrue(positions_started.wait(timeout=1.0))
+        summary_thread.start()
+        time.sleep(0.1)
+        self.assertNotIn("summary_start", events)
+        release_positions.set()
+        positions_thread.join(timeout=2.0)
+        summary_thread.join(timeout=2.0)
+
+        self.assertEqual(["positions_start", "positions_end", "summary_start", "summary_end"], events)
+        self.assertEqual([], positions_result)
+        self.assertIn("BuyingPower", summary_result)
+
+    def test_positions_use_stale_cache_while_account_data_circuit_open(self):
+        app = _IBGatewayApp("127.0.0.1", 4001, 31)
+        app._ensure_ready = mock.Mock(return_value={"ready": True})
+        app.reqPositions = mock.Mock()
+        app.cancelPositions = mock.Mock()
+        app._account_cache_store(("positions",), [{"ticker": "AAPL", "position": 3}], ttl_seconds=0.01)
+        time.sleep(0.02)
+
+        for _ in range(4):
+            app._record_account_data_issue("positions", "positions_timeout")
+
+        positions = app.request_positions(timeout=1)
+
+        self.assertEqual([{"ticker": "AAPL", "position": 3}], positions)
+        app.reqPositions.assert_not_called()
+        app.cancelPositions.assert_not_called()
 
 
 class _DummyStaleBrokerService(TradingServiceAuthRecoveryMixin):

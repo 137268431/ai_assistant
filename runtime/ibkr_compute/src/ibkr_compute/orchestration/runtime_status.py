@@ -234,7 +234,12 @@ class TradingServiceRuntimeStatusMixin:
             merged["source_error"] = source_error
         return merged
 
-    def status(self, refresh_auth: bool = True, refresh_calendar: bool | None = None) -> dict:
+    def status(
+        self,
+        refresh_auth: bool = True,
+        refresh_calendar: bool | None = None,
+        include_compute_status: bool = True,
+    ) -> dict:
         service_mod = _service_mod()
         if refresh_calendar is None:
             refresh_calendar = refresh_auth
@@ -460,13 +465,18 @@ class TradingServiceRuntimeStatusMixin:
         try:
             from ibkr_compute.api.service_topology import uses_remote_compute_service
 
-            if uses_remote_compute_service():
+            if include_compute_status and uses_remote_compute_service():
                 from ibkr_compute.api.compute_status_client import get_remote_compute_status
 
                 compute_status = get_remote_compute_status(force_refresh=False, symbols=data_symbols)
                 candidate = compute_status.get("multi_timeframe_readiness")
                 if isinstance(candidate, dict):
                     multi_timeframe_readiness = dict(candidate)
+            elif not include_compute_status and uses_remote_compute_service():
+                multi_timeframe_readiness = {
+                    "status": "omitted",
+                    "reason": "compute_status_lookup_skipped",
+                }
         except Exception:
             multi_timeframe_readiness = {}
         host_resources = self._host_resources_snapshot()

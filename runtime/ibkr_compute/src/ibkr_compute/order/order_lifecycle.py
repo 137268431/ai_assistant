@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from datetime import datetime
@@ -49,6 +50,7 @@ PROTECTION_TP_ROLES = {"take_profit", "tp", "repair_tp"}
 PROTECTION_SL_ROLES = {"stop_loss", "sl", "repair_sl"}
 PROTECTION_ROLES = PROTECTION_TP_ROLES | PROTECTION_SL_ROLES
 ACTIVE_CLOSE_ROLES = {"close", "manual_close", "market_close", "close_order", "reverse_close"}
+ACCOUNT_DATA_BACKOFF_SECONDS = max(5.0, float(os.environ.get("IBKR_ACCOUNT_DATA_CIRCUIT_POLL_BACKOFF_SEC", "30") or 30))
 
 
 class OrderLifecycle:
@@ -91,6 +93,9 @@ class OrderLifecycle:
         self._order_flow_risk_error_count = 0
         self._last_order_flow_risk_action_ms = 0
         self._protection_missing_alerted: set[str] = set()
+        self._account_data_backoff_until = 0.0
+        self._account_data_backoff_reason = ""
+        self._account_data_backoff_last_warn_at = 0.0
 
     def _get_config_value(self, key: str, default: str) -> str:
         if not self.config:
@@ -125,6 +130,69 @@ class OrderLifecycle:
         if raw in {"0", "false", "no", "off"}:
             return False
         return bool(default)
+
+    @staticmethod
+    def _account_data_error_text(exc: Exception | str) -> str:
+        return str(exc or "")
+
+    @classmethod
+    def _is_account_data_unavailable_error(cls, exc: Exception | str) -> bool:
+        lowered = cls._account_data_error_text(exc).lower()
+        return (
+            "account_data_circuit_open" in lowered
+            or "account_data_request_queue_timeout" in lowered
+            or "positions_timeout" in lowered
+            or "open_orders_timeout" in lowered
+            or "open_orders_all_timeout" in lowered
+            or "executions_timeout" in lowered
+            or "account_summary_timeout" in lowered
+            or "account_updates_timeout" in lowered
+        )
+
+    @classmethod
+    def _retry_after_seconds(cls, exc: Exception | str, default: float = ACCOUNT_DATA_BACKOFF_SECONDS) -> float:
+        match = re.search(r"retry_after_s=([0-9]+(?:\.[0-9]+)?)", cls._account_data_error_text(exc))
+        if match:
+            try:
+                return max(5.0, min(120.0, float(match.group(1))))
+            except Exception:
+                return float(default)
+        return float(default)
+
+    def _account_data_backoff_remaining(self) -> float:
+        return max(0.0, float(self._account_data_backoff_until or 0.0) - time.time())
+
+    def _mark_account_data_backoff(self, exc: Exception | str, *, operation: str) -> None:
+        reason = self._account_data_error_text(exc) or "account_data_unavailable"
+        self._account_data_backoff_until = max(
+            float(self._account_data_backoff_until or 0.0),
+            time.time() + self._retry_after_seconds(reason),
+        )
+        self._account_data_backoff_reason = reason
+        now = time.time()
+        if now - float(self._account_data_backoff_last_warn_at or 0.0) >= 15.0:
+            logger.warning(
+                "Skipping lifecycle account-data fetch during backoff: operation=%s retry_after_s=%.1f reason=%s",
+                operation,
+                self._account_data_backoff_remaining(),
+                reason,
+            )
+            self._account_data_backoff_last_warn_at = now
+
+    def _should_skip_account_data_fetch(self, *, operation: str) -> bool:
+        remaining = self._account_data_backoff_remaining()
+        if remaining <= 0:
+            return False
+        now = time.time()
+        if now - float(self._account_data_backoff_last_warn_at or 0.0) >= 15.0:
+            logger.warning(
+                "Skipping lifecycle account-data fetch during backoff: operation=%s retry_after_s=%.1f reason=%s",
+                operation,
+                remaining,
+                self._account_data_backoff_reason or "account_data_backoff",
+            )
+            self._account_data_backoff_last_warn_at = now
+        return True
 
     def _eod_close_time(self) -> tuple[int, int]:
         raw_value = self._get_config_value(
@@ -328,30 +396,62 @@ class OrderLifecycle:
 
 
     def get_positions(self, acct_id: str = None) -> List[Dict]:
+        if self._should_skip_account_data_fetch(operation="positions"):
+            return []
         try:
-            return list(self.broker.list_positions() or [])
+            positions = list(self.broker.list_positions() or [])
+            self._account_data_backoff_until = 0.0
+            self._account_data_backoff_reason = ""
+            return positions
         except Exception as exc:
+            if self._is_account_data_unavailable_error(exc):
+                self._mark_account_data_backoff(exc, operation="positions")
+                return []
             logger.warning("Failed to get positions: %s", exc)
             return []
 
     def get_account_summary(self, acct_id: str = None) -> Dict:
+        if self._should_skip_account_data_fetch(operation="account_summary"):
+            return {}
         try:
-            return dict(self.broker.get_account_summary() or {})
+            summary = dict(self.broker.get_account_summary() or {})
+            self._account_data_backoff_until = 0.0
+            self._account_data_backoff_reason = ""
+            return summary
         except Exception as exc:
+            if self._is_account_data_unavailable_error(exc):
+                self._mark_account_data_backoff(exc, operation="account_summary")
+                return {}
             logger.warning("Failed to get account summary: %s", exc)
             return {}
 
     def get_account_snapshot(self, acct_id: str = None) -> Dict:
+        if self._should_skip_account_data_fetch(operation="account_snapshot"):
+            return {}
         try:
-            return dict(self.broker.get_account_snapshot(account=acct_id) or {})
+            snapshot = dict(self.broker.get_account_snapshot(account=acct_id) or {})
+            self._account_data_backoff_until = 0.0
+            self._account_data_backoff_reason = ""
+            return snapshot
         except Exception as exc:
+            if self._is_account_data_unavailable_error(exc):
+                self._mark_account_data_backoff(exc, operation="account_snapshot")
+                return {}
             logger.warning("Failed to get account snapshot: %s", exc)
             return {}
 
     def get_account_pnl(self, acct_id: str = None) -> Dict:
+        if self._should_skip_account_data_fetch(operation="account_pnl"):
+            return {"ok": False, "error": "account_data_backoff"}
         try:
-            return dict(self.broker.get_account_pnl(account=acct_id) or {})
+            pnl = dict(self.broker.get_account_pnl(account=acct_id) or {})
+            self._account_data_backoff_until = 0.0
+            self._account_data_backoff_reason = ""
+            return pnl
         except Exception as exc:
+            if self._is_account_data_unavailable_error(exc):
+                self._mark_account_data_backoff(exc, operation="account_pnl")
+                return {"ok": False, "error": str(exc)}
             logger.warning("Failed to get account PnL: %s", exc)
             return {"ok": False, "error": str(exc)}
 
@@ -1071,6 +1171,20 @@ class OrderLifecycle:
         ).lower()
         return any(marker in text for marker in ("unconfirmed", "timeout", "timed out", "pending"))
 
+    def _cancel_order_with_modifier(self, order_id: str, *, operation: str, order_family_type: str) -> dict:
+        if not self.order_modifier:
+            return {"ok": False, "error": "order_modifier_unavailable"}
+        try:
+            return self.order_modifier.cancel_order(
+                order_id,
+                operation=operation,
+                order_family_type=order_family_type,
+            )
+        except TypeError as exc:
+            if "unexpected keyword" not in str(exc):
+                raise
+            return self.order_modifier.cancel_order(order_id)
+
     def _cancel_order_flow_protection(self, group: dict, reason: str) -> dict:
         outcomes = {"errors": [], "pending": [], "cancelled": []}
         for role in ("take_profit", "stop_loss"):
@@ -1080,14 +1194,10 @@ class OrderLifecycle:
             broker_id = self._order_broker_id(row)
             if not broker_id:
                 continue
-            result = (
-                self.order_modifier.cancel_order(
-                    broker_id,
-                    operation=f"cancel_{role}",
-                    order_family_type=role,
-                )
-                if self.order_modifier
-                else {"ok": False, "error": "order_modifier_unavailable"}
+            result = self._cancel_order_with_modifier(
+                broker_id,
+                operation=f"cancel_{role}",
+                order_family_type=role,
             )
             if not result.get("ok") and not self._cancel_result_looks_closed(result):
                 item = {"order_id": broker_id, "role": role, "error": result.get("error") or "cancel_failed", "result": dict(result or {})}
@@ -1877,14 +1987,10 @@ class OrderLifecycle:
             broker_id = self._order_broker_id(row)
             if not broker_id:
                 continue
-            result = (
-                self.order_modifier.cancel_order(
-                    broker_id,
-                    operation=f"cancel_{role}",
-                    order_family_type=role,
-                )
-                if self.order_modifier
-                else {"ok": False, "error": "order_modifier_unavailable"}
+            result = self._cancel_order_with_modifier(
+                broker_id,
+                operation=f"cancel_{role}",
+                order_family_type=role,
             )
             if not result.get("ok") and not self._cancel_result_looks_closed(result):
                 errors.append({"order_id": broker_id, "role": role, "error": result.get("error") or "cancel_failed"})
@@ -2081,7 +2187,7 @@ class OrderLifecycle:
         broker_id = self._order_broker_id(target_row)
         if not broker_id or not self.order_modifier:
             return False
-        result = self.order_modifier.cancel_order(
+        result = self._cancel_order_with_modifier(
             broker_id,
             operation="cancel_take_profit",
             order_family_type="take_profit",

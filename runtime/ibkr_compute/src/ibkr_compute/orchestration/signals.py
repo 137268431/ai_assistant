@@ -12,6 +12,10 @@ from ibkr_compute.api.account.buying_power_guard import (
 )
 from ibkr_compute.core.time_utils import ET
 from ibkr_compute.observability.prometheus import record_signal_event
+from ibkr_compute.order.buying_power_reservations import (
+    apply_reservations_to_buying_power_summary,
+    merge_reservation_snapshot_into_guard,
+)
 
 
 def _service_mod():
@@ -56,6 +60,10 @@ class TradingServiceSignalsMixin:
         "risk_model_strategy_entry_order_count",
         "risk_model_strategy_position_symbols",
         "risk_model_strategy_entry_order_symbols",
+        "local_reserved_exposure",
+        "local_reserved_count",
+        "local_reserved_order_ids",
+        "local_reservation_state_key",
     )
 
     @staticmethod
@@ -1676,6 +1684,8 @@ class TradingServiceSignalsMixin:
             "buying_power_requested_exposure": guard.get("requested_exposure"),
             "buying_power_guard_state": guard.get("state"),
             "buying_power_guard_reason": guard.get("reason"),
+            "buying_power_local_reserved_exposure": guard.get("local_reserved_exposure"),
+            "buying_power_local_reserved_count": guard.get("local_reserved_count"),
         }
 
     def _merge_buying_power_snapshot_guard(self, guard: dict, snapshot_guard: dict | None) -> dict:
@@ -1829,6 +1839,19 @@ class TradingServiceSignalsMixin:
     def _evaluate_signal_buying_power_guard(self, sig: dict) -> dict:
         service_mod = _service_mod()
         snapshot = self._account_buying_power_snapshot()
+        reservation_store = getattr(self, "buying_power_reservations", None)
+        reservation_snapshot = {}
+        snapshotter = getattr(reservation_store, "snapshot", None)
+        if callable(snapshotter):
+            try:
+                reservation_snapshot = snapshotter()
+            except Exception as exc:
+                service_mod.logger.warning("Buying-power reservation snapshot failed: %s", exc)
+                reservation_snapshot = {}
+        summary = apply_reservations_to_buying_power_summary(
+            (snapshot or {}).get("summary") or {},
+            reservation_snapshot,
+        )
         exposure = estimate_entry_exposure(
             sig.get("shares"),
             sig.get("entry"),
@@ -1838,11 +1861,12 @@ class TradingServiceSignalsMixin:
             "LMT",
         )
         guard = build_buying_power_guard(
-            (snapshot or {}).get("summary") or {},
+            summary,
             config=getattr(self, "config", None),
             environment=service_mod.ENVIRONMENT,
             requested_exposure=exposure,
         )
+        merge_reservation_snapshot_into_guard(guard, reservation_snapshot)
         snapshot_guard = (snapshot or {}).get("buying_power_guard")
         self._merge_buying_power_snapshot_guard(guard, snapshot_guard if isinstance(snapshot_guard, dict) else None)
         if isinstance((snapshot or {}).get("errors"), dict):
@@ -2524,11 +2548,19 @@ class TradingServiceSignalsMixin:
 
         detail["attempted"] = True
         detail["gateway_request_blocked"] = False
+        entry_order_id = order_ids[0] if order_ids else ""
         for order_id in order_ids:
             try:
                 result_row = cancel(order_id)
             except Exception as exc:
                 result_row = {"ok": False, "error": str(exc), "exception": type(exc).__name__}
+            if order_id == entry_order_id and bool((result_row or {}).get("ok")):
+                reservation_releaser = getattr(getattr(self, "buying_power_reservations", None), "release", None)
+                if callable(reservation_releaser):
+                    try:
+                        reservation_releaser(entry_order_id=order_id, reason="submit_failed_cancel_sync")
+                    except Exception as exc:
+                        detail.setdefault("reservation_release_errors", []).append(str(exc))
             detail["results"].append({"order_id": order_id, **dict(result_row or {})})
         failed = [row for row in detail["results"] if not row.get("ok")]
         detail["ok"] = not failed

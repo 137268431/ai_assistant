@@ -15,6 +15,10 @@ from ibkr_compute.api.account.snapshot import (
     _build_ibkr_account_snapshot,
 )
 from ibkr_compute.api.shared.service_status import get_service_status_snapshot
+from ibkr_compute.order.buying_power_reservations import (
+    apply_reservations_to_buying_power_summary,
+    merge_reservation_snapshot_into_guard,
+)
 
 
 BUYING_POWER_SNAPSHOT_META_KEYS = (
@@ -271,12 +275,25 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
             "order_type": order_type,
         }, 400
     pre_submit_snapshot = _build_ibkr_account_buying_power_snapshot(service)
-    buying_power_guard = build_buying_power_guard(
+    reservation_store = getattr(service, "buying_power_reservations", None)
+    reservation_snapshot = {}
+    snapshotter = getattr(reservation_store, "snapshot", None)
+    if callable(snapshotter):
+        try:
+            reservation_snapshot = snapshotter()
+        except Exception:
+            reservation_snapshot = {}
+    adjusted_summary = apply_reservations_to_buying_power_summary(
         (pre_submit_snapshot or {}).get("summary") or {},
+        reservation_snapshot,
+    )
+    buying_power_guard = build_buying_power_guard(
+        adjusted_summary,
         config=getattr(service, "config", None),
         environment=runtime_environment,
         requested_exposure=requested_exposure,
     )
+    merge_reservation_snapshot_into_guard(buying_power_guard, reservation_snapshot)
     snapshot_guard = (pre_submit_snapshot or {}).get("buying_power_guard")
     _merge_snapshot_guard_metadata(buying_power_guard, snapshot_guard if isinstance(snapshot_guard, dict) else None)
     if isinstance((pre_submit_snapshot or {}).get("errors"), dict):

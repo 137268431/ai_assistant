@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from flask import request
+
 from ibkr_compute.api.monitor.views import _build_ibkr_monitor_snapshot
 from ibkr_compute.api.shared.route_request import coerce_request_bool
 from ibkr_compute.api.shared.service_status import get_service_status_snapshot
@@ -116,7 +118,17 @@ def _build_ibkr_status_response() -> tuple[dict, int]:
             "service_topology": build_service_topology(),
         }, 200
     _maybe_restore_ibkr_service(service, refresh_auth=False, block=False)
-    status_payload = get_service_status_snapshot(service, refresh_calendar=True)
+    try:
+        skip_compute_status = coerce_request_bool(request.args.get("skip_compute_status"), False)
+    except Exception:
+        skip_compute_status = False
+    status_payload = get_service_status_snapshot(
+        service,
+        refresh_calendar=True,
+        include_compute_status=not skip_compute_status,
+    )
+    if skip_compute_status:
+        status_payload["compute_status_lookup_skipped"] = True
     runtime_environment = normalize_broker_mode(
         status_payload.get("broker_mode") or status_payload.get("environment"),
         "live",

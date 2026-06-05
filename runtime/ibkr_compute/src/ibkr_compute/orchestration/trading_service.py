@@ -59,6 +59,8 @@ from ibkr_compute.order.order_placer import OrderPlacer
 from ibkr_compute.order.order_tracker import OrderTracker
 from ibkr_compute.order.order_modifier import OrderModifier
 from ibkr_compute.order.order_lifecycle import OrderLifecycle
+from ibkr_compute.order.buying_power_reservations import BuyingPowerReservationStore
+from ibkr_compute.order.gateway_serial import GatewayOrderMutationGate
 from ibkr_compute.order_flow import OrderFlowManager
 from ibkr_compute.orchestration.account_snapshot_refresh import TradingServiceAccountSnapshotRefreshMixin
 from ibkr_compute.orchestration.auth_recovery import TradingServiceAuthRecoveryMixin
@@ -297,13 +299,26 @@ class IBKRTradingService(
             quote_provider=self.realtime_quote_book.get_quote,
         )
 
+        self.gateway_order_gate = GatewayOrderMutationGate(config=self.config, environment=ENVIRONMENT)
+        self.buying_power_reservations = BuyingPowerReservationStore(
+            pb_client=self.pb,
+            environment=ENVIRONMENT,
+        )
         self.order_placer = OrderPlacer(
             pb_client=self.pb,
             config=self.config,
             environment=ENVIRONMENT,
             broker=self.broker,
+            gateway_gate=self.gateway_order_gate,
+            reservation_store=self.buying_power_reservations,
         )
-        self.order_modifier = OrderModifier(pb_client=self.pb, broker=self.broker)
+        self.order_modifier = OrderModifier(
+            pb_client=self.pb,
+            broker=self.broker,
+            config=self.config,
+            environment=ENVIRONMENT,
+            gateway_gate=self.gateway_order_gate,
+        )
         self.order_tracker = OrderTracker(
             pb_client=self.pb,
             on_fill=self._on_order_fill,

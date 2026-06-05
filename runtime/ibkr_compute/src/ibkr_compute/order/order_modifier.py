@@ -11,6 +11,7 @@ from typing import Any, Dict
 
 from ibkr_compute.broker import BrokerAdapter
 from ibkr_compute.observability.prometheus import record_order_event
+from ibkr_compute.order.gateway_serial import GatewayOrderMutationGate, GatewayOrderMutationTimeout
 
 logger = logging.getLogger(__name__)
 
@@ -24,10 +25,16 @@ class OrderModifier:
         account_id: str = None,
         pb_client=None,
         broker: BrokerAdapter | None = None,
+        config=None,
+        environment: str = "live",
+        gateway_gate: GatewayOrderMutationGate | None = None,
     ):
         self.account_id = account_id or ACCOUNT_ID
         self.pb_client = pb_client
         self.broker = broker or BrokerAdapter()
+        self.config = config
+        self.environment = str(environment or "live").strip().lower() or "live"
+        self.gateway_gate = gateway_gate or GatewayOrderMutationGate(config=config, environment=self.environment)
 
     @staticmethod
     def _infer_modify_family(updates: Dict[str, Any] | None, fallback: str = "unknown") -> str:
@@ -53,11 +60,21 @@ class OrderModifier:
     ) -> Dict[str, Any]:
         started = time.perf_counter()
         family = str(order_family_type or "").strip() or self._infer_modify_family(updates)
-        result = self.broker.modify_order(
-            str(order_id or "").strip(),
-            dict(updates or {}),
-            account_id=str(acct_id or self.account_id or "").strip(),
-        )
+        try:
+            with self.gateway_gate.hold("modify_order", order_id=str(order_id or "").strip(), family=family):
+                result = self.broker.modify_order(
+                    str(order_id or "").strip(),
+                    dict(updates or {}),
+                    account_id=str(acct_id or self.account_id or "").strip(),
+                )
+        except GatewayOrderMutationTimeout as exc:
+            result = {
+                "ok": False,
+                "error": "gateway_order_queue_timeout",
+                "queue_timeout_s": exc.timeout_s,
+                "gateway_operation": exc.operation,
+                "order_id": str(order_id or "").strip(),
+            }
         record_order_event(
             operation=str(operation or "modify_manual"),
             order_family_type=family,
@@ -98,7 +115,17 @@ class OrderModifier:
         order_family_type: str = "unknown",
     ) -> Dict[str, Any]:
         started = time.perf_counter()
-        result = self.broker.cancel_order(str(order_id or "").strip())
+        try:
+            with self.gateway_gate.hold("cancel_order", order_id=str(order_id or "").strip()):
+                result = self.broker.cancel_order(str(order_id or "").strip())
+        except GatewayOrderMutationTimeout as exc:
+            result = {
+                "ok": False,
+                "error": "gateway_order_queue_timeout",
+                "queue_timeout_s": exc.timeout_s,
+                "gateway_operation": exc.operation,
+                "order_id": str(order_id or "").strip(),
+            }
         record_order_event(
             operation=str(operation or "cancel_order"),
             order_family_type=str(order_family_type or "unknown"),
@@ -111,4 +138,13 @@ class OrderModifier:
         return result
 
     def cancel_all_orders(self, acct_id: str = None) -> Dict[str, Any]:
-        return self.broker.cancel_all_orders()
+        try:
+            with self.gateway_gate.hold("cancel_all_orders"):
+                return self.broker.cancel_all_orders()
+        except GatewayOrderMutationTimeout as exc:
+            return {
+                "ok": False,
+                "error": "gateway_order_queue_timeout",
+                "queue_timeout_s": exc.timeout_s,
+                "gateway_operation": exc.operation,
+            }

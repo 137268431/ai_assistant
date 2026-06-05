@@ -549,7 +549,9 @@ class RuntimeSignalLifecycleTest(unittest.TestCase):
         )
 
         row = service.pb.signals["sig-row-1"]
-        self.assertEqual(row["status"], "filled_position")
+        self.assertEqual(row["status"], "protected_active")
+        self.assertEqual(row["extra"]["signal_lifecycle_status"], "filled_position")
+        self.assertEqual(row["extra"]["pb_signal_status_mapped_from"], "filled_position")
         self.assertEqual(row["note"], "entry_filled_final_protection_repriced")
         self.assertEqual(row["executed_price"], 100.06)
         self.assertAlmostEqual(row["stop_loss"], 98.46)
@@ -562,7 +564,8 @@ class RuntimeSignalLifecycleTest(unittest.TestCase):
         self.assertAlmostEqual(1.5, reprice["reward_risk"])
         self.assertAlmostEqual(6.0, reprice["slippage_bps"])
         self.assertAlmostEqual(0.0375, reprice["slippage_r"])
-        self.assertEqual("filled_position", service.pb.acked[-1]["status"])
+        self.assertEqual("protected_active", service.pb.acked[-1]["status"])
+        self.assertEqual("filled_position", service.pb.acked[-1]["order"]["extra"]["signal_lifecycle_status"])
 
     def test_tv_direct_short_entry_fill_reprices_protection_from_actual_fill(self):
         service = _FakeService()
@@ -582,7 +585,8 @@ class RuntimeSignalLifecycleTest(unittest.TestCase):
         )
 
         row = service.pb.signals["sig-row-1"]
-        self.assertEqual(row["status"], "filled_position")
+        self.assertEqual(row["status"], "protected_active")
+        self.assertEqual(row["extra"]["signal_lifecycle_status"], "filled_position")
         self.assertEqual(row["extra"]["entry_fill_direction"], "short")
         self.assertAlmostEqual(row["stop_loss"], 101.54)
         self.assertAlmostEqual(row["take_profit"], 97.54)
@@ -611,13 +615,18 @@ class RuntimeSignalLifecycleTest(unittest.TestCase):
         )
 
         row = service.pb.signals["sig-row-1"]
-        self.assertEqual(row["status"], "protection_reprice_failed")
+        self.assertEqual(row["status"], "protection_incomplete")
         self.assertEqual(row["note"], "protection_reprice_failed")
+        self.assertEqual(row["extra"]["signal_lifecycle_status"], "protection_reprice_failed")
         self.assertTrue(row["extra"]["protection_reprice_failed"])
         self.assertTrue(row["extra"]["protection_incomplete"])
         self.assertFalse(row["extra"]["protection_complete"])
         self.assertEqual("broker_modify_failed", row["extra"]["protection_reprice_result"]["reason"])
-        self.assertEqual("protection_reprice_failed", service.pb.acked[-1]["status"])
+        self.assertEqual("protection_incomplete", service.pb.acked[-1]["status"])
+        self.assertEqual(
+            "protection_reprice_failed",
+            service.pb.acked[-1]["order"]["extra"]["signal_lifecycle_status"],
+        )
 
     def test_tv_direct_entry_cancel_marks_cancelled_with_missed_limit_reason(self):
         service = _FakeService()
@@ -637,16 +646,18 @@ class RuntimeSignalLifecycleTest(unittest.TestCase):
         )
 
         row = service.pb.signals["sig-row-1"]
-        self.assertEqual("cancelled", row["status"])
+        self.assertEqual("rejected", row["status"])
         self.assertEqual("cancelled", row["note"])
+        self.assertEqual("cancelled", row["extra"]["signal_lifecycle_status"])
         self.assertEqual("entry_missed_limit_cap", row["extra"]["status_reason"])
         self.assertTrue(row["extra"]["entry_missed_limit_cap"])
         self.assertEqual("entry_missed_limit_cap", row["extra"]["entry_missed_reason"])
         self.assertEqual("Cancelled", row["extra"]["entry_cancel_status"])
         self.assertFalse(row["extra"]["position_open"])
         ack = service.pb.acked[-1]
-        self.assertEqual("cancelled", ack["status"])
+        self.assertEqual("rejected", ack["status"])
         self.assertEqual("cancelled", ack["note"])
+        self.assertEqual("cancelled", ack["order"]["extra"]["signal_lifecycle_status"])
         self.assertEqual("entry_missed_limit_cap", ack["order"]["extra"]["status_reason"])
         self.assertTrue(ack["order"]["extra"]["entry_missed_limit_cap"])
         self.assertEqual(["AAPL"], service.signal_processor.removed)

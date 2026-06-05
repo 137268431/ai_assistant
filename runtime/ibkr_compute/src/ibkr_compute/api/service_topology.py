@@ -143,12 +143,24 @@ def _derive_gateway_status(runtime_mode: str, service_profile: str, service_stat
     return "embedded"
 
 
-def _select_topology_status_payload(runtime_mode: str, service_profile: str, payload: dict) -> dict:
+def _select_topology_status_payload(
+    runtime_mode: str,
+    service_profile: str,
+    payload: dict,
+    *,
+    fetch_runtime_status: bool | None = None,
+) -> dict:
     if service_profile == "runtime" or runtime_mode != "remote":
         return payload
     if is_runtime_status_payload(payload):
         return payload
-    if str(os.environ.get("IBKR_TOPOLOGY_FETCH_RUNTIME_STATUS") or "").strip().lower() not in {"1", "true", "yes", "on"}:
+    should_fetch = (
+        str(os.environ.get("IBKR_TOPOLOGY_FETCH_RUNTIME_STATUS") or "").strip().lower()
+        in {"1", "true", "yes", "on"}
+        if fetch_runtime_status is None
+        else bool(fetch_runtime_status)
+    )
+    if not should_fetch:
         return payload
     remote_payload = get_remote_runtime_status()
     if is_runtime_status_payload(remote_payload):
@@ -160,7 +172,12 @@ def _owned_service_status(service_profile: str, owner_profile: str) -> str:
     return "running" if service_profile == owner_profile else "peer"
 
 
-def build_service_topology(service=None, service_status: dict | None = None) -> dict:
+def build_service_topology(
+    service=None,
+    service_status: dict | None = None,
+    *,
+    fetch_runtime_status: bool | None = None,
+) -> dict:
     runtime_mode = get_runtime_mode()
     service_profile = get_service_profile()
     compute_internal_url = get_compute_internal_url()
@@ -176,7 +193,12 @@ def build_service_topology(service=None, service_status: dict | None = None) -> 
     if not payload and service is not None and hasattr(service, "status"):
         payload = get_service_status_snapshot(service)
 
-    topology_payload = _select_topology_status_payload(runtime_mode, service_profile, payload)
+    topology_payload = _select_topology_status_payload(
+        runtime_mode,
+        service_profile,
+        payload,
+        fetch_runtime_status=fetch_runtime_status,
+    )
     gateway = topology_payload.get("gateway") or {}
     session = topology_payload.get("session") or {}
     runtime_client_id = _ib_gateway_client_id("runtime")

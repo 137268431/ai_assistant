@@ -36,8 +36,20 @@ if "flask" not in sys.modules:
 
 from ibkr_compute.api.compute.runtime_ops import _get_runtime_status_snapshot
 from ibkr_compute.api.ops.status_views import _build_topology_payload
+from ibkr_compute.api import runtime_status_client
 from ibkr_compute.api.runtime.common import get_ibkr_service
 from ibkr_compute.api.service_topology import build_service_topology
+
+
+class _FakeRuntimeStatusResponse:
+    ok = True
+
+    def __init__(self, payload):
+        self._payload = payload
+        self.status_code = 200
+
+    def json(self):
+        return self._payload
 
 
 class RemoteRuntimeTopologyTest(unittest.TestCase):
@@ -110,6 +122,32 @@ class RemoteRuntimeTopologyTest(unittest.TestCase):
         self.assertEqual(runtime_service["status"], "expected_remote")
         self.assertFalse(runtime_service["session_authenticated"])
         self.assertEqual(gateway_service["status"], "expected_remote")
+
+
+class RemoteRuntimeStatusClientTest(unittest.TestCase):
+    def setUp(self):
+        runtime_status_client._runtime_status_cache["expires_at"] = 0.0
+        runtime_status_client._runtime_status_cache["payload"] = None
+        runtime_status_client._runtime_status_cache["last_success_at"] = 0.0
+        runtime_status_client._runtime_status_cache["last_success_payload"] = None
+
+    def test_remote_runtime_status_client_skips_compute_status_lookup(self):
+        runtime_payload = {
+            "ok": True,
+            "service_profile": "runtime",
+            "session": {"authenticated": True},
+        }
+        with mock.patch.object(runtime_status_client, "get_runtime_internal_url", return_value="http://runtime.internal"):
+            with mock.patch.object(
+                runtime_status_client.requests,
+                "get",
+                return_value=_FakeRuntimeStatusResponse(runtime_payload),
+            ) as get_mock:
+                payload = runtime_status_client.get_remote_runtime_status(force_refresh=True)
+
+        self.assertEqual(runtime_payload, payload)
+        self.assertEqual("http://runtime.internal/ibkr/status", get_mock.call_args.args[0])
+        self.assertEqual({"skip_compute_status": "1"}, get_mock.call_args.kwargs["params"])
 
 
 class RemoteRuntimeSnapshotResolverTest(unittest.TestCase):

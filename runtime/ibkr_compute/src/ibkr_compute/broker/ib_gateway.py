@@ -7,6 +7,7 @@ import math
 import os
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Callable, Dict, Iterable, List, Optional
@@ -73,6 +74,7 @@ ACCOUNT_DATA_REQUEST_KINDS = {
     "account_pnl",
     "account_summary",
     "account_updates",
+    "executions",
     "open_orders",
     "open_orders_all",
     "positions",
@@ -96,6 +98,9 @@ def _env_float(name: str, default: float, *, minimum: float = 0.0) -> float:
 ACCOUNT_SUMMARY_CACHE_TTL_SECONDS = _env_float("IBKR_ACCOUNT_SUMMARY_CACHE_TTL_SEC", 15.0, minimum=0.0)
 POSITIONS_CACHE_TTL_SECONDS = _env_float("IBKR_POSITIONS_CACHE_TTL_SEC", 10.0, minimum=0.0)
 OPEN_ORDERS_CACHE_TTL_SECONDS = _env_float("IBKR_OPEN_ORDERS_CACHE_TTL_SEC", 3.0, minimum=0.0)
+EXECUTIONS_CACHE_TTL_SECONDS = _env_float("IBKR_EXECUTIONS_CACHE_TTL_SEC", 3.0, minimum=0.0)
+ACCOUNT_DATA_STALE_CACHE_TTL_SECONDS = _env_float("IBKR_ACCOUNT_DATA_STALE_CACHE_TTL_SEC", 300.0, minimum=0.0)
+ACCOUNT_DATA_SERIAL_TIMEOUT_SECONDS = _env_float("IBKR_ACCOUNT_DATA_SERIAL_TIMEOUT_SEC", 30.0, minimum=0.1)
 
 
 from ibkr_compute.broker.ib_gateway_service import (
@@ -120,8 +125,12 @@ class _IBGatewayApp(EWrapper, EClient):
         self._listener_lock = threading.RLock()
         self._account_updates_lock = threading.RLock()
         self._account_updates_request_lock = threading.Lock()
+        self._account_data_request_lock = threading.RLock()
         self._account_request_locks: Dict[str, threading.Lock] = {}
         self._account_request_cache: Dict[tuple, dict[str, Any]] = {}
+        self._account_data_request_owner_kind = ""
+        self._account_data_request_owner_since = 0.0
+        self._account_data_request_queue_timeouts = 0
         self._account_updates_expected_unsubscribe_until = 0.0
         self._request_seq = 1000
         self._ticker_seq = 50_000
@@ -285,6 +294,48 @@ class _IBGatewayApp(EWrapper, EClient):
             remaining_s = float(snapshot.get("remaining_s") or 0.0)
             raise TimeoutError(f"account_data_circuit_open:{reason}:retry_after_s={round(remaining_s, 1)}")
 
+    def _account_data_circuit_active(self) -> bool:
+        return bool((self._account_data_circuit_snapshot() or {}).get("active"))
+
+    def _account_data_gate_snapshot_locked(self, now: float | None = None) -> dict[str, Any]:
+        current = float(now or time.time())
+        owner_since = float(self._account_data_request_owner_since or 0.0)
+        return {
+            "serial_enabled": True,
+            "serial_timeout_s": ACCOUNT_DATA_SERIAL_TIMEOUT_SECONDS,
+            "owner_kind": str(self._account_data_request_owner_kind or ""),
+            "owner_age_s": round(max(0.0, current - owner_since), 3) if owner_since else 0.0,
+            "queue_timeouts": int(self._account_data_request_queue_timeouts or 0),
+        }
+
+    @contextmanager
+    def _account_data_request_gate(self, kind: str, timeout: int | float):
+        normalized_kind = str(kind or "").strip().lower() or "account_data"
+        if normalized_kind not in ACCOUNT_DATA_REQUEST_KINDS:
+            yield {"serialized": False, "kind": normalized_kind, "queue_wait_s": 0.0}
+            return
+        request_timeout = max(0.1, float(timeout or DEFAULT_CONNECT_TIMEOUT_SECONDS))
+        queue_timeout = max(0.1, min(ACCOUNT_DATA_SERIAL_TIMEOUT_SECONDS, request_timeout))
+        started = time.perf_counter()
+        acquired = self._account_data_request_lock.acquire(timeout=queue_timeout)
+        queue_wait_s = time.perf_counter() - started
+        if not acquired:
+            with self._state_lock:
+                self._account_data_request_queue_timeouts += 1
+            raise TimeoutError(
+                f"account_data_request_queue_timeout:{normalized_kind}:timeout_s={round(queue_timeout, 1)}"
+            )
+        with self._state_lock:
+            self._account_data_request_owner_kind = normalized_kind
+            self._account_data_request_owner_since = time.time()
+        try:
+            yield {"serialized": True, "kind": normalized_kind, "queue_wait_s": queue_wait_s}
+        finally:
+            with self._state_lock:
+                self._account_data_request_owner_kind = ""
+                self._account_data_request_owner_since = 0.0
+            self._account_data_request_lock.release()
+
     def _account_request_lock(self, kind: str) -> threading.Lock:
         normalized_kind = str(kind or "").strip().lower() or "account_data"
         with self._state_lock:
@@ -294,16 +345,37 @@ class _IBGatewayApp(EWrapper, EClient):
                 self._account_request_locks[normalized_kind] = lock
             return lock
 
-    def _account_cache_get(self, key: tuple) -> Any:
+    def _account_cache_get(
+        self,
+        key: tuple,
+        *,
+        allow_stale: bool = False,
+        stale_ttl_seconds: float | None = None,
+    ) -> Any:
         now = time.time()
         with self._state_lock:
             entry = self._account_request_cache.get(key)
             if not entry:
                 return None
-            if float(entry.get("expires_at") or 0.0) <= now:
+            expires_at = float(entry.get("expires_at") or 0.0)
+            if expires_at > now:
+                return copy.deepcopy(entry.get("value"))
+            stored_at = float(entry.get("stored_at") or 0.0)
+            max_stale_age = max(
+                0.0,
+                float(
+                    ACCOUNT_DATA_STALE_CACHE_TTL_SECONDS
+                    if stale_ttl_seconds is None
+                    else stale_ttl_seconds
+                ),
+            )
+            age_s = now - stored_at if stored_at else 0.0
+            if allow_stale and stored_at > 0 and age_s <= max_stale_age:
+                return copy.deepcopy(entry.get("value"))
+            if not stored_at or age_s > max_stale_age:
                 self._account_request_cache.pop(key, None)
                 return None
-            return copy.deepcopy(entry.get("value"))
+            return None
 
     def _account_cache_store(self, key: tuple, value: Any, ttl_seconds: float) -> Any:
         ttl = max(0.0, float(ttl_seconds or 0.0))
@@ -316,6 +388,18 @@ class _IBGatewayApp(EWrapper, EClient):
                 "value": copy.deepcopy(value),
             }
         return value
+
+    def _account_cache_get_if_circuit_open(self, kind: str, key: tuple) -> Any:
+        normalized_kind = str(kind or "").strip().lower()
+        if normalized_kind not in ACCOUNT_DATA_REQUEST_KINDS:
+            return None
+        if not self._account_data_circuit_active():
+            return None
+        return self._account_cache_get(
+            key,
+            allow_stale=True,
+            stale_ttl_seconds=ACCOUNT_DATA_STALE_CACHE_TTL_SECONDS,
+        )
 
     def _mark_expected_account_updates_unsubscribe(self) -> None:
         with self._state_lock:
@@ -1493,15 +1577,26 @@ class _IBGatewayApp(EWrapper, EClient):
                 if cached is not None:
                     return list(cached or [])
             self._ensure_ready(timeout, "request_open_orders")
-            self._raise_if_account_data_circuit_open(kind)
-            req_id, ctx = self._next_request(kind)
-            if include_all:
-                self.reqAllOpenOrders()
-            else:
-                self.reqOpenOrders()
-            orders = self._await(req_id, ctx, timeout)
-            self._account_cache_store(cache_key, orders, OPEN_ORDERS_CACHE_TTL_SECONDS)
-            return orders
+            stale = self._account_cache_get_if_circuit_open(kind, cache_key)
+            if stale is not None:
+                return list(stale or [])
+            with self._account_data_request_gate(kind, timeout):
+                if not force:
+                    cached = self._account_cache_get(cache_key)
+                    if cached is not None:
+                        return list(cached or [])
+                stale = self._account_cache_get_if_circuit_open(kind, cache_key)
+                if stale is not None:
+                    return list(stale or [])
+                self._raise_if_account_data_circuit_open(kind)
+                req_id, ctx = self._next_request(kind)
+                if include_all:
+                    self.reqAllOpenOrders()
+                else:
+                    self.reqOpenOrders()
+                orders = self._await(req_id, ctx, timeout)
+                self._account_cache_store(cache_key, orders, OPEN_ORDERS_CACHE_TTL_SECONDS)
+                return orders
 
     def request_positions(self, timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS) -> List[dict]:
         cache_key = ("positions",)
@@ -1513,19 +1608,29 @@ class _IBGatewayApp(EWrapper, EClient):
             if cached is not None:
                 return list(cached or [])
             self._ensure_ready(timeout, "request_positions")
-            self._raise_if_account_data_circuit_open("positions")
-            req_id, ctx = self._next_request("positions")
-            self._positions = {}
-            try:
-                self.reqPositions()
-                positions = self._await(req_id, ctx, timeout)
-                self._account_cache_store(cache_key, positions, POSITIONS_CACHE_TTL_SECONDS)
-                return positions
-            finally:
+            stale = self._account_cache_get_if_circuit_open("positions", cache_key)
+            if stale is not None:
+                return list(stale or [])
+            with self._account_data_request_gate("positions", timeout):
+                cached = self._account_cache_get(cache_key)
+                if cached is not None:
+                    return list(cached or [])
+                stale = self._account_cache_get_if_circuit_open("positions", cache_key)
+                if stale is not None:
+                    return list(stale or [])
+                self._raise_if_account_data_circuit_open("positions")
+                req_id, ctx = self._next_request("positions")
+                self._positions = {}
                 try:
-                    self.cancelPositions()
-                except Exception:
-                    logger.debug("cancelPositions failed", exc_info=True)
+                    self.reqPositions()
+                    positions = self._await(req_id, ctx, timeout)
+                    self._account_cache_store(cache_key, positions, POSITIONS_CACHE_TTL_SECONDS)
+                    return positions
+                finally:
+                    try:
+                        self.cancelPositions()
+                    except Exception:
+                        logger.debug("cancelPositions failed", exc_info=True)
 
     def request_account_summary(self, timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS) -> Dict[str, dict]:
         cache_key = ("account_summary",)
@@ -1537,22 +1642,32 @@ class _IBGatewayApp(EWrapper, EClient):
             if cached is not None:
                 return dict(cached or {})
             self._ensure_ready(timeout, "request_account_summary")
-            self._raise_if_account_data_circuit_open("account_summary")
-            req_id, ctx = self._next_request("account_summary")
-            try:
-                self.reqAccountSummary(req_id, "All", "NetLiquidation,BuyingPower,AvailableFunds,ExcessLiquidity")
-                items = self._await(req_id, ctx, timeout)
-                if not items:
-                    return {}
-                account = self._managed_accounts.split(",", 1)[0].strip() if self._managed_accounts else ""
-                summary = dict(self._account_summary.get(account) or items[0] or {})
-                self._account_cache_store(cache_key, summary, ACCOUNT_SUMMARY_CACHE_TTL_SECONDS)
-                return summary
-            finally:
+            stale = self._account_cache_get_if_circuit_open("account_summary", cache_key)
+            if stale is not None:
+                return dict(stale or {})
+            with self._account_data_request_gate("account_summary", timeout):
+                cached = self._account_cache_get(cache_key)
+                if cached is not None:
+                    return dict(cached or {})
+                stale = self._account_cache_get_if_circuit_open("account_summary", cache_key)
+                if stale is not None:
+                    return dict(stale or {})
+                self._raise_if_account_data_circuit_open("account_summary")
+                req_id, ctx = self._next_request("account_summary")
                 try:
-                    self.cancelAccountSummary(req_id)
-                except Exception:
-                    logger.debug("cancelAccountSummary failed for req_id=%s", req_id, exc_info=True)
+                    self.reqAccountSummary(req_id, "All", "NetLiquidation,BuyingPower,AvailableFunds,ExcessLiquidity")
+                    items = self._await(req_id, ctx, timeout)
+                    if not items:
+                        return {}
+                    account = self._managed_accounts.split(",", 1)[0].strip() if self._managed_accounts else ""
+                    summary = dict(self._account_summary.get(account) or items[0] or {})
+                    self._account_cache_store(cache_key, summary, ACCOUNT_SUMMARY_CACHE_TTL_SECONDS)
+                    return summary
+                finally:
+                    try:
+                        self.cancelAccountSummary(req_id)
+                    except Exception:
+                        logger.debug("cancelAccountSummary failed for req_id=%s", req_id, exc_info=True)
 
     def request_account_updates(
         self,
@@ -1562,36 +1677,37 @@ class _IBGatewayApp(EWrapper, EClient):
     ) -> Dict[str, Any]:
         with self._account_updates_request_lock:
             self._ensure_ready(timeout, "request_account_updates")
-            self._raise_if_account_data_circuit_open("account_updates")
-            requested_account = str(account or "").strip()
-            if not requested_account and self._managed_accounts:
-                requested_account = self._managed_accounts.split(",", 1)[0].strip()
-            if not requested_account:
-                raise RuntimeError("missing_managed_account")
+            with self._account_data_request_gate("account_updates", timeout):
+                self._raise_if_account_data_circuit_open("account_updates")
+                requested_account = str(account or "").strip()
+                if not requested_account and self._managed_accounts:
+                    requested_account = self._managed_accounts.split(",", 1)[0].strip()
+                if not requested_account:
+                    raise RuntimeError("missing_managed_account")
 
-            capture = _AccountUpdatesCapture(account=requested_account)
-            with self._account_updates_lock:
-                self._account_updates_capture = capture
-            try:
-                self.reqAccountUpdates(True, requested_account)
-                if not capture.event.wait(timeout=max(1, int(timeout))):
-                    self._record_account_data_issue("account_updates", "account_updates_timeout")
-                    raise TimeoutError("account_updates_timeout")
-                self._record_account_data_success("account_updates")
-                return {
-                    "account": requested_account,
-                    "summary": dict(capture.summary),
-                    "positions": [dict(item) for item in capture.positions.values()],
-                }
-            finally:
-                try:
-                    self._mark_expected_account_updates_unsubscribe()
-                    self.reqAccountUpdates(False, requested_account)
-                except Exception:
-                    logger.debug("reqAccountUpdates(False) failed for %s", requested_account, exc_info=True)
+                capture = _AccountUpdatesCapture(account=requested_account)
                 with self._account_updates_lock:
-                    if self._account_updates_capture is capture:
-                        self._account_updates_capture = None
+                    self._account_updates_capture = capture
+                try:
+                    self.reqAccountUpdates(True, requested_account)
+                    if not capture.event.wait(timeout=max(1, int(timeout))):
+                        self._record_account_data_issue("account_updates", "account_updates_timeout")
+                        raise TimeoutError("account_updates_timeout")
+                    self._record_account_data_success("account_updates")
+                    return {
+                        "account": requested_account,
+                        "summary": dict(capture.summary),
+                        "positions": [dict(item) for item in capture.positions.values()],
+                    }
+                finally:
+                    try:
+                        self._mark_expected_account_updates_unsubscribe()
+                        self.reqAccountUpdates(False, requested_account)
+                    except Exception:
+                        logger.debug("reqAccountUpdates(False) failed for %s", requested_account, exc_info=True)
+                    with self._account_updates_lock:
+                        if self._account_updates_capture is capture:
+                            self._account_updates_capture = None
 
     def request_account_pnl(
         self,
@@ -1601,52 +1717,81 @@ class _IBGatewayApp(EWrapper, EClient):
         timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS,
     ) -> Dict[str, Any]:
         self._ensure_ready(timeout, "request_account_pnl")
-        self._raise_if_account_data_circuit_open("account_pnl")
-        requested_account = str(account or "").strip()
-        if not requested_account and self._managed_accounts:
-            requested_account = self._managed_accounts.split(",", 1)[0].strip()
-        if not requested_account:
-            raise RuntimeError("missing_managed_account")
-        if not callable(getattr(self, "reqPnL", None)):
-            raise RuntimeError("req_pnl_unavailable")
+        with self._account_data_request_gate("account_pnl", timeout):
+            self._raise_if_account_data_circuit_open("account_pnl")
+            requested_account = str(account or "").strip()
+            if not requested_account and self._managed_accounts:
+                requested_account = self._managed_accounts.split(",", 1)[0].strip()
+            if not requested_account:
+                raise RuntimeError("missing_managed_account")
+            if not callable(getattr(self, "reqPnL", None)):
+                raise RuntimeError("req_pnl_unavailable")
 
-        req_id, ctx = self._next_request("account_pnl")
-        subscribed = False
-        try:
-            self.reqPnL(req_id, requested_account, str(model_code or ""))
-            subscribed = True
-            items = self._await(req_id, ctx, timeout)
-            payload = dict(items[0] or {}) if items else {}
-            if not payload:
-                return {}
-            payload.setdefault("source", "reqPnL")
-            payload["account"] = requested_account
-            payload["model_code"] = str(model_code or "")
-            return payload
-        finally:
-            self._pending_requests.pop(req_id, None)
-            if subscribed:
-                try:
-                    self.cancelPnL(req_id)
-                except Exception:
-                    logger.debug("cancelPnL failed for req_id=%s account=%s", req_id, requested_account, exc_info=True)
+            req_id, ctx = self._next_request("account_pnl")
+            subscribed = False
+            try:
+                self.reqPnL(req_id, requested_account, str(model_code or ""))
+                subscribed = True
+                items = self._await(req_id, ctx, timeout)
+                payload = dict(items[0] or {}) if items else {}
+                if not payload:
+                    return {}
+                payload.setdefault("source", "reqPnL")
+                payload["account"] = requested_account
+                payload["model_code"] = str(model_code or "")
+                return payload
+            finally:
+                self._pending_requests.pop(req_id, None)
+                if subscribed:
+                    try:
+                        self.cancelPnL(req_id)
+                    except Exception:
+                        logger.debug("cancelPnL failed for req_id=%s account=%s", req_id, requested_account, exc_info=True)
 
-    def request_executions(self, timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS) -> List[dict]:
-        self._ensure_ready(timeout, "request_executions")
-        req_id, ctx = self._next_request("executions")
-        self.reqExecutions(req_id, ExecutionFilter())
-        items = self._await(req_id, ctx, timeout)
-        # IB sends commissionReport callbacks separately from execDetailsEnd.
-        # Give those callbacks a short window, then return the refreshed cache.
-        exec_ids = [str(item.get("execId") or "") for item in (items or []) if str(item.get("execId") or "")]
-        if exec_ids:
-            deadline = time.time() + min(2.0, max(0.0, float(timeout or 0)) * 0.25)
-            while time.time() < deadline:
-                if all(bool(self._executions.get(exec_id, {}).get("commission_known")) for exec_id in exec_ids):
-                    break
-                time.sleep(0.1)
-            return [dict(self._executions.get(exec_id) or item) for exec_id, item in zip(exec_ids, items)]
-        return items
+    def request_executions(
+        self,
+        timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS,
+        *,
+        force: bool = False,
+    ) -> List[dict]:
+        cache_key = ("executions",)
+        if not force:
+            cached = self._account_cache_get(cache_key)
+            if cached is not None:
+                return list(cached or [])
+        with self._account_request_lock("executions"):
+            if not force:
+                cached = self._account_cache_get(cache_key)
+                if cached is not None:
+                    return list(cached or [])
+            self._ensure_ready(timeout, "request_executions")
+            stale = self._account_cache_get_if_circuit_open("executions", cache_key)
+            if stale is not None:
+                return list(stale or [])
+            with self._account_data_request_gate("executions", timeout):
+                if not force:
+                    cached = self._account_cache_get(cache_key)
+                    if cached is not None:
+                        return list(cached or [])
+                stale = self._account_cache_get_if_circuit_open("executions", cache_key)
+                if stale is not None:
+                    return list(stale or [])
+                self._raise_if_account_data_circuit_open("executions")
+                req_id, ctx = self._next_request("executions")
+                self.reqExecutions(req_id, ExecutionFilter())
+                items = self._await(req_id, ctx, timeout)
+                # IB sends commissionReport callbacks separately from execDetailsEnd.
+                # Give those callbacks a short window, then return the refreshed cache.
+                exec_ids = [str(item.get("execId") or "") for item in (items or []) if str(item.get("execId") or "")]
+                if exec_ids:
+                    deadline = time.time() + min(2.0, max(0.0, float(timeout or 0)) * 0.25)
+                    while time.time() < deadline:
+                        if all(bool(self._executions.get(exec_id, {}).get("commission_known")) for exec_id in exec_ids):
+                            break
+                        time.sleep(0.1)
+                    items = [dict(self._executions.get(exec_id) or item) for exec_id, item in zip(exec_ids, items)]
+                self._account_cache_store(cache_key, items, EXECUTIONS_CACHE_TTL_SECONDS)
+                return list(items or [])
 
     def place_order(self, contract: Any, order: Any, timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS):
         started = time.perf_counter()
@@ -1893,6 +2038,7 @@ class _IBGatewayApp(EWrapper, EClient):
                 "connected": bool(getattr(self, "isConnected", lambda: False)()),
                 "status_code": int(self._status_code or 0),
                 "account_data_circuit": self._account_data_circuit_snapshot_locked(now),
+                "account_data_request_gate": self._account_data_gate_snapshot_locked(now),
                 "last_connect_at": (
                     datetime.fromtimestamp(self._last_connect_at, ET).isoformat()
                     if self._last_connect_at else ""

@@ -15,6 +15,8 @@ from typing import Any, Dict, List
 
 from ibkr_compute.broker import BrokerAdapter
 from ibkr_compute.observability.prometheus import record_order_event
+from ibkr_compute.order.buying_power_reservations import BuyingPowerReservationStore
+from ibkr_compute.order.gateway_serial import GatewayOrderMutationGate, GatewayOrderMutationTimeout
 
 logger = logging.getLogger(__name__)
 
@@ -31,12 +33,19 @@ class OrderPlacer:
         config=None,
         environment: str = "live",
         broker: BrokerAdapter | None = None,
+        gateway_gate: GatewayOrderMutationGate | None = None,
+        reservation_store: BuyingPowerReservationStore | None = None,
     ):
         self.account_id = account_id or ACCOUNT_ID
         self.pb_client = pb_client
         self.config = config
         self.environment = str(environment or "live").strip().lower() or "live"
         self.broker = broker or BrokerAdapter()
+        self.gateway_gate = gateway_gate or GatewayOrderMutationGate(config=config, environment=self.environment)
+        self.reservation_store = reservation_store or BuyingPowerReservationStore(
+            pb_client=pb_client,
+            environment=self.environment,
+        )
         self._order_count = 0
         self._suppression_attempted = False
         self._suppression_enabled = False
@@ -247,7 +256,71 @@ class OrderPlacer:
             "entry_order_unique_id": resolved_entry_unique_id,
         }
 
-    def place_bracket_order(
+    def place_bracket_order(self, *args, **kwargs) -> Dict[str, Any]:
+        metadata = self._bracket_call_metadata(args, kwargs)
+        try:
+            with self.gateway_gate.hold("place_bracket_order", **metadata):
+                return self._place_bracket_order_unlocked(*args, **kwargs)
+        except GatewayOrderMutationTimeout as exc:
+            logger.error("Gateway order queue timeout: operation=%s timeout=%ss", exc.operation, exc.timeout_s)
+            return {
+                "ok": False,
+                "error": "gateway_order_queue_timeout",
+                "queue_timeout_s": exc.timeout_s,
+                "gateway_operation": exc.operation,
+                **metadata,
+            }
+
+    @staticmethod
+    def _bracket_call_metadata(args: tuple, kwargs: dict) -> Dict[str, Any]:
+        names = ("conid", "symbol", "direction", "quantity", "entry_price")
+        payload = {name: kwargs.get(name) for name in names if name in kwargs}
+        for index, name in enumerate(names):
+            if index < len(args) and name not in payload:
+                payload[name] = args[index]
+        if "symbol" in payload:
+            payload["symbol"] = str(payload.get("symbol") or "").upper()
+        if "direction" in payload:
+            payload["direction"] = str(payload.get("direction") or "").lower()
+        for name in ("signal_id", "trade_group_id", "bracket_group"):
+            if kwargs.get(name):
+                payload[name] = kwargs.get(name)
+        return payload
+
+    def _reserve_submitted_entry_exposure(self, payload: Dict[str, Any], *, symbol: str, direction: str, signal_id: str) -> None:
+        store = getattr(self, "reservation_store", None)
+        reserver = getattr(store, "reserve_entry", None)
+        if not callable(reserver):
+            return
+        order_ids = [str(item or "").strip() for item in (payload.get("order_ids") or []) if str(item or "").strip()]
+        if not order_ids:
+            return
+        entry_order_id = order_ids[0]
+        missing = {str(item or "").strip() for item in (payload.get("missing_order_ids") or [])}
+        if entry_order_id in missing:
+            return
+        if not (payload.get("ok") or payload.get("protection_incomplete")):
+            return
+        try:
+            result = reserver(
+                signal_id=signal_id,
+                trade_group_id=payload.get("trade_group_id") or payload.get("bracket_group") or "",
+                entry_order_id=entry_order_id,
+                symbol=symbol,
+                direction=direction,
+                quantity=payload.get("quantity"),
+                entry_price=payload.get("entry_price"),
+                source="bracket_submission",
+            )
+            if result.get("ok"):
+                payload["buying_power_reservation"] = dict(result.get("reservation") or {})
+            elif result.get("error"):
+                payload["buying_power_reservation_error"] = str(result.get("error") or "")
+        except Exception as exc:
+            logger.warning("Failed to reserve buying power for submitted entry: %s", exc)
+            payload["buying_power_reservation_error"] = str(exc)
+
+    def _place_bracket_order_unlocked(
         self,
         conid: int,
         symbol: str,
@@ -378,7 +451,7 @@ class OrderPlacer:
             or (returned_bracket_group if returned_family_type == "bracket_oco" else "")
             or ""
         )
-        return {
+        payload = {
             "ok": bool(result.get("ok")),
             "entry_coid": str(result.get("entry_coid") or ""),
             "tp_coid": str(result.get("tp_coid") or ""),
@@ -407,12 +480,22 @@ class OrderPlacer:
             "quantity": entry_quantity,
             "take_profit_quantity": int(result.get("take_profit_quantity") or tp_quantity),
             "stop_loss_quantity": int(result.get("stop_loss_quantity") or sl_quantity),
+            "entry_price": float(result.get("entry_price") or entry_price or 0.0),
+            "take_profit_price": float(result.get("take_profit_price") or take_profit_price or 0.0),
+            "stop_loss_price": float(result.get("stop_loss_price") or stop_loss_price or 0.0),
             "order_extra": dict(order_extra_payload),
             "price_normalization": dict(result.get("price_normalization") or {}),
             "entry_algo_strategy": str(result.get("entry_algo_strategy") or entry_algo_strategy or ""),
             "entry_adaptive_priority": str(result.get("entry_adaptive_priority") or entry_adaptive_priority or ""),
             "raw_response": result.get("raw"),
         }
+        self._reserve_submitted_entry_exposure(
+            payload,
+            symbol=str(symbol or "").upper(),
+            direction=str(direction or "").lower(),
+            signal_id=signal_id,
+        )
+        return payload
 
     def place_harvest_bracket_order(
         self,
@@ -488,7 +571,38 @@ class OrderPlacer:
         result["remaining_after_partial_tp"] = max(0, total_qty - partial_tp_qty)
         return result
 
-    def place_market_close(
+    def place_market_close(self, *args, **kwargs) -> Dict[str, Any]:
+        metadata = self._market_close_call_metadata(args, kwargs)
+        try:
+            with self.gateway_gate.hold("place_market_close", **metadata):
+                return self._place_market_close_unlocked(*args, **kwargs)
+        except GatewayOrderMutationTimeout as exc:
+            logger.error("Gateway close queue timeout: operation=%s timeout=%ss", exc.operation, exc.timeout_s)
+            return {
+                "ok": False,
+                "error": "gateway_order_queue_timeout",
+                "queue_timeout_s": exc.timeout_s,
+                "gateway_operation": exc.operation,
+                **metadata,
+            }
+
+    @staticmethod
+    def _market_close_call_metadata(args: tuple, kwargs: dict) -> Dict[str, Any]:
+        names = ("conid", "symbol", "direction", "quantity")
+        payload = {name: kwargs.get(name) for name in names if name in kwargs}
+        for index, name in enumerate(names):
+            if index < len(args) and name not in payload:
+                payload[name] = args[index]
+        if "symbol" in payload:
+            payload["symbol"] = str(payload.get("symbol") or "").upper()
+        if "direction" in payload:
+            payload["direction"] = str(payload.get("direction") or "").lower()
+        for name in ("signal_id", "trade_group_id", "entry_order_unique_id"):
+            if kwargs.get(name):
+                payload[name] = kwargs.get(name)
+        return payload
+
+    def _place_market_close_unlocked(
         self,
         conid: int,
         symbol: str,

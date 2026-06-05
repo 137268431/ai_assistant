@@ -12,7 +12,39 @@ if str(SRC_ROOT) not in sys.path:
 from ibkr_compute.api import compute_status_client
 
 
+class _JsonResponse:
+    ok = True
+    status_code = 200
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
 class ComputeStatusClientScanTest(unittest.TestCase):
+    def setUp(self):
+        compute_status_client._compute_status_cache["expires_at"] = 0.0
+        compute_status_client._compute_status_cache["payload"] = None
+        compute_status_client._compute_status_cache["cache_key"] = None
+
+    def test_get_remote_compute_status_skips_runtime_status_lookup(self):
+        with mock.patch.object(compute_status_client, "get_compute_internal_url", return_value="http://127.0.0.1:5100"):
+            with mock.patch.object(
+                compute_status_client.requests,
+                "get",
+                return_value=_JsonResponse({"service_profile": "compute", "multi_timeframe_readiness": {"status": "ready"}}),
+            ) as get_mock:
+                payload = compute_status_client.get_remote_compute_status(symbols=["aapl"])
+
+        self.assertEqual("compute", payload["service_profile"])
+        self.assertEqual("http://127.0.0.1:5100/status", get_mock.call_args.args[0])
+        self.assertEqual(
+            {"lite": "1", "skip_runtime_status": "1", "symbols": "AAPL"},
+            get_mock.call_args.kwargs["params"],
+        )
+
     def test_trigger_remote_scan_timeout_is_structured_retryable_failure(self):
         with mock.patch.object(compute_status_client, "get_compute_internal_url", return_value="http://127.0.0.1:5100"):
             with mock.patch.object(

@@ -1867,8 +1867,8 @@
             );
         }
 
-        function isGroupDefaultCollapsed(group) {
-            return ['Canceled', 'Closed'].includes(String(group?.status || '').trim());
+        function isGroupDefaultCollapsed() {
+            return true;
         }
 
         function isGroupCollapsed(group) {

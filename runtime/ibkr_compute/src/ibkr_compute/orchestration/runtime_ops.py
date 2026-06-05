@@ -24,6 +24,12 @@ class TradingServiceRuntimeOpsMixin:
         "submitted",
         "working",
     }
+    _PB_SIGNAL_STATUS_ALIASES = {
+        "cancelled": "rejected",
+        "canceled": "rejected",
+        "filled_position": "protected_active",
+        "protection_reprice_failed": "protection_incomplete",
+    }
 
     @staticmethod
     def _escape_filter_value(value: Any) -> str:
@@ -32,6 +38,22 @@ class TradingServiceRuntimeOpsMixin:
     @staticmethod
     def _safe_extra(value: Any) -> dict[str, Any]:
         return dict(value) if isinstance(value, dict) else {}
+
+    @classmethod
+    def _pb_signal_status(cls, status: Any) -> str:
+        normalized = str(status or "").strip().lower()
+        return cls._PB_SIGNAL_STATUS_ALIASES.get(normalized, normalized)
+
+    @classmethod
+    def _annotate_pb_signal_status_alias(cls, extra: dict[str, Any], requested_status: Any) -> dict[str, Any]:
+        payload = dict(extra or {})
+        requested = str(requested_status or "").strip().lower()
+        mapped = cls._pb_signal_status(requested)
+        if requested and mapped != requested:
+            payload.setdefault("signal_lifecycle_status", requested)
+            payload["pb_signal_status"] = mapped
+            payload["pb_signal_status_mapped_from"] = requested
+        return payload
 
     @staticmethod
     def _order_role(order: dict[str, Any]) -> str:
@@ -785,6 +807,12 @@ class TradingServiceRuntimeOpsMixin:
             order_extra.setdefault("status_reason", "entry_missed_limit_cap")
             order_extra["entry_missed_limit_cap"] = True
             order_extra.setdefault("entry_missed_reason", "entry_missed_limit_cap")
+        requested_ack_status = ack_status
+        ack_status = self._pb_signal_status(ack_status)
+        if requested_ack_status != ack_status:
+            order_extra.setdefault("signal_lifecycle_status", requested_ack_status)
+            order_extra["pb_signal_status"] = ack_status
+            order_extra["pb_signal_status_mapped_from"] = requested_ack_status
         try:
             ack(
                 signal_id=signal_id,
@@ -1361,11 +1389,13 @@ class TradingServiceRuntimeOpsMixin:
                     "protection_orders_checked": int(protection_status.get("orders_checked") or 0),
                     "safety_cancel_recommended": True,
                 }
+                extra = self._annotate_pb_signal_status_alias(extra, failure_status)
+                pb_failure_status = self._pb_signal_status(failure_status)
                 self.pb.update_record(
                     "ibkr_signals",
                     str(signal_record.get("id")),
                     {
-                        "status": failure_status,
+                        "status": pb_failure_status,
                         "note": failure_note,
                         "executed_price": actual_fill_price,
                         "extra": extra,
@@ -1421,11 +1451,13 @@ class TradingServiceRuntimeOpsMixin:
                 "protection_orders_checked": int(protection_status.get("orders_checked") or 0),
                 "safety_cancel_recommended": False,
             }
+            extra = self._annotate_pb_signal_status_alias(extra, success_status)
+            pb_success_status = self._pb_signal_status(success_status)
             self.pb.update_record(
                 "ibkr_signals",
                 str(signal_record.get("id")),
                 {
-                    "status": success_status,
+                    "status": pb_success_status,
                     "note": success_note,
                     "executed_price": actual_fill_price,
                     "stop_loss": rebase_result.get("stop_loss") or self._signal_price_value(signal_record, "stop_loss", "sl_price"),
@@ -1529,11 +1561,12 @@ class TradingServiceRuntimeOpsMixin:
                 "protection_incomplete": False,
                 "safety_cancel_recommended": False,
             }
+            extra = self._annotate_pb_signal_status_alias(extra, "cancelled")
             self.pb.update_record(
                 "ibkr_signals",
                 str(signal_record.get("id")),
                 {
-                    "status": "cancelled",
+                    "status": self._pb_signal_status("cancelled"),
                     "note": "cancelled",
                     "extra": extra,
                 },
@@ -1935,6 +1968,29 @@ class TradingServiceRuntimeOpsMixin:
         else:
             self.order_lifecycle.reset_sl_count()
 
+    def _release_buying_power_reservation_for_order(self, order: dict, *, reason: str) -> None:
+        store = getattr(self, "buying_power_reservations", None)
+        releaser = getattr(store, "release", None)
+        if not callable(releaser):
+            return
+        order_id = str(
+            order.get("orderId")
+            or order.get("order_id")
+            or order.get("broker_order_id")
+            or order.get("id")
+            or ""
+        ).strip()
+        symbol = str(order.get("ticker") or order.get("symbol") or "").strip().upper()
+        try:
+            if order_id:
+                result = releaser(entry_order_id=order_id, reason=reason)
+                if symbol and isinstance(result, dict) and int(result.get("released") or 0) <= 0:
+                    releaser(symbol=symbol, reason=f"{reason}_symbol_fallback")
+            elif symbol:
+                releaser(symbol=symbol, reason=reason)
+        except Exception as exc:
+            _service_mod().logger.warning("Buying-power reservation release failed: %s", exc)
+
     def _on_order_fill(self, order: dict):
         service_mod = _service_mod()
         symbol = str(order.get("ticker") or order.get("symbol") or "").strip().upper()
@@ -1956,6 +2012,7 @@ class TradingServiceRuntimeOpsMixin:
         if not symbol:
             return
         if role == "entry":
+            self._release_buying_power_reservation_for_order(order, reason="entry_fill")
             direction = "long" if side == "BUY" else "short" if side == "SELL" else ""
             self.signal_processor.register_filled_position(
                 symbol,
@@ -1978,6 +2035,7 @@ class TradingServiceRuntimeOpsMixin:
         has_parent = bool(str(order.get("parentId") or order.get("parent_id") or "").strip())
         service_mod.logger.info("Order cancelled: %s", symbol or order.get("ticker"))
         if symbol and not has_parent:
+            self._release_buying_power_reservation_for_order(order, reason="entry_cancel")
             self._update_signal_after_entry_cancel(order, symbol)
         if symbol and not has_parent:
             self.signal_processor.remove_position(symbol)

@@ -75,6 +75,11 @@ TV_PRIMARY_DEFAULTS = {
     "tv_risk_update_retry_missing_child_orders": "true",
 }
 
+GATEWAY_ORDER_DEFAULTS = {
+    "ibkr_gateway_order_serial_enabled": "true",
+    "ibkr_gateway_order_serial_timeout_sec": "120",
+}
+
 DEPRECATED_PAPER_RISK_CONFIG_KEYS = {
     "ibkr_buying_power_guard_paper_source",
     "ibkr_paper_risk_buying_power_usd",
@@ -211,3 +216,15 @@ def test_tv_primary_seed_values_match_defaults() -> None:
         assert seed_default.lower() == expected.lower()
     for key in DEPRECATED_PAPER_RISK_CONFIG_KEYS:
         assert key not in seed_values
+
+
+def test_gateway_order_serial_defaults_match_seed_values() -> None:
+    Config, _ = _load_config_modules()
+    seed_values = _seed_config_values()
+
+    for key, expected in GATEWAY_ORDER_DEFAULTS.items():
+        assert Config.DEFAULTS[key] == expected
+        assert key in seed_values
+        seed_value, seed_default = seed_values[key]
+        assert seed_value.lower() == expected.lower()
+        assert seed_default.lower() == expected.lower()

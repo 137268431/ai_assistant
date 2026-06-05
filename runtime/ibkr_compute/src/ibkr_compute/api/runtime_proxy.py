@@ -44,6 +44,8 @@ _RUNTIME_STATUS_PROXY_CACHE_LOCK = threading.RLock()
 _RUNTIME_STATUS_PROXY_CACHE: dict[str, Any] = {
     "cached_at": 0.0,
     "payload": None,
+    "cache_key": "",
+    "entries": {},
 }
 
 
@@ -113,6 +115,13 @@ def _runtime_status_proxy_timeout_seconds() -> float:
         "IBKR_COMPUTE_RUNTIME_STATUS_PROXY_TIMEOUT_SEC",
         RUNTIME_STATUS_PROXY_TIMEOUT_SECONDS,
     )
+
+
+def _runtime_status_proxy_cache_ttl_seconds() -> float:
+    try:
+        return max(0.0, float(os.environ.get("IBKR_COMPUTE_RUNTIME_STATUS_PROXY_CACHE_TTL_SEC", "1.5") or 0.0))
+    except Exception:
+        return 1.5
 
 
 def _runtime_proxy_slow_log_threshold_seconds() -> float:
@@ -219,7 +228,24 @@ def _build_runtime_upstream(path: str) -> str:
     return f"{get_runtime_internal_url()}{normalized_path}"
 
 
-def _cache_runtime_status_proxy_payload(upstream_response) -> None:
+def _runtime_status_proxy_cache_key(path: str, params: list[tuple[str, str]]) -> str:
+    normalized_params = [
+        (str(key or ""), str(value or ""))
+        for key, value in (params or [])
+    ]
+    return json.dumps(
+        {
+            "method": "GET",
+            "path": _normalize_path(path),
+            "params": sorted(normalized_params),
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _cache_runtime_status_proxy_payload(upstream_response, *, cache_key: str) -> None:
     if not getattr(upstream_response, "ok", False):
         return
     try:
@@ -228,15 +254,60 @@ def _cache_runtime_status_proxy_payload(upstream_response) -> None:
         return
     if not isinstance(payload, dict) or not payload:
         return
+    entry = {
+        "payload": dict(payload),
+        "cached_at": time.time(),
+        "status_code": int(getattr(upstream_response, "status_code", 200) or 200),
+    }
     with _RUNTIME_STATUS_PROXY_CACHE_LOCK:
+        entries = _RUNTIME_STATUS_PROXY_CACHE.setdefault("entries", {})
+        if isinstance(entries, dict):
+            entries[str(cache_key or "")] = entry
         _RUNTIME_STATUS_PROXY_CACHE["payload"] = dict(payload)
-        _RUNTIME_STATUS_PROXY_CACHE["cached_at"] = time.time()
+        _RUNTIME_STATUS_PROXY_CACHE["cached_at"] = entry["cached_at"]
+        _RUNTIME_STATUS_PROXY_CACHE["cache_key"] = str(cache_key or "")
 
 
-def _build_stale_runtime_status_proxy_response(*, upstream: str, error: str, status_code: int = 200):
+def _build_fresh_runtime_status_proxy_response(*, upstream: str, cache_key: str):
+    ttl_seconds = _runtime_status_proxy_cache_ttl_seconds()
+    if ttl_seconds <= 0:
+        return None
     with _RUNTIME_STATUS_PROXY_CACHE_LOCK:
-        payload = _RUNTIME_STATUS_PROXY_CACHE.get("payload")
-        cached_at = float(_RUNTIME_STATUS_PROXY_CACHE.get("cached_at") or 0.0)
+        entries = _RUNTIME_STATUS_PROXY_CACHE.get("entries")
+        entry = entries.get(str(cache_key or "")) if isinstance(entries, dict) else None
+    if not isinstance(entry, dict):
+        return None
+    cached_at = float(entry.get("cached_at") or 0.0)
+    age_s = max(0.0, time.time() - cached_at) if cached_at else ttl_seconds + 1
+    if age_s > ttl_seconds:
+        return None
+    payload = entry.get("payload")
+    if not isinstance(payload, dict) or not payload:
+        return None
+    cached_payload = dict(payload)
+    cached_payload["runtime_status_proxy_cache_hit"] = True
+    cached_payload["runtime_status_proxy_cache_age_s"] = round(age_s, 3)
+    cached_payload["proxy_upstream"] = upstream
+    if "service_topology" not in cached_payload:
+        cached_payload["service_topology"] = build_service_topology(fetch_runtime_status=False)
+    response = jsonify(cached_payload)
+    try:
+        response.status_code = int(entry.get("status_code") or 200)
+    except Exception:
+        pass
+    return response
+
+
+def _build_stale_runtime_status_proxy_response(*, upstream: str, error: str, cache_key: str = "", status_code: int = 200):
+    with _RUNTIME_STATUS_PROXY_CACHE_LOCK:
+        entries = _RUNTIME_STATUS_PROXY_CACHE.get("entries")
+        entry = entries.get(str(cache_key or "")) if isinstance(entries, dict) else None
+        if isinstance(entry, dict):
+            payload = entry.get("payload")
+            cached_at = float(entry.get("cached_at") or 0.0)
+        else:
+            payload = _RUNTIME_STATUS_PROXY_CACHE.get("payload")
+            cached_at = float(_RUNTIME_STATUS_PROXY_CACHE.get("cached_at") or 0.0)
     if not isinstance(payload, dict) or not payload:
         return None
     stale_payload = dict(payload)
@@ -247,7 +318,7 @@ def _build_stale_runtime_status_proxy_response(*, upstream: str, error: str, sta
     stale_payload["runtime_status_stale_reason"] = str(error or "runtime_status_proxy_failed")[:500]
     stale_payload["proxy_upstream"] = upstream
     if "service_topology" not in stale_payload:
-        stale_payload["service_topology"] = build_service_topology()
+        stale_payload["service_topology"] = build_service_topology(fetch_runtime_status=False)
     return jsonify(stale_payload), status_code
 
 
@@ -435,11 +506,22 @@ def proxy_runtime_request(path: str):
     is_runtime_status_request = _is_runtime_status_proxy_request(normalized_path)
     timeout_seconds = _runtime_status_proxy_timeout_seconds() if is_runtime_status_request else _runtime_proxy_timeout_seconds(normalized_path)
     params = list(request.args.items(multi=True))
+    if is_runtime_status_request and not any(str(key) == "skip_compute_status" for key, _ in params):
+        params.append(("skip_compute_status", "1"))
+    runtime_status_cache_key = _runtime_status_proxy_cache_key(normalized_path, params) if is_runtime_status_request else ""
     headers = {}
     for header_name in ("Accept", "Content-Type"):
         header_value = request.headers.get(header_name)
         if header_value:
             headers[header_name] = header_value
+
+    if is_runtime_status_request:
+        cached_response = _build_fresh_runtime_status_proxy_response(
+            upstream=upstream,
+            cache_key=runtime_status_cache_key,
+        )
+        if cached_response is not None:
+            return cached_response
 
     started = time.monotonic()
     try:
@@ -466,6 +548,7 @@ def proxy_runtime_request(path: str):
             stale_response = _build_stale_runtime_status_proxy_response(
                 upstream=upstream,
                 error=str(exc),
+                cache_key=runtime_status_cache_key,
             )
             if stale_response is not None:
                 return stale_response
@@ -475,7 +558,9 @@ def proxy_runtime_request(path: str):
                 "status": "offline",
                 "error": str(exc),
                 "proxy_upstream": upstream,
-                "service_topology": build_service_topology(),
+                "service_topology": build_service_topology(
+                    fetch_runtime_status=False if is_runtime_status_request else None
+                ),
             }
         ), 502
 
@@ -493,11 +578,12 @@ def proxy_runtime_request(path: str):
         )
     if is_runtime_status_request:
         if upstream_response.ok:
-            _cache_runtime_status_proxy_payload(upstream_response)
+            _cache_runtime_status_proxy_payload(upstream_response, cache_key=runtime_status_cache_key)
         else:
             stale_response = _build_stale_runtime_status_proxy_response(
                 upstream=upstream,
                 error=f"http_{int(upstream_response.status_code)}",
+                cache_key=runtime_status_cache_key,
             )
             if stale_response is not None:
                 return stale_response

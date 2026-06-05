@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import logging
 import threading
@@ -25,6 +26,7 @@ POLL_INTERVAL_ACTIVE = max(5, int(os.environ.get("IBKR_ORDER_POLL_INTERVAL_ACTIV
 POLL_INTERVAL_IDLE = max(POLL_INTERVAL_ACTIVE, int(os.environ.get("IBKR_ORDER_POLL_INTERVAL_IDLE_SEC", "15")))
 ORDER_FAST_TRACK_WINDOW = max(POLL_INTERVAL_ACTIVE, int(os.environ.get("IBKR_ORDER_FAST_TRACK_SEC", "30")))
 EXECUTION_FILL_SYNC_INTERVAL = max(0, int(os.environ.get("IBKR_EXECUTION_FILL_SYNC_INTERVAL_SEC", "900")))
+ACCOUNT_DATA_BACKOFF_SECONDS = max(5.0, float(os.environ.get("IBKR_ACCOUNT_DATA_CIRCUIT_POLL_BACKOFF_SEC", "30") or 30))
 
 
 class OrderTracker:
@@ -57,6 +59,10 @@ class OrderTracker:
         self._poll_wakeup = threading.Event()
         self._initial_snapshot_pending = True
         self._last_execution_fill_sync_at = 0.0
+        self._account_data_backoff_until = 0.0
+        self._account_data_backoff_reason = ""
+        self._account_data_backoff_last_warn_at = 0.0
+        self._last_live_orders_fetch_unavailable = False
 
         add_fill_listener = getattr(self.broker, "add_execution_fill_listener", None)
         if callable(add_fill_listener):
@@ -98,6 +104,69 @@ class OrderTracker:
 
     def _mark_order_activity(self):
         self._last_order_activity = time.time()
+
+    @staticmethod
+    def _account_data_error_text(exc: Exception | str) -> str:
+        return str(exc or "")
+
+    @classmethod
+    def _is_account_data_unavailable_error(cls, exc: Exception | str) -> bool:
+        text = cls._account_data_error_text(exc)
+        lowered = text.lower()
+        return (
+            "account_data_circuit_open" in lowered
+            or "account_data_request_queue_timeout" in lowered
+            or "positions_timeout" in lowered
+            or "open_orders_timeout" in lowered
+            or "open_orders_all_timeout" in lowered
+            or "executions_timeout" in lowered
+            or "account_summary_timeout" in lowered
+            or "account_updates_timeout" in lowered
+        )
+
+    @classmethod
+    def _retry_after_seconds(cls, exc: Exception | str, default: float = ACCOUNT_DATA_BACKOFF_SECONDS) -> float:
+        text = cls._account_data_error_text(exc)
+        match = re.search(r"retry_after_s=([0-9]+(?:\.[0-9]+)?)", text)
+        if match:
+            try:
+                return max(5.0, min(120.0, float(match.group(1))))
+            except Exception:
+                return float(default)
+        return float(default)
+
+    def _account_data_backoff_remaining(self) -> float:
+        return max(0.0, float(self._account_data_backoff_until or 0.0) - time.time())
+
+    def _mark_account_data_backoff(self, exc: Exception | str, *, operation: str) -> None:
+        reason = self._account_data_error_text(exc) or "account_data_unavailable"
+        retry_after = self._retry_after_seconds(reason)
+        self._account_data_backoff_until = max(self._account_data_backoff_until, time.time() + retry_after)
+        self._account_data_backoff_reason = reason
+        now = time.time()
+        if now - float(self._account_data_backoff_last_warn_at or 0.0) >= 15.0:
+            logger.warning(
+                "Skipping broker account/order polling during account-data backoff: operation=%s retry_after_s=%.1f reason=%s",
+                operation,
+                self._account_data_backoff_remaining(),
+                reason,
+            )
+            self._account_data_backoff_last_warn_at = now
+
+    def _should_skip_account_data_fetch(self, *, operation: str) -> bool:
+        remaining = self._account_data_backoff_remaining()
+        if remaining <= 0:
+            return False
+        now = time.time()
+        if now - float(self._account_data_backoff_last_warn_at or 0.0) >= 15.0:
+            logger.warning(
+                "Skipping broker account/order polling during account-data backoff: operation=%s retry_after_s=%.1f reason=%s",
+                operation,
+                remaining,
+                self._account_data_backoff_reason or "account_data_backoff",
+            )
+            self._account_data_backoff_last_warn_at = now
+        return True
 
     @staticmethod
     def _to_float(value: Any, default: float = 0.0) -> float:
@@ -339,6 +408,18 @@ class OrderTracker:
         include_all: bool = False,
     ) -> List[Dict]:
         started = time.perf_counter()
+        if self._should_skip_account_data_fetch(operation="live_orders"):
+            self._last_live_orders_fetch_unavailable = True
+            record_order_event(
+                environment=self.environment,
+                operation="tracker_live_orders_fetch",
+                order_family_type="all" if include_all else "open",
+                result="skipped",
+                reason_code="account_data_backoff",
+                duration_s=time.perf_counter() - started,
+            )
+            return []
+        self._last_live_orders_fetch_unavailable = False
         attempts = max(1, int(retries or 1))
         for attempt in range(attempts):
             try:
@@ -357,6 +438,18 @@ class OrderTracker:
                     )
                     return orders
             except Exception as exc:
+                if self._is_account_data_unavailable_error(exc):
+                    self._mark_account_data_backoff(exc, operation="live_orders")
+                    self._last_live_orders_fetch_unavailable = True
+                    record_order_event(
+                        environment=self.environment,
+                        operation="tracker_live_orders_fetch",
+                        order_family_type="all" if include_all else "open",
+                        result="skipped",
+                        reason_code="account_data_unavailable",
+                        duration_s=time.perf_counter() - started,
+                    )
+                    return []
                 logger.warning("Failed to get live orders: %s", exc)
                 if attempt + 1 >= attempts:
                     record_order_event(
@@ -1177,6 +1270,7 @@ class OrderTracker:
         started = time.perf_counter()
         try:
             orders = self.get_live_orders(force=bool(force))
+            fetch_unavailable = bool(self._last_live_orders_fetch_unavailable)
             self._last_poll = time.time()
             current_order_ids = set()
             for order in orders:
@@ -1185,7 +1279,8 @@ class OrderTracker:
                     continue
                 current_order_ids.add(order_id)
                 self._handle_live_order_payload(order, source="poll")
-            self._finalize_disappeared_orders(current_order_ids)
+            if not fetch_unavailable:
+                self._finalize_disappeared_orders(current_order_ids)
         except Exception:
             record_order_event(
                 environment=self.environment,
@@ -1199,8 +1294,12 @@ class OrderTracker:
             environment=self.environment,
             operation="tracker_poll",
             order_family_type="force" if force else "scheduled",
-            result="ok",
-            reason_code="orders_seen" if orders else "empty",
+            result="skipped" if bool(self._last_live_orders_fetch_unavailable) else "ok",
+            reason_code="account_data_unavailable"
+            if bool(self._last_live_orders_fetch_unavailable)
+            else "orders_seen"
+            if orders
+            else "empty",
             duration_s=time.perf_counter() - started,
         )
 
@@ -1233,10 +1332,15 @@ class OrderTracker:
         now = time.time()
         if self._last_execution_fill_sync_at and now - self._last_execution_fill_sync_at < interval:
             return 0
+        if self._should_skip_account_data_fetch(operation="recent_execution_fills"):
+            return 0
         self._last_execution_fill_sync_at = now
         try:
             raw_fills = list(self.broker.list_recent_fills() or [])
         except Exception as exc:
+            if self._is_account_data_unavailable_error(exc):
+                self._mark_account_data_backoff(exc, operation="recent_execution_fills")
+                return 0
             logger.debug("Recent execution fills sync failed: %s", exc)
             return 0
         fills = normalize_execution_fills(
