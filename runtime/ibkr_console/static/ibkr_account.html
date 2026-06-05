@@ -287,6 +287,20 @@
             return `${num.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })}%`;
         }
 
+        function formatSignedPercent(value, digits = 2) {
+            const num = Number(value);
+            if (!Number.isFinite(num)) return '--';
+            const prefix = num > 0 ? '+' : '';
+            return `${prefix}${formatPercent(num, digits)}`;
+        }
+
+        function getTodayPnlNetLiqPct(accountTodayPnl, summary) {
+            const pnl = Number(accountTodayPnl?.net);
+            const netLiq = Number(summary?.net_liquidation);
+            if (!Number.isFinite(pnl) || !Number.isFinite(netLiq) || netLiq <= 0) return null;
+            return pnl / netLiq * 100;
+        }
+
         function normalizeTimeValue(value) {
             if (value === null || value === undefined || value === '') return '';
             if (typeof value !== 'string') return value;
@@ -1848,8 +1862,16 @@
             const todayPnlSub = todayPnlOk
                 ? `${todayPnlSource === 'broker_req_pnl' ? 'IBKR PnL stream' : 'IBKR Daily PnL'} · ${todayRawField}`
                 : (accountTodayPnl.message || 'IBKR Daily PnL unavailable');
+            const todayPnlPct = todayPnlOk ? getTodayPnlNetLiqPct(accountTodayPnl, summary) : null;
             const cards = [
-                { label: 'Today P&L', value: todayPnlOk ? formatSignedNullableMoney(accountTodayPnl.net) : '--', sub: todayPnlSub, toneValue: todayPnlOk ? accountTodayPnl.net : null },
+                {
+                    label: 'Today P&L',
+                    value: todayPnlOk ? formatSignedNullableMoney(accountTodayPnl.net) : '--',
+                    sub: todayPnlSub,
+                    toneValue: todayPnlOk ? accountTodayPnl.net : null,
+                    badge: todayPnlPct === null ? '' : `${formatSignedPercent(todayPnlPct)} NetLiq`,
+                    badgeToneValue: todayPnlPct,
+                },
                 { label: 'Realized', value: formatSignedNullableMoney(summary.realized_pnl), sub: 'IBKR current realized', toneValue: summary.realized_pnl },
                 { label: 'Floating', value: formatSignedNullableMoney(summary.unrealized_pnl), sub: `${counts.open_positions || 0} open positions`, toneValue: summary.unrealized_pnl },
                 { label: 'Net Liq', value: formatMoney(summary.net_liquidation), sub: '账户净值', toneValue: summary.net_liquidation },
@@ -1862,7 +1884,10 @@
             document.getElementById('summaryGrid').innerHTML = cards.map((card) => `
                 <div class="summary-card ${card.label === 'Remaining BP' && bpGuard.state === 'blocked' ? 'danger' : card.label === 'Remaining BP' && bpGuard.state === 'warning' ? 'warn' : ''}">
                     <div class="summary-label">${escapeHtml(card.label)}</div>
-                    <div class="summary-value ${valueClass(card.toneValue)}">${escapeHtml(String(card.value))}</div>
+                    <div class="summary-value-line">
+                        <div class="summary-value ${valueClass(card.toneValue)}">${escapeHtml(String(card.value))}</div>
+                        ${card.badge ? `<span class="summary-value-badge ${valueClass(card.badgeToneValue)}">${escapeHtml(card.badge)}</span>` : ''}
+                    </div>
                     <div class="summary-sub">${escapeHtml(card.sub)}</div>
                 </div>
             `).join('');

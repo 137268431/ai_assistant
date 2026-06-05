@@ -139,13 +139,43 @@
             line-height: 1.1;
         }
 
+        .summary-value-line {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: baseline;
+            gap: 8px;
+            margin-top: 8px;
+            min-width: 0;
+        }
+
+        .summary-value-line .summary-value {
+            margin-top: 0;
+        }
+
+        .summary-value-badge {
+            display: inline-flex;
+            align-items: center;
+            border: 1px solid rgba(148, 163, 184, 0.22);
+            border-radius: 999px;
+            padding: 3px 7px;
+            background: rgba(148, 163, 184, 0.08);
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px;
+            font-weight: 700;
+            line-height: 1;
+            white-space: nowrap;
+        }
+
         .summary-value.positive,
-        .metric-value.positive {
+        .metric-value.positive,
+        .summary-value-badge.positive {
             color: var(--long);
         }
 
         .summary-value.negative,
-        .metric-value.negative {
+        .metric-value.negative,
+        .summary-value-badge.negative {
             color: var(--short);
         }
 

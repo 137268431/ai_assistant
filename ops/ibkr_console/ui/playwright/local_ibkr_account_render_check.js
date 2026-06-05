@@ -570,6 +570,7 @@ html = html.replace(/<link href="https:\/\/fonts\.googleapis\.com[^"]+" rel="sty
     && result.areaText.includes('Stale / Needs Repair Chains')
     && result.areaText.includes('missing_client_order_id')
     && result.accountSummaryText.includes('Remaining BP')
+    && result.accountSummaryText.includes('+0.02% NetLiq')
     && result.pageTopText.includes('盘中标 24 active')
     && result.contextText.includes('盘中标')
     && result.contextText.includes('24 active')
