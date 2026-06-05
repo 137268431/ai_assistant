@@ -128,7 +128,7 @@ groups:
       description: service={{ $labels.service }} target={{ $labels.target_service
         }} route={{ $labels.route }}.
   - alert: BrokerIBErrorsHigh
-    expr: sum by (service, environment, client_role, ib_error_code, severity) (increase(ibkr_broker_error_total{severity!="benign"}[5m]))
+    expr: sum by (service, environment, client_role, ib_error_code, ib_error_cn, ib_error_action_cn, severity) (increase(ibkr_broker_error_total{severity!="benign"}[5m]))
       > 3
     for: 2m
     labels:
@@ -136,6 +136,7 @@ groups:
     annotations:
       summary: IB broker errors increased
       description: client_role={{ $labels.client_role }} ib_error_code={{ $labels.ib_error_code
+        }} ib_error={{ $labels.ib_error_cn }} action={{ $labels.ib_error_action_cn
         }} severity={{ $labels.severity }}.
   - alert: BrokerPendingRequestsHigh
     expr: sum by (service, environment, client_role, request_kind) (ibkr_broker_pending_requests)

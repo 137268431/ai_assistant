@@ -9,6 +9,8 @@ import time
 from typing import Any
 from urllib.parse import urlparse
 
+from ibkr_compute.observability.ib_error_catalog import describe_ib_error
+
 try:  # prometheus-client is added to runtime requirements; keep imports safe for local tools.
     from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 except Exception:  # pragma: no cover - exercised only on hosts before dependency install.
@@ -21,6 +23,7 @@ _ID_RE = re.compile(r"^[A-Za-z0-9_-]{12,}$")
 _UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 _NUM_RE = re.compile(r"^\d+$")
 _HEXISH_RE = re.compile(r"^[0-9a-fA-F]{16,}$")
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 _PATCH_LOCK = threading.Lock()
 _REQUESTS_PATCHED = False
 _ORIGINAL_REQUEST = None
@@ -188,6 +191,15 @@ def _sanitize_label(value: Any, default: str = "unknown") -> str:
     return text[:160] or default
 
 
+def _sanitize_display_label(value: Any, default: str = "unknown") -> str:
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return default
+    text = _CONTROL_RE.sub(" ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:120] or default
+
+
 def _sanitize_reason_code(value: Any, default: str = "unknown") -> str:
     raw = str(value if value is not None else "").strip()
     if not raw:
@@ -294,6 +306,16 @@ if _client_available():
         "ibkr_service_info",
         "IBKR service metadata marker for Prometheus scrapes.",
         ("service",),
+    )
+    COMPONENT_VERSION_INFO = Gauge(
+        "ibkr_component_version_info",
+        "Installed/runtime IBKR component version marker.",
+        ("service", "environment", "component", "version", "status"),
+    )
+    GATEWAY_MAJOR_VERSION = Gauge(
+        "ibkr_gateway_major_version",
+        "Configured IB Gateway major version.",
+        ("service", "environment", "version"),
     )
     HTTP_SERVER_REQUESTS = Counter(
         "ibkr_http_server_requests_total",
@@ -552,7 +574,16 @@ if _client_available():
     BROKER_ERRORS = Counter(
         "ibkr_broker_error_total",
         "IB API error callback counts.",
-        ("service", "environment", "client_role", "ib_error_code", "request_kind", "severity"),
+        (
+            "service",
+            "environment",
+            "client_role",
+            "ib_error_code",
+            "ib_error_cn",
+            "ib_error_action_cn",
+            "request_kind",
+            "severity",
+        ),
     )
     BROKER_REQUESTS = Counter(
         "ibkr_broker_request_total",
@@ -619,7 +650,7 @@ if _client_available():
         buckets=_DEFAULT_BUCKETS,
     )
 else:  # pragma: no cover
-    SERVICE_INFO = None
+    SERVICE_INFO = COMPONENT_VERSION_INFO = GATEWAY_MAJOR_VERSION = None
     HTTP_SERVER_REQUESTS = HTTP_SERVER_DURATION = HTTP_SERVER_IN_FLIGHT = HTTP_SERVER_EXCEPTIONS = None
     HTTP_CLIENT_REQUESTS = HTTP_CLIENT_DURATION = HTTP_CLIENT_IN_FLIGHT = HTTP_CLIENT_EXCEPTIONS = None
     GATEWAY_SOCKET_PROBES = GATEWAY_SOCKET_DURATION = GATEWAY_SOCKET_LISTENING = None
@@ -652,6 +683,7 @@ def install_flask_metrics(app: Any, service_name: str | None = None) -> None:
     service = resolve_source_service(service_name)
     if SERVICE_INFO is not None:
         SERVICE_INFO.labels(service).set(1.0)
+    refresh_component_version_metrics(service_name=service)
     install_requests_metrics()
 
     @app.before_request
@@ -713,6 +745,7 @@ def install_flask_metrics(app: Any, service_name: str | None = None) -> None:
     def ibkr_prometheus_metrics():  # type: ignore[unused-ignore]
         if generate_latest is None:
             return "# prometheus_client_missing 1\n", 503, {"Content-Type": CONTENT_TYPE_LATEST}
+        refresh_component_version_metrics(service_name=service)
         return generate_latest(), 200, {"Content-Type": CONTENT_TYPE_LATEST}
 
 
@@ -784,6 +817,47 @@ def _client_role(obj: Any = None) -> str:
 
 def _client_id(obj: Any = None) -> str:
     return _sanitize_label(getattr(obj, "client_id", None) or os.environ.get("IBGW_CLIENT_ID") or "0")
+
+
+def _ibapi_version() -> str:
+    try:
+        import ibapi
+
+        return str(getattr(ibapi, "__version__", "") or "unknown").strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _gateway_major_version() -> str:
+    for key in ("IBKR_TWS_MAJOR_VERSION", "TWS_MAJOR_VERSION", "IBGW_TWS_MAJOR_VERSION"):
+        value = str(os.environ.get(key) or "").strip()
+        if value:
+            return value
+    return "unknown"
+
+
+def refresh_component_version_metrics(*, service_name: str | None = None, environment: str = "") -> None:
+    if not _client_available():
+        return
+    service = resolve_source_service(service_name)
+    env = _metric_environment(environment)
+    components = {"ibapi": _ibapi_version()}
+    if service == "ibkr-runtime":
+        components["gateway"] = _gateway_major_version()
+    if COMPONENT_VERSION_INFO is not None:
+        for component, version in components.items():
+            status = "present" if version != "unknown" else "unknown"
+            COMPONENT_VERSION_INFO.labels(
+                service,
+                env,
+                _sanitize_label(component),
+                _sanitize_label(version),
+                status,
+            ).set(1.0)
+    gateway_version = components.get("gateway", "")
+    version_number = _optional_float(gateway_version)
+    if GATEWAY_MAJOR_VERSION is not None and version_number is not None:
+        GATEWAY_MAJOR_VERSION.labels(service, env, _sanitize_label(gateway_version)).set(version_number)
 
 
 def _metric_environment(environment: str = "") -> str:
@@ -1178,7 +1252,17 @@ def record_broker_disconnect(obj: Any = None, *, source: str = "unknown", reason
 
 def record_broker_error(obj: Any = None, *, ib_error_code: Any, request_kind: str = "unknown", severity: str = "warning") -> None:
     if BROKER_ERRORS is not None:
-        BROKER_ERRORS.labels(resolve_source_service(), _env_from_obj(obj), _client_role(obj), _sanitize_label(ib_error_code or 0), _sanitize_label(request_kind), _sanitize_label(severity)).inc()
+        info = describe_ib_error(ib_error_code)
+        BROKER_ERRORS.labels(
+            resolve_source_service(),
+            _env_from_obj(obj),
+            _client_role(obj),
+            _sanitize_label(ib_error_code or 0),
+            _sanitize_display_label(info.summary_cn),
+            _sanitize_display_label(info.action_cn),
+            _sanitize_label(request_kind),
+            _sanitize_label(severity),
+        ).inc()
 
 
 def record_broker_request(obj: Any = None, *, request_kind: str, result: str, duration_s: float | None = None, error_class: str = "") -> None:
@@ -1336,6 +1420,7 @@ __all__ = [
     "record_order_event",
     "record_signal_event",
     "record_signal_record_created",
+    "refresh_component_version_metrics",
     "register_flask_metrics",
     "register_prometheus_metrics",
     "resolve_source_service",

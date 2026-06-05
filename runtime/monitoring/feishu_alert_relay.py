@@ -182,6 +182,8 @@ _SOURCE_LABEL_KEYS = [
     "operation",
     "order_family_type",
     "ib_error_code",
+    "ib_error_cn",
+    "ib_error_action_cn",
     "host",
     "port",
     "mountpoint",

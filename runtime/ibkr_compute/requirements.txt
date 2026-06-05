@@ -4,4 +4,4 @@ requests>=2.31
 gunicorn>=21.2
 apscheduler>=3.10
 prometheus-client>=0.20
-ibapi==9.81.1.post1
+ibapi @ https://interactivebrokers.github.io/downloads/twsapi_macunix.1047.01.zip#subdirectory=IBJts/source/pythonclient

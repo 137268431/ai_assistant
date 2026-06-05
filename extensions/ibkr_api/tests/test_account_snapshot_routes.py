@@ -231,6 +231,92 @@ class AccountSnapshotRoutesTest(unittest.TestCase):
         self.assertEqual([], enriched["stale_pb_order_groups"])
         self.assertEqual(0, enriched["counts"]["pb_active_order_groups"])
 
+    def test_flat_position_relation_uses_closed_order_group_and_commissions(self):
+        pb = _FakePB(
+            {
+                "orders": [
+                    {
+                        "id": "ord-tsla-entry",
+                        "environment": "live",
+                        "symbol": "TSLA",
+                        "status": "Filled",
+                        "signal_id": "sig-tsla",
+                        "trade_group_id": "grp-tsla",
+                        "entry_order_unique_id": "entry-tsla",
+                        "unique_id": "entry-tsla",
+                        "order_id": "1001",
+                        "broker_order_id": "1001",
+                        "role": "entry",
+                        "relation_status": "closed",
+                        "direction": "long",
+                        "position_side": "long",
+                        "quantity": 10,
+                        "filled_qty": 10,
+                        "fill_price": 250.0,
+                        "updated": "2026-05-14 14:55:16",
+                    },
+                    {
+                        "id": "ord-tsla-close",
+                        "environment": "live",
+                        "symbol": "TSLA",
+                        "status": "Filled",
+                        "signal_id": "sig-tsla",
+                        "trade_group_id": "grp-tsla",
+                        "entry_order_unique_id": "entry-tsla",
+                        "unique_id": "close-tsla",
+                        "order_id": "1002",
+                        "broker_order_id": "1002",
+                        "role": "close",
+                        "relation_status": "closed",
+                        "direction": "long",
+                        "position_side": "long",
+                        "quantity": 10,
+                        "filled_qty": 10,
+                        "fill_price": 260.0,
+                        "updated": "2026-05-14 15:02:11",
+                    },
+                ],
+                "ibkr_execution_fills": [
+                    {"environment": "live", "order_id": "1001", "commission": 0.35, "commission_known": True, "currency": "USD"},
+                    {"environment": "live", "order_id": "1002", "commission": 0.45, "commission_known": True, "currency": "USD"},
+                ],
+                "ibkr_signals": [
+                    {
+                        "signal_id": "sig-tsla",
+                        "environment": "live",
+                        "symbol": "TSLA",
+                        "status": "executed",
+                        "updated": "2026-05-14 15:02:12",
+                    }
+                ],
+            }
+        )
+        payload = {
+            "ok": True,
+            "environment": "live",
+            "positions": [{"symbol": "TSLA", "quantity": 0, "realized_pnl": 94.86, "currency": "USD"}],
+            "orders": [],
+            "live_open_orders": [],
+            "counts": {},
+        }
+
+        enriched = enrich_account_snapshot(pb, payload, "live")
+
+        relation = enriched["positions"][0]["relation"]
+        self.assertEqual("flat_broker_position", relation["status"])
+        self.assertEqual("sig-tsla", relation["signal_id"])
+        self.assertEqual("grp-tsla", relation["trade_group_id"])
+        self.assertEqual("entry-tsla", relation["entry_order_unique_id"])
+        self.assertEqual("Filled", relation["last_order_status"])
+        self.assertEqual("2026-05-14 15:02:11", relation["order_updated"])
+        self.assertEqual(2, relation["order_count"])
+        self.assertEqual(10.0, relation["entry_filled_qty"])
+        self.assertEqual(10.0, relation["exit_filled_qty"])
+        self.assertAlmostEqual(0.8, relation["commission"])
+        self.assertEqual("USD", relation["commission_currency"])
+        self.assertTrue(relation["commission_known"])
+        self.assertEqual(2, relation["commission_fill_count"])
+
     def test_live_order_group_orders_are_sorted_and_include_trade_direction(self):
         pb = _FakePB(
             {

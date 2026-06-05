@@ -462,8 +462,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service, environment, client_role, ib_error_code, severity) (increase(ibkr_broker_error_total{service=~\"$service\", environment=~\"$environment\", severity!=\"benign\"}[5m])) > 0",
-          "legendFormat": "IB {{client_role}} {{ib_error_code}} {{severity}}",
+          "expr": "sum by (service, environment, client_role, ib_error_code, ib_error_cn, ib_error_action_cn, severity) (increase(ibkr_broker_error_total{service=~\"$service\", environment=~\"$environment\", severity!=\"benign\"}[5m])) > 0",
+          "legendFormat": "IB {{client_role}} {{ib_error_code}} {{ib_error_cn}} · {{ib_error_action_cn}} {{severity}}",
           "range": true,
           "refId": "A"
         },
@@ -554,8 +554,8 @@
     {
       "id": 7,
       "type": "stat",
-      "title": "服务采集在线 / Service Scrape Health",
-      "description": "Prometheus 是否能抓到 IBKR 与监控组件。",
+      "title": "服务采集与版本 / Scrape and Version Health",
+      "description": "Prometheus 是否能抓到 IBKR 与监控组件；同时展示 ibapi/Gateway 版本标记。",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -610,6 +610,17 @@
           "legendFormat": "monitoring targets",
           "range": true,
           "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (service, environment, component, version, status) (ibkr_component_version_info{service=~\"$service\", environment=~\"$environment\", component=~\"ibapi|gateway\"})",
+          "legendFormat": "version {{service}} {{component}} {{version}} {{status}}",
+          "range": true,
+          "refId": "E"
         }
       ],
       "fieldConfig": {
@@ -2518,8 +2529,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (client_role, ib_error_code, request_kind, severity) (rate(ibkr_broker_error_total{service=~\"$service\", environment=~\"$environment\", severity!=\"benign\"}[$__rate_interval]))",
-          "legendFormat": "{{client_role}} {{ib_error_code}} {{request_kind}} {{severity}}",
+          "expr": "sum by (client_role, ib_error_code, ib_error_cn, ib_error_action_cn, request_kind, severity) (rate(ibkr_broker_error_total{service=~\"$service\", environment=~\"$environment\", severity!=\"benign\"}[$__rate_interval]))",
+          "legendFormat": "{{client_role}} {{ib_error_code}} {{ib_error_cn}} · {{ib_error_action_cn}} {{request_kind}} {{severity}}",
           "range": true,
           "refId": "A"
         }
@@ -5009,8 +5020,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (client_role, ib_error_code, request_kind, severity) (increase(ibkr_broker_error_total{service=~\"$service\", environment=~\"$environment\", severity=\"benign\"}[$__range]))",
-          "legendFormat": "良性 IB {{client_role}} {{ib_error_code}} {{request_kind}}",
+          "expr": "sum by (client_role, ib_error_code, ib_error_cn, ib_error_action_cn, request_kind, severity) (increase(ibkr_broker_error_total{service=~\"$service\", environment=~\"$environment\", severity=\"benign\"}[$__range]))",
+          "legendFormat": "良性 IB {{client_role}} {{ib_error_code}} {{ib_error_cn}} {{request_kind}}",
           "range": true,
           "refId": "A"
         }
@@ -5308,8 +5319,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service, environment, client_role, ib_error_code, severity) (increase(ibkr_broker_error_total{service=~\"$service\", environment=~\"$environment\", severity!=\"benign\"}[5m])) > 0",
-          "legendFormat": "IB {{client_role}} {{ib_error_code}} {{severity}}",
+          "expr": "sum by (service, environment, client_role, ib_error_code, ib_error_cn, ib_error_action_cn, severity) (increase(ibkr_broker_error_total{service=~\"$service\", environment=~\"$environment\", severity!=\"benign\"}[5m])) > 0",
+          "legendFormat": "IB {{client_role}} {{ib_error_code}} {{ib_error_cn}} · {{ib_error_action_cn}} {{severity}}",
           "range": true,
           "refId": "A"
         },

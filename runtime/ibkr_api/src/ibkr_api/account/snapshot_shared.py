@@ -116,6 +116,7 @@ def normalize_order_record(record: dict[str, Any]) -> dict[str, Any]:
     extra = _parse_json_object(record.get("extra"))
     quantity = to_float(record.get("quantity")) or 0.0
     filled_qty_raw = to_float(record.get("filled_qty")) or 0.0
+    commission = abs(to_float(record.get("commission") if record.get("commission") not in (None, "") else extra.get("commission")) or 0.0)
     status = _pick_first_non_empty(record.get("status"), extra.get("status"))
     role = _pick_first_non_empty(record.get("role"), extra.get("role")) or "entry"
     trade_group_id = _pick_first_non_empty(
@@ -159,8 +160,11 @@ def normalize_order_record(record: dict[str, Any]) -> dict[str, Any]:
         "filled_qty": filled_qty,
         "limit_price": to_float(record.get("limit_price") if record.get("limit_price") not in (None, "") else extra.get("limit_price")) or 0.0,
         "fill_price": to_float(record.get("fill_price") if record.get("fill_price") not in (None, "") else extra.get("fill_price")) or 0.0,
-        "commission": abs(to_float(record.get("commission") if record.get("commission") not in (None, "") else extra.get("commission")) or 0.0),
+        "commission": commission,
         "commission_currency": _pick_first_non_empty(record.get("commission_currency"), extra.get("commission_currency"), "USD").upper(),
+        "commission_known": bool(record.get("commission_known") or extra.get("commission_known")) or commission > 0,
+        "commission_source": _pick_first_non_empty(record.get("commission_source"), extra.get("commission_source"), "orders" if commission > 0 else ""),
+        "commission_fill_count": to_int(record.get("commission_fill_count") if record.get("commission_fill_count") not in (None, "") else extra.get("commission_fill_count"), 0),
         "updated": updated,
         "updated_ms": _parse_time_ms(updated),
         "status_weight": _order_status_weight(status),

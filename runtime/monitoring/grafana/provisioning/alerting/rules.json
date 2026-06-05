@@ -714,7 +714,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "sum by (service, environment, client_role, ib_error_code, severity) (increase(ibkr_broker_error_total{severity!=\"benign\"}[5m])) > 3",
+                "expr": "sum by (service, environment, client_role, ib_error_code, ib_error_cn, ib_error_action_cn, severity) (increase(ibkr_broker_error_total{severity!=\"benign\"}[5m])) > 3",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -773,7 +773,7 @@
           "for": "2m",
           "annotations": {
             "summary": "IB Broker 错误增多",
-            "description": "5 分钟 IB error 个数超过阈值，来源包含 client_role/ib_error_code。"
+            "description": "5 分钟 IB error 个数超过阈值，来源包含 client_role/ib_error_code/中文含义/处理建议。"
           },
           "labels": {
             "severity": "warning",

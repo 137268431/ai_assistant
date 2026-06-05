@@ -213,6 +213,12 @@ const mockSnapshot = enrichAccountSnapshot(
           entry_order_unique_id: 'coid-flat',
           last_order_status: 'Filled',
           order_updated: '2026-04-10T09:42:00Z',
+          order_count: 2,
+          entry_filled_qty: 10,
+          exit_filled_qty: 10,
+          commission: 1.25,
+          commission_currency: 'USD',
+          commission_known: true,
         },
         raw: {},
       },
@@ -459,26 +465,29 @@ window.buildPageUrl = function(path, params = {}, options = {}) {
 window.fetchWithRetry = async function(input) {
   const url = String(input || '');
   if (url.includes('/api/custom/ibkr/today-targets')) {
+    const payload = {
+      ok: true,
+      market_date: '2026-04-10',
+      summary: {
+        total: 25,
+        active_count: 24,
+        candidate_count: 1,
+        signaled_count: 3,
+      },
+      items: [],
+    };
     return {
       ok: true,
       status: 200,
-      text: async () => JSON.stringify({
-        ok: true,
-        market_date: '2026-04-10',
-        summary: {
-          total: 25,
-          active_count: 24,
-          candidate_count: 1,
-          signaled_count: 3,
-        },
-        items: [],
-      }),
+      text: async () => JSON.stringify(payload),
+      json: async () => payload,
     };
   }
   return {
     ok: true,
     status: 200,
     text: async () => JSON.stringify(window.__MOCK_SNAPSHOT__),
+    json: async () => window.__MOCK_SNAPSHOT__,
   };
 };
 window.getToken = function() { return 'mock-token'; };
@@ -486,7 +495,7 @@ window.showToast = function() {};
 window.handleAuthError = function() {};
 </script>`;
 
-html = html.replace('<script src="common.js"></script>', injected);
+html = html.replace(/<script src="common\.js(?:\?[^"]*)?"><\/script>/, injected);
 html = html.replace(/<link href="https:\/\/fonts\.googleapis\.com[^"]+" rel="stylesheet">/, '');
 
 (async () => {
@@ -553,7 +562,7 @@ html = html.replace(/<link href="https:\/\/fonts\.googleapis\.com[^"]+" rel="sty
     && result.areaText.includes('brackets=2:')
     && result.areaText.includes('tg-1')
     && result.areaText.includes('tg-1-tactical')
-    && result.areaText.includes('PB Stale / Needs Repair Chains')
+    && result.areaText.includes('Stale / Needs Repair Chains')
     && result.areaText.includes('missing_client_order_id')
     && result.accountSummaryText.includes('Remaining BP')
     && result.pageTopText.includes('盘中标 24 active')
@@ -564,6 +573,8 @@ html = html.replace(/<link href="https:\/\/fonts\.googleapis\.com[^"]+" rel="sty
     && result.flatSectionText.includes('今日已闭合 / FLAT')
     && result.flatSectionText.includes('ABNB')
     && result.flatSectionText.includes('不是当前 IBKR live open order')
+    && result.flatSectionText.includes('Fees')
+    && result.flatSectionText.includes('$1.25')
     && result.flatSectionText.includes('订单页')
     && result.flatCloseButtonCount === 0
     && result.tableCount >= 3

@@ -208,7 +208,9 @@ def enrich_account_snapshot(pb: Any, payload: dict[str, Any], environment: str) 
     symbols.extend(to_text((group or {}).get("symbol")).upper() for group in managed_context.get("active_groups", []))
     symbols.extend(to_text((group or {}).get("symbol")).upper() for group in managed_context.get("live_order_groups", []))
     symbols = [symbol for symbol in symbols if symbol]
-    relation_context = build_relation_context(pb, environment, symbols, managed_context.get("order_records", []))
+    has_flat_position_rows = any((to_float(ensure_object(position).get("quantity")) or 0.0) == 0 for position in positions)
+    relation_order_records = [] if has_flat_position_rows else managed_context.get("order_records", [])
+    relation_context = build_relation_context(pb, environment, symbols, relation_order_records)
     system_managed_count = 0
     external_count = 0
     flat_count = 0
@@ -221,6 +223,7 @@ def enrich_account_snapshot(pb: Any, payload: dict[str, Any], environment: str) 
         related_signal = ensure_object(relation_context["signalMap"].get(to_text(active_group.get("signal_id")))) if active_group.get("signal_id") else {}
         if quantity == 0:
             flat_count += 1
+            commission = abs(to_float(active_group.get("commission")) or 0.0)
             relation = {
                 "status": "flat_broker_position",
                 "reason": "gateway_flat_position_record",
@@ -230,9 +233,18 @@ def enrich_account_snapshot(pb: Any, payload: dict[str, Any], environment: str) 
                 "entry_order_unique_id": to_text(active_group.get("entry_order_unique_id")),
                 "last_order_status": to_text(active_group.get("latest_order_status")),
                 "order_updated": to_text(active_group.get("latest_updated")),
+                "order_count": len(active_group.get("orders") or []),
+                "entry_filled_qty": to_float(active_group.get("entry_filled_qty")) or 0.0,
+                "exit_filled_qty": to_float(active_group.get("exit_filled_qty")) or 0.0,
+                "commission": round(commission, 6),
+                "commission_currency": to_text(active_group.get("commission_currency") or item.get("currency") or "USD").upper(),
+                "commission_known": bool(active_group.get("commission_known")) or commission > 0,
+                "commission_source": to_text(active_group.get("commission_source")),
+                "commission_fill_count": to_int(active_group.get("commission_fill_count"), 0),
             }
         elif active_group and active_group.get("has_open_exposure"):
             system_managed_count += 1
+            commission = abs(to_float(active_group.get("commission")) or 0.0)
             relation = {
                 "status": "system_managed",
                 "reason": "matched_open_trade_group",
@@ -244,6 +256,11 @@ def enrich_account_snapshot(pb: Any, payload: dict[str, Any], environment: str) 
                 "last_order_status": to_text(active_group.get("latest_order_status")),
                 "order_updated": to_text(active_group.get("latest_updated")),
                 "order_count": len(active_group.get("orders") or []),
+                "commission": round(commission, 6),
+                "commission_currency": to_text(active_group.get("commission_currency") or item.get("currency") or "USD").upper(),
+                "commission_known": bool(active_group.get("commission_known")) or commission > 0,
+                "commission_source": to_text(active_group.get("commission_source")),
+                "commission_fill_count": to_int(active_group.get("commission_fill_count"), 0),
             }
         else:
             external_count += 1

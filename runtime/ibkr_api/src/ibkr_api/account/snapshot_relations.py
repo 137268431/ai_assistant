@@ -3,6 +3,11 @@ from __future__ import annotations
 from typing import Any
 
 from ibkr_api.orders.values import to_float, to_int, to_text
+from ibkr_api.account.snapshot_live_orders import (
+    _collect_order_ids,
+    _enrich_orders_with_execution_commissions,
+    _fetch_execution_commissions,
+)
 from ibkr_api.account.snapshot_shared import (
     OPEN_ORDER_FILTER_PER_PAGE,
     canonical_order_status,
@@ -27,6 +32,8 @@ def build_relation_context(pb: Any, environment: str, symbols: list[str], normal
     if not orders:
         order_rows = pb.get_records("orders", filter=f'environment = "{environment}"', sort="-updated", per_page=OPEN_ORDER_FILTER_PER_PAGE, page=1) or []
         orders = [normalize_order_record(dict(row)) for row in order_rows if isinstance(row, dict)]
+        execution_commissions = _fetch_execution_commissions(pb, environment, _collect_order_ids(orders))
+        orders = _enrich_orders_with_execution_commissions(orders, execution_commissions)
     filtered_orders = [order for order in orders if to_text(order.get("symbol")).upper() in symbol_set]
     groups_by_symbol: dict[str, dict[str, dict[str, Any]]] = {}
     signal_ids: set[str] = set()
@@ -48,6 +55,11 @@ def build_relation_context(pb: Any, environment: str, symbols: list[str], normal
                 "best_status_weight": -1,
                 "entry_filled_qty": 0.0,
                 "exit_filled_qty": 0.0,
+                "commission": 0.0,
+                "commission_currency": "USD",
+                "commission_known": False,
+                "commission_source": "",
+                "commission_fill_count": 0,
                 "has_active_order": False,
                 "has_open_exposure": False,
                 "orders": [],
@@ -67,6 +79,17 @@ def build_relation_context(pb: Any, environment: str, symbols: list[str], normal
             group["entry_filled_qty"] += abs(to_float(normalized.get("filled_qty")) or 0.0)
         if _is_exit_exposure_role(role):
             group["exit_filled_qty"] += abs(to_float(normalized.get("filled_qty")) or 0.0)
+        commission = abs(to_float(normalized.get("commission")) or 0.0)
+        group["commission"] += commission
+        currency = to_text(normalized.get("commission_currency")).upper()
+        if currency:
+            group["commission_currency"] = currency
+        if bool(normalized.get("commission_known")) or commission > 0:
+            group["commission_known"] = True
+        source = to_text(normalized.get("commission_source"))
+        if source:
+            group["commission_source"] = source
+        group["commission_fill_count"] += to_int(normalized.get("commission_fill_count"), 0)
         if to_text(normalized.get("relation_status")).lower() in {"active", "planned"} or (to_int(normalized.get("status_weight"), 0) >= 70 and canonical_order_status(normalized.get("status")) != "FILLED"):
             group["has_active_order"] = True
     active_group_by_symbol: dict[str, dict[str, Any]] = {}

@@ -912,6 +912,17 @@
             return currency === 'USD' ? `$${text}` : `${currency} ${text}`;
         }
 
+        function getFlatPositionCommissionPayload(position) {
+            const relation = position?.relation || {};
+            const raw = position?.raw || {};
+            return {
+                commission: firstDefined(position?.commission, position?.fee, position?.fees, relation.commission, relation.fee, relation.fees, raw.commission, raw.ibkr_commission),
+                commission_currency: firstDefined(position?.commission_currency, relation.commission_currency, raw.commissionCurrency, raw.commission_currency, position?.currency, 'USD'),
+                commission_known: firstDefined(position?.commission_known, relation.commission_known, raw.commission_known),
+                commission_source: firstDefined(position?.commission_source, relation.commission_source, raw.commission_source),
+            };
+        }
+
         function getLiveOrderClientId(order) {
             const raw = order?.raw || {};
             return String(firstDefined(order?.client_order_id, order?.cOID, order?.coid, order?.order_ref, order?.orderRef, raw.cOID, raw.coid, raw.orderRef, raw.order_ref, '')).trim();
@@ -1912,6 +1923,14 @@
             const groupCopy = tradeGroupId ? `group=${tradeGroupId}` : 'group=--';
             const signalCopy = signalId ? `signal=${signalId}` : 'signal=--';
             const orderCopy = `order=${orderStatus || '--'} · updated=${formatTimeLabel(relation.order_updated)}`;
+            const detailParts = [];
+            if (relation.entry_order_unique_id) detailParts.push(`entry=${relation.entry_order_unique_id}`);
+            if (relation.order_count) detailParts.push(`orders=${relation.order_count}`);
+            if (Number(relation.entry_filled_qty || 0) || Number(relation.exit_filled_qty || 0)) {
+                detailParts.push(`filled=${formatQty(relation.entry_filled_qty)}->${formatQty(relation.exit_filled_qty)}`);
+            }
+            const detailsCopy = detailParts.length ? detailParts.join(' · ') : 'details=--';
+            const commissionPayload = getFlatPositionCommissionPayload(position);
             return `
                 <div class="flat-position-row">
                     <div class="flat-position-main">
@@ -1923,10 +1942,12 @@
                         <div class="summary-sub mono">${escapeHtml(groupCopy)}</div>
                         <div class="summary-sub mono">${escapeHtml(signalCopy)}</div>
                         <div class="summary-sub mono">${escapeHtml(orderCopy)}</div>
+                        <div class="summary-sub mono">${escapeHtml(detailsCopy)}</div>
                     </div>
                     <div class="flat-position-metrics">
                         <div class="metric-item"><div class="metric-label">Quantity</div><div class="metric-value">${escapeHtml(formatQty(position.quantity))}</div></div>
                         <div class="metric-item"><div class="metric-label">Realized</div><div class="metric-value ${valueClass(position.realized_pnl)}">${escapeHtml(formatSignedMoney(position.realized_pnl))}</div></div>
+                        <div class="metric-item"><div class="metric-label">Fees</div><div class="metric-value">${escapeHtml(formatOrderCommission(commissionPayload))}</div></div>
                         <div class="metric-item"><div class="metric-label">Market Value</div><div class="metric-value">${escapeHtml(formatMoney(position.market_value))}</div></div>
                     </div>
                     <div class="record-actions compact-actions">
