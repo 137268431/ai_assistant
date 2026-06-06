@@ -75,13 +75,15 @@ class GatewayOrderProbeTest(unittest.TestCase):
         prices = {"AAPL": 200.0, "MSFT": 400.0}
 
         with mock.patch.object(probe, "get_snapshot", return_value=snapshot), mock.patch.object(
-            probe.fee_probe,
-            "fetch_latest_reference_price",
-            side_effect=lambda _args, symbol: prices[symbol],
+            probe,
+            "fetch_latest_reference_context",
+            side_effect=lambda _args, symbol: (prices[symbol], {"AAPL": 265598, "MSFT": 272093}[symbol]),
         ):
             plans, excluded, summary = probe.select_probe_plan(args)
 
         self.assertEqual(["AAPL", "MSFT"], [plan.symbol for plan in plans])
+        self.assertEqual([265598, 272093], [plan.conid for plan in plans])
+        self.assertEqual(265598, plans[0].payload()["conid"])
         self.assertEqual(2, summary["selected_orders"])
         self.assertEqual(2, len([plan for plan in plans if plan.requested_exposure >= 5000.0]))
         self.assertGreaterEqual(summary["total_requested_exposure"], 10000.0)
@@ -132,6 +134,48 @@ class GatewayOrderProbeTest(unittest.TestCase):
         self.assertEqual(33, plans[0].quantity)
         self.assertEqual(5133.81, plans[0].requested_exposure)
         self.assertEqual(str(plan_path), summary["plan_path"])
+
+    def test_load_probe_plan_can_rescale_notional_and_preserve_conid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "summary.json"
+            plan_path.write_text(
+                json.dumps(
+                    {
+                        "plan_summary": {"target_notional_per_order": 5000.0},
+                        "plan": [
+                            {
+                                "symbol": "AAPL",
+                                "conid": 265598,
+                                "direction": "long",
+                                "quantity": 33,
+                                "reference_price": 311.14,
+                                "entry_price": 155.57,
+                                "take_profit_price": 178.91,
+                                "stop_loss_price": 132.23,
+                                "target_notional": 5000.0,
+                                "requested_exposure": 5133.81,
+                            }
+                        ],
+                    }
+                )
+            )
+            args = Namespace(
+                plan_path=str(plan_path),
+                orders=1,
+                quantity=1,
+                direction="long",
+                target_notional_per_order=6000.0,
+            )
+            snapshot = {"ok": True, "environment": "paper", "broker_mode": "paper", "positions": [], "orders": [], "live_open_orders": []}
+
+            with mock.patch.object(probe, "get_snapshot", return_value=snapshot):
+                plans, excluded, summary = probe.select_probe_plan(args)
+
+        self.assertFalse(excluded)
+        self.assertEqual(265598, plans[0].conid)
+        self.assertEqual(39, plans[0].quantity)
+        self.assertAlmostEqual(6067.23, plans[0].requested_exposure)
+        self.assertEqual(6000.0, summary["target_notional_per_order"])
 
     def test_action_params_force_paper(self):
         self.assertEqual({"environment": "paper", "broker_mode": "paper"}, probe.action_params())

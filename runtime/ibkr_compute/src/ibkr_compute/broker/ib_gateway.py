@@ -71,6 +71,10 @@ logger = logging.getLogger(__name__)
 
 
 TICK_BY_TICK_DUPLICATE_WINDOW_SECONDS = 15.0
+BRACKET_SUBMISSION_CONFIRM_TIMEOUT_SECONDS = 12.0
+CANCEL_CONFIRM_TIMEOUT_SECONDS = 12.0
+CANCEL_ALL_RECONCILE_TIMEOUT_SECONDS = 180.0
+CANCEL_ALL_RECONCILE_POLL_INTERVAL_SECONDS = 1.0
 ACCOUNT_DATA_REQUEST_KINDS = {
     "account_pnl",
     "account_summary",
@@ -86,6 +90,53 @@ ACCOUNT_DATA_CIRCUIT_COOLDOWN_SECONDS = 60.0
 ACCOUNT_DATA_CIRCUIT_MIN_FAILURES = 4
 ACCOUNT_DATA_EXPECTED_UNSUBSCRIBE_GRACE_SECONDS = 5.0
 SMART_ROUTED_US_SEC_TYPES = {"STK", "ETF", "WAR"}
+
+
+def _order_error_code(order_error: dict | None) -> int:
+    try:
+        return int((order_error or {}).get("code") or 0)
+    except Exception:
+        return 0
+
+
+def _order_error_message(order_error: dict | None) -> str:
+    return str((order_error or {}).get("message") or (order_error or {}).get("error") or "").strip()
+
+
+def _order_error_is_submission_warning(order_error: dict | None) -> bool:
+    """IB sends code 399 for valid off-hours orders that are queued for the next open."""
+    message = _order_error_message(order_error).lower()
+    return (
+        _order_error_code(order_error) == 399
+        and "will not be placed at the exchange until" in message
+    )
+
+
+def _order_error_is_cancel_notice(order_error: dict | None) -> bool:
+    code = _order_error_code(order_error)
+    message = _order_error_message(order_error).lower()
+    if code == 202:
+        return "order canceled" in message or "order cancelled" in message
+    if code == 10147:
+        return "needs to be cancelled is not found" in message or "not found" in message
+    if code == 10148:
+        return (
+            "state: cancelled" in message
+            or "state: canceled" in message
+            or ("cannot be cancelled" in message and ("cancelled" in message or "canceled" in message))
+        )
+    return False
+
+
+def _remember_submission_warning(warnings: dict[str, list[dict]], order_id: str, order_error: dict | None) -> None:
+    warning = dict(order_error or {})
+    if not warning:
+        return
+    bucket = warnings.setdefault(str(order_id or "").strip(), [])
+    signature = (_order_error_code(warning), _order_error_message(warning))
+    if any((_order_error_code(item), _order_error_message(item)) == signature for item in bucket):
+        return
+    bucket.append(warning)
 
 
 def _env_float(name: str, default: float, *, minimum: float = 0.0) -> float:
@@ -506,12 +557,20 @@ class _IBGatewayApp(EWrapper, EClient):
             errorCode = 0
             errorString = args[0] if args else ""
             _advancedOrderRejectJson = ""
-        expected_account_unsubscribe = self._is_expected_account_updates_unsubscribe_error(int(errorCode or 0))
+        normalized_error_code = int(errorCode or 0)
+        order_error_payload = {"code": normalized_error_code, "message": str(errorString or "")}
+        order_warning = _order_error_is_submission_warning(order_error_payload)
+        cancel_notice = _order_error_is_cancel_notice(order_error_payload)
+        expected_account_unsubscribe = self._is_expected_account_updates_unsubscribe_error(normalized_error_code)
         pending_ctx = self._pending_requests.get(int(reqId or 0))
-        severity = "benign" if int(errorCode or 0) in BENIGN_ERROR_CODES or expected_account_unsubscribe else "warning"
+        severity = (
+            "benign"
+            if normalized_error_code in BENIGN_ERROR_CODES or expected_account_unsubscribe or order_warning or cancel_notice
+            else "warning"
+        )
         record_broker_error(
             self,
-            ib_error_code=int(errorCode or 0),
+            ib_error_code=normalized_error_code,
             request_kind=pending_ctx.kind if pending_ctx else "unknown",
             severity=severity,
         )
@@ -534,22 +593,36 @@ class _IBGatewayApp(EWrapper, EClient):
                 for item in self._recent_errors[-20:]
                 if self._last_error_at - float(item.get("ts", 0) or 0) <= 120
             ]
-            if errorCode not in BENIGN_ERROR_CODES and not expected_account_unsubscribe:
+            if (
+                normalized_error_code not in BENIGN_ERROR_CODES
+                and not expected_account_unsubscribe
+                and not order_warning
+                and not cancel_notice
+            ):
                 logger.warning("IB Gateway error reqId=%s code=%s message=%s", reqId, errorCode, errorString)
-                if int(errorCode or 0) in ACCOUNT_DATA_UNSUBSCRIBED_CODES:
+                if normalized_error_code in ACCOUNT_DATA_UNSUBSCRIBED_CODES:
                     self._record_account_data_issue("account_updates", str(errorString or "account_data_unsubscribed"))
-                numeric_req_id = int(reqId or 0)
-                if numeric_req_id > 0:
-                    self._order_errors[str(numeric_req_id)] = {
-                        "order_id": str(numeric_req_id),
-                        "code": int(errorCode or 0),
-                        "message": str(errorString or ""),
-                        "advanced_reject_json": str(_advancedOrderRejectJson or ""),
-                        "at": _iso_now(),
-                    }
+            elif order_warning:
+                logger.info("Ignoring non-fatal IB order submission warning reqId=%s code=%s", reqId, errorCode)
+            elif cancel_notice:
+                logger.debug("Ignoring non-fatal IB cancel notice reqId=%s code=%s", reqId, errorCode)
             elif expected_account_unsubscribe:
                 logger.debug("Ignoring expected account update unsubscribe error reqId=%s code=%s", reqId, errorCode)
-            if errorCode in {502, 504, 1100, 2110}:
+            numeric_req_id = int(reqId or 0)
+            if (
+                numeric_req_id > 0
+                and normalized_error_code not in BENIGN_ERROR_CODES
+                and not expected_account_unsubscribe
+                and not order_warning
+            ):
+                self._order_errors[str(numeric_req_id)] = {
+                    "order_id": str(numeric_req_id),
+                    "code": normalized_error_code,
+                    "message": str(errorString or ""),
+                    "advanced_reject_json": str(_advancedOrderRejectJson or ""),
+                    "at": _iso_now(),
+                }
+            if normalized_error_code in {502, 504, 1100, 2110}:
                 self._ready = False
                 self._status_code = 503
                 self._next_order_id = None
@@ -1885,25 +1958,34 @@ class _IBGatewayApp(EWrapper, EClient):
 
         deadline = time.time() + max(0.5, float(timeout or 0.0))
         request_timeout = max(1, min(3, int(max(1.0, float(timeout or 0.0)))))
+        ignored_warnings: dict[str, list[dict]] = {}
 
         while time.time() < deadline:
             order_error = self.get_order_error(normalized_order_id)
             if order_error:
-                return {
-                    "ok": False,
-                    "order_id": normalized_order_id,
-                    "error": str(order_error.get("message") or "order_rejected"),
-                    "details": order_error,
-                }
+                if _order_error_is_submission_warning(order_error):
+                    _remember_submission_warning(ignored_warnings, normalized_order_id, order_error)
+                else:
+                    return {
+                        "ok": False,
+                        "order_id": normalized_order_id,
+                        "error": str(order_error.get("message") or "order_rejected"),
+                        "details": order_error,
+                    }
 
             snapshot = self.get_order_snapshot(normalized_order_id)
             if snapshot:
-                return {
+                if ignored_warnings.get(normalized_order_id):
+                    self.clear_order_error(normalized_order_id)
+                result = {
                     "ok": True,
                     "order_id": normalized_order_id,
                     "source": "snapshot",
                     "order": snapshot,
                 }
+                if ignored_warnings.get(normalized_order_id):
+                    result["ignored_warnings"] = list(ignored_warnings[normalized_order_id])
+                return result
 
             try:
                 open_orders = self.request_open_orders(timeout=request_timeout, force=True)
@@ -1918,29 +2000,40 @@ class _IBGatewayApp(EWrapper, EClient):
                     or ""
                 ).strip()
                 if open_order_id == normalized_order_id:
-                    return {
+                    if ignored_warnings.get(normalized_order_id):
+                        self.clear_order_error(normalized_order_id)
+                    result = {
                         "ok": True,
                         "order_id": normalized_order_id,
                         "source": "open_orders",
                         "order": dict(open_order),
                     }
+                    if ignored_warnings.get(normalized_order_id):
+                        result["ignored_warnings"] = list(ignored_warnings[normalized_order_id])
+                    return result
 
             time.sleep(max(0.05, float(poll_interval or 0.2)))
 
         order_error = self.get_order_error(normalized_order_id)
         if order_error:
-            return {
-                "ok": False,
-                "order_id": normalized_order_id,
-                "error": str(order_error.get("message") or "order_rejected"),
-                "details": order_error,
-            }
+            if _order_error_is_submission_warning(order_error):
+                _remember_submission_warning(ignored_warnings, normalized_order_id, order_error)
+            else:
+                return {
+                    "ok": False,
+                    "order_id": normalized_order_id,
+                    "error": str(order_error.get("message") or "order_rejected"),
+                    "details": order_error,
+                }
 
-        return {
+        result = {
             "ok": False,
             "order_id": normalized_order_id,
             "error": "order_submission_unconfirmed",
         }
+        if ignored_warnings.get(normalized_order_id):
+            result["ignored_warnings"] = list(ignored_warnings[normalized_order_id])
+        return result
 
     def await_order_submissions(
         self,
@@ -1957,6 +2050,20 @@ class _IBGatewayApp(EWrapper, EClient):
         request_timeout = max(1, min(3, int(max(1.0, float(timeout or 0.0)))))
         confirmed: dict[str, dict] = {}
         failures: dict[str, dict] = {}
+        ignored_warnings: dict[str, list[dict]] = {}
+
+        def confirm_order(order_id: str, *, source: str, order: dict) -> None:
+            if ignored_warnings.get(order_id):
+                self.clear_order_error(order_id)
+            payload = {
+                "ok": True,
+                "order_id": order_id,
+                "source": source,
+                "order": dict(order),
+            }
+            if ignored_warnings.get(order_id):
+                payload["ignored_warnings"] = list(ignored_warnings[order_id])
+            confirmed[order_id] = payload
 
         while time.time() < deadline and len(confirmed) + len(failures) < len(expected_ids):
             for order_id in expected_ids:
@@ -1964,21 +2071,19 @@ class _IBGatewayApp(EWrapper, EClient):
                     continue
                 order_error = self.get_order_error(order_id)
                 if order_error:
-                    failures[order_id] = {
-                        "ok": False,
-                        "order_id": order_id,
-                        "error": str(order_error.get("message") or "order_rejected"),
-                        "details": order_error,
-                    }
-                    continue
+                    if _order_error_is_submission_warning(order_error):
+                        _remember_submission_warning(ignored_warnings, order_id, order_error)
+                    else:
+                        failures[order_id] = {
+                            "ok": False,
+                            "order_id": order_id,
+                            "error": str(order_error.get("message") or "order_rejected"),
+                            "details": order_error,
+                        }
+                        continue
                 snapshot = self.get_order_snapshot(order_id)
                 if snapshot:
-                    confirmed[order_id] = {
-                        "ok": True,
-                        "order_id": order_id,
-                        "source": "snapshot",
-                        "order": snapshot,
-                    }
+                    confirm_order(order_id, source="snapshot", order=snapshot)
 
             missing_ids = [
                 order_id
@@ -2001,12 +2106,7 @@ class _IBGatewayApp(EWrapper, EClient):
                     or ""
                 ).strip()
                 if open_order_id in missing_ids:
-                    confirmed[open_order_id] = {
-                        "ok": True,
-                        "order_id": open_order_id,
-                        "source": "open_orders",
-                        "order": dict(open_order),
-                    }
+                    confirm_order(open_order_id, source="open_orders", order=dict(open_order))
 
             time.sleep(max(0.05, float(poll_interval or 0.2)))
 
@@ -2015,12 +2115,15 @@ class _IBGatewayApp(EWrapper, EClient):
                 continue
             order_error = self.get_order_error(order_id)
             if order_error:
-                failures[order_id] = {
-                    "ok": False,
-                    "order_id": order_id,
-                    "error": str(order_error.get("message") or "order_rejected"),
-                    "details": order_error,
-                }
+                if _order_error_is_submission_warning(order_error):
+                    _remember_submission_warning(ignored_warnings, order_id, order_error)
+                else:
+                    failures[order_id] = {
+                        "ok": False,
+                        "order_id": order_id,
+                        "error": str(order_error.get("message") or "order_rejected"),
+                        "details": order_error,
+                    }
 
         missing_ids = [
             order_id
@@ -2035,6 +2138,7 @@ class _IBGatewayApp(EWrapper, EClient):
                 "orders": confirmed,
                 "failures": failures,
                 "missing_order_ids": missing_ids,
+                "ignored_warnings": ignored_warnings,
             }
         if missing_ids:
             return {
@@ -2043,12 +2147,14 @@ class _IBGatewayApp(EWrapper, EClient):
                 "orders": confirmed,
                 "failures": failures,
                 "missing_order_ids": missing_ids,
+                "ignored_warnings": ignored_warnings,
             }
         return {
             "ok": True,
             "orders": confirmed,
             "failures": {},
             "missing_order_ids": [],
+            "ignored_warnings": ignored_warnings,
         }
 
     def status(self) -> dict:
@@ -2785,8 +2891,18 @@ class BrokerAdapter:
     def get_account_pnl(self, account: str = "", model_code: str = "") -> Dict[str, Any]:
         return self.client.request_account_pnl(account=account, model_code=model_code)
 
-    def list_open_orders(self, *, include_all: bool = False, force: bool = False) -> List[dict]:
-        return self.client.request_open_orders(include_all=include_all, force=force)
+    def list_open_orders(self, *, include_all: bool = False, force: bool = False, timeout: float | None = None) -> List[dict]:
+        request_open_orders = getattr(self.client, "request_open_orders", None)
+        if not callable(request_open_orders):
+            return []
+        request_timeout = max(1, min(5, int(max(1.0, float(timeout or DEFAULT_CONNECT_TIMEOUT_SECONDS)))))
+        try:
+            return list(request_open_orders(timeout=request_timeout, include_all=include_all, force=force) or [])
+        except TypeError:
+            try:
+                return list(request_open_orders(include_all=include_all, force=force) or [])
+            except TypeError:
+                return list(request_open_orders(include_all=include_all) or [])
 
     def list_recent_fills(self) -> List[dict]:
         return self.client.request_executions()
@@ -2810,6 +2926,10 @@ class BrokerAdapter:
             code = 0
         message = str(order_error.get("message") or order_error.get("error") or "").strip().lower()
         return code == 202 or "order canceled" in message or "order cancelled" in message
+
+    @staticmethod
+    def _order_error_is_cancel_terminal_notice(order_error: dict | None) -> bool:
+        return _order_error_is_cancel_notice(order_error)
 
     @staticmethod
     def _order_error_is_stale_invalid_price_rejection(order_error: dict | None) -> bool:
@@ -2939,6 +3059,14 @@ class BrokerAdapter:
                         "ignored_errors": ignored_errors,
                     }
                 if self._order_error_is_stale_invalid_price_rejection(order_error):
+                    ignored_errors.append(dict(order_error))
+                    clearer = getattr(self.client, "clear_order_error", None)
+                    if callable(clearer):
+                        try:
+                            clearer(normalized_order_id)
+                        except Exception:
+                            pass
+                elif self._order_error_is_cancel_terminal_notice(order_error):
                     ignored_errors.append(dict(order_error))
                     clearer = getattr(self.client, "clear_order_error", None)
                     if callable(clearer):
@@ -3313,7 +3441,7 @@ class BrokerAdapter:
 
         submission_result = self.client.await_order_submissions(
             [str(order_ids[0]), str(order_ids[1]), str(order_ids[2])],
-            timeout=5.0,
+            timeout=BRACKET_SUBMISSION_CONFIRM_TIMEOUT_SECONDS,
             poll_interval=0.2,
         )
         if not submission_result.get("ok"):
@@ -3648,6 +3776,104 @@ class BrokerAdapter:
     def get_order_snapshot(self, order_id: str) -> dict:
         return self.client.get_order_snapshot(order_id)
 
+    def _await_orders_not_open(
+        self,
+        order_ids: Iterable[str],
+        *,
+        timeout: float = CANCEL_ALL_RECONCILE_TIMEOUT_SECONDS,
+        poll_interval: float = CANCEL_ALL_RECONCILE_POLL_INTERVAL_SECONDS,
+    ) -> dict:
+        remaining = {str(item or "").strip() for item in (order_ids or []) if str(item or "").strip()}
+        if not remaining:
+            return {"ok": True, "remaining_order_ids": [], "open_orders": [], "source": "empty"}
+
+        deadline = time.time() + max(1.0, float(timeout or 0.0))
+        last_open_orders: list[dict] = []
+        last_error = ""
+        filled_order_ids: set[str] = set()
+        ignored_errors: dict[str, list[dict]] = {}
+
+        while time.time() < deadline:
+            try:
+                open_orders = self.list_open_orders(include_all=True, force=True, timeout=5.0)
+                last_open_orders = [dict(item) for item in (open_orders or [])]
+                last_error = ""
+            except Exception as exc:
+                last_error = str(exc)
+                time.sleep(max(0.1, float(poll_interval or 1.0)))
+                continue
+
+            open_by_id = {
+                self._order_snapshot_id(item): dict(item)
+                for item in (open_orders or [])
+                if self._order_snapshot_id(item)
+            }
+            still_open: set[str] = set()
+            for order_id in list(remaining):
+                order_error = {}
+                getter = getattr(self.client, "get_order_error", None)
+                if callable(getter):
+                    try:
+                        order_error = dict(getter(order_id) or {})
+                    except Exception:
+                        order_error = {}
+                if order_error and (
+                    self._order_error_is_cancelled(order_error)
+                    or self._order_error_is_cancel_terminal_notice(order_error)
+                    or self._order_error_is_stale_invalid_price_rejection(order_error)
+                ):
+                    ignored_errors.setdefault(order_id, []).append(dict(order_error))
+                    clearer = getattr(self.client, "clear_order_error", None)
+                    if callable(clearer):
+                        try:
+                            clearer(order_id)
+                        except Exception:
+                            pass
+
+                snapshot = open_by_id.get(order_id) or {}
+                if not snapshot:
+                    getter_snapshot = getattr(self.client, "get_order_snapshot", None)
+                    if callable(getter_snapshot):
+                        try:
+                            snapshot = dict(getter_snapshot(order_id) or {})
+                        except Exception:
+                            snapshot = {}
+                status = self._order_snapshot_status(snapshot)
+                if status in {"FILLED", "EXECUTED"}:
+                    filled_order_ids.add(order_id)
+                    continue
+                if order_id in open_by_id and status not in {"CANCELED", "CANCELLED", "API_CANCELLED", "INACTIVE", "REJECTED", "EXPIRED"}:
+                    still_open.add(order_id)
+
+            remaining = still_open
+            if filled_order_ids:
+                return {
+                    "ok": False,
+                    "error": "order_filled_during_cancel_all",
+                    "filled_order_ids": sorted(filled_order_ids),
+                    "remaining_order_ids": sorted(remaining),
+                    "open_orders": last_open_orders,
+                    "ignored_errors": ignored_errors,
+                }
+            if not remaining:
+                return {
+                    "ok": True,
+                    "remaining_order_ids": [],
+                    "open_orders": last_open_orders,
+                    "ignored_errors": ignored_errors,
+                    "source": "open_orders_reconciled",
+                }
+            time.sleep(max(0.1, float(poll_interval or 1.0)))
+
+        return {
+            "ok": False,
+            "error": "order_cancel_unconfirmed",
+            "remaining_order_ids": sorted(remaining),
+            "open_orders": last_open_orders,
+            "last_error": last_error,
+            "ignored_errors": ignored_errors,
+        }
+
     def cancel_order(self, order_id: str) -> dict:
         started = time.perf_counter()
         try:
@@ -3663,7 +3889,11 @@ class BrokerAdapter:
                 duration_s=time.perf_counter() - started,
             )
             return {"ok": False, "error": str(exc)}
-        confirm_result = self.await_order_cancelled(str(order_id), timeout=3.0, poll_interval=0.2)
+        confirm_result = self.await_order_cancelled(
+            str(order_id),
+            timeout=CANCEL_CONFIRM_TIMEOUT_SECONDS,
+            poll_interval=0.2,
+        )
         if not confirm_result.get("ok"):
             record_order_event(
                 operation="cancel",
@@ -3686,16 +3916,96 @@ class BrokerAdapter:
         }
 
     def cancel_all_orders(self) -> dict:
-        orders = self.list_open_orders()
-        cancelled = 0
-        errors = []
+        started = time.perf_counter()
+        try:
+            orders = self.list_open_orders(include_all=True, force=True, timeout=5.0)
+        except Exception as exc:
+            record_order_event(
+                operation="cancel_all_orders",
+                result="error",
+                reason_code=exc.__class__.__name__,
+                duration_s=time.perf_counter() - started,
+            )
+            return {"ok": False, "cancelled": 0, "errors": [str(exc)], "error_details": [{"error": str(exc)}]}
+
+        active_order_ids: list[str] = []
+        skipped_terminal = 0
         for order in orders:
-            status = str(order.get("status") or "").strip().lower()
-            if status in {"filled", "cancelled", "canceled", "inactive"}:
+            order_id = self._order_snapshot_id(order)
+            if not order_id:
                 continue
-            result = self.cancel_order(str(order.get("orderId") or order.get("id") or ""))
-            if result.get("ok"):
-                cancelled += 1
+            status = self._order_snapshot_status(order)
+            if status in {"FILLED", "EXECUTED", "CANCELED", "CANCELLED", "API_CANCELLED", "INACTIVE", "REJECTED", "EXPIRED"}:
+                skipped_terminal += 1
+                continue
+            active_order_ids.append(order_id)
+
+        submitted_order_ids: list[str] = []
+        errors: list[str] = []
+        error_details: list[dict] = []
+        clearer = getattr(self.client, "clear_order_error", None)
+        for order_id in active_order_ids:
+            order_started = time.perf_counter()
+            try:
+                if callable(clearer):
+                    clearer(order_id)
+                self.client.cancel_open_order(order_id)
+                submitted_order_ids.append(order_id)
+            except Exception as exc:
+                error = str(exc)
+                errors.append(error or "cancel_failed")
+                error_details.append({"order_id": order_id, "error": error or "cancel_failed"})
+                record_order_event(
+                    operation="cancel",
+                    result="error",
+                    reason_code=exc.__class__.__name__,
+                    duration_s=time.perf_counter() - order_started,
+                )
+
+        reconcile = self._await_orders_not_open(submitted_order_ids) if submitted_order_ids else {"ok": True}
+        unconfirmed_ids = {
+            str(item or "").strip()
+            for item in (reconcile.get("remaining_order_ids") or [])
+            if str(item or "").strip()
+        }
+        filled_ids = {
+            str(item or "").strip()
+            for item in (reconcile.get("filled_order_ids") or [])
+            if str(item or "").strip()
+        }
+        for order_id in submitted_order_ids:
+            if order_id in unconfirmed_ids or order_id in filled_ids:
+                reason = "order_filled_during_cancel_all" if order_id in filled_ids else "order_cancel_unconfirmed"
+                errors.append(reason)
+                error_details.append({"order_id": order_id, "error": reason})
+                record_order_event(
+                    operation="cancel",
+                    result="unconfirmed",
+                    reason_code=reason,
+                    duration_s=time.perf_counter() - started,
+                )
             else:
-                errors.append(result.get("error") or "cancel_failed")
-        return {"ok": not errors, "cancelled": cancelled, "errors": errors}
+                record_order_event(
+                    operation="cancel",
+                    result="ok",
+                    duration_s=time.perf_counter() - started,
+                )
+
+        cancelled = max(0, len(submitted_order_ids) - len(unconfirmed_ids) - len(filled_ids))
+        result_ok = not errors and bool(reconcile.get("ok", True))
+        record_order_event(
+            operation="cancel_all_orders",
+            result="ok" if result_ok else "error",
+            reason_code=str(reconcile.get("error") or (errors[0] if errors else "ok")),
+            duration_s=time.perf_counter() - started,
+        )
+        return {
+            "ok": result_ok,
+            "cancelled": cancelled,
+            "requested": len(active_order_ids),
+            "submitted": len(submitted_order_ids),
+            "skipped_terminal": skipped_terminal,
+            "errors": errors,
+            "error_details": error_details,
+            "reconcile": reconcile,
+        }

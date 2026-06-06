@@ -6,8 +6,8 @@ quant.lzw-glory.top {
             flush_interval -1
             header_up X-Real-IP {remote_host}
             transport http {
-                read_timeout 300s
-                write_timeout 300s
+                read_timeout 900s
+                write_timeout 900s
                 dial_timeout 30s
             }
         }

@@ -627,6 +627,7 @@ class TradingServiceSignalsMixin:
                             order_family_type="bracket_oco",
                             entry_algo_strategy="Adaptive" if bool(extra.get("tv_entry_adaptive_enabled")) else "",
                             entry_adaptive_priority=str(extra.get("tv_entry_adaptive_priority") or ""),
+                            buying_power_guard=buying_power_guard,
                         )
                 else:
                     harvest_settings = self._harvest_entry_settings()
@@ -660,6 +661,7 @@ class TradingServiceSignalsMixin:
                             signal_id=signal_id,
                             trade_group_id=trade_group_id,
                             settings=harvest_settings,
+                            buying_power_guard=buying_power_guard,
                         )
 
                 submission_duration = time.perf_counter() - submission_started
@@ -687,11 +689,16 @@ class TradingServiceSignalsMixin:
                                 symbol,
                                 order_flow_err,
                             )
-                    if buying_power_guard.get("enabled"):
-                        result["buying_power_guard"] = dict(buying_power_guard)
+                    submitted_buying_power_guard = (
+                        dict(result.get("buying_power_guard"))
+                        if isinstance(result.get("buying_power_guard"), dict)
+                        else dict(buying_power_guard)
+                    )
+                    if submitted_buying_power_guard.get("enabled"):
+                        result["buying_power_guard"] = dict(submitted_buying_power_guard)
                         self._notify_buying_power_guard(
                             sig,
-                            buying_power_guard,
+                            submitted_buying_power_guard,
                             level="info",
                             event_type="account_order",
                             force=True,
@@ -731,10 +738,24 @@ class TradingServiceSignalsMixin:
                         stage="order_submission",
                         signal_source=str(sig.get("source") or "unknown"),
                         result="error",
-                        reason_code="protection_incomplete" if result.get("protection_incomplete") else "submit_failed",
+                        reason_code=str(result.get("error") or "")
+                        if result.get("error") in {"buying_power_blocked", "buying_power_unavailable"}
+                        else "protection_incomplete"
+                        if result.get("protection_incomplete")
+                        else "submit_failed",
                         duration_s=submission_duration,
                     )
-                    self._mark_signal_submit_failed(sig, result)
+                    result_guard = result.get("buying_power_guard") if isinstance(result.get("buying_power_guard"), dict) else {}
+                    if result.get("error") == "buying_power_blocked" and result_guard:
+                        self._handle_buying_power_guard_state_transition(sig, result_guard)
+                        self._mark_signal_buying_power_blocked(sig, result_guard)
+                        self._notify_buying_power_guard(sig, result_guard, level="error", event_type="alert", force=True)
+                    elif result.get("error") == "buying_power_unavailable" and result_guard:
+                        self._handle_buying_power_guard_state_transition(sig, result_guard)
+                        self._mark_signal_buying_power_unavailable(sig, result_guard)
+                        self._notify_buying_power_guard(sig, result_guard, level="error", event_type="alert", force=True)
+                    else:
+                        self._mark_signal_submit_failed(sig, result)
 
                 self.signal_router.mark_processed(signal_id)
                 finalized = True
@@ -2699,6 +2720,10 @@ class TradingServiceSignalsMixin:
             config=getattr(self, "config", None),
             environment=service_mod.ENVIRONMENT,
             requested_exposure=exposure,
+        )
+        guard["account_remaining_buying_power"] = self._safe_float(
+            ((snapshot or {}).get("summary") or {}).get("remaining_buying_power"),
+            self._safe_float(((snapshot or {}).get("summary") or {}).get("buying_power"), 0.0),
         )
         merge_reservation_snapshot_into_guard(guard, reservation_snapshot)
         snapshot_guard = (snapshot or {}).get("buying_power_guard")

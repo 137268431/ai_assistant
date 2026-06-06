@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import logging
-from typing import Dict, Iterable, List, Optional
+import threading
+from typing import Any, Dict, Iterable, List, Optional
 
 from ibkr_compute.broker import BrokerAdapter
 
@@ -16,6 +18,60 @@ class ConidResolver:
         self.broker = broker or BrokerAdapter()
         self._cache: Dict[str, int] = {}
         self._validated_symbols: set[str] = set()
+        self._bar_cache_checked_symbols: set[str] = set()
+        self._lock = threading.RLock()
+
+    @staticmethod
+    def _coerce_conid(value: Any) -> int:
+        try:
+            conid = int(float(value or 0))
+        except (TypeError, ValueError):
+            conid = 0
+        return conid if conid > 0 else 0
+
+    @classmethod
+    def _extract_conid_from_record(cls, record: dict | None) -> int:
+        if not isinstance(record, dict):
+            return 0
+        for key in ("conid", "conidEx"):
+            conid = cls._coerce_conid(record.get(key))
+            if conid > 0:
+                return conid
+        extra = record.get("extra")
+        if isinstance(extra, str):
+            try:
+                extra = json.loads(extra)
+            except Exception:
+                extra = {}
+        if isinstance(extra, dict):
+            for key in ("conid", "conidEx"):
+                conid = cls._coerce_conid(extra.get(key))
+                if conid > 0:
+                    return conid
+        return 0
+
+    def _load_conid_from_bars(self, symbol: str) -> int:
+        if not self.pb_client or not symbol or symbol in self._bar_cache_checked_symbols:
+            return 0
+        self._bar_cache_checked_symbols.add(symbol)
+        try:
+            rows = self.pb_client.get_records(
+                "ibkr_bars",
+                filter=f'symbol = "{symbol}" && environment = "live"',
+                sort="-bar_time_ms",
+                per_page=5,
+            )
+        except Exception as exc:
+            logger.debug("Failed to read bar conid cache for %s: %s", symbol, exc)
+            return 0
+        for row in rows or []:
+            conid = self._extract_conid_from_record(row)
+            if conid > 0:
+                self._cache[symbol] = conid
+                self._validated_symbols.add(symbol)
+                self._save_to_pb(symbol, conid)
+                return conid
+        return 0
 
     def load_cache_from_pb(self):
         if not self.pb_client:
@@ -52,41 +108,47 @@ class ConidResolver:
         normalized = str(symbol or "").strip().upper()
         if not normalized:
             return None
-        cached = self._cache.get(normalized)
-        if cached:
-            if normalized in self._validated_symbols:
-                return int(cached)
+        with self._lock:
+            cached = self._cache.get(normalized)
+            if cached:
+                if normalized in self._validated_symbols:
+                    return int(cached)
+                try:
+                    contract = self.broker.resolve_contract(symbol=normalized, conid=int(cached))
+                except Exception as exc:
+                    logger.warning("Cached conid validation failed for %s=%s: %s", normalized, cached, exc)
+                    contract = None
+                resolved_conid = int((contract or {}).get("conid") or 0)
+                if resolved_conid > 0:
+                    self._validated_symbols.add(normalized)
+                    if resolved_conid != int(cached):
+                        logger.warning(
+                            "Corrected cached conid for %s: %s -> %s",
+                            normalized,
+                            cached,
+                            resolved_conid,
+                        )
+                        self._cache[normalized] = resolved_conid
+                        self._save_to_pb(normalized, resolved_conid)
+                    return resolved_conid
+                self._cache.pop(normalized, None)
+
+            bar_conid = self._load_conid_from_bars(normalized)
+            if bar_conid > 0:
+                return bar_conid
+
             try:
-                contract = self.broker.resolve_contract(symbol=normalized, conid=int(cached))
+                contract = self.broker.resolve_contract(symbol=normalized)
             except Exception as exc:
-                logger.warning("Cached conid validation failed for %s=%s: %s", normalized, cached, exc)
-                contract = None
-            resolved_conid = int((contract or {}).get("conid") or 0)
-            if resolved_conid > 0:
+                logger.warning("Conid resolve failed for %s: %s", normalized, exc)
+                return None
+            conid = int((contract or {}).get("conid") or 0)
+            if conid > 0:
+                self._cache[normalized] = conid
                 self._validated_symbols.add(normalized)
-                if resolved_conid != int(cached):
-                    logger.warning(
-                        "Corrected cached conid for %s: %s -> %s",
-                        normalized,
-                        cached,
-                        resolved_conid,
-                    )
-                    self._cache[normalized] = resolved_conid
-                    self._save_to_pb(normalized, resolved_conid)
-                return resolved_conid
-            self._cache.pop(normalized, None)
-        try:
-            contract = self.broker.resolve_contract(symbol=normalized)
-        except Exception as exc:
-            logger.warning("Conid resolve failed for %s: %s", normalized, exc)
+                self._save_to_pb(normalized, conid)
+                return conid
             return None
-        conid = int((contract or {}).get("conid") or 0)
-        if conid > 0:
-            self._cache[normalized] = conid
-            self._validated_symbols.add(normalized)
-            self._save_to_pb(normalized, conid)
-            return conid
-        return None
 
     def resolve_bulk(self, symbols: Iterable[str]) -> Dict[str, int]:
         result: Dict[str, int] = {}

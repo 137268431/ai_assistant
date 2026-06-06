@@ -54,9 +54,10 @@ class OrderProbePlan:
     stop_loss_price: float
     target_notional: float = 0.0
     requested_exposure: float = 0.0
+    conid: int = 0
 
     def payload(self) -> dict[str, Any]:
-        return {
+        payload = {
             "symbol": self.symbol,
             "direction": self.direction,
             "quantity": self.quantity,
@@ -65,10 +66,14 @@ class OrderProbePlan:
             "take_profit_price": self.take_profit_price,
             "stop_loss_price": self.stop_loss_price,
         }
+        if int(self.conid or 0) > 0:
+            payload["conid"] = int(self.conid)
+        return payload
 
     def summary(self) -> dict[str, Any]:
         return {
             "symbol": self.symbol,
+            "conid": int(self.conid or 0),
             "direction": self.direction,
             "quantity": self.quantity,
             "reference_price": self.reference_price,
@@ -137,6 +142,85 @@ def quantity_for_target_notional(entry_price: float, target_notional: float, fal
         quantity = max(1, int(ceil(target / float(entry_price))))
     exposure = round(float(entry_price) * quantity, 4)
     return quantity, exposure
+
+
+def _extract_conid_from_bar_row(row: dict[str, Any] | None) -> int:
+    if not isinstance(row, dict):
+        return 0
+    for key in ("conid", "conidEx"):
+        try:
+            conid = int(float(row.get(key) or 0))
+        except (TypeError, ValueError):
+            conid = 0
+        if conid > 0:
+            return conid
+    extra = row.get("extra")
+    if isinstance(extra, str):
+        try:
+            extra = json.loads(extra)
+        except Exception:
+            extra = {}
+    if isinstance(extra, dict):
+        for key in ("conid", "conidEx"):
+            try:
+                conid = int(float(extra.get(key) or 0))
+            except (TypeError, ValueError):
+                conid = 0
+            if conid > 0:
+                return conid
+    return 0
+
+
+def fetch_latest_reference_context(args: argparse.Namespace, symbol: str) -> tuple[float, int]:
+    normalized = fee_probe.normalize_symbol(symbol)
+    price_override = float(getattr(args, "reference_price", 0.0) or 0.0)
+    rows: list[dict[str, Any]] = []
+    try:
+        safe_symbol = fee_probe.sqlite_literal(normalized)
+        rows = fee_probe.run_remote_sql(
+            args,
+            f"""
+            select close, environment, interval, us_time, bar_time_ms, extra
+            from ibkr_bars
+            where symbol = {safe_symbol}
+              and close > 0
+              and environment in ('live', 'paper')
+            order by bar_time_ms desc
+            limit 1;
+            """,
+        )
+    except Exception:
+        rows = []
+    row = rows[0] if rows else {}
+    if price_override > 0:
+        price = price_override
+    else:
+        price = fee_probe.to_float(row.get("close"), 0.0) if row else 0.0
+        if price <= 0:
+            # Keep the historical behavior and error message for callers/tests that mock this helper.
+            price = fee_probe.fetch_latest_reference_price(args, normalized)
+    conid = _extract_conid_from_bar_row(row)
+    return float(price), int(conid or 0)
+
+
+def fetch_latest_conid(args: argparse.Namespace, symbol: str) -> int:
+    normalized = fee_probe.normalize_symbol(symbol)
+    try:
+        safe_symbol = fee_probe.sqlite_literal(normalized)
+        rows = fee_probe.run_remote_sql(
+            args,
+            f"""
+            select extra
+            from ibkr_bars
+            where symbol = {safe_symbol}
+              and environment in ('live', 'paper')
+            order by bar_time_ms desc
+            limit 1;
+            """,
+        )
+    except Exception:
+        return 0
+    return _extract_conid_from_bar_row(rows[0] if rows else {})
 
 
 def artifact_dir(args: argparse.Namespace) -> Path:
@@ -325,7 +409,7 @@ def select_probe_plan(args: argparse.Namespace) -> tuple[list[OrderProbePlan], l
             break
         try:
             fee_probe.check_clean_preflight(snapshot, symbol)
-            reference_price = fee_probe.fetch_latest_reference_price(args, symbol)
+            reference_price, conid = fetch_latest_reference_context(args, symbol)
             entry, tp, sl = build_non_marketable_bracket(
                 reference_price,
                 direction=args.direction,
@@ -351,6 +435,7 @@ def select_probe_plan(args: argparse.Namespace) -> tuple[list[OrderProbePlan], l
                 stop_loss_price=sl,
                 target_notional=round(float(getattr(args, "target_notional_per_order", 0.0) or 0.0), 4),
                 requested_exposure=requested_exposure,
+                conid=conid,
             )
         )
     summary = {
@@ -389,6 +474,14 @@ def load_probe_plan(args: argparse.Namespace) -> tuple[list[OrderProbePlan], lis
             tp = round_price(float(item.get("take_profit_price") or 0.0))
             sl = round_price(float(item.get("stop_loss_price") or 0.0))
             quantity = max(1, int(float(item.get("quantity") or 0)))
+            conid = int(float(item.get("conid") or 0))
+            target_notional = float(getattr(args, "target_notional_per_order", 0.0) or item.get("target_notional") or 0.0)
+            if target_notional > 0:
+                quantity, requested_exposure = quantity_for_target_notional(entry, target_notional, quantity)
+            else:
+                requested_exposure = round(float(item.get("requested_exposure") or entry * quantity), 4)
+            if conid <= 0:
+                conid = fetch_latest_conid(args, symbol)
             if not symbol or entry <= 0 or tp <= 0 or sl <= 0:
                 raise GatewayProbeError("invalid_plan_item_prices")
         except Exception as exc:
@@ -403,8 +496,9 @@ def load_probe_plan(args: argparse.Namespace) -> tuple[list[OrderProbePlan], lis
                 entry_price=entry,
                 take_profit_price=tp,
                 stop_loss_price=sl,
-                target_notional=float(item.get("target_notional") or getattr(args, "target_notional_per_order", 0.0) or 0.0),
-                requested_exposure=round(float(item.get("requested_exposure") or entry * quantity), 4),
+                target_notional=target_notional,
+                requested_exposure=requested_exposure,
+                conid=conid,
             )
         )
     summary = {
@@ -600,6 +694,32 @@ def cancel_known_order_ids(args: argparse.Namespace, place_results: list[dict[st
     return cancel_results
 
 
+def cancel_all_orders(args: argparse.Namespace, *, source: str = "gateway_order_probe_cancel_all") -> list[dict[str, Any]]:
+    client = fee_probe.ApiClient(args.api_base_url, timeout=float(args.http_timeout_sec))
+    started = time.perf_counter()
+    try:
+        response = client.post("/api/custom/ibkr/orders/cancel_all", {"source": source}, action_params())
+        result = response.get("result") if isinstance(response.get("result"), dict) else {}
+        ok = bool(response.get("ok") and result.get("ok", True) is not False)
+        error = response.get("error") or result.get("error") or ""
+    except Exception as exc:
+        response = {}
+        result = {}
+        ok = False
+        error = str(exc)
+    return [
+        {
+            "ok": ok,
+            "source": "cancel_all",
+            "response": response,
+            "cancelled": result.get("cancelled"),
+            "errors": result.get("errors") if isinstance(result.get("errors"), list) else [],
+            "elapsed_s": round(time.perf_counter() - started, 3),
+            "error": error,
+        }
+    ]
+
+
 def cleanup_symbols(args: argparse.Namespace, plans: list[OrderProbePlan], place_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     client = fee_probe.ApiClient(args.api_base_url, timeout=float(args.http_timeout_sec))
     snapshot_client, snapshot_path = account_snapshot_client(args)
@@ -665,7 +785,10 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     try:
         place_results = submit_burst(args, plans)
         pending_observation = observe_pending_account_access(args, symbols)
-        cancel_results = cancel_known_order_ids(args, place_results)
+        if bool(getattr(args, "bulk_cancel_all", False)):
+            cancel_results = cancel_all_orders(args)
+        else:
+            cancel_results = cancel_known_order_ids(args, place_results)
     finally:
         if any(item.get("timed_out") for item in place_results):
             rescue_cancel_results = cancel_visible_orders_for_symbols(args, symbols)
@@ -748,12 +871,18 @@ def apply_stress_preset(args: argparse.Namespace) -> argparse.Namespace:
         args.submit_timeout_sec = max(float(args.submit_timeout_sec or 0.0), 90.0)
     args.skip_health = False
     args.skip_stability_gate = False
+    if target_orders >= 10:
+        args.bulk_cancel_all = True
     args.max_firing_alerts = 0.0
     args.max_broker_pending_requests = 0.0
     args.max_order_failures = 0.0
     args.max_signal_attention = 0.0
-    args.max_order_operation_p95 = min(float(args.max_order_operation_p95 or 10.0), 10.0)
-    args.max_gateway_serial_wait_p95 = min(float(args.max_gateway_serial_wait_p95 or 2.0), 2.0)
+    args.max_order_operation_p95 = max(float(args.max_order_operation_p95 or 10.0), 10.0)
+    if target_orders > 3:
+        expected_queue_wait = max(2.0, min(float(args.submit_timeout_sec or 90.0), float(target_orders) * 10.0))
+        args.max_gateway_serial_wait_p95 = max(float(args.max_gateway_serial_wait_p95 or 0.0), expected_queue_wait)
+    else:
+        args.max_gateway_serial_wait_p95 = max(float(args.max_gateway_serial_wait_p95 or 2.0), 2.0)
     args.max_gateway_serial_timeouts = 0.0
     return args
 
@@ -783,6 +912,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--burst-workers", type=int, default=1)
     parser.add_argument("--burst-spacing-seconds", type=float, default=0.0)
     parser.add_argument("--cancel-spacing-seconds", type=float, default=0.75)
+    parser.add_argument("--bulk-cancel-all", action="store_true", help="Use one paper cancel_all request for stress cleanup instead of cancelling every known order leg.")
     parser.add_argument("--post-place-sleep-seconds", type=float, default=1.0)
     parser.add_argument("--pending-hold-seconds", type=float, default=0.0, help="Keep accepted paper orders pending for this long while sampling account access before cancel.")
     parser.add_argument("--pending-hold-sample-interval-sec", type=float, default=5.0)

@@ -17,6 +17,19 @@ from ibkr_api.account.snapshot_shared import (
 )
 
 
+SIGNAL_RELATION_QUERY_CHUNK_SIZE = 25
+
+
+def _escape_filter_value(value: Any) -> str:
+    return to_text(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _chunks(values: list[str], size: int):
+    chunk_size = max(1, int(size or 1))
+    for index in range(0, len(values), chunk_size):
+        yield values[index:index + chunk_size]
+
+
 def build_relation_context(pb: Any, environment: str, symbols: list[str], normalized_order_records: list[dict[str, Any]]) -> dict[str, Any]:
     normalized_symbols = []
     seen: set[str] = set()
@@ -112,15 +125,30 @@ def build_relation_context(pb: Any, environment: str, symbols: list[str], normal
         if group_list:
             active_group_by_symbol[symbol] = group_list[0]
     signal_map: dict[str, dict[str, Any]] = {}
+    warnings: list[dict[str, Any]] = []
     if signal_id_list:
-        clauses = [f'signal_id = "{signal_id}"' for signal_id in signal_id_list]
-        signal_rows = pb.get_records(
-            "ibkr_signals",
-            filter=f'environment = "{environment}" && ({" || ".join(clauses)})',
-            sort="-updated",
-            per_page=400,
-            page=1,
-        ) or []
+        signal_rows: list[dict[str, Any]] = []
+        for chunk in _chunks(signal_id_list, SIGNAL_RELATION_QUERY_CHUNK_SIZE):
+            clauses = [f'signal_id = "{_escape_filter_value(signal_id)}"' for signal_id in chunk]
+            try:
+                rows = pb.get_records(
+                    "ibkr_signals",
+                    filter=f'environment = "{_escape_filter_value(environment)}" && ({" || ".join(clauses)})',
+                    sort="-updated",
+                    per_page=max(100, min(400, len(chunk) * 2)),
+                    page=1,
+                ) or []
+            except Exception as exc:
+                warnings.append(
+                    {
+                        "source": "ibkr_signals",
+                        "reason": "relation_signal_lookup_failed",
+                        "chunk_size": len(chunk),
+                        "error": to_text(exc)[:240],
+                    }
+                )
+                continue
+            signal_rows.extend(row for row in rows if isinstance(row, dict))
         for row in signal_rows:
             if not isinstance(row, dict):
                 continue
@@ -131,7 +159,7 @@ def build_relation_context(pb: Any, environment: str, symbols: list[str], normal
             existing = signal_map.get(signal_id)
             if existing is None or to_int(normalized_signal.get("status_weight"), 0) >= to_int(existing.get("status_weight"), 0) or to_int(normalized_signal.get("updated_ms"), 0) >= to_int(existing.get("updated_ms"), 0):
                 signal_map[signal_id] = normalized_signal
-    return {"activeGroupBySymbol": active_group_by_symbol, "signalMap": signal_map}
+    return {"activeGroupBySymbol": active_group_by_symbol, "signalMap": signal_map, "warnings": warnings}
 
 
 __all__ = ["build_relation_context"]

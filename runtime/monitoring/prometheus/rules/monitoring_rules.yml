@@ -105,8 +105,8 @@ groups:
       summary: Inbound HTTP 5xx ratio is high
       description: service={{ $labels.service }} route={{ $labels.route }}.
   - alert: HTTPServerP95LatencyHigh
-    expr: (histogram_quantile(0.95, sum by (le, service, route) (rate(ibkr_http_server_request_duration_seconds_bucket{route!~"/health|/status|/ibkr/status|/api/custom/ibkr/statusz|/api/custom/system/summaryz|/api/custom/system/monitorz|/api/custom/system/storagez"}[5m])))
-      > 5) and (sum by (service, route) (increase(ibkr_http_server_requests_total{route!~"/health|/status|/ibkr/status|/api/custom/ibkr/statusz|/api/custom/system/summaryz|/api/custom/system/monitorz|/api/custom/system/storagez"}[5m]))
+    expr: (histogram_quantile(0.95, sum by (le, service, route) (rate(ibkr_http_server_request_duration_seconds_bucket{route!~"/health|/status|/ibkr/status|/api/custom/ibkr/statusz|/api/custom/system/summaryz|/api/custom/system/monitorz|/api/custom/system/storagez|/ibkr/orders/.*|/api/custom/ibkr/orders/.*"}[5m])))
+      > 5) and (sum by (service, route) (increase(ibkr_http_server_requests_total{route!~"/health|/status|/ibkr/status|/api/custom/ibkr/statusz|/api/custom/system/summaryz|/api/custom/system/monitorz|/api/custom/system/storagez|/ibkr/orders/.*|/api/custom/ibkr/orders/.*"}[5m]))
       > 20)
     for: 5m
     labels:
@@ -150,7 +150,7 @@ groups:
         }}.
   - alert: OrderCommandFailuresHigh
     expr: sum by (service, environment, operation, order_family_type, result, reason_code)
-      (increase(ibkr_order_events_total{result!~"ok|synced|seen"}[5m])) > 0
+      (increase(ibkr_order_events_total{operation=~"place_bracket|place_entry|place_take_profit|place_stop_loss|place_bracket_order|place_market_close|adjust_stop_loss|adjust_take_profit|cancel_order|cancel_all_orders|cancel_entry|cancel_take_profit|cancel_stop_loss|modify_manual|modify_order|ibapi_place|ibapi_cancel|modify|cancel", result!~"ok|synced|seen"}[5m])) > 0
     for: 2m
     labels:
       severity: warning
@@ -160,7 +160,7 @@ groups:
         }} result={{ $labels.result }} reason={{ $labels.reason_code }}.
   - alert: OrderOperationP95LatencyHigh
     expr: histogram_quantile(0.95, sum by (le, service, environment, operation, result)
-      (rate(ibkr_order_operation_duration_seconds_bucket{operation=~"place_bracket|place_entry|place_take_profit|place_stop_loss|place_bracket_order|place_market_close|adjust_stop_loss|adjust_take_profit|cancel_order|cancel_all_orders|cancel_entry|cancel_take_profit|cancel_stop_loss|modify_manual|modify_order|ibapi_place|ibapi_cancel|modify|cancel"}[5m]))) > 2
+      (rate(ibkr_order_operation_duration_seconds_bucket{operation=~"place_bracket|place_entry|place_take_profit|place_stop_loss|place_bracket_order|place_market_close|adjust_stop_loss|adjust_take_profit|cancel_order|cancel_all_orders|cancel_entry|cancel_take_profit|cancel_stop_loss|modify_manual|modify_order|ibapi_place|ibapi_cancel|modify|cancel"}[5m]))) > 30
     for: 5m
     labels:
       severity: warning
@@ -169,7 +169,7 @@ groups:
       description: operation={{ $labels.operation }} result={{ $labels.result }}.
   - alert: GatewayOrderSerialQueueWaitHigh
     expr: histogram_quantile(0.95, sum by (le, service, environment, operation, result)
-      (rate(ibkr_gateway_order_serial_queue_wait_seconds_bucket[5m]))) > 2
+      (rate(ibkr_gateway_order_serial_queue_wait_seconds_bucket[5m]))) > 450
     for: 3m
     labels:
       severity: warning

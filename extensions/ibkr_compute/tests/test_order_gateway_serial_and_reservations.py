@@ -151,6 +151,64 @@ class GatewaySerialAndReservationTest(unittest.TestCase):
         self.assertEqual("blocked", guard["state"])
         self.assertEqual(6000.0, guard["remaining_after"])
 
+    def test_gateway_gate_rechecks_stale_buying_power_guard_against_latest_reservations(self):
+        class _IncrementingBroker(_BracketBroker):
+            def place_bracket_order(self, **kwargs):
+                base = 301 + len(self.calls) * 10
+                self.order_ids = [str(base), str(base + 1), str(base + 2)]
+                return super().place_bracket_order(**kwargs)
+
+        pb = _StatePB()
+        store = BuyingPowerReservationStore(pb, environment="paper")
+        config = _Config({"ibkr_buying_power_guard_enabled": "true"})
+        broker = _IncrementingBroker()
+        placer = OrderPlacer(
+            pb_client=pb,
+            config=config,
+            environment="paper",
+            broker=broker,
+            reservation_store=store,
+        )
+        stale_guard = build_buying_power_guard(
+            {"buying_power": 19000.0, "net_liquidation": 100000.0},
+            config=config,
+            environment="paper",
+            requested_exposure=5000.0,
+        )
+
+        first = placer.place_bracket_order(
+            conid=123,
+            symbol="AAPL",
+            direction="long",
+            quantity=50,
+            entry_price=100.0,
+            take_profit_price=104.0,
+            stop_loss_price=98.0,
+            signal_id="sig-a",
+            trade_group_id="grp-a",
+            buying_power_guard=dict(stale_guard),
+        )
+        second = placer.place_bracket_order(
+            conid=456,
+            symbol="MSFT",
+            direction="long",
+            quantity=50,
+            entry_price=100.0,
+            take_profit_price=104.0,
+            stop_loss_price=98.0,
+            signal_id="sig-b",
+            trade_group_id="grp-b",
+            buying_power_guard=dict(stale_guard),
+        )
+
+        self.assertTrue(first["ok"])
+        self.assertFalse(second["ok"])
+        self.assertEqual("buying_power_blocked", second["error"])
+        self.assertEqual(1, len(broker.calls))
+        self.assertEqual(1, store.snapshot()["count"])
+        self.assertEqual(5000.0, second["buying_power_guard"]["local_reserved_exposure"])
+        self.assertEqual(9000.0, second["buying_power_guard"]["remaining_after"])
+
     def test_shared_gateway_gate_serializes_place_and_modify_operations(self):
         events = []
         started = threading.Event()

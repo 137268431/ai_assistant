@@ -168,6 +168,17 @@ from ibkr_api.signals.api import build_signals_ack_response, build_signals_pendi
 
 
 REQUEST_TIMEOUT_SECONDS = max(1.0, float(os.environ.get("IBKR_API_PROXY_TIMEOUT_SEC", "60")))
+ORDER_WRITE_PROXY_TIMEOUT_SECONDS = max(
+    REQUEST_TIMEOUT_SECONDS,
+    float(os.environ.get("IBKR_API_ORDER_WRITE_PROXY_TIMEOUT_SEC", "360") or "360"),
+)
+ORDER_WRITE_PROXY_PATHS = {
+    "/ibkr/orders/cancel",
+    "/ibkr/orders/cancel_all",
+    "/ibkr/orders/modify",
+    "/ibkr/orders/place",
+    "/ibkr/positions/close",
+}
 PB_BASE_URL = str(os.environ.get("PB_BASE_URL") or "http://127.0.0.1:8090").rstrip("/")
 COMPUTE_BASE_URL = str(os.environ.get("IBKR_COMPUTE_INTERNAL_URL") or "http://127.0.0.1:5100").rstrip("/")
 BACKTEST_BASE_URL = str(os.environ.get("IBKR_BACKTEST_INTERNAL_URL") or "http://127.0.0.1:5105").rstrip("/")
@@ -1030,12 +1041,19 @@ def _build_statusz_runtime_payload(
     )
 
 
+def _proxy_timeout_seconds(path: str) -> float:
+    normalized_path = "/" + str(path or "").strip().lstrip("/")
+    if normalized_path in ORDER_WRITE_PROXY_PATHS:
+        return ORDER_WRITE_PROXY_TIMEOUT_SECONDS
+    return REQUEST_TIMEOUT_SECONDS
+
+
 def _forward_request(base_url: str, path: str, *, params: list[tuple[str, str]] | None = None, json_body: Any = None) -> Response:
     return _forward_request_support(
         requests_module=requests,
         request_obj=request,
         jsonify_fn=jsonify,
-        request_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
+        request_timeout_seconds=_proxy_timeout_seconds(path),
         forwarded_request_headers=FORWARDED_REQUEST_HEADERS,
         build_response_from_upstream_fn=_build_response_from_upstream,
         build_service_topology_fn=build_service_topology,

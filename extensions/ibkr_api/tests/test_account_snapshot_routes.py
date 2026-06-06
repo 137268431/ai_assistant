@@ -30,6 +30,7 @@ if "flask" not in sys.modules:
     sys.modules["flask"] = flask_stub
 
 from ibkr_api.account.snapshot import build_account_snapshot_response, enrich_account_snapshot
+from ibkr_api.account.snapshot_relations import build_relation_context
 
 
 class _FakePB:
@@ -133,6 +134,43 @@ class AccountSnapshotRoutesTest(unittest.TestCase):
             calls[0]["params"],
         )
 
+    def test_build_account_snapshot_response_forwards_cache_bust_to_runtime(self):
+        calls = []
+
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            calls.append(list(params or []))
+            return {
+                "ok": True,
+                "status_code": 200,
+                "payload": {
+                    "ok": True,
+                    "environment": "paper",
+                    "summary": {},
+                    "positions": [],
+                    "orders": [],
+                    "live_open_orders": [],
+                    "counts": {},
+                },
+                "target_url": "http://runtime/ibkr/account",
+                "elapsed_ms": 1.0,
+                "timeout_s": timeout,
+            }
+
+        payload, status_code = build_account_snapshot_response(
+            _FakePB(rows={"orders": [], "ibkr_signals": []}),
+            payload={"broker_mode": "paper", "environment": "paper", "cache_bust": "123", "cache": "0"},
+            normalize_environment=lambda value, default="live": value or default,
+            request_json_request=request_json_request,
+            runtime_base_url="http://runtime",
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(
+            [("broker_mode", "paper"), ("environment", "paper"), ("cache_bust", "123"), ("cache", "0")],
+            calls[0],
+        )
+
     def test_enrich_account_snapshot_builds_reconciliation_fields(self):
         pb = _FakePB()
         payload = {
@@ -175,6 +213,46 @@ class AccountSnapshotRoutesTest(unittest.TestCase):
         self.assertEqual(1.23, enriched["live_open_orders"][0]["commission"])
         self.assertEqual(1.23, enriched["live_open_orders"][0]["pb_context"]["pb_commission"])
         self.assertEqual(1.23, enriched["matched_order_groups"][0]["commission"])
+
+    def test_relation_context_chunks_many_signal_ids_and_degrades_on_lookup_error(self):
+        order_records = [
+            {
+                "symbol": "AAPL",
+                "group_key": f"grp-{index}",
+                "trade_group_id": f"grp-{index}",
+                "entry_order_unique_id": f"entry-{index}",
+                "signal_id": f"sig-{index}",
+                "updated_ms": index,
+                "status_weight": 80,
+                "status": "Submitted",
+                "role": "entry",
+                "relation_status": "active",
+                "filled_qty": 0,
+            }
+            for index in range(60)
+        ]
+
+        class ChunkingPB(_FakePB):
+            def __init__(self):
+                super().__init__({"orders": [], "ibkr_signals": []})
+                self.signal_filters = []
+
+            def get_records(self, collection, filter=None, sort=None, per_page=200, page=1):
+                if collection == "ibkr_signals":
+                    self.signal_filters.append(filter or "")
+                    if (filter or "").count("signal_id =") > 25:
+                        raise AssertionError("signal relation query was not chunked")
+                    raise RuntimeError("simulated_pb_400")
+                return super().get_records(collection, filter=filter, sort=sort, per_page=per_page, page=page)
+
+        pb = ChunkingPB()
+        context = build_relation_context(pb, "paper", ["AAPL"], order_records)
+
+        self.assertGreater(len(pb.signal_filters), 1)
+        self.assertEqual({}, context["signalMap"])
+        self.assertTrue(context["activeGroupBySymbol"]["AAPL"])
+        self.assertEqual(3, len(context["warnings"]))
+        self.assertTrue(all(item["reason"] == "relation_signal_lookup_failed" for item in context["warnings"]))
 
     def test_close_role_offsets_open_exposure_for_history_groups(self):
         pb = _FakePB(

@@ -600,7 +600,7 @@ def _build_ibkr_account_snapshot(
         except Exception as exc:
             error = str(exc) or "account_snapshot_refresh_failed"
             mark_cached_snapshot_refresh_error(api_app, cache_key, error)
-            cached = load_cached_snapshot(api_app, cache_key, allow_stale=True)
+            cached = load_cached_snapshot(api_app, cache_key, allow_stale=allow_stale)
             if cached:
                 return _stale_snapshot_after_error(cached, error)
             return _account_snapshot_error_payload(context, error)

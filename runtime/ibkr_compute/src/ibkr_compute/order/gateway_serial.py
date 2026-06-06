@@ -7,6 +7,7 @@ from typing import Any, Iterator
 
 
 _GLOBAL_ORDER_MUTATION_LOCK = threading.RLock()
+DEFAULT_GATEWAY_ORDER_SERIAL_TIMEOUT_SECONDS = 900.0
 
 
 class GatewayOrderMutationTimeout(RuntimeError):
@@ -75,7 +76,13 @@ class GatewayOrderMutationGate:
         return self._config_bool("ibkr_gateway_order_serial_enabled", True)
 
     def timeout_seconds(self) -> float:
-        return max(0.1, self._config_float("ibkr_gateway_order_serial_timeout_sec", 12.0))
+        return max(
+            0.1,
+            self._config_float(
+                "ibkr_gateway_order_serial_timeout_sec",
+                DEFAULT_GATEWAY_ORDER_SERIAL_TIMEOUT_SECONDS,
+            ),
+        )
 
     @contextmanager
     def hold(self, operation: str, **metadata: Any) -> Iterator[dict[str, Any]]:
@@ -114,4 +121,8 @@ class GatewayOrderMutationGate:
         }
 
 
-__all__ = ["GatewayOrderMutationGate", "GatewayOrderMutationTimeout"]
+__all__ = [
+    "DEFAULT_GATEWAY_ORDER_SERIAL_TIMEOUT_SECONDS",
+    "GatewayOrderMutationGate",
+    "GatewayOrderMutationTimeout",
+]

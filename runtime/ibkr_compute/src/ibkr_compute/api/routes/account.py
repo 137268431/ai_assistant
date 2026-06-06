@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from flask import jsonify
+from flask import jsonify, request
 
 from ibkr_compute.api.account.views import (
     _build_ibkr_account_snapshot,
@@ -11,7 +11,7 @@ from ibkr_compute.api.account.views import (
     _build_ibkr_order_history,
     _build_ibkr_place_order_response,
 )
-from ibkr_compute.api.route_request import get_query_arg_bool, get_query_arg_int
+from ibkr_compute.api.route_request import coerce_request_bool, get_query_arg_bool, get_query_arg_int
 from ibkr_compute.api.route_response import build_json_request_response, json_response
 from ibkr_compute.api.route_runtime import require_ibkr_service
 from ibkr_compute.api.runtime_proxy import register_runtime_proxy_route, should_proxy_runtime_requests
@@ -29,6 +29,16 @@ def _build_account_action_response(builder):
     if unavailable:
         return unavailable
     return build_json_request_response(lambda payload: builder(service, payload))
+
+
+def _account_snapshot_cache_bypass() -> bool:
+    if get_query_arg_bool("cache_bust", False):
+        return True
+    if request.args.get("_"):
+        return True
+    if "cache" in request.args and not coerce_request_bool(request.args.get("cache"), True):
+        return True
+    return False
 
 
 def register_account_routes(app):
@@ -50,7 +60,15 @@ def register_account_routes(app):
         if unavailable:
             return unavailable
         try:
-            return jsonify(_build_ibkr_account_snapshot(service, include_pnl=get_query_arg_bool("include_pnl", True)))
+            bypass_cache = _account_snapshot_cache_bypass()
+            return jsonify(
+                _build_ibkr_account_snapshot(
+                    service,
+                    include_pnl=get_query_arg_bool("include_pnl", True),
+                    force_refresh=bypass_cache,
+                    allow_stale=not bypass_cache,
+                )
+            )
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)}), 500
 
@@ -59,7 +77,13 @@ def register_account_routes(app):
         service, unavailable = _resolve_account_service()
         if unavailable:
             return unavailable
-        snapshot = _build_ibkr_account_snapshot(service, include_pnl=False)
+        bypass_cache = _account_snapshot_cache_bypass()
+        snapshot = _build_ibkr_account_snapshot(
+            service,
+            include_pnl=False,
+            force_refresh=bypass_cache,
+            allow_stale=not bypass_cache,
+        )
         return jsonify(
             {
                 "ok": True,
@@ -76,7 +100,13 @@ def register_account_routes(app):
         service, unavailable = _resolve_account_service()
         if unavailable:
             return unavailable
-        snapshot = _build_ibkr_account_snapshot(service, include_pnl=False)
+        bypass_cache = _account_snapshot_cache_bypass()
+        snapshot = _build_ibkr_account_snapshot(
+            service,
+            include_pnl=False,
+            force_refresh=bypass_cache,
+            allow_stale=not bypass_cache,
+        )
         return jsonify(
             {
                 "ok": True,

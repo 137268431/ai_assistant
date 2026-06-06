@@ -14,8 +14,12 @@ from ibkr_compute.core.time_utils import ET
 from typing import Any, Dict, List
 
 from ibkr_compute.broker import BrokerAdapter
+from ibkr_compute.api.account.buying_power_guard import build_buying_power_guard, estimate_entry_exposure
 from ibkr_compute.observability.prometheus import record_gateway_order_serial_event, record_order_event
-from ibkr_compute.order.buying_power_reservations import BuyingPowerReservationStore
+from ibkr_compute.order.buying_power_reservations import (
+    BuyingPowerReservationStore,
+    merge_reservation_snapshot_into_guard,
+)
 from ibkr_compute.order.gateway_serial import GatewayOrderMutationGate, GatewayOrderMutationTimeout
 
 logger = logging.getLogger(__name__)
@@ -132,6 +136,16 @@ class OrderPlacer:
                 reason_code=role_reason,
                 duration_s=duration_s,
             )
+
+    @staticmethod
+    def _safe_float(value: Any, default: float = 0.0) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return default
+        if number != number:
+            return default
+        return float(number)
 
     def _signal_lookup_environments(self) -> List[str]:
         candidates: List[str] = []
@@ -257,10 +271,36 @@ class OrderPlacer:
         }
 
     def place_bracket_order(self, *args, **kwargs) -> Dict[str, Any]:
+        pre_submit_buying_power_guard = kwargs.pop("buying_power_guard", None)
         metadata = self._bracket_call_metadata(args, kwargs)
         try:
             with self.gateway_gate.hold("place_bracket_order", **metadata) as gate_info:
+                buying_power_decision = self._recheck_buying_power_inside_gateway_gate(
+                    args,
+                    kwargs,
+                    pre_submit_guard=pre_submit_buying_power_guard,
+                )
+                if not buying_power_decision.get("ok"):
+                    result = dict(buying_power_decision)
+                    record_order_event(
+                        environment=self.environment,
+                        operation="place_bracket",
+                        order_family_type=str(kwargs.get("order_family_type") or "bracket_oco"),
+                        result="error",
+                        reason_code=str(result.get("error") or "buying_power_blocked"),
+                    )
+                    record_gateway_order_serial_event(
+                        environment=self.environment,
+                        operation="place_bracket_order",
+                        result="error",
+                        queue_wait_s=gate_info.get("queue_wait_s"),
+                    )
+                    return result
                 result = self._place_bracket_order_unlocked(*args, **kwargs)
+                if isinstance(buying_power_decision.get("buying_power_guard"), dict):
+                    result["buying_power_guard"] = dict(buying_power_decision["buying_power_guard"])
+                    if isinstance(pre_submit_buying_power_guard, dict):
+                        result["pre_submit_buying_power_guard"] = dict(pre_submit_buying_power_guard)
             record_gateway_order_serial_event(
                 environment=self.environment,
                 operation="place_bracket_order",
@@ -283,6 +323,99 @@ class OrderPlacer:
                 "gateway_operation": exc.operation,
                 **metadata,
             }
+
+    def _recheck_buying_power_inside_gateway_gate(
+        self,
+        args: tuple,
+        kwargs: dict,
+        *,
+        pre_submit_guard: Any = None,
+    ) -> Dict[str, Any]:
+        guard = pre_submit_guard if isinstance(pre_submit_guard, dict) else {}
+        if not guard:
+            order_extra = kwargs.get("order_extra")
+            if isinstance(order_extra, dict) and isinstance(order_extra.get("buying_power_guard"), dict):
+                guard = dict(order_extra.get("buying_power_guard") or {})
+        if not guard or not guard.get("enabled"):
+            return {"ok": True}
+
+        exposure = self._bracket_requested_exposure(args, kwargs)
+        if exposure <= 0:
+            recheck_guard = dict(guard)
+            recheck_guard["state"] = "blocked"
+            recheck_guard["reason"] = "buying_power_price_unavailable"
+            return {
+                "ok": False,
+                "error": "buying_power_blocked",
+                "reason": "buying_power_price_unavailable",
+                "buying_power_guard": recheck_guard,
+                "pre_submit_buying_power_guard": dict(guard),
+            }
+
+        snapshotter = getattr(self.reservation_store, "snapshot", None)
+        reservation_snapshot = {}
+        if callable(snapshotter):
+            try:
+                reservation_snapshot = snapshotter()
+            except Exception as exc:
+                logger.warning("Buying-power reservation snapshot failed inside order gate: %s", exc)
+                reservation_snapshot = {}
+
+        guard_remaining = self._safe_float(guard.get("remaining"), 0.0)
+        guard_local_reserved = self._safe_float(guard.get("local_reserved_exposure"), 0.0)
+        account_remaining = self._safe_float(
+            guard.get("account_remaining_buying_power"),
+            guard_remaining + guard_local_reserved,
+        )
+        current_reserved = self._safe_float((reservation_snapshot or {}).get("exposure"), 0.0)
+        adjusted_remaining = max(0.0, account_remaining - current_reserved)
+        summary = {
+            "buying_power": adjusted_remaining,
+            "remaining_buying_power": adjusted_remaining,
+            "net_liquidation": self._safe_float(guard.get("net_liquidation"), 0.0),
+        }
+        recheck_guard = build_buying_power_guard(
+            summary,
+            config=self.config,
+            environment=self.environment,
+            requested_exposure=exposure,
+        )
+        recheck_guard["account_remaining_buying_power"] = account_remaining
+        recheck_guard["pre_submit_remaining"] = guard.get("remaining")
+        recheck_guard["pre_submit_remaining_after"] = guard.get("remaining_after")
+        merge_reservation_snapshot_into_guard(recheck_guard, reservation_snapshot)
+        state = str(recheck_guard.get("state") or "").strip().lower()
+        if state in {"blocked", "unavailable"}:
+            error = "buying_power_unavailable" if state == "unavailable" else "buying_power_blocked"
+            return {
+                "ok": False,
+                "error": error,
+                "reason": str(recheck_guard.get("reason") or error),
+                "buying_power_guard": recheck_guard,
+                "pre_submit_buying_power_guard": dict(guard),
+                "gateway_order_gate_recheck": True,
+            }
+        return {
+            "ok": True,
+            "buying_power_guard": recheck_guard,
+            "pre_submit_buying_power_guard": dict(guard),
+            "gateway_order_gate_recheck": True,
+        }
+
+    def _bracket_requested_exposure(self, args: tuple, kwargs: dict) -> float:
+        names = ("conid", "symbol", "direction", "quantity", "entry_price", "take_profit_price", "stop_loss_price")
+        payload = {name: kwargs.get(name) for name in names if name in kwargs}
+        for index, name in enumerate(names):
+            if index < len(args) and name not in payload:
+                payload[name] = args[index]
+        return estimate_entry_exposure(
+            payload.get("quantity"),
+            payload.get("entry_price"),
+            payload.get("take_profit_price"),
+            payload.get("stop_loss_price"),
+            payload.get("direction"),
+            kwargs.get("entry_order_type") or "LMT",
+        )
 
     @staticmethod
     def _bracket_call_metadata(args: tuple, kwargs: dict) -> Dict[str, Any]:
@@ -526,6 +659,7 @@ class OrderPlacer:
         bracket_group: str = "",
         settings: Dict[str, Any] | None = None,
         entry_order_type: str = "LMT",
+        buying_power_guard: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         from ibkr_compute.core.intraday_harvest import (
             INTRADAY_VOLATILITY_HARVEST_PROFILE,
@@ -576,6 +710,7 @@ class OrderPlacer:
             trade_group_id=trade_group_id,
             bracket_group=bracket_group,
             order_family_type="partial_harvest_bracket" if partial_harvest else "bracket_oco",
+            buying_power_guard=buying_power_guard,
         )
         result["harvest_split"] = False
         result["partial_harvest"] = partial_harvest

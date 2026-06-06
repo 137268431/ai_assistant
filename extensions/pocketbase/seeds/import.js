@@ -167,7 +167,7 @@ const configData = [
   cfg('position_limit_max', '36', '36', '当日交易次数上限', '交易风控', 400, '当日成功下单计数达到该上限后，新的交易信号将被拒绝；0 表示不限制每日交易次数'),
   cfg('max_strategy_open_positions', '0', '0', '策略同时持仓上限', '交易风控', 402, '策略持仓与已提交未成交策略入场单合计达到该上限时，新信号保持 pending 等待容量；0 表示主要按动态购买力限制'),
   cfg('ibkr_gateway_order_serial_enabled', 'TRUE', 'TRUE', 'Gateway写操作串行', '交易风控', 402.01, '开启后开仓、平仓、撤单、改单共用进程内串行门，避免 IB Gateway 下单请求互相穿插'),
-  cfg('ibkr_gateway_order_serial_timeout_sec', '12', '12', 'Gateway写操作排队超时', '交易风控', 402.02, 'Gateway 写操作等待串行门的最长秒数；超时后返回 gateway_order_queue_timeout 且不发送 broker 请求'),
+  cfg('ibkr_gateway_order_serial_timeout_sec', '900', '900', 'Gateway写操作排队超时', '交易风控', 402.02, 'Gateway 写操作等待串行门的最长秒数；45 个并发 bracket 单会串行排队，超时后返回 gateway_order_queue_timeout 且不发送 broker 请求'),
   cfg('ibkr_buying_power_guard_enabled', 'TRUE', 'TRUE', '购买力阈值保护', '交易风控', 402.1, '开启后新开仓会基于 IBKR BuyingPower 计算下单后剩余购买力；低于禁止阈值时拒绝下单'),
   cfg('ibkr_buying_power_warn_usd', '25000', '25000', '购买力预警金额', '交易风控', 402.2, '下单后剩余 BuyingPower 低于 max(该金额, NetLiq 百分比阈值) 时发送预警但允许继续'),
   cfg('ibkr_buying_power_warn_pct_net_liq', '20', '20', '购买力预警净值%', '交易风控', 402.3, '预警阈值的 NetLiq 百分比部分；默认 20%'),

@@ -15,7 +15,7 @@ def _build_snapshot_action_response(
 ) -> tuple[dict, int]:
     if delay_seconds > 0:
         time.sleep(delay_seconds)
-    snapshot = _build_ibkr_account_snapshot(service)
+    snapshot = _build_ibkr_account_snapshot(service, force_refresh=True, allow_stale=False)
     payload = {
         "ok": bool((result or {}).get("ok")),
         "action": action,
@@ -24,7 +24,12 @@ def _build_snapshot_action_response(
     }
     if extra:
         payload.update(extra)
-    return payload, (200 if (result or {}).get("ok") else 500)
+    if (result or {}).get("ok"):
+        status = 200
+    else:
+        error = str((result or {}).get("error") or "")
+        status = 409 if error == "buying_power_blocked" else 503 if error == "buying_power_unavailable" else 500
+    return payload, status
 
 
 __all__ = ["_build_snapshot_action_response"]

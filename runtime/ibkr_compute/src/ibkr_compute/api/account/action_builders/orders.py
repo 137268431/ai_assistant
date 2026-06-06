@@ -293,6 +293,10 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
         environment=runtime_environment,
         requested_exposure=requested_exposure,
     )
+    buying_power_guard["account_remaining_buying_power"] = _safe_float(
+        ((pre_submit_snapshot or {}).get("summary") or {}).get("remaining_buying_power"),
+        _safe_float(((pre_submit_snapshot or {}).get("summary") or {}).get("buying_power"), 0.0),
+    )
     merge_reservation_snapshot_into_guard(buying_power_guard, reservation_snapshot)
     snapshot_guard = (pre_submit_snapshot or {}).get("buying_power_guard")
     _merge_snapshot_guard_metadata(buying_power_guard, snapshot_guard if isinstance(snapshot_guard, dict) else None)
@@ -432,6 +436,12 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
         use_paper=api_app._ibkr_service_uses_paper_account(service),
         signal_id=signal_id,
         entry_order_type=order_type,
+        buying_power_guard=buying_power_guard,
+    )
+    submitted_buying_power_guard = (
+        dict(result.get("buying_power_guard"))
+        if isinstance(result.get("buying_power_guard"), dict)
+        else dict(buying_power_guard)
     )
     if result.get("ok"):
         _notify_manual_buying_power_event(
@@ -442,7 +452,7 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
             symbol=symbol,
             direction=direction,
             quantity=quantity,
-            guard=buying_power_guard,
+            guard=submitted_buying_power_guard,
         )
     return _build_snapshot_action_response(
         service,
@@ -460,7 +470,7 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
             "take_profit_price": float(take_profit_price),
             "stop_loss_price": float(stop_loss_price),
             "signal_id": signal_id,
-            "buying_power_guard": buying_power_guard,
+            "buying_power_guard": submitted_buying_power_guard,
             "pre_submit_buying_power_guard": buying_power_guard,
         },
     )

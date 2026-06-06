@@ -245,6 +245,36 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertEqual([], fallback["positions"])
         self.assertEqual(2, lifecycle.snapshot_calls)
 
+    def test_account_snapshot_force_refresh_can_refuse_stale_cache_on_refresh_error(self):
+        app = _FakeApiApp()
+        lifecycle = _SnapshotLifecycle()
+        service = _SnapshotService(lifecycle)
+
+        first = _with_fake_api_app(app, lambda: _build_ibkr_account_snapshot(service, include_pnl=False))
+        self.assertFalse(first["stale"])
+
+        cache_key = ("paper", "DU123", False)
+        with app.ibkr_account_snapshot_cache_lock:
+            app.ibkr_account_snapshot_cache[cache_key]["fresh_until"] = time.time() - 1
+            app.ibkr_account_snapshot_cache[cache_key]["stale_until"] = time.time() + 120
+
+        lifecycle.fail = True
+        payload = _with_fake_api_app(
+            app,
+            lambda: _build_ibkr_account_snapshot(
+                service,
+                include_pnl=False,
+                force_refresh=True,
+                allow_stale=False,
+            ),
+        )
+
+        self.assertFalse(payload["ok"])
+        self.assertFalse(payload["stale"])
+        self.assertEqual("empty_error", payload["cache_state"])
+        self.assertEqual("account snapshot timeout", payload["refresh_error"])
+        self.assertEqual(2, lifecycle.snapshot_calls)
+
     def test_buying_power_reuses_fresh_full_snapshot_cache(self):
         app = _FakeApiApp()
         lifecycle = _BuyingPowerLifecycle()
