@@ -73,7 +73,7 @@ logger = logging.getLogger(__name__)
 TICK_BY_TICK_DUPLICATE_WINDOW_SECONDS = 15.0
 # Large bracket bursts can delay openOrder/orderStatus callbacks even when the
 # raw placeOrder socket write succeeds immediately.
-BRACKET_SUBMISSION_CONFIRM_TIMEOUT_SECONDS = 30.0
+BRACKET_SUBMISSION_CONFIRM_TIMEOUT_SECONDS = 60.0
 ORDER_MODIFICATION_CONFIRM_TIMEOUT_SECONDS = 12.0
 CANCEL_CONFIRM_TIMEOUT_SECONDS = 12.0
 CANCEL_ALL_RECONCILE_TIMEOUT_SECONDS = 180.0
@@ -1981,7 +1981,7 @@ class _IBGatewayApp(EWrapper, EClient):
             return {"ok": False, "error": "missing_order_id"}
 
         deadline = time.time() + max(0.5, float(timeout or 0.0))
-        request_timeout = max(1, min(15, int(max(1.0, float(timeout or 0.0)))))
+        request_timeout = max(1, min(30, int(max(1.0, float(timeout or 0.0)))))
         ignored_warnings: dict[str, list[dict]] = {}
 
         while time.time() < deadline:
@@ -2071,7 +2071,7 @@ class _IBGatewayApp(EWrapper, EClient):
             return {"ok": False, "error": "missing_order_ids", "orders": {}, "missing_order_ids": []}
 
         deadline = time.time() + max(0.5, float(timeout or 0.0))
-        request_timeout = max(1, min(15, int(max(1.0, float(timeout or 0.0)))))
+        request_timeout = max(1, min(30, int(max(1.0, float(timeout or 0.0)))))
         confirmed: dict[str, dict] = {}
         failures: dict[str, dict] = {}
         ignored_warnings: dict[str, list[dict]] = {}

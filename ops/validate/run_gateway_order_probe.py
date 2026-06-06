@@ -274,17 +274,42 @@ def is_expected_buying_power_block(item: dict[str, Any] | None) -> bool:
     return action_error_code(item) == "buying_power_blocked"
 
 
-def account_snapshot_client(args: argparse.Namespace) -> tuple[fee_probe.ApiClient, str]:
+def cleanup_http_timeout(args: argparse.Namespace) -> float:
+    explicit = float(getattr(args, "cleanup_http_timeout_sec", 0.0) or 0.0)
+    if explicit > 0:
+        return explicit
+    return max(5.0, min(float(getattr(args, "http_timeout_sec", 30.0) or 30.0), 60.0))
+
+
+def cancel_all_http_timeout(args: argparse.Namespace) -> float:
+    explicit = float(getattr(args, "cancel_all_http_timeout_sec", 0.0) or 0.0)
+    if explicit > 0:
+        return explicit
+    http_timeout = float(getattr(args, "http_timeout_sec", 30.0) or 30.0)
+    # Runtime cancel_all can reconcile open_orders_all for up to ~180s under
+    # large bracket bursts, so it needs a larger client timeout than snapshots.
+    return max(cleanup_http_timeout(args), min(http_timeout, 240.0))
+
+
+def symbol_cleanup_timeout(args: argparse.Namespace) -> float:
+    explicit = float(getattr(args, "symbol_cleanup_timeout_sec", 0.0) or 0.0)
+    if explicit > 0:
+        return explicit
+    return max(5.0, min(float(getattr(args, "cleanup_timeout_sec", 60.0) or 60.0), 45.0))
+
+
+def account_snapshot_client(args: argparse.Namespace, *, timeout_sec: float | None = None) -> tuple[fee_probe.ApiClient, str]:
     base_url = fee_probe.to_text(args.account_base_url) or args.api_base_url
     snapshot_args = argparse.Namespace(
         account_base_url=fee_probe.to_text(args.account_base_url),
         account_snapshot_path=fee_probe.to_text(args.account_snapshot_path),
     )
-    return fee_probe.ApiClient(base_url, timeout=float(args.http_timeout_sec)), fee_probe.account_snapshot_path(snapshot_args)
+    timeout = float(timeout_sec if timeout_sec is not None else args.http_timeout_sec)
+    return fee_probe.ApiClient(base_url, timeout=timeout), fee_probe.account_snapshot_path(snapshot_args)
 
 
-def get_snapshot(args: argparse.Namespace) -> dict[str, Any]:
-    client, path = account_snapshot_client(args)
+def get_snapshot(args: argparse.Namespace, *, timeout_sec: float | None = None) -> dict[str, Any]:
+    client, path = account_snapshot_client(args, timeout_sec=timeout_sec)
     return fee_probe.get_account_snapshot(client, path)
 
 
@@ -295,8 +320,12 @@ def is_flat_for_symbols(snapshot: dict[str, Any], symbols: list[str]) -> bool:
 def wait_for_flat_symbols(args: argparse.Namespace, symbols: list[str]) -> dict[str, Any]:
     deadline = time.time() + float(args.cleanup_timeout_sec)
     last_snapshot: dict[str, Any] = {}
+    snapshot_timeout = cleanup_http_timeout(args)
     while time.time() <= deadline:
-        last_snapshot = get_snapshot(args)
+        try:
+            last_snapshot = get_snapshot(args, timeout_sec=snapshot_timeout)
+        except Exception as exc:
+            last_snapshot = {"ok": False, "error": str(exc)}
         if is_flat_for_symbols(last_snapshot, symbols):
             return {"ok": True, "snapshot": last_snapshot}
         time.sleep(max(0.2, float(args.poll_interval_sec)))
@@ -997,36 +1026,83 @@ def cancel_known_order_ids(args: argparse.Namespace, place_results: list[dict[st
 
 
 def cancel_all_orders(args: argparse.Namespace, *, source: str = "gateway_order_probe_cancel_all") -> list[dict[str, Any]]:
-    client = fee_probe.ApiClient(args.api_base_url, timeout=float(args.http_timeout_sec))
-    started = time.perf_counter()
-    try:
-        response = client.post("/api/custom/ibkr/orders/cancel_all", {"source": source}, action_params())
-        result = nested_result(response)
-        ok = response_action_ok(response)
-        error = action_error_code({"response": response})
-    except Exception as exc:
-        response = {}
-        result = {}
-        ok = False
-        error = str(exc)
-    return [
-        {
+    attempts: list[dict[str, Any]] = []
+    max_attempts = max(1, int(getattr(args, "cancel_all_attempts", 3) or 3))
+    retry_delay = max(0.0, float(getattr(args, "cancel_all_retry_delay_sec", 10.0) or 0.0))
+    final_response: dict[str, Any] = {}
+    final_result: dict[str, Any] = {}
+    final_ok = False
+    final_error = ""
+    total_started = time.perf_counter()
+    for attempt in range(1, max_attempts + 1):
+        client = fee_probe.ApiClient(args.api_base_url, timeout=cancel_all_http_timeout(args))
+        started = time.perf_counter()
+        try:
+            response = client.post("/api/custom/ibkr/orders/cancel_all", {"source": source, "attempt": attempt}, action_params())
+            result = nested_result(response)
+            ok = response_action_ok(response)
+            error = action_error_code({"response": response})
+        except Exception as exc:
+            response = {}
+            result = {}
+            ok = False
+            error = str(exc)
+        attempt_payload = {
+            "attempt": attempt,
             "ok": ok,
-            "source": "cancel_all",
             "response": response,
             "cancelled": result.get("cancelled"),
             "errors": result.get("errors") if isinstance(result.get("errors"), list) else [],
             "elapsed_s": round(time.perf_counter() - started, 3),
             "error": error,
         }
+        attempts.append(attempt_payload)
+        final_response = response
+        final_result = result
+        final_ok = ok
+        final_error = error
+        if ok:
+            break
+        if attempt < max_attempts:
+            time.sleep(retry_delay * attempt)
+    return [
+        {
+            "ok": final_ok,
+            "source": "cancel_all",
+            "response": final_response,
+            "cancelled": final_result.get("cancelled"),
+            "errors": final_result.get("errors") if isinstance(final_result.get("errors"), list) else [],
+            "attempts": attempts,
+            "elapsed_s": round(time.perf_counter() - total_started, 3),
+            "error": final_error,
+        }
     ]
 
 
 def cleanup_symbols(args: argparse.Namespace, plans: list[OrderProbePlan], place_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    client = fee_probe.ApiClient(args.api_base_url, timeout=float(args.http_timeout_sec))
-    snapshot_client, snapshot_path = account_snapshot_client(args)
+    symbols = [plan.symbol for plan in plans]
+    snapshot_timeout = cleanup_http_timeout(args)
+    try:
+        global_snapshot = get_snapshot(args, timeout_sec=snapshot_timeout)
+    except Exception:
+        global_snapshot = {}
+    if global_snapshot and is_flat_for_symbols(global_snapshot, symbols):
+        return [
+            {
+                "ok": True,
+                "symbol": plan.symbol,
+                "skipped": True,
+                "reason": "already_flat_after_bulk_cancel",
+                "result": {"final_snapshot": global_snapshot, "flat": True},
+            }
+            for plan in plans
+        ]
+
+    client = fee_probe.ApiClient(args.api_base_url, timeout=snapshot_timeout)
+    snapshot_client, snapshot_path = account_snapshot_client(args, timeout_sec=snapshot_timeout)
     latest_place_by_symbol = {str(item.get("symbol")): item.get("response") or item for item in place_results}
     cleanup_results: list[dict[str, Any]] = []
+    per_symbol_timeout = symbol_cleanup_timeout(args)
     for plan in plans:
         try:
             result = fee_probe.cleanup_symbol(
@@ -1036,7 +1112,7 @@ def cleanup_symbols(args: argparse.Namespace, plans: list[OrderProbePlan], place
                 plan.quantity,
                 latest_place_by_symbol.get(plan.symbol) or {},
                 snapshot_fn=lambda path=snapshot_path: fee_probe.get_account_snapshot(snapshot_client, path),
-                timeout_s=float(args.cleanup_timeout_sec),
+                timeout_s=per_symbol_timeout,
                 interval_s=float(args.poll_interval_sec),
             )
             cleanup_results.append({"ok": fee_probe.is_flat_for_symbol(result.get("final_snapshot") or {}, plan.symbol), "symbol": plan.symbol, "result": result})
@@ -1256,6 +1332,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--min-pending-visible-orders", type=int, default=0)
     parser.add_argument("--max-pending-snapshot-elapsed-sec", type=float, default=10.0)
     parser.add_argument("--cleanup-timeout-sec", type=float, default=60.0)
+    parser.add_argument("--cleanup-http-timeout-sec", type=float, default=0.0, help="Bound account snapshot/order cleanup HTTP calls; defaults to min(http timeout, 60s).")
+    parser.add_argument("--symbol-cleanup-timeout-sec", type=float, default=0.0, help="Per-symbol cleanup wait cap; defaults to min(cleanup timeout, 45s).")
+    parser.add_argument("--cancel-all-http-timeout-sec", type=float, default=0.0, help="Bulk cancel_all HTTP timeout; defaults to up to 240s so 135-leg bracket bursts can reconcile.")
+    parser.add_argument("--cancel-all-attempts", type=int, default=3, help="Retry bulk paper cancel_all before falling back to per-symbol cleanup.")
+    parser.add_argument("--cancel-all-retry-delay-sec", type=float, default=10.0)
     parser.add_argument("--poll-interval-sec", type=float, default=2.0)
     parser.add_argument("--http-timeout-sec", type=float, default=30.0)
     parser.add_argument("--submit-timeout-sec", type=float, default=0.0, help="Hard wall-clock limit for the concurrent place burst before timed-out symbols are failed and cleanup starts.")

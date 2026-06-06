@@ -359,6 +359,84 @@ class GatewayOrderProbeTest(unittest.TestCase):
         self.assertEqual(["101", "201"], [item["order_id"] for item in items])
         self.assertEqual(["entry", "entry"], [item["role"] for item in items])
 
+    def test_cleanup_symbols_skips_per_symbol_work_when_already_flat(self):
+        args = Namespace(
+            api_base_url="https://example.test",
+            account_base_url="",
+            account_snapshot_path="",
+            http_timeout_sec=1200.0,
+            cleanup_http_timeout_sec=30.0,
+            cleanup_timeout_sec=1200.0,
+            symbol_cleanup_timeout_sec=0.0,
+            poll_interval_sec=2.0,
+            cancel_spacing_seconds=0.0,
+        )
+        plans = [
+            probe.OrderProbePlan("AAPL", "long", 1, 100.0, 50.0, 57.5, 42.5),
+            probe.OrderProbePlan("MSFT", "long", 1, 200.0, 100.0, 115.0, 85.0),
+        ]
+        snapshot = {"ok": True, "positions": [], "orders": [], "live_open_orders": []}
+
+        with mock.patch.object(probe, "get_snapshot", return_value=snapshot) as get_snapshot, mock.patch.object(
+            probe.fee_probe,
+            "cleanup_symbol",
+        ) as cleanup_symbol:
+            results = probe.cleanup_symbols(args, plans, [])
+
+        get_snapshot.assert_called_once_with(args, timeout_sec=30.0)
+        cleanup_symbol.assert_not_called()
+        self.assertEqual(2, len(results))
+        self.assertTrue(all(item["ok"] for item in results))
+        self.assertTrue(all(item["skipped"] for item in results))
+
+    def test_cancel_all_orders_retries_timeout_before_success(self):
+        args = Namespace(
+            api_base_url="https://example.test",
+            http_timeout_sec=1200.0,
+            cleanup_http_timeout_sec=30.0,
+            cancel_all_http_timeout_sec=0.0,
+            cancel_all_attempts=2,
+            cancel_all_retry_delay_sec=0.0,
+        )
+
+        class FakeClient:
+            calls = 0
+            timeouts = []
+
+            def __init__(self, _base_url, timeout=0):
+                self.timeout = timeout
+                self.__class__.timeouts.append(timeout)
+
+            def post(self, path, payload, params):
+                self.__class__.calls += 1
+                self.last_payload = payload
+                if self.__class__.calls == 1:
+                    return {
+                        "ok": False,
+                        "result": {"ok": False, "errors": ["open_orders_all_timeout"]},
+                    }
+                return {"ok": True, "result": {"ok": True, "cancelled": 3}}
+
+        with mock.patch.object(probe.fee_probe, "ApiClient", FakeClient), mock.patch.object(probe.time, "sleep", return_value=None):
+            results = probe.cancel_all_orders(args)
+
+        self.assertEqual(1, len(results))
+        self.assertTrue(results[0]["ok"])
+        self.assertEqual(3, results[0]["cancelled"])
+        self.assertEqual(2, len(results[0]["attempts"]))
+        self.assertEqual("open_orders_all_timeout", results[0]["attempts"][0]["errors"][0])
+        self.assertEqual(2, FakeClient.calls)
+        self.assertEqual([240.0, 240.0], FakeClient.timeouts)
+
+    def test_cancel_all_timeout_can_be_overridden(self):
+        args = Namespace(
+            http_timeout_sec=1200.0,
+            cleanup_http_timeout_sec=45.0,
+            cancel_all_http_timeout_sec=300.0,
+        )
+
+        self.assertEqual(300.0, probe.cancel_all_http_timeout(args))
+
 
 if __name__ == "__main__":
     unittest.main()

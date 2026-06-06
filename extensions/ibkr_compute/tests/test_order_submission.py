@@ -1515,7 +1515,7 @@ class IBGatewayOrderSubmissionWarningTest(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        self.assertEqual([{"timeout": 15, "force": True}], calls)
+        self.assertEqual([{"timeout": 30, "force": True}], calls)
 
     def test_await_order_submissions_still_fails_true_rejection(self):
         rejection = {"order_id": "101", "code": 201, "message": "Order rejected - reason:Invalid Price"}
