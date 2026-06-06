@@ -941,6 +941,9 @@ def build_replay_plan(args: argparse.Namespace) -> tuple[list[ReplayChain], list
         "selected_risk_chains": sum(1 for chain in selected if chain.risk_events),
         "selected_exit_chains": sum(1 for chain in selected if chain.exit_events),
         "selection_policy": "prefer_full_chains" if prefer_full_chains else "chronological",
+        "followup_stress_concurrent": bool(getattr(args, "followup_stress_concurrent", False)),
+        "risk_burst_workers": int(getattr(args, "risk_burst_workers", 1) or 1),
+        "exit_burst_workers": int(getattr(args, "exit_burst_workers", 1) or 1),
         "active_symbol_excluded_chains": len(active_excluded),
         "full_chain_candidates": sum(1 for chain in candidates if chain.risk_events and chain.exit_events),
         "risk_candidate_chains": sum(1 for chain in candidates if chain.risk_events),
@@ -1450,6 +1453,49 @@ def send_burst(args: argparse.Namespace, chains: list[ReplayChain]) -> list[dict
     return results
 
 
+def send_payload_burst(
+    args: argparse.Namespace,
+    items: list[tuple[ReplayChain, dict[str, Any], str]],
+    *,
+    workers: int,
+    spacing_seconds: float = 0.0,
+) -> list[tuple[ReplayChain, dict[str, Any], dict[str, Any], str]]:
+    if not items:
+        return []
+
+    def send_indexed(index: int, chain: ReplayChain, payload: dict[str, Any], check_name: str) -> tuple[ReplayChain, dict[str, Any], dict[str, Any], str]:
+        delay = max(0.0, float(spacing_seconds or 0.0)) * index
+        if delay > 0:
+            time.sleep(delay)
+        try:
+            result = send_payload(args, payload)
+        except Exception as exc:
+            result = {
+                "ok": False,
+                "event_id": payload.get("event_id"),
+                "event_type": payload.get("event_type"),
+                "error": str(exc),
+            }
+        return chain, payload, result, check_name
+
+    results: list[tuple[ReplayChain, dict[str, Any], dict[str, Any], str]] = []
+    with ThreadPoolExecutor(max_workers=max(1, int(workers or 1))) as executor:
+        future_map = {
+            executor.submit(send_indexed, index, chain, payload, check_name): index
+            for index, (chain, payload, check_name) in enumerate(items)
+        }
+        completed: list[tuple[int, ReplayChain, dict[str, Any], dict[str, Any], str]] = []
+        for future in as_completed(future_map):
+            index = future_map[future]
+            chain, payload, result, check_name = future.result()
+            completed.append((index, chain, payload, result, check_name))
+        for _index, chain, payload, result, check_name in sorted(completed, key=lambda item: item[0]):
+            chain.sent_events.append(result)
+            chain.checks.append({"name": check_name, **result})
+            results.append((chain, payload, result, check_name))
+    return results
+
+
 def wait_for_routing(args: argparse.Namespace, chains: list[ReplayChain], event_types: set[str] | None = None) -> None:
     wanted = event_types or {"pre_alert", "entry", "risk_update", "exit"}
     for chain in chains:
@@ -1691,6 +1737,103 @@ def send_risk_and_exit(args: argparse.Namespace, chain: ReplayChain) -> None:
             }
         )
         time.sleep(max(0.1, float(args.exit_spacing_seconds or 0.1)))
+
+
+def route_followup_results(
+    args: argparse.Namespace,
+    sent: list[tuple[ReplayChain, dict[str, Any], dict[str, Any], str]],
+    *,
+    route_name: str,
+) -> None:
+    for chain, payload, result, _check_name in sent:
+        if not result.get("ok"):
+            continue
+        event_row = wait_for_tv_event_terminal(args, safe_text(payload.get("event_id")))
+        chain.checks.append(
+            {
+                "name": route_name,
+                "ok": safe_lower(event_row.get("status")) == "routed",
+                "event_id": payload.get("event_id"),
+                "status": event_row.get("status"),
+                "route_record_id": event_row.get("route_record_id"),
+                "error_msg": event_row.get("error_msg"),
+            }
+        )
+
+
+def send_risk_updates_burst(args: argparse.Namespace, chains: list[ReplayChain]) -> None:
+    items: list[tuple[ReplayChain, dict[str, Any], str]] = []
+    for chain in chains:
+        previous_prices: dict[str, float] = {}
+        orders = query_orders(args, chain.synthetic_signal_id)
+        chain.final_orders = orders
+        if not orders_have_bracket(orders):
+            for payload in chain.payloads.get("risk_update", []):
+                chain.checks.append(
+                    {
+                        "name": "risk_skipped_no_child_orders",
+                        "ok": True,
+                        "event_id": payload.get("event_id"),
+                        "reason": "risk_update_requires_tp_sl_orders",
+                    }
+                )
+            continue
+        for payload in chain.payloads.get("risk_update", []):
+            stamp_runtime_payload(payload, args)
+            rebase_risk_payload(payload, chain, orders, previous_prices)
+            items.append((chain, payload, "send_risk_update"))
+    sent = send_payload_burst(
+        args,
+        items,
+        workers=max(1, int(getattr(args, "risk_burst_workers", 1) or 1)),
+        spacing_seconds=max(0.0, float(getattr(args, "followup_burst_spacing_seconds", 0.0) or 0.0)),
+    )
+    route_followup_results(args, sent, route_name="route_risk_update")
+
+
+def send_exits_burst(args: argparse.Namespace, chains: list[ReplayChain]) -> None:
+    items: list[tuple[ReplayChain, dict[str, Any], str]] = []
+    for chain in chains:
+        orders = query_orders(args, chain.synthetic_signal_id)
+        chain.final_orders = orders
+        if not chain.payloads.get("exit"):
+            chain.checks.append({"name": "exit_skipped_no_source_event", "ok": True, "reason": "no_exit_event"})
+            continue
+        if not has_filled_entry_or_position(orders):
+            for payload in chain.payloads.get("exit", []):
+                chain.checks.append(
+                    {
+                        "name": "exit_skipped_no_fill",
+                        "ok": True,
+                        "event_id": payload.get("event_id"),
+                        "reason": "real_filled_order_required_for_close",
+                    }
+                )
+            continue
+        previous_prices = {
+            "stop_loss": order_price(role_map(orders).get("stop_loss", {}), "limit_price", "sl_price", "stop_loss"),
+            "take_profit": order_price(role_map(orders).get("take_profit", {}), "limit_price", "tp_price", "take_profit"),
+        }
+        for payload in chain.payloads.get("exit", []):
+            stamp_runtime_payload(payload, args)
+            rebase_exit_payload(payload, orders, previous_prices)
+            items.append((chain, payload, "send_exit"))
+    sent = send_payload_burst(
+        args,
+        items,
+        workers=max(1, int(getattr(args, "exit_burst_workers", 1) or 1)),
+        spacing_seconds=max(0.0, float(getattr(args, "followup_burst_spacing_seconds", 0.0) or 0.0)),
+    )
+    route_followup_results(args, sent, route_name="route_exit")
+
+
+def send_followups(args: argparse.Namespace, chains: list[ReplayChain]) -> None:
+    if not getattr(args, "followup_stress_concurrent", False):
+        for chain in chains:
+            send_risk_and_exit(args, chain)
+        return
+    send_risk_updates_burst(args, chains)
+    send_exits_burst(args, chains)
 
 
 def finalize_chain(args: argparse.Namespace, chain: ReplayChain) -> None:
@@ -2136,8 +2279,7 @@ def execute_replay(args: argparse.Namespace, chains: list[ReplayChain], summary:
     wait_for_routing(args, chains, {"pre_alert", "entry"})
     for chain in chains:
         wait_for_entry_processing(args, chain)
-    for chain in chains:
-        send_risk_and_exit(args, chain)
+    send_followups(args, chains)
     for chain in chains:
         finalize_chain(args, chain)
     cleanup_results = cleanup_synthetic_orders(args, chains)
@@ -2464,6 +2606,12 @@ def apply_strict_canary_preset(args: argparse.Namespace) -> argparse.Namespace:
     args.skip_account_flat_check = False
     args.no_cleanup = False
     args.no_prefer_full_chains = False
+    args.followup_stress_concurrent = True
+    args.risk_burst_workers = 3
+    args.exit_burst_workers = 3
+    args.followup_burst_spacing_seconds = 0.0
+    args.risk_spacing_seconds = 0.0
+    args.exit_spacing_seconds = 0.0
     return args
 
 
@@ -2536,6 +2684,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-gateway-serial-timeouts", type=float, default=0.0)
     parser.add_argument("--no-cleanup", action="store_true")
     parser.add_argument("--preview-payloads", type=int, default=3)
+    parser.add_argument(
+        "--followup-stress-concurrent",
+        action="store_true",
+        help="Send all eligible risk_update payloads as one burst and all eligible exit payloads as one burst after entry processing.",
+    )
+    parser.add_argument("--risk-burst-workers", type=int, default=1)
+    parser.add_argument("--exit-burst-workers", type=int, default=1)
+    parser.add_argument("--followup-burst-spacing-seconds", type=float, default=0.0)
     parser.add_argument("--risk-spacing-seconds", type=float, default=0.5)
     parser.add_argument("--exit-spacing-seconds", type=float, default=0.5)
     parser.add_argument("--cleanup-spacing-seconds", type=float, default=0.5)

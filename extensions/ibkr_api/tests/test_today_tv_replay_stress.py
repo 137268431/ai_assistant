@@ -26,6 +26,7 @@ from run_today_tv_replay_stress import (  # noqa: E402
     ReplayAttemptError,
     rewrite_chain_payloads,
     run_single_attempt,
+    send_followups,
     split_active_symbol_conflicts,
     verify_account_flat_for_chains,
     verify_no_open_synthetic_orders,
@@ -277,6 +278,66 @@ class TodayTvReplayStressTest(unittest.TestCase):
         self.assertEqual("sim-signal", chain.synthetic_signal_id)
         self.assertEqual("entry_routed_to_existing_signal_not_adopted", chain.checks[-1]["name"])
         self.assertFalse(chain.checks[-1]["ok"])
+
+    def test_strict_canary_enables_concurrent_followup_stress(self):
+        args = parse_args(["--strict-canary", "--dry-run"])
+
+        self.assertTrue(args.followup_stress_concurrent)
+        self.assertEqual(3, args.risk_burst_workers)
+        self.assertEqual(3, args.exit_burst_workers)
+        self.assertEqual(0.0, args.followup_burst_spacing_seconds)
+
+    def test_send_followups_bursts_risk_updates_before_exit_burst(self):
+        events = [
+            _event("entry", "sig-a", "pos-a", "AAPL"),
+            _event("risk_update", "sig-a", "pos-a", "AAPL"),
+            _event("exit", "sig-a", "pos-a", "AAPL"),
+            _event("entry", "sig-b", "pos-b", "MSFT"),
+            _event("risk_update", "sig-b", "pos-b", "MSFT"),
+            _event("exit", "sig-b", "pos-b", "MSFT"),
+        ]
+        chains, excluded = build_chains(events, [], [], broker_mode="paper")
+        self.assertFalse(excluded)
+        rewrite_chain_payloads(
+            chains,
+            run_id="SIMTV_BURST",
+            broker_mode="paper",
+            data_environment="live",
+            include_pre_alert=False,
+            base_time=datetime(2026, 6, 5, 10, 0, 0, tzinfo=ET),
+        )
+        orders = [
+            {"role": "entry", "status": "Filled", "quantity": 1, "filled_qty": 1, "limit_price": 100.0, "fill_price": 100.0},
+            {"role": "take_profit", "status": "Submitted", "quantity": 1, "limit_price": 103.0, "tp_price": 103.0},
+            {"role": "stop_loss", "status": "Submitted", "quantity": 1, "limit_price": 98.0, "sl_price": 98.0},
+        ]
+        args = Namespace(
+            followup_stress_concurrent=True,
+            risk_burst_workers=4,
+            exit_burst_workers=4,
+            followup_burst_spacing_seconds=0.0,
+            data_environment="live",
+        )
+        sent_types = []
+
+        def fake_send(_args, payload):
+            sent_types.append(payload["event_type"])
+            return {"ok": True, "event_id": payload["event_id"], "event_type": payload["event_type"], "response": {"ok": True}}
+
+        with mock.patch("run_today_tv_replay_stress.query_orders", return_value=orders), mock.patch(
+            "run_today_tv_replay_stress.send_payload",
+            side_effect=fake_send,
+        ), mock.patch(
+            "run_today_tv_replay_stress.wait_for_tv_event_terminal",
+            side_effect=lambda _args, event_id: {"status": "routed", "route_record_id": f"route-{event_id}"},
+        ):
+            send_followups(args, chains)
+
+        self.assertCountEqual(["risk_update", "risk_update", "exit", "exit"], sent_types)
+        self.assertTrue(all(any(check.get("name") == "send_risk_update" for check in chain.checks) for chain in chains))
+        self.assertTrue(all(any(check.get("name") == "send_exit" for check in chain.checks) for chain in chains))
+        self.assertEqual(2, sum(1 for chain in chains for check in chain.checks if check.get("name") == "route_risk_update" and check.get("ok")))
+        self.assertEqual(2, sum(1 for chain in chains for check in chain.checks if check.get("name") == "route_exit" and check.get("ok")))
 
     def test_cleanup_filled_entry_uses_tv_exit_with_actual_trade_group(self):
         chain = build_chains([_event("entry")], [], [], broker_mode="paper")[0][0]

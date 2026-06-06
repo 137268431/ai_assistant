@@ -123,6 +123,9 @@ class TodayTvReplayLaunchdManagerTest(unittest.TestCase):
                 "market_date": "2026-06-08",
                 "selected_chains": 3,
                 "selected_full_chains": 3,
+                "followup_stress_concurrent": True,
+                "risk_burst_workers": 3,
+                "exit_burst_workers": 3,
                 "flow_requirements": {
                     "ok": True,
                     "counts": {

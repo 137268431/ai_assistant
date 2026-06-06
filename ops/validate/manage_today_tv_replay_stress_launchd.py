@@ -333,6 +333,16 @@ def audit_success_attempt(base_dir: Path, retry_summary: dict[str, Any], checks:
     add_check(checks, "multi_signal_full_chains", selected_full_chains >= 3, selected_full_chains=selected_full_chains, required=3)
     add_check(
         checks,
+        "followup_concurrent_stress_enabled",
+        bool(summary.get("followup_stress_concurrent"))
+        and int(summary.get("risk_burst_workers") or 0) >= 3
+        and int(summary.get("exit_burst_workers") or 0) >= 3,
+        followup_stress_concurrent=summary.get("followup_stress_concurrent"),
+        risk_burst_workers=summary.get("risk_burst_workers"),
+        exit_burst_workers=summary.get("exit_burst_workers"),
+    )
+    add_check(
+        checks,
         "chain_reports_cover_selected_chains",
         bool(chain_reports) and len(chain_reports) >= selected_chains >= 3,
         chain_reports=len(chain_reports),
@@ -382,6 +392,9 @@ def audit_success_attempt(base_dir: Path, retry_summary: dict[str, Any], checks:
             "market_date": summary.get("market_date"),
             "selected_chains": summary.get("selected_chains"),
             "selected_full_chains": summary.get("selected_full_chains"),
+            "followup_stress_concurrent": summary.get("followup_stress_concurrent"),
+            "risk_burst_workers": summary.get("risk_burst_workers"),
+            "exit_burst_workers": summary.get("exit_burst_workers"),
             "classifications": summary.get("classifications"),
             "flow_counts": flow_counts,
             "flow_thresholds": flow_thresholds,
@@ -413,6 +426,9 @@ def build_evidence_summary(audit_payload: dict[str, Any]) -> dict[str, Any]:
         "market_date": attempt.get("market_date"),
         "selected_chains": attempt.get("selected_chains"),
         "selected_full_chains": attempt.get("selected_full_chains"),
+        "followup_stress_concurrent": attempt.get("followup_stress_concurrent"),
+        "risk_burst_workers": attempt.get("risk_burst_workers"),
+        "exit_burst_workers": attempt.get("exit_burst_workers"),
         "flow_counts": attempt.get("flow_counts") or {},
         "flow_thresholds": attempt.get("flow_thresholds") or {},
         "burst_results": attempt.get("burst_results") or {},
@@ -880,6 +896,16 @@ def collect_replay_readiness(*, retries: int = 2, retry_sleep_seconds: float = 2
     checks: list[dict[str, Any]] = []
     add_check(checks, "plan_selected_chains", int(summary.get("selected_chains") or 0) >= min_selected, value=summary.get("selected_chains"), threshold=min_selected)
     add_check(checks, "plan_selected_full_chains", int(summary.get("selected_full_chains") or 0) >= min_full, value=summary.get("selected_full_chains"), threshold=min_full)
+    add_check(
+        checks,
+        "plan_followup_concurrent_stress",
+        bool(summary.get("followup_stress_concurrent"))
+        and int(summary.get("risk_burst_workers") or 0) >= 3
+        and int(summary.get("exit_burst_workers") or 0) >= 3,
+        followup_stress_concurrent=summary.get("followup_stress_concurrent"),
+        risk_burst_workers=summary.get("risk_burst_workers"),
+        exit_burst_workers=summary.get("exit_burst_workers"),
+    )
     add_check(checks, "account_flat_readiness", bool(account.get("ok")), failures=account.get("failures") or [], symbols=account.get("symbols") or [])
     add_check(checks, "stack_health_readiness", bool((health.get("stack") or {}).get("ok")), failures=(health.get("stack") or {}).get("failures") or [])
     add_check(checks, "monitoring_health_readiness", bool((health.get("monitoring") or {}).get("ok")), failures=(health.get("monitoring") or {}).get("failures") or [])
@@ -891,6 +917,9 @@ def collect_replay_readiness(*, retries: int = 2, retry_sleep_seconds: float = 2
             "market_date": summary.get("market_date"),
             "selected_chains": summary.get("selected_chains"),
             "selected_full_chains": summary.get("selected_full_chains"),
+            "followup_stress_concurrent": summary.get("followup_stress_concurrent"),
+            "risk_burst_workers": summary.get("risk_burst_workers"),
+            "exit_burst_workers": summary.get("exit_burst_workers"),
             "selected_symbols": [item.get("symbol") for item in summary.get("selected") or []],
             "exclude_reasons": summary.get("exclude_reasons") or {},
         },

@@ -6,7 +6,6 @@ from ibkr_compute.core.broker_mode import normalize_broker_mode
 
 
 def _service_flag(service, *names: str) -> bool:
-    found = False
     for name in names:
         try:
             value = getattr(service, name)
@@ -18,7 +17,6 @@ def _service_flag(service, *names: str) -> bool:
             except Exception:
                 continue
         if value is not None:
-            found = True
             if bool(value):
                 return True
     return False
