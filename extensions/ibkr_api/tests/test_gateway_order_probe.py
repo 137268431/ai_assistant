@@ -148,6 +148,7 @@ class GatewayOrderProbeTest(unittest.TestCase):
         self.assertGreaterEqual(args.pending_hold_seconds, 45.0)
         self.assertGreaterEqual(args.min_pending_hold_samples, 3)
         self.assertGreaterEqual(args.min_pending_visible_orders, 45)
+        self.assertGreaterEqual(args.submit_timeout_sec, 90.0)
         self.assertGreaterEqual(len(probe.split_symbols(args.symbols)), 45)
 
     def test_account_lock_stress_can_scale_to_forty_five_orders(self):
@@ -218,6 +219,36 @@ class GatewayOrderProbeTest(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertIn("visible_pending_orders", {item["name"] for item in result["failures"]})
+
+    def test_submit_burst_marks_unfinished_symbols_timed_out(self):
+        args = Namespace(
+            api_base_url="https://example.test",
+            http_timeout_sec=30.0,
+            burst_workers=2,
+            burst_spacing_seconds=0.0,
+            submit_timeout_sec=0.05,
+        )
+        plans = [
+            probe.OrderProbePlan("AAPL", "long", 1, 100.0, 50.0, 57.5, 42.5),
+            probe.OrderProbePlan("MSFT", "long", 1, 200.0, 100.0, 115.0, 85.0),
+        ]
+
+        def fake_submit(_client, plan, *, delay_s=0.0):
+            if plan.symbol == "MSFT":
+                probe.time.sleep(0.2)
+            return {"ok": True, "symbol": plan.symbol, "order_ids": [f"{plan.symbol}-1"]}
+
+        with mock.patch.object(probe.fee_probe, "ApiClient", return_value=object()), mock.patch.object(
+            probe,
+            "submit_one",
+            side_effect=fake_submit,
+        ):
+            results = probe.submit_burst(args, plans)
+
+        self.assertTrue(results[0]["ok"])
+        self.assertFalse(results[1]["ok"])
+        self.assertTrue(results[1]["timed_out"])
+        self.assertEqual("submit_timeout", results[1]["error"])
 
 
 if __name__ == "__main__":

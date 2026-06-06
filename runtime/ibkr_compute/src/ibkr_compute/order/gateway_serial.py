@@ -75,7 +75,7 @@ class GatewayOrderMutationGate:
         return self._config_bool("ibkr_gateway_order_serial_enabled", True)
 
     def timeout_seconds(self) -> float:
-        return max(0.1, self._config_float("ibkr_gateway_order_serial_timeout_sec", 120.0))
+        return max(0.1, self._config_float("ibkr_gateway_order_serial_timeout_sec", 12.0))
 
     @contextmanager
     def hold(self, operation: str, **metadata: Any) -> Iterator[dict[str, Any]]:

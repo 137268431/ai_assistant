@@ -4,8 +4,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -53,6 +55,31 @@ TERMINAL_ORDER_STATUSES = {
 
 class ProbeError(RuntimeError):
     pass
+
+
+class HardRequestTimeout(TimeoutError):
+    pass
+
+
+def _run_with_hard_timeout(fn, timeout_s: float):
+    if threading.current_thread() is not threading.main_thread() or not hasattr(signal, "setitimer"):
+        return fn()
+    timeout = max(1.0, float(timeout_s or 0.0))
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, 0.0)
+
+    def _raise_timeout(_signum, _frame):
+        raise HardRequestTimeout(f"hard_timeout_s={timeout:g}")
+
+    signal.signal(signal.SIGALRM, _raise_timeout)
+    signal.setitimer(signal.ITIMER_REAL, timeout)
+    try:
+        return fn()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0.0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer and previous_timer[0] > 0:
+            signal.setitimer(signal.ITIMER_REAL, previous_timer[0], previous_timer[1])
 
 
 @dataclass(frozen=True)
@@ -340,12 +367,16 @@ class ApiClient:
         status_code = 0
         raw = b""
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                status_code = int(getattr(response, "status", 200) or 200)
-                raw = response.read()
+            def _open_and_read():
+                with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                    return int(getattr(response, "status", 200) or 200), response.read()
+
+            status_code, raw = _run_with_hard_timeout(_open_and_read, self.timeout + 2.0)
         except urllib.error.HTTPError as exc:
             status_code = int(exc.code or 0)
             raw = exc.read()
+        except HardRequestTimeout as exc:
+            raise ProbeError(f"http_request_hard_timeout:{url}:{exc}") from exc
         except urllib.error.URLError as exc:
             raise ProbeError(f"http_request_failed:{url}:{exc}") from exc
         text = raw.decode("utf-8", errors="replace")

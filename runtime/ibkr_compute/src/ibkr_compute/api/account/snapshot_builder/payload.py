@@ -312,6 +312,36 @@ def _fresh_full_snapshot_for_buying_power(api_app, context: dict) -> dict:
     return payload
 
 
+def _build_buying_power_payload_from_full_snapshot(full_snapshot: dict, context: dict) -> dict:
+    if not isinstance(full_snapshot, dict) or not full_snapshot:
+        return {}
+    payload = _decorate_account_snapshot_health(dict(full_snapshot))
+    health = payload.get("account_snapshot_health") if isinstance(payload.get("account_snapshot_health"), dict) else {}
+    if str(health.get("state") or "").strip().lower() != "ok":
+        return {}
+    guard = payload.get("buying_power_guard") if isinstance(payload.get("buying_power_guard"), dict) else {}
+    guard = dict(guard)
+    guard.setdefault("source", "account_snapshot")
+    return _decorate_account_snapshot_health(
+        {
+            "ok": bool(payload.get("ok", True)),
+            "environment": payload.get("environment") or context["runtime_environment"],
+            "account_id": payload.get("account_id") or context["account_id"],
+            "service_running": bool(payload.get("service_running")),
+            "service_starting": bool(payload.get("service_starting")),
+            "session_authenticated": bool(payload.get("session_authenticated")),
+            "gateway_running": bool(payload.get("gateway_running")),
+            "summary": dict(payload.get("summary") or {}),
+            "buying_power_guard": guard,
+            "summary_raw": dict(payload.get("summary_raw") or {}),
+            "errors": dict(payload.get("errors") or {}),
+            "fetched_at": payload.get("fetched_at") or datetime.now(timezone.utc).isoformat(),
+            "source": "account_snapshot",
+            "snapshot_source": payload.get("source") or "account_snapshot",
+        }
+    )
+
+
 def _build_account_data_circuit_buying_power_snapshot(service, context: dict, circuit: dict) -> dict:
     retry_after_s = _safe_float((circuit or {}).get("remaining_s"), 0.0)
     reason = "account_data_circuit_open"
@@ -368,24 +398,19 @@ def _build_ibkr_account_buying_power_snapshot(service) -> dict:
             return load_cached_snapshot(api_app, cache_key, allow_stale=False) or payload
 
         full_cached = _fresh_full_snapshot_for_buying_power(api_app, context)
-        if full_cached:
-            payload = {
-                "ok": bool(full_cached.get("ok", True)),
-                "environment": full_cached.get("environment") or context["runtime_environment"],
-                "account_id": full_cached.get("account_id") or context["account_id"],
-                "service_running": bool(full_cached.get("service_running")),
-                "service_starting": bool(full_cached.get("service_starting")),
-                "session_authenticated": bool(full_cached.get("session_authenticated")),
-                "gateway_running": bool(full_cached.get("gateway_running")),
-                "summary": dict(full_cached.get("summary") or {}),
-                "buying_power_guard": dict(full_cached.get("buying_power_guard") or {}),
-                "summary_raw": dict(full_cached.get("summary_raw") or {}),
-                "errors": dict(full_cached.get("errors") or {}),
-                "fetched_at": full_cached.get("fetched_at") or datetime.now(timezone.utc).isoformat(),
-                "source": "account_snapshot",
-                "snapshot_source": full_cached.get("source") or "account_snapshot",
-            }
-            payload = _decorate_account_snapshot_health(payload)
+        payload = _build_buying_power_payload_from_full_snapshot(full_cached, context)
+        if payload:
+            store_cached_snapshot(api_app, cache_key, payload)
+            return load_cached_snapshot(api_app, cache_key, allow_stale=False) or payload
+
+        full_refreshed = _build_ibkr_account_snapshot(
+            service,
+            include_pnl=False,
+            force_refresh=False,
+            allow_stale=False,
+        )
+        payload = _build_buying_power_payload_from_full_snapshot(full_refreshed, context)
+        if payload:
             store_cached_snapshot(api_app, cache_key, payload)
             return load_cached_snapshot(api_app, cache_key, allow_stale=False) or payload
 

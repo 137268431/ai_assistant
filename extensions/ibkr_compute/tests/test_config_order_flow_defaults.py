@@ -77,7 +77,7 @@ TV_PRIMARY_DEFAULTS = {
 
 GATEWAY_ORDER_DEFAULTS = {
     "ibkr_gateway_order_serial_enabled": "true",
-    "ibkr_gateway_order_serial_timeout_sec": "120",
+    "ibkr_gateway_order_serial_timeout_sec": "12",
 }
 
 DEPRECATED_PAPER_RISK_CONFIG_KEYS = {

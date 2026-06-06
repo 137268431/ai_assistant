@@ -139,6 +139,8 @@ class _BuyingPowerLifecycle:
 
     def get_account_snapshot(self, _account_id):
         self.snapshot_calls += 1
+        if self.delay:
+            time.sleep(self.delay)
         return {
             "summary": {
                 "AccountCode": {"value": "DU123"},
@@ -271,7 +273,7 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertEqual(0, lifecycle.summary_calls)
         self.assertEqual("ok", buying_power["account_snapshot_health"]["state"])
 
-    def test_buying_power_snapshot_single_flight_for_summary_fetch(self):
+    def test_buying_power_snapshot_single_flight_refreshes_full_snapshot_when_cache_empty(self):
         app = _FakeApiApp()
         lifecycle = _BuyingPowerLifecycle(delay=0.05)
         service = _BuyingPowerService(lifecycle)
@@ -282,7 +284,9 @@ class AccountSnapshotFetchTest(unittest.TestCase):
 
         payloads = _with_fake_api_app(app, run)
 
-        self.assertEqual(1, lifecycle.summary_calls)
+        self.assertEqual(1, lifecycle.snapshot_calls)
+        self.assertEqual(0, lifecycle.summary_calls)
+        self.assertTrue(all(payload["source"] == "account_snapshot" for payload in payloads))
         self.assertTrue(all(payload["buying_power_guard"]["state"] == "ok" for payload in payloads))
 
     def test_buying_power_snapshot_short_circuits_when_account_data_circuit_open(self):

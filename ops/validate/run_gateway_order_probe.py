@@ -4,14 +4,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import sys
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from math import ceil
 from pathlib import Path
 from typing import Any
+import urllib.request
 from zoneinfo import ZoneInfo
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -149,6 +151,12 @@ def write_artifact(args: argparse.Namespace, payload: dict[str, Any]) -> str:
     tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
     tmp_path.replace(summary_path)
     return str(summary_path)
+
+
+def configure_http_proxy(args: argparse.Namespace) -> None:
+    if bool(getattr(args, "use_system_proxy", False)):
+        return
+    urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))
 
 
 def action_params() -> dict[str, Any]:
@@ -465,19 +473,106 @@ def submit_burst(args: argparse.Namespace, plans: list[OrderProbePlan]) -> list[
     client = fee_probe.ApiClient(args.api_base_url, timeout=float(args.http_timeout_sec))
     workers = max(1, min(len(plans), int(args.burst_workers or 1)))
     spacing = max(0.0, float(args.burst_spacing_seconds or 0.0))
-    results: list[dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {
-            pool.submit(submit_one, client, plan, delay_s=index * spacing): plan.symbol
-            for index, plan in enumerate(plans)
-        }
-        for future in as_completed(futures):
+    submit_timeout = float(getattr(args, "submit_timeout_sec", 0.0) or 0.0)
+    if submit_timeout <= 0:
+        submit_timeout = max(float(args.http_timeout_sec) + 5.0, spacing * max(0, len(plans) - 1) + float(args.http_timeout_sec) + 5.0)
+
+    work: queue.Queue[tuple[int, OrderProbePlan]] = queue.Queue()
+    result_queue: queue.Queue[tuple[int, dict[str, Any]]] = queue.Queue()
+    stop_event = threading.Event()
+    for index, plan in enumerate(plans):
+        work.put((index, plan))
+
+    def worker() -> None:
+        while not stop_event.is_set():
             try:
-                results.append(future.result())
+                index, plan = work.get_nowait()
+            except queue.Empty:
+                return
+            if stop_event.is_set():
+                return
+            try:
+                result = submit_one(client, plan, delay_s=index * spacing)
             except Exception as exc:
-                results.append({"ok": False, "symbol": futures[future], "error": str(exc), "order_ids": []})
-    results.sort(key=lambda item: [plan.symbol for plan in plans].index(str(item.get("symbol"))) if str(item.get("symbol")) in [plan.symbol for plan in plans] else 999)
-    return results
+                result = {"ok": False, "symbol": plan.symbol, "error": str(exc), "order_ids": []}
+            result_queue.put((index, result))
+
+    threads = [
+        threading.Thread(target=worker, name=f"gateway-probe-submit-{index + 1}", daemon=True)
+        for index in range(workers)
+    ]
+    for thread in threads:
+        thread.start()
+
+    effective_timeout = max(0.01, submit_timeout)
+    deadline = time.monotonic() + effective_timeout
+    results_by_index: dict[int, dict[str, Any]] = {}
+    while len(results_by_index) < len(plans):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            index, result = result_queue.get(timeout=min(0.5, remaining))
+        except queue.Empty:
+            continue
+        results_by_index[index] = result
+
+    if len(results_by_index) < len(plans):
+        stop_event.set()
+        for index, plan in enumerate(plans):
+            if index not in results_by_index:
+                results_by_index[index] = {
+                    "ok": False,
+                    "symbol": plan.symbol,
+                    "payload": plan.payload(),
+                    "error": "submit_timeout",
+                    "timed_out": True,
+                    "timeout_s": round(effective_timeout, 3),
+                    "order_ids": [],
+                }
+
+    return [results_by_index[index] for index in range(len(plans))]
+
+
+def cancel_visible_orders_for_symbols(args: argparse.Namespace, symbols: list[str]) -> list[dict[str, Any]]:
+    snapshot = get_snapshot(args)
+    client = fee_probe.ApiClient(args.api_base_url, timeout=float(args.http_timeout_sec))
+    normalized_symbols = {fee_probe.normalize_symbol(symbol) for symbol in symbols if fee_probe.normalize_symbol(symbol)}
+    seen: set[str] = set()
+    cancel_results: list[dict[str, Any]] = []
+    for key in ("live_open_orders", "orders"):
+        for order in snapshot.get(key) or []:
+            if not isinstance(order, dict) or not fee_probe.is_open_order(order):
+                continue
+            if fee_probe.order_symbol(order) not in normalized_symbols:
+                continue
+            oid = fee_probe.order_id(order)
+            identity = oid or compact_json(order)[:200]
+            if not oid or identity in seen:
+                continue
+            seen.add(identity)
+            started = time.perf_counter()
+            try:
+                response = client.post("/api/custom/ibkr/orders/cancel", {"order_id": oid}, action_params())
+                ok = bool(response.get("ok"))
+                error = response.get("error") or ((response.get("result") or {}).get("error") if isinstance(response.get("result"), dict) else "")
+            except Exception as exc:
+                response = {}
+                ok = False
+                error = str(exc)
+            cancel_results.append(
+                {
+                    "ok": ok,
+                    "order_id": oid,
+                    "symbol": fee_probe.order_symbol(order),
+                    "response": response,
+                    "elapsed_s": round(time.perf_counter() - started, 3),
+                    "error": error,
+                    "source": "visible_order_rescue",
+                }
+            )
+            time.sleep(max(0.0, float(args.cancel_spacing_seconds or 0.0)))
+    return cancel_results
 
 
 def cancel_known_order_ids(args: argparse.Namespace, place_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -563,6 +658,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
 
     place_results: list[dict[str, Any]] = []
     cancel_results: list[dict[str, Any]] = []
+    rescue_cancel_results: list[dict[str, Any]] = []
     cleanup_results: list[dict[str, Any]] = []
     pending_observation: dict[str, Any] = {}
     flat_after: dict[str, Any] = {}
@@ -571,6 +667,8 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         pending_observation = observe_pending_account_access(args, symbols)
         cancel_results = cancel_known_order_ids(args, place_results)
     finally:
+        if any(item.get("timed_out") for item in place_results):
+            rescue_cancel_results = cancel_visible_orders_for_symbols(args, symbols)
         cleanup_results = cleanup_symbols(args, plans, place_results)
         flat_after = wait_for_flat_symbols(args, symbols)
 
@@ -590,9 +688,10 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 "failed": sum(1 for item in place_results if not item.get("ok")),
             },
             "cancel_results": {
-                "total": len(cancel_results),
-                "ok": sum(1 for item in cancel_results if item.get("ok")),
-                "failed": sum(1 for item in cancel_results if not item.get("ok")),
+                "total": len(cancel_results) + len(rescue_cancel_results),
+                "ok": sum(1 for item in [*cancel_results, *rescue_cancel_results] if item.get("ok")),
+                "failed": sum(1 for item in [*cancel_results, *rescue_cancel_results] if not item.get("ok")),
+                "rescue_total": len(rescue_cancel_results),
             },
             "cleanup_results": {
                 "total": len(cleanup_results),
@@ -615,6 +714,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 "place": place_results,
                 "pending_hold": pending_observation,
                 "cancel": cancel_results,
+                "rescue_cancel": rescue_cancel_results,
                 "cleanup": cleanup_results,
                 "flat_after": flat_after,
             },
@@ -645,6 +745,7 @@ def apply_stress_preset(args: argparse.Namespace) -> argparse.Namespace:
         args.min_pending_hold_samples = max(int(args.min_pending_hold_samples or 0), 3)
         args.min_pending_visible_orders = max(int(args.min_pending_visible_orders or 0), target_orders)
         args.max_pending_snapshot_elapsed_sec = min(float(args.max_pending_snapshot_elapsed_sec or 10.0), 10.0)
+        args.submit_timeout_sec = max(float(args.submit_timeout_sec or 0.0), 90.0)
     args.skip_health = False
     args.skip_stability_gate = False
     args.max_firing_alerts = 0.0
@@ -691,6 +792,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--cleanup-timeout-sec", type=float, default=60.0)
     parser.add_argument("--poll-interval-sec", type=float, default=2.0)
     parser.add_argument("--http-timeout-sec", type=float, default=30.0)
+    parser.add_argument("--submit-timeout-sec", type=float, default=0.0, help="Hard wall-clock limit for the concurrent place burst before timed-out symbols are failed and cleanup starts.")
     parser.add_argument("--sqlite-timeout-sec", type=float, default=45.0)
     parser.add_argument("--stability-lookback-minutes", type=float, default=5.0)
     parser.add_argument("--max-firing-alerts", type=float, default=0.0)
@@ -707,6 +809,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--execute", action="store_true", help="Submit paper orders. Without this flag only the safe plan is built.")
     parser.add_argument("--confirm", default="", help=f"Required with --execute: {CONFIRM_TEXT}")
     parser.add_argument("--format", choices=("text", "json"), default="text")
+    parser.add_argument("--use-system-proxy", action="store_true", help="Allow urllib to use OS/env proxy settings. By default the probe bypasses system proxies.")
     return apply_stress_preset(parser.parse_args(argv))
 
 
@@ -762,6 +865,7 @@ def print_text(payload: dict[str, Any]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    configure_http_proxy(args)
     try:
         payload = run_probe(args)
     except Exception as exc:
