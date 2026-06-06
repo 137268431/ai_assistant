@@ -687,7 +687,7 @@
       "id": 9,
       "type": "stat",
       "title": "可用金额 / Available Capital",
-      "description": "交易可用金额主看 Remaining Buying Power；AvailableFunds 和 Cash 仅作对照。",
+      "description": "交易可用金额主看 Remaining Buying Power；低于 warn_floor 变黄，低于 block_floor 变红。AvailableFunds 和 Cash 仅作对照。",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -705,10 +705,32 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (source) (ibkr_account_buying_power_remaining_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
-          "legendFormat": "remaining BP {{source}}",
+          "expr": "(max by (source) (ibkr_account_buying_power_remaining_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})) >= on(source) (max by (source) (ibkr_account_buying_power_warn_floor_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"}))",
+          "legendFormat": "BP OK {{source}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "((max by (source) (ibkr_account_buying_power_remaining_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})) < on(source) (max by (source) (ibkr_account_buying_power_warn_floor_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"}))) and on(source) ((max by (source) (ibkr_account_buying_power_remaining_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})) >= on(source) (max by (source) (ibkr_account_buying_power_block_floor_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})))",
+          "legendFormat": "BP LOW {{source}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "(max by (source) (ibkr_account_buying_power_remaining_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})) < on(source) (max by (source) (ibkr_account_buying_power_block_floor_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"}))",
+          "legendFormat": "BP BLOCK {{source}}",
+          "range": true,
+          "refId": "C"
         },
         {
           "datasource": {
@@ -719,7 +741,7 @@
           "expr": "max by (source) (ibkr_account_available_funds_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
           "legendFormat": "available funds {{source}}",
           "range": true,
-          "refId": "B"
+          "refId": "D"
         },
         {
           "datasource": {
@@ -730,7 +752,7 @@
           "expr": "max by (source) (ibkr_account_total_cash_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
           "legendFormat": "cash {{source}}",
           "range": true,
-          "refId": "C"
+          "refId": "E"
         }
       ],
       "fieldConfig": {
@@ -747,7 +769,53 @@
             ]
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^BP OK.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^BP LOW.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "yellow"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^BP BLOCK.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "reduceOptions": {
@@ -4535,7 +4603,7 @@
       "id": 55,
       "type": "stat",
       "title": "账户资金 / Account Capital",
-      "description": "",
+      "description": "账户资金概览；Remaining Buying Power 低于 warn_floor 变黄，低于 block_floor 变红。",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -4564,10 +4632,32 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_buying_power_remaining_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
-          "legendFormat": "buying power {{environment}} {{source}}",
+          "expr": "(max by (environment, source) (ibkr_account_buying_power_remaining_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})) >= on(environment, source) (max by (environment, source) (ibkr_account_buying_power_warn_floor_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"}))",
+          "legendFormat": "BP OK {{environment}} {{source}}",
           "range": true,
           "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "((max by (environment, source) (ibkr_account_buying_power_remaining_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})) < on(environment, source) (max by (environment, source) (ibkr_account_buying_power_warn_floor_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"}))) and on(environment, source) ((max by (environment, source) (ibkr_account_buying_power_remaining_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})) >= on(environment, source) (max by (environment, source) (ibkr_account_buying_power_block_floor_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})))",
+          "legendFormat": "BP LOW {{environment}} {{source}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "(max by (environment, source) (ibkr_account_buying_power_remaining_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})) < on(environment, source) (max by (environment, source) (ibkr_account_buying_power_block_floor_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"}))",
+          "legendFormat": "BP BLOCK {{environment}} {{source}}",
+          "range": true,
+          "refId": "D"
         },
         {
           "datasource": {
@@ -4578,7 +4668,7 @@
           "expr": "max by (environment, source) (ibkr_account_available_funds_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
           "legendFormat": "available funds {{environment}} {{source}}",
           "range": true,
-          "refId": "C"
+          "refId": "E"
         },
         {
           "datasource": {
@@ -4589,7 +4679,7 @@
           "expr": "max by (environment, source) (ibkr_account_total_cash_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
           "legendFormat": "cash {{environment}} {{source}}",
           "range": true,
-          "refId": "D"
+          "refId": "F"
         }
       ],
       "fieldConfig": {
@@ -4610,7 +4700,53 @@
             ]
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^BP OK.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^BP LOW.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "yellow"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^BP BLOCK.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "reduceOptions": {

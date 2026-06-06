@@ -1,4 +1,6 @@
 import sys
+import json
+import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
@@ -41,12 +43,19 @@ class GatewayOrderProbeTest(unittest.TestCase):
         self.assertGreater(take_profit, 100.0)
         self.assertLess(take_profit, entry)
 
+    def test_quantity_for_target_notional_sizes_from_entry_price(self):
+        quantity, exposure = probe.quantity_for_target_notional(155.57, 5000.0, 1)
+
+        self.assertEqual(33, quantity)
+        self.assertAlmostEqual(5133.81, exposure)
+
     def test_select_probe_plan_skips_dirty_symbol_and_keeps_clean_ones(self):
         args = Namespace(
             symbols="TSLA,AAPL,MSFT",
             orders=2,
             quantity=1,
             direction="long",
+            target_notional_per_order=5000.0,
             entry_distance_pct=0.5,
             protection_gap_pct=0.15,
             reference_price=0.0,
@@ -74,11 +83,141 @@ class GatewayOrderProbeTest(unittest.TestCase):
 
         self.assertEqual(["AAPL", "MSFT"], [plan.symbol for plan in plans])
         self.assertEqual(2, summary["selected_orders"])
+        self.assertEqual(2, len([plan for plan in plans if plan.requested_exposure >= 5000.0]))
+        self.assertGreaterEqual(summary["total_requested_exposure"], 10000.0)
         self.assertEqual("TSLA", excluded[0]["symbol"])
         self.assertIn("pre_existing_position", excluded[0]["reason"])
 
+    def test_load_probe_plan_reuses_dry_run_summary_without_fetching_prices(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "summary.json"
+            plan_path.write_text(
+                json.dumps(
+                    {
+                        "plan_summary": {"target_notional_per_order": 5000.0},
+                        "plan": [
+                            {
+                                "symbol": "AAPL",
+                                "direction": "long",
+                                "quantity": 33,
+                                "reference_price": 311.14,
+                                "entry_price": 155.57,
+                                "take_profit_price": 178.91,
+                                "stop_loss_price": 132.23,
+                                "target_notional": 5000.0,
+                                "requested_exposure": 5133.81,
+                            }
+                        ],
+                    }
+                )
+            )
+            args = Namespace(
+                plan_path=str(plan_path),
+                orders=1,
+                quantity=1,
+                direction="long",
+                target_notional_per_order=0.0,
+            )
+            snapshot = {"ok": True, "environment": "paper", "broker_mode": "paper", "positions": [], "orders": [], "live_open_orders": []}
+
+            with mock.patch.object(probe, "get_snapshot", return_value=snapshot), mock.patch.object(
+                probe.fee_probe,
+                "fetch_latest_reference_price",
+            ) as fetch_price:
+                plans, excluded, summary = probe.select_probe_plan(args)
+
+        fetch_price.assert_not_called()
+        self.assertFalse(excluded)
+        self.assertEqual(["AAPL"], [plan.symbol for plan in plans])
+        self.assertEqual(33, plans[0].quantity)
+        self.assertEqual(5133.81, plans[0].requested_exposure)
+        self.assertEqual(str(plan_path), summary["plan_path"])
+
     def test_action_params_force_paper(self):
         self.assertEqual({"environment": "paper", "broker_mode": "paper"}, probe.action_params())
+
+    def test_account_lock_stress_preset_holds_forty_five_pending_orders(self):
+        args = probe.parse_args(["--account-lock-stress"])
+
+        self.assertTrue(args.gateway_stress)
+        self.assertTrue(args.account_lock_stress)
+        self.assertGreaterEqual(args.orders, 45)
+        self.assertGreaterEqual(args.min_orders, 45)
+        self.assertGreaterEqual(args.burst_workers, 45)
+        self.assertGreaterEqual(args.target_notional_per_order, 5000.0)
+        self.assertGreaterEqual(args.pending_hold_seconds, 45.0)
+        self.assertGreaterEqual(args.min_pending_hold_samples, 3)
+        self.assertGreaterEqual(args.min_pending_visible_orders, 45)
+        self.assertGreaterEqual(len(probe.split_symbols(args.symbols)), 45)
+
+    def test_account_lock_stress_can_scale_to_forty_five_orders(self):
+        args = probe.parse_args(["--account-lock-stress", "--orders", "45", "--min-orders", "45"])
+
+        self.assertEqual(45, args.orders)
+        self.assertEqual(45, args.min_orders)
+        self.assertEqual(45, args.burst_workers)
+        self.assertEqual(45, args.min_pending_visible_orders)
+
+    def test_observe_pending_account_access_requires_visible_orders_and_latency(self):
+        args = Namespace(
+            pending_hold_seconds=0.0,
+            post_place_sleep_seconds=0.0,
+            min_pending_hold_samples=2,
+            pending_hold_sample_interval_sec=0.25,
+            min_pending_visible_orders=2,
+            max_pending_snapshot_elapsed_sec=10.0,
+        )
+        snapshot = {
+            "ok": True,
+            "environment": "paper",
+            "broker_mode": "paper",
+            "service_running": True,
+            "session_authenticated": True,
+            "websocket_ready": True,
+            "summary_available": True,
+            "positions": [],
+            "orders": [
+                {"symbol": "AAPL", "status": "Submitted", "order_id": "1"},
+                {"symbol": "MSFT", "status": "Submitted", "order_id": "2"},
+            ],
+            "live_open_orders": [],
+        }
+
+        with mock.patch.object(probe, "get_snapshot", return_value=snapshot), mock.patch.object(probe.time, "sleep", return_value=None):
+            result = probe.observe_pending_account_access(args, ["AAPL", "MSFT"])
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(2, result["sample_count"])
+        self.assertEqual(2, result["max_selected_open_order_count_observed"])
+        self.assertFalse(result["failures"])
+
+    def test_observe_pending_account_access_fails_when_orders_are_not_visible(self):
+        args = Namespace(
+            pending_hold_seconds=0.0,
+            post_place_sleep_seconds=0.0,
+            min_pending_hold_samples=1,
+            pending_hold_sample_interval_sec=0.25,
+            min_pending_visible_orders=1,
+            max_pending_snapshot_elapsed_sec=10.0,
+        )
+        snapshot = {
+            "ok": True,
+            "environment": "paper",
+            "broker_mode": "paper",
+            "service_running": True,
+            "session_authenticated": True,
+            "websocket_ready": True,
+            "summary_available": True,
+            "positions": [],
+            "orders": [],
+            "live_open_orders": [],
+        }
+
+        with mock.patch.object(probe, "get_snapshot", return_value=snapshot):
+            result = probe.observe_pending_account_access(args, ["AAPL"])
+
+        self.assertFalse(result["ok"])
+        self.assertIn("visible_pending_orders", {item["name"] for item in result["failures"]})
 
 
 if __name__ == "__main__":

@@ -25,9 +25,50 @@ from manage_today_tv_replay_stress_launchd import (  # noqa: E402
     parse_launchctl_print,
     readiness_from_components,
     select_current_runner_item,
+    split_current_runner_items,
+    status_payload,
+    stop,
+    write_start_files,
 )
 
 ET = ZoneInfo("America/New_York")
+
+
+def _stable_values():
+    return {
+        "firing_alerts": 0.0,
+        "broker_pending_requests": 0.0,
+        "order_failures_window": 0.0,
+        "signal_attention_window": 0.0,
+        "order_operation_p95": 0.1,
+        "gateway_serial_wait_p95": 0.0,
+        "gateway_serial_timeouts_window": 0.0,
+    }
+
+
+def _health_artifact():
+    phase = {"stack": {"ok": True}, "monitoring": {"ok": True}, "alerts": {"ok": True}, "metrics": {"_lookback": {"range": "5m"}}}
+    return {"before": phase, "after": phase}
+
+
+def _observed_chain(signal_id: str, symbol: str) -> dict:
+    return {
+        "synthetic_signal_id": signal_id,
+        "symbol": symbol,
+        "direction": "long",
+        "risk_events": 1,
+        "exit_events": 1,
+        "checks": [
+            {"name": "send_entry", "ok": True},
+            {"name": "route_entry", "ok": True},
+            {"name": "entry_processed", "ok": True},
+            {"name": "route_risk_update", "ok": True},
+            {"name": "route_exit", "ok": True},
+            {"name": "account_flat_before", "ok": True},
+            {"name": "account_flat_after", "ok": True},
+            {"name": "post_cleanup_no_open_synthetic_orders", "ok": True},
+        ],
+    }
 
 
 class TodayTvReplayLaunchdManagerTest(unittest.TestCase):
@@ -102,6 +143,27 @@ class TodayTvReplayLaunchdManagerTest(unittest.TestCase):
         self.assertEqual(1, result["attempts"])
         self.assertEqual(1, result["last_attempt"]["attempt"])
 
+    def test_stop_dry_run_does_not_call_launchctl(self):
+        with mock.patch("manage_today_tv_replay_stress_launchd.labels_from_plists", return_value=["runner-a"]), mock.patch(
+            "manage_today_tv_replay_stress_launchd.run"
+        ) as run_mock:
+            result = stop(Namespace(label="", dry_run=True))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("would_stop", result["action"])
+        run_mock.assert_not_called()
+
+    def test_stop_treats_already_unloaded_as_ok(self):
+        proc = mock.Mock(returncode=5, stdout="", stderr="Boot-out failed: 5: Input/output error\\nCould not find service")
+        with mock.patch("manage_today_tv_replay_stress_launchd.labels_from_plists", return_value=["runner-a"]), mock.patch(
+            "manage_today_tv_replay_stress_launchd.meta_for_label",
+            return_value={"plist": "/tmp/runner-a.plist"},
+        ), mock.patch("manage_today_tv_replay_stress_launchd.run", return_value=proc):
+            result = stop(Namespace(label="", dry_run=False))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("already_unloaded", result["stopped"][0]["action"])
+
     def test_audit_retry_artifacts_proves_success_attempt_chain(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -126,6 +188,10 @@ class TodayTvReplayLaunchdManagerTest(unittest.TestCase):
                 "followup_stress_concurrent": True,
                 "risk_burst_workers": 3,
                 "exit_burst_workers": 3,
+                "selected_risk_payloads": 9,
+                "selected_exit_payloads": 9,
+                "risk_repeat": 3,
+                "exit_repeat": 3,
                 "flow_requirements": {
                     "ok": True,
                     "counts": {
@@ -134,35 +200,53 @@ class TodayTvReplayLaunchdManagerTest(unittest.TestCase):
                         "bracket_chains": 3,
                         "filled_entry_chains": 1,
                         "routed_exit_chains": 1,
+                        "sent_risk_update_events": 9,
+                        "routed_risk_update_events": 9,
+                        "sent_exit_events": 3,
+                        "routed_exit_events": 3,
                         "closed_reverse_chains": 1,
                     },
                     "thresholds": {
                         "min_bracket_chains": 3,
                         "min_filled_entry_chains": 1,
                         "min_routed_exit_chains": 1,
+                        "min_sent_risk_update_events": 6,
+                        "min_routed_risk_update_events": 6,
+                        "min_sent_exit_events": 3,
+                        "min_routed_exit_events": 3,
                         "min_closed_reverse_chains": 1,
                     },
                     "failures": [],
                 },
                 "account_flat": {"before": {"ok": True}, "after": {"ok": True}},
-                "stability": {"before": {"ok": True}, "after": {"ok": True}},
+                "stability": {"before": {"ok": True, "values": _stable_values()}, "after": {"ok": True, "values": _stable_values()}},
+                "chain_observability": {
+                    "ok": True,
+                    "total": 3,
+                    "failures": [],
+                    "matrix": [
+                        {"signal_id": "sim-1", "ok": True},
+                        {"signal_id": "sim-2", "ok": True},
+                        {"signal_id": "sim-3", "ok": True},
+                    ],
+                },
                 "burst_results": {"total": 6, "failed": 0},
                 "cleanup_results": {"total": 3, "failed": 0},
                 "post_cleanup_results": {"total": 3, "failed": 0},
                 "chains": [
-                    {"synthetic_signal_id": "sim-1", "symbol": "AAPL", "checks": [{"name": "entry_processed", "ok": True}]},
-                    {"synthetic_signal_id": "sim-2", "symbol": "MSFT", "checks": [{"name": "entry_processed", "ok": True}]},
-                    {"synthetic_signal_id": "sim-3", "symbol": "NVDA", "checks": [{"name": "entry_processed", "ok": True}]},
+                    _observed_chain("sim-1", "AAPL"),
+                    _observed_chain("sim-2", "MSFT"),
+                    _observed_chain("sim-3", "NVDA"),
                 ],
             }
             (attempt_dir / "summary.json").write_text(json.dumps(summary))
-            (attempt_dir / "health_and_metrics.json").write_text(json.dumps({"before": {}, "after": {}}))
+            (attempt_dir / "health_and_metrics.json").write_text(json.dumps(_health_artifact()))
             (attempt_dir / "chains.jsonl").write_text(
                 "\n".join(
                     [
-                        json.dumps({"synthetic_signal_id": "sim-1"}),
-                        json.dumps({"synthetic_signal_id": "sim-2"}),
-                        json.dumps({"synthetic_signal_id": "sim-3"}),
+                        json.dumps(_observed_chain("sim-1", "AAPL")),
+                        json.dumps(_observed_chain("sim-2", "MSFT")),
+                        json.dumps(_observed_chain("sim-3", "NVDA")),
                     ]
                 )
                 + "\n"
@@ -176,6 +260,7 @@ class TodayTvReplayLaunchdManagerTest(unittest.TestCase):
         self.assertEqual("complete", result["objective_status"])
         self.assertEqual(3, result["evidence_summary"]["selected_chains"])
         self.assertEqual(3, result["evidence_summary"]["flow_counts"]["bracket_chains"])
+        self.assertTrue(result["evidence_summary"]["chain_observability"]["ok"])
         self.assertTrue(result["evidence_summary"]["account_flat_after_ok"])
 
     def test_audit_retry_artifacts_marks_market_end_abandoned(self):
@@ -431,6 +516,83 @@ class TodayTvReplayLaunchdManagerTest(unittest.TestCase):
         result = select_current_runner_item(items)
 
         self.assertEqual("new", result["label"])
+
+    def test_split_current_runner_items_separates_historical_labels(self):
+        items = [
+            {
+                "label": "old",
+                "loaded": False,
+                "launch": {"state": "not running"},
+                "retry_summary": {"available": True, "updated_at_et": "2026-06-05T16:00:00-04:00"},
+            },
+            {
+                "label": "running",
+                "loaded": True,
+                "launch": {"state": "running"},
+                "retry_summary": {"available": True, "stale": False, "updated_at_et": "2026-06-05T15:00:00-04:00"},
+            },
+        ]
+
+        current, historical = split_current_runner_items(items)
+
+        self.assertEqual("running", current["label"])
+        self.assertEqual(["old"], [item["label"] for item in historical])
+
+    def test_status_payload_marks_current_and_historical_runners(self):
+        labels = ["old-label", "running-label"]
+
+        def fake_run(command):
+            proc = mock.Mock(returncode=0, stdout="", stderr="")
+            if "old-label" in command[-1]:
+                proc.stdout = "state = not running\nruns = 1\n"
+            else:
+                proc.stdout = "state = running\npid = 123\nruns = 1\n"
+            return proc
+
+        def fake_meta(label):
+            return {"label": label, "artifact_dir": f"/tmp/{label}"}
+
+        def fake_summary(artifact_dir, *, launch=None):
+            return {
+                "available": True,
+                "stale": False,
+                "updated_at_et": "2026-06-05T16:00:00-04:00",
+                "phase": "waiting_market_window",
+            }
+
+        with mock.patch("manage_today_tv_replay_stress_launchd.labels_from_plists", return_value=labels), mock.patch(
+            "manage_today_tv_replay_stress_launchd.run", side_effect=fake_run
+        ), mock.patch("manage_today_tv_replay_stress_launchd.meta_for_label", side_effect=fake_meta), mock.patch(
+            "manage_today_tv_replay_stress_launchd.compact_retry_summary", side_effect=fake_summary
+        ):
+            result = status_payload()
+
+        self.assertEqual(2, result["count"])
+        self.assertEqual(1, result["running_count"])
+        self.assertEqual("running-label", result["current_label"])
+        self.assertEqual(1, result["historical_count"])
+        self.assertEqual(["old-label"], result["historical_labels"])
+
+    def test_write_start_files_records_script_fingerprints(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifacts = root / "artifacts"
+            agents = root / "agents"
+            with mock.patch("manage_today_tv_replay_stress_launchd.ARTIFACT_ROOT", artifacts), mock.patch(
+                "manage_today_tv_replay_stress_launchd.launch_agents_dir",
+                return_value=agents,
+            ):
+                _label, artifact_dir, _plist, _wrapper = write_start_files("SIMTV_META_TEST")
+
+            meta = json.loads((artifact_dir / "runner.launchd.meta.json").read_text())
+
+        fingerprints = meta["script_fingerprints"]
+        replay = fingerprints["run_today_tv_replay_stress"]
+        manager = fingerprints["manage_today_tv_replay_stress_launchd"]
+        self.assertTrue(replay["ok"])
+        self.assertEqual(64, len(replay["sha256"]))
+        self.assertTrue(manager["ok"])
+        self.assertEqual(64, len(manager["sha256"]))
 
 
 if __name__ == "__main__":

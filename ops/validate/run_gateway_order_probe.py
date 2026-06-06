@@ -9,6 +9,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
+from math import ceil
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -26,6 +27,14 @@ CN = ZoneInfo("Asia/Shanghai")
 DEFAULT_ARTIFACT_ROOT = Path("artifacts/validation/gateway_order_probe")
 DEFAULT_PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://127.0.0.1:9090")
 CONFIRM_TEXT = "PAPER_GATEWAY_ORDER_PROBE"
+DEFAULT_SYMBOLS = (
+    "TSLA,AAPL,MSFT,NVDA,AMD,META,GOOGL,AMZN,NFLX,ORCL,"
+    "CRM,ADBE,INTC,CSCO,QCOM,AVGO,TXN,MU,IBM,NOW,SHOP,SNOW,PLTR,UBER,DDOG,NET,"
+    "PANW,CRWD,ZS,TEAM,WDAY,INTU,ADP,PYPL,SQ,COIN,HOOD,ABNB,BKNG,MELI,SE,SPOT,"
+    "ROKU,TWLO,OKTA,DELL,HPQ,SMCI,MRVL,LRCX,KLAC,AMAT,ASML,TSM,"
+    "JPM,BAC,WFC,GS,MS,V,MA,AXP,DIS,CMCSA,PEP,KO,MCD,SBUX,COST,WMT,TGT,HD,LOW,"
+    "NKE,BA,CAT,GE,GM,F,FDX,UPS,UNH,JNJ,PFE,MRK,ABBV,LLY,TMO,ISRG,VRTX"
+)
 
 
 class GatewayProbeError(RuntimeError):
@@ -41,6 +50,8 @@ class OrderProbePlan:
     entry_price: float
     take_profit_price: float
     stop_loss_price: float
+    target_notional: float = 0.0
+    requested_exposure: float = 0.0
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -62,6 +73,8 @@ class OrderProbePlan:
             "entry_price": self.entry_price,
             "take_profit_price": self.take_profit_price,
             "stop_loss_price": self.stop_loss_price,
+            "target_notional": self.target_notional,
+            "requested_exposure": self.requested_exposure,
         }
 
 
@@ -112,6 +125,18 @@ def build_non_marketable_bracket(
     raise GatewayProbeError("direction must be long or short")
 
 
+def quantity_for_target_notional(entry_price: float, target_notional: float, fallback_quantity: int) -> tuple[int, float]:
+    target = float(target_notional or 0.0)
+    if target <= 0:
+        quantity = max(1, int(fallback_quantity or 1))
+    else:
+        if entry_price <= 0:
+            raise GatewayProbeError("entry_price_required_for_target_notional")
+        quantity = max(1, int(ceil(target / float(entry_price))))
+    exposure = round(float(entry_price) * quantity, 4)
+    return quantity, exposure
+
+
 def artifact_dir(args: argparse.Namespace) -> Path:
     return Path(args.artifact_root) / args.run_id
 
@@ -159,7 +184,126 @@ def wait_for_flat_symbols(args: argparse.Namespace, symbols: list[str]) -> dict[
     return {"ok": False, "snapshot": last_snapshot, "error": "cleanup_timeout_not_flat"}
 
 
+def summarize_account_snapshot(snapshot: dict[str, Any], symbols: list[str]) -> dict[str, Any]:
+    selected: dict[str, dict[str, Any]] = {}
+    total_open = 0
+    for symbol in symbols:
+        open_orders = fee_probe.open_orders_for_symbol(snapshot, symbol)
+        total_open += len(open_orders)
+        selected[symbol] = {
+            "position_qty": fee_probe.net_position_quantity(snapshot, symbol),
+            "open_order_count": len(open_orders),
+            "open_order_ids": [fee_probe.order_id(order) for order in open_orders if fee_probe.order_id(order)],
+        }
+    return {
+        "ok": snapshot.get("ok") is not False,
+        "environment": snapshot.get("environment"),
+        "broker_mode": snapshot.get("broker_mode"),
+        "service_running": snapshot.get("service_running"),
+        "service_starting": snapshot.get("service_starting"),
+        "session_authenticated": snapshot.get("session_authenticated"),
+        "websocket_ready": snapshot.get("websocket_ready"),
+        "summary_available": snapshot.get("summary_available"),
+        "stale": snapshot.get("stale"),
+        "selected_open_order_count": total_open,
+        "selected_symbols": selected,
+    }
+
+
+def account_access_ok(summary: dict[str, Any]) -> bool:
+    return (
+        bool(summary.get("ok"))
+        and summary.get("service_running") is not False
+        and summary.get("session_authenticated") is not False
+        and summary.get("websocket_ready") is not False
+        and summary.get("summary_available") is not False
+    )
+
+
+def sample_account_access(args: argparse.Namespace, symbols: list[str], *, phase: str, sample_index: int) -> dict[str, Any]:
+    started = time.perf_counter()
+    try:
+        snapshot = get_snapshot(args)
+        fee_probe.assert_paper_snapshot(snapshot)
+        summary = summarize_account_snapshot(snapshot, symbols)
+        ok = account_access_ok(summary)
+        return {
+            "ok": ok,
+            "phase": phase,
+            "sample_index": int(sample_index),
+            "elapsed_s": round(time.perf_counter() - started, 3),
+            "summary": summary,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "phase": phase,
+            "sample_index": int(sample_index),
+            "elapsed_s": round(time.perf_counter() - started, 3),
+            "error": str(exc),
+        }
+
+
+def observe_pending_account_access(args: argparse.Namespace, symbols: list[str]) -> dict[str, Any]:
+    hold_seconds = max(float(args.pending_hold_seconds or 0.0), float(args.post_place_sleep_seconds or 0.0))
+    min_samples = max(0, int(args.min_pending_hold_samples or 0))
+    min_visible_orders = max(0, int(args.min_pending_visible_orders or 0))
+    max_elapsed = max(0.1, float(args.max_pending_snapshot_elapsed_sec or 10.0))
+    sample_goal = max(1, min_samples) if hold_seconds > 0 or min_samples > 0 else 0
+    if sample_goal <= 0:
+        return {"ok": True, "skipped": True, "reason": "pending_hold_not_requested", "samples": []}
+
+    started = time.time()
+    interval = max(0.25, float(args.pending_hold_sample_interval_sec or 1.0))
+    samples: list[dict[str, Any]] = []
+    while True:
+        samples.append(sample_account_access(args, symbols, phase="pending_hold", sample_index=len(samples) + 1))
+        elapsed = time.time() - started
+        if elapsed >= hold_seconds and len(samples) >= sample_goal:
+            break
+        if elapsed < hold_seconds:
+            sleep_for = min(interval, max(0.0, hold_seconds - elapsed))
+        else:
+            sleep_for = interval
+        time.sleep(max(0.25, sleep_for))
+
+    visible_counts = [
+        int(((sample.get("summary") or {}).get("selected_open_order_count") or 0))
+        for sample in samples
+        if isinstance(sample, dict)
+    ]
+    elapsed_values = [float(sample.get("elapsed_s") or 0.0) for sample in samples if isinstance(sample, dict)]
+    max_observed_orders = max(visible_counts or [0])
+    max_observed_elapsed = max(elapsed_values or [0.0])
+    failures: list[dict[str, Any]] = []
+    if not all(sample.get("ok") for sample in samples):
+        failures.append({"name": "account_snapshot_samples_ok", "failed": sum(1 for sample in samples if not sample.get("ok"))})
+    if len(samples) < sample_goal:
+        failures.append({"name": "account_snapshot_sample_count", "value": len(samples), "threshold": sample_goal})
+    if max_observed_elapsed > max_elapsed:
+        failures.append({"name": "account_snapshot_latency", "value": max_observed_elapsed, "threshold": max_elapsed})
+    if max_observed_orders < min_visible_orders:
+        failures.append({"name": "visible_pending_orders", "value": max_observed_orders, "threshold": min_visible_orders})
+    return {
+        "ok": not failures,
+        "skipped": False,
+        "hold_seconds": hold_seconds,
+        "sample_interval_sec": interval,
+        "min_samples": min_samples,
+        "min_visible_orders": min_visible_orders,
+        "max_snapshot_elapsed_sec": max_elapsed,
+        "sample_count": len(samples),
+        "max_snapshot_elapsed_observed_sec": round(max_observed_elapsed, 3),
+        "max_selected_open_order_count_observed": max_observed_orders,
+        "failures": failures,
+        "samples": samples,
+    }
+
+
 def select_probe_plan(args: argparse.Namespace) -> tuple[list[OrderProbePlan], list[dict[str, Any]], dict[str, Any]]:
+    if fee_probe.to_text(getattr(args, "plan_path", "")):
+        return load_probe_plan(args)
+
     symbols = split_symbols(args.symbols)
     if not symbols:
         raise GatewayProbeError("no_symbols_configured")
@@ -180,6 +324,11 @@ def select_probe_plan(args: argparse.Namespace) -> tuple[list[OrderProbePlan], l
                 entry_distance_pct=float(args.entry_distance_pct),
                 protection_gap_pct=float(args.protection_gap_pct),
             )
+            quantity, requested_exposure = quantity_for_target_notional(
+                entry,
+                float(getattr(args, "target_notional_per_order", 0.0) or 0.0),
+                int(args.quantity or 1),
+            )
         except Exception as exc:
             excluded.append({"symbol": symbol, "reason": str(exc)})
             continue
@@ -187,18 +336,77 @@ def select_probe_plan(args: argparse.Namespace) -> tuple[list[OrderProbePlan], l
             OrderProbePlan(
                 symbol=symbol,
                 direction=args.direction,
-                quantity=max(1, int(args.quantity or 1)),
+                quantity=quantity,
                 reference_price=round(float(reference_price), 4),
                 entry_price=entry,
                 take_profit_price=tp,
                 stop_loss_price=sl,
+                target_notional=round(float(getattr(args, "target_notional_per_order", 0.0) or 0.0), 4),
+                requested_exposure=requested_exposure,
             )
         )
     summary = {
         "requested_symbols": symbols,
         "selected_symbols": [plan.symbol for plan in selected],
         "selected_orders": len(selected),
+        "target_notional_per_order": float(getattr(args, "target_notional_per_order", 0.0) or 0.0),
+        "total_requested_exposure": round(sum(plan.requested_exposure for plan in selected), 4),
         "excluded": excluded,
+    }
+    return selected, excluded, summary
+
+
+def load_probe_plan(args: argparse.Namespace) -> tuple[list[OrderProbePlan], list[dict[str, Any]], dict[str, Any]]:
+    plan_path = Path(fee_probe.to_text(getattr(args, "plan_path", "")))
+    payload = json.loads(plan_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise GatewayProbeError("plan_path_payload_not_object")
+    raw_plan = payload.get("plan") if isinstance(payload.get("plan"), list) else []
+    if not raw_plan:
+        raise GatewayProbeError("plan_path_missing_plan")
+    snapshot = get_snapshot(args)
+    fee_probe.assert_paper_snapshot(snapshot)
+
+    selected: list[OrderProbePlan] = []
+    excluded: list[dict[str, Any]] = []
+    for item in raw_plan:
+        if not isinstance(item, dict):
+            continue
+        if len(selected) >= max(1, int(args.orders or 1)):
+            break
+        symbol = fee_probe.normalize_symbol(item.get("symbol"))
+        try:
+            fee_probe.check_clean_preflight(snapshot, symbol)
+            entry = round_price(float(item.get("entry_price") or 0.0))
+            tp = round_price(float(item.get("take_profit_price") or 0.0))
+            sl = round_price(float(item.get("stop_loss_price") or 0.0))
+            quantity = max(1, int(float(item.get("quantity") or 0)))
+            if not symbol or entry <= 0 or tp <= 0 or sl <= 0:
+                raise GatewayProbeError("invalid_plan_item_prices")
+        except Exception as exc:
+            excluded.append({"symbol": symbol, "reason": str(exc)})
+            continue
+        selected.append(
+            OrderProbePlan(
+                symbol=symbol,
+                direction=fee_probe.to_text(item.get("direction") or args.direction).lower() or args.direction,
+                quantity=quantity,
+                reference_price=float(item.get("reference_price") or 0.0),
+                entry_price=entry,
+                take_profit_price=tp,
+                stop_loss_price=sl,
+                target_notional=float(item.get("target_notional") or getattr(args, "target_notional_per_order", 0.0) or 0.0),
+                requested_exposure=round(float(item.get("requested_exposure") or entry * quantity), 4),
+            )
+        )
+    summary = {
+        "requested_symbols": [fee_probe.normalize_symbol(item.get("symbol")) for item in raw_plan if isinstance(item, dict)],
+        "selected_symbols": [plan.symbol for plan in selected],
+        "selected_orders": len(selected),
+        "target_notional_per_order": float(getattr(args, "target_notional_per_order", 0.0) or (payload.get("plan_summary") or {}).get("target_notional_per_order") or 0.0),
+        "total_requested_exposure": round(sum(plan.requested_exposure for plan in selected), 4),
+        "excluded": excluded,
+        "plan_path": str(plan_path),
     }
     return selected, excluded, summary
 
@@ -356,10 +564,11 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     place_results: list[dict[str, Any]] = []
     cancel_results: list[dict[str, Any]] = []
     cleanup_results: list[dict[str, Any]] = []
+    pending_observation: dict[str, Any] = {}
     flat_after: dict[str, Any] = {}
     try:
         place_results = submit_burst(args, plans)
-        time.sleep(max(0.0, float(args.post_place_sleep_seconds or 0.0)))
+        pending_observation = observe_pending_account_access(args, symbols)
         cancel_results = cancel_known_order_ids(args, place_results)
     finally:
         cleanup_results = cleanup_symbols(args, plans, place_results)
@@ -369,10 +578,11 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     place_ok = all(item.get("ok") for item in place_results) and len(place_results) == len(plans)
     cancel_attempted = bool(cancel_results) or all(item.get("order_ids") == [] for item in place_results)
     cleanup_ok = all(item.get("ok") for item in cleanup_results) and bool(flat_after.get("ok"))
+    account_lock_ok = bool(pending_observation.get("ok"))
     stability_ok = bool((before.get("stability") or {}).get("ok")) and bool((after.get("stability") or {}).get("ok"))
     payload.update(
         {
-            "ok": bool(place_ok and cancel_attempted and cleanup_ok and stability_ok),
+            "ok": bool(place_ok and cancel_attempted and cleanup_ok and account_lock_ok and stability_ok),
             "reason": "gateway_order_probe_complete",
             "place_results": {
                 "total": len(place_results),
@@ -389,11 +599,21 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 "ok": sum(1 for item in cleanup_results if item.get("ok")),
                 "failed": sum(1 for item in cleanup_results if not item.get("ok")),
             },
+            "pending_hold": {
+                "ok": pending_observation.get("ok"),
+                "skipped": pending_observation.get("skipped"),
+                "hold_seconds": pending_observation.get("hold_seconds"),
+                "sample_count": pending_observation.get("sample_count"),
+                "max_selected_open_order_count_observed": pending_observation.get("max_selected_open_order_count_observed"),
+                "max_snapshot_elapsed_observed_sec": pending_observation.get("max_snapshot_elapsed_observed_sec"),
+                "failures": pending_observation.get("failures") or [],
+            },
             "account_flat": {"before": True, "after": bool(flat_after.get("ok"))},
             "stability": {"before": before.get("stability"), "after": after.get("stability")},
             "health": {"before": before.get("health"), "after": after.get("health")},
             "details": {
                 "place": place_results,
+                "pending_hold": pending_observation,
                 "cancel": cancel_results,
                 "cleanup": cleanup_results,
                 "flat_after": flat_after,
@@ -405,15 +625,26 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def apply_stress_preset(args: argparse.Namespace) -> argparse.Namespace:
+    if args.account_lock_stress:
+        args.gateway_stress = True
     if not args.gateway_stress:
         return args
-    args.orders = max(int(args.orders or 0), 3)
-    args.min_orders = max(int(args.min_orders or 0), 3)
-    args.burst_workers = max(int(args.burst_workers or 0), 3)
+    required_orders = 45 if args.account_lock_stress else 3
+    target_orders = max(int(args.orders or 0), required_orders)
+    args.orders = target_orders
+    args.min_orders = max(int(args.min_orders or 0), target_orders)
+    args.burst_workers = max(int(args.burst_workers or 0), target_orders)
     args.quantity = max(1, int(args.quantity or 1))
     args.direction = "long"
     args.entry_distance_pct = max(float(args.entry_distance_pct or 0.0), 0.50)
     args.protection_gap_pct = max(float(args.protection_gap_pct or 0.0), 0.15)
+    if args.account_lock_stress:
+        args.target_notional_per_order = max(float(args.target_notional_per_order or 0.0), 5000.0)
+        args.pending_hold_seconds = max(float(args.pending_hold_seconds or 0.0), 45.0)
+        args.pending_hold_sample_interval_sec = max(1.0, min(float(args.pending_hold_sample_interval_sec or 10.0), 10.0))
+        args.min_pending_hold_samples = max(int(args.min_pending_hold_samples or 0), 3)
+        args.min_pending_visible_orders = max(int(args.min_pending_visible_orders or 0), target_orders)
+        args.max_pending_snapshot_elapsed_sec = min(float(args.max_pending_snapshot_elapsed_sec or 10.0), 10.0)
     args.skip_health = False
     args.skip_stability_gate = False
     args.max_firing_alerts = 0.0
@@ -438,10 +669,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--prometheus-url", default=DEFAULT_PROMETHEUS_URL)
     parser.add_argument("--artifact-root", default=str(DEFAULT_ARTIFACT_ROOT))
     parser.add_argument("--run-id", default=default_run_id)
-    parser.add_argument("--symbols", default=os.environ.get("IBKR_GATEWAY_PROBE_SYMBOLS", "TSLA,AAPL,MSFT,NVDA,AMD,META,GOOGL"))
+    parser.add_argument("--plan-path", default="", help="Reuse a previously written dry-run summary.json plan instead of fetching reference prices again.")
+    parser.add_argument("--symbols", default=os.environ.get("IBKR_GATEWAY_PROBE_SYMBOLS", DEFAULT_SYMBOLS))
     parser.add_argument("--orders", type=int, default=1)
     parser.add_argument("--min-orders", type=int, default=1)
     parser.add_argument("--quantity", type=int, default=1)
+    parser.add_argument("--target-notional-per-order", type=float, default=0.0, help="Approximate entry notional per symbol; overrides quantity by sizing from the non-marketable entry price.")
     parser.add_argument("--direction", choices=("long", "short"), default="long")
     parser.add_argument("--reference-price", type=float, default=0.0)
     parser.add_argument("--entry-distance-pct", type=float, default=0.50)
@@ -450,6 +683,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--burst-spacing-seconds", type=float, default=0.0)
     parser.add_argument("--cancel-spacing-seconds", type=float, default=0.75)
     parser.add_argument("--post-place-sleep-seconds", type=float, default=1.0)
+    parser.add_argument("--pending-hold-seconds", type=float, default=0.0, help="Keep accepted paper orders pending for this long while sampling account access before cancel.")
+    parser.add_argument("--pending-hold-sample-interval-sec", type=float, default=5.0)
+    parser.add_argument("--min-pending-hold-samples", type=int, default=0)
+    parser.add_argument("--min-pending-visible-orders", type=int, default=0)
+    parser.add_argument("--max-pending-snapshot-elapsed-sec", type=float, default=10.0)
     parser.add_argument("--cleanup-timeout-sec", type=float, default=60.0)
     parser.add_argument("--poll-interval-sec", type=float, default=2.0)
     parser.add_argument("--http-timeout-sec", type=float, default=30.0)
@@ -463,6 +701,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-gateway-serial-wait-p95", type=float, default=2.0)
     parser.add_argument("--max-gateway-serial-timeouts", type=float, default=0.0)
     parser.add_argument("--gateway-stress", action="store_true", help="Require 3 safe paper orders, concurrent placement, staggered cancel, and strict stability gates.")
+    parser.add_argument("--account-lock-stress", action="store_true", help="Require 5 concurrent safe paper orders and hold them pending while account/Gateway access is sampled.")
     parser.add_argument("--skip-health", action="store_true")
     parser.add_argument("--skip-stability-gate", action="store_true")
     parser.add_argument("--execute", action="store_true", help="Submit paper orders. Without this flag only the safe plan is built.")
@@ -479,6 +718,14 @@ def print_text(payload: dict[str, Any]) -> None:
             symbols=",".join((payload.get("plan_summary") or {}).get("selected_symbols") or []),
         )
     )
+    plan_summary = payload.get("plan_summary") or {}
+    if plan_summary.get("total_requested_exposure") is not None:
+        print(
+            "target_notional_per_order={target} total_requested_exposure={total}".format(
+                target=plan_summary.get("target_notional_per_order"),
+                total=plan_summary.get("total_requested_exposure"),
+            )
+        )
     if "place_results" in payload:
         print(
             "place={place_ok}/{place_total} cancel={cancel_ok}/{cancel_total} cleanup={cleanup_ok}/{cleanup_total} flat_after={flat_after}".format(
@@ -489,6 +736,16 @@ def print_text(payload: dict[str, Any]) -> None:
                 cleanup_ok=(payload.get("cleanup_results") or {}).get("ok"),
                 cleanup_total=(payload.get("cleanup_results") or {}).get("total"),
                 flat_after=(payload.get("account_flat") or {}).get("after"),
+            )
+        )
+        pending = payload.get("pending_hold") or {}
+        print(
+            "pending_hold_ok={ok} samples={samples} max_open_orders={open_orders} max_snapshot_elapsed={elapsed} failures={failures}".format(
+                ok=pending.get("ok"),
+                samples=pending.get("sample_count"),
+                open_orders=pending.get("max_selected_open_order_count_observed"),
+                elapsed=pending.get("max_snapshot_elapsed_observed_sec"),
+                failures=",".join(str(item.get("name")) for item in pending.get("failures") or []),
             )
         )
         after_values = (((payload.get("stability") or {}).get("after") or {}).get("values") or {})

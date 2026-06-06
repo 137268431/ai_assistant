@@ -1488,7 +1488,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "max by (service, environment, source) (ibkr_account_buying_power_guard_state{source=~\"account_snapshot|account_summary\", state=\"unavailable\"}) > 0",
+                "expr": "max by (service, environment, source) (ibkr_account_buying_power_guard_state{source=\"account_snapshot\", state=\"unavailable\"}) > 0",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -1574,7 +1574,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "(max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=~\"account_snapshot|account_summary\"}) < max by (service, environment, source) (ibkr_account_buying_power_block_floor_usd{source=~\"account_snapshot|account_summary\"})) and (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=~\"account_snapshot|account_summary\"}) >= 0)",
+                "expr": "(max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=\"account_snapshot\"}) < max by (service, environment, source) (ibkr_account_buying_power_block_floor_usd{source=\"account_snapshot\"})) and (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=\"account_snapshot\"}) >= 0)",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -1660,7 +1660,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "(max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=~\"account_snapshot|account_summary\"}) < max by (service, environment, source) (ibkr_account_buying_power_warn_floor_usd{source=~\"account_snapshot|account_summary\"})) and (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=~\"account_snapshot|account_summary\"}) >= max by (service, environment, source) (ibkr_account_buying_power_block_floor_usd{source=~\"account_snapshot|account_summary\"}))",
+                "expr": "(max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=\"account_snapshot\"}) < max by (service, environment, source) (ibkr_account_buying_power_warn_floor_usd{source=\"account_snapshot\"})) and (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=\"account_snapshot\"}) >= max by (service, environment, source) (ibkr_account_buying_power_block_floor_usd{source=\"account_snapshot\"}))",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -1746,7 +1746,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "max by (service, environment, source) (ibkr_account_snapshot_available{source=~\"account_snapshot|account_summary\"}) == 0",
+                "expr": "max by (service, environment, source) (ibkr_account_snapshot_available{source=\"account_snapshot\"}) == 0",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,

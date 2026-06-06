@@ -289,8 +289,16 @@ def _decorate_account_snapshot_health(payload: dict, *, reason: str = "") -> dic
 
 
 def _fresh_full_snapshot_for_buying_power(api_app, context: dict) -> dict:
-    cached = load_cached_snapshot(api_app, context["cache_key"], allow_stale=False)
-    if not isinstance(cached, dict):
+    candidate_keys = [
+        context["cache_key"],
+        (context["runtime_environment"], context["account_id"], True),
+    ]
+    cached = {}
+    for cache_key in candidate_keys:
+        cached = load_cached_snapshot(api_app, cache_key, allow_stale=False)
+        if isinstance(cached, dict):
+            break
+    if not isinstance(cached, dict) or not cached:
         return {}
     payload = _decorate_account_snapshot_health(dict(cached))
     health = payload.get("account_snapshot_health") if isinstance(payload.get("account_snapshot_health"), dict) else {}

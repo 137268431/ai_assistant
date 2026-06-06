@@ -700,6 +700,26 @@ def clone_event_payload(
     return payload
 
 
+def annotate_stress_repeat_payload(payload: dict[str, Any], *, repeat_index: int, repeat_total: int) -> None:
+    payload["stress_repeat_index"] = int(repeat_index)
+    payload["stress_repeat_total"] = int(repeat_total)
+    extra = as_object(payload.get("extra"))
+    extra.update(
+        {
+            "stress_repeat_index": int(repeat_index),
+            "stress_repeat_total": int(repeat_total),
+            "followup_stress_amplified": int(repeat_total) > 1,
+        }
+    )
+    if safe_lower(payload.get("event_type")) == "risk_update" and repeat_index > 1:
+        step = round(0.01 * (repeat_index - 1), 4)
+        for key in ("new_stop_loss", "stop_loss", "new_take_profit", "take_profit"):
+            value = safe_float(payload.get(key), 0.0)
+            if value > 0:
+                payload[key] = round(value + step, 4)
+    payload["extra"] = extra
+
+
 def rewrite_chain_payloads(
     chains: list[ReplayChain],
     *,
@@ -707,6 +727,8 @@ def rewrite_chain_payloads(
     broker_mode: str,
     data_environment: str,
     include_pre_alert: bool,
+    risk_repeat: int = 1,
+    exit_repeat: int = 1,
     base_time: datetime | None = None,
 ) -> None:
     base = base_time or choose_entry_base_time(len(chains))
@@ -753,9 +775,11 @@ def rewrite_chain_payloads(
             )
         )
         event_counter += 1
+        safe_risk_repeat = max(1, int(risk_repeat or 1))
+        safe_exit_repeat = max(1, int(exit_repeat or 1))
         for risk_event in chain.risk_events:
-            payloads["risk_update"].append(
-                clone_event_payload(
+            for repeat_index in range(1, safe_risk_repeat + 1):
+                payload = clone_event_payload(
                     chain,
                     risk_event,
                     run_id=run_id,
@@ -767,11 +791,12 @@ def rewrite_chain_payloads(
                     data_environment=data_environment,
                     pine_eval_ms=entry_eval_ms,
                 )
-            )
-            event_counter += 1
+                annotate_stress_repeat_payload(payload, repeat_index=repeat_index, repeat_total=safe_risk_repeat)
+                payloads["risk_update"].append(payload)
+                event_counter += 1
         for exit_event in chain.exit_events:
-            payloads["exit"].append(
-                clone_event_payload(
+            for repeat_index in range(1, safe_exit_repeat + 1):
+                payload = clone_event_payload(
                     chain,
                     exit_event,
                     run_id=run_id,
@@ -783,8 +808,9 @@ def rewrite_chain_payloads(
                     data_environment=data_environment,
                     pine_eval_ms=entry_eval_ms,
                 )
-            )
-            event_counter += 1
+                annotate_stress_repeat_payload(payload, repeat_index=repeat_index, repeat_total=safe_exit_repeat)
+                payloads["exit"].append(payload)
+                event_counter += 1
         chain.payloads = payloads
 
 
@@ -919,6 +945,8 @@ def build_replay_plan(args: argparse.Namespace) -> tuple[list[ReplayChain], list
         broker_mode=args.broker_mode,
         data_environment=args.data_environment,
         include_pre_alert=not args.skip_pre_alert,
+        risk_repeat=max(1, int(getattr(args, "risk_repeat", 1) or 1)),
+        exit_repeat=max(1, int(getattr(args, "exit_repeat", 1) or 1)),
     )
     event_counts: dict[str, int] = {}
     status_counts: dict[str, int] = {}
@@ -940,10 +968,14 @@ def build_replay_plan(args: argparse.Namespace) -> tuple[list[ReplayChain], list
         "selected_full_chains": sum(1 for chain in selected if chain.risk_events and chain.exit_events),
         "selected_risk_chains": sum(1 for chain in selected if chain.risk_events),
         "selected_exit_chains": sum(1 for chain in selected if chain.exit_events),
+        "selected_risk_payloads": sum(len(chain.payloads.get("risk_update") or []) for chain in selected),
+        "selected_exit_payloads": sum(len(chain.payloads.get("exit") or []) for chain in selected),
         "selection_policy": "prefer_full_chains" if prefer_full_chains else "chronological",
         "followup_stress_concurrent": bool(getattr(args, "followup_stress_concurrent", False)),
         "risk_burst_workers": int(getattr(args, "risk_burst_workers", 1) or 1),
         "exit_burst_workers": int(getattr(args, "exit_burst_workers", 1) or 1),
+        "risk_repeat": max(1, int(getattr(args, "risk_repeat", 1) or 1)),
+        "exit_repeat": max(1, int(getattr(args, "exit_repeat", 1) or 1)),
         "active_symbol_excluded_chains": len(active_excluded),
         "full_chain_candidates": sum(1 for chain in candidates if chain.risk_events and chain.exit_events),
         "risk_candidate_chains": sum(1 for chain in candidates if chain.risk_events),
@@ -2050,6 +2082,15 @@ def count_routed_exit_chains(chains: list[ReplayChain]) -> int:
     )
 
 
+def count_checks(chains: list[ReplayChain], name: str, *, ok_only: bool = True) -> int:
+    return sum(
+        1
+        for chain in chains
+        for check in chain.checks
+        if check.get("name") == name and (not ok_only or check.get("ok") is True)
+    )
+
+
 def count_confirmed_close_reverses(chains: list[ReplayChain]) -> int:
     return sum(
         1
@@ -2059,6 +2100,79 @@ def count_confirmed_close_reverses(chains: list[ReplayChain]) -> int:
             for row in chain.final_reverses
         )
     )
+
+
+def check_ok(checks: list[dict[str, Any]], name: str) -> bool:
+    return any(isinstance(check, dict) and check.get("name") == name and check.get("ok") is True for check in checks)
+
+
+def any_check_ok(checks: list[dict[str, Any]], names: set[str]) -> bool:
+    return any(isinstance(check, dict) and check.get("name") in names and check.get("ok") is True for check in checks)
+
+
+def evaluate_chain_observability(chains: list[ReplayChain]) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    risk_outcome_names = {"route_risk_update", "risk_skipped_no_child_orders"}
+    exit_outcome_names = {"route_exit", "exit_skipped_no_fill", "exit_skipped_no_source_event", "exit_skipped_no_bracket"}
+    for chain in chains:
+        failed_checks = [check for check in chain.checks if isinstance(check, dict) and check.get("ok") is False]
+        risk_expected = bool(chain.risk_events or (chain.payloads.get("risk_update") or []))
+        exit_expected = bool(chain.exit_events or (chain.payloads.get("exit") or []))
+        row = {
+            "signal_id": chain.synthetic_signal_id,
+            "symbol": chain.symbol,
+            "direction": chain.direction,
+            "classification": chain.classification,
+            "entry_send_ok": check_ok(chain.checks, "send_entry"),
+            "entry_route_ok": check_ok(chain.checks, "route_entry"),
+            "entry_processed_ok": check_ok(chain.checks, "entry_processed"),
+            "risk_expected": risk_expected,
+            "risk_observed_ok": (not risk_expected) or any_check_ok(chain.checks, risk_outcome_names),
+            "risk_routed_ok": check_ok(chain.checks, "route_risk_update"),
+            "exit_expected": exit_expected,
+            "exit_observed_ok": (not exit_expected) or any_check_ok(chain.checks, exit_outcome_names),
+            "exit_routed_ok": check_ok(chain.checks, "route_exit"),
+            "account_before_ok": check_ok(chain.checks, "account_flat_before"),
+            "account_after_ok": check_ok(chain.checks, "account_flat_after"),
+            "post_cleanup_ok": check_ok(chain.checks, "post_cleanup_no_open_synthetic_orders"),
+            "failed_check_count": len(failed_checks),
+        }
+        row["ok"] = all(
+            bool(row.get(name))
+            for name in (
+                "entry_send_ok",
+                "entry_route_ok",
+                "entry_processed_ok",
+                "risk_observed_ok",
+                "exit_observed_ok",
+                "account_before_ok",
+                "account_after_ok",
+                "post_cleanup_ok",
+            )
+        ) and not failed_checks
+        if not row["ok"]:
+            failures.append(
+                {
+                    "signal_id": chain.synthetic_signal_id,
+                    "symbol": chain.symbol,
+                    "failed_fields": [name for name, value in row.items() if name.endswith("_ok") and not value],
+                    "failed_checks": [
+                        {
+                            "name": check.get("name"),
+                            "reason": check.get("reason") or check.get("error") or check.get("error_msg"),
+                        }
+                        for check in failed_checks[:10]
+                    ],
+                }
+            )
+        rows.append(row)
+    return {
+        "ok": bool(rows) and not failures,
+        "total": len(rows),
+        "failures": failures,
+        "matrix": rows,
+    }
 
 
 def evaluate_flow_requirements(
@@ -2071,6 +2185,10 @@ def evaluate_flow_requirements(
         "min_bracket_chains": max(0, int(getattr(args, "min_bracket_chains", 0) or 0)),
         "min_filled_entry_chains": max(0, int(getattr(args, "min_filled_entry_chains", 0) or 0)),
         "min_routed_exit_chains": max(0, int(getattr(args, "min_routed_exit_chains", 0) or 0)),
+        "min_sent_risk_update_events": max(0, int(getattr(args, "min_sent_risk_update_events", 0) or 0)),
+        "min_routed_risk_update_events": max(0, int(getattr(args, "min_routed_risk_update_events", 0) or 0)),
+        "min_sent_exit_events": max(0, int(getattr(args, "min_sent_exit_events", 0) or 0)),
+        "min_routed_exit_events": max(0, int(getattr(args, "min_routed_exit_events", 0) or 0)),
         "min_cleanup_exit_chains": max(0, int(getattr(args, "min_cleanup_exit_chains", 0) or 0)),
         "min_closed_reverse_chains": max(0, int(getattr(args, "min_closed_reverse_chains", 0) or 0)),
     }
@@ -2080,6 +2198,12 @@ def evaluate_flow_requirements(
         "bracket_chains": sum(1 for chain in chains if orders_have_bracket(chain.final_orders)),
         "filled_entry_chains": sum(1 for chain in chains if has_filled_entry_or_position(chain.final_orders)),
         "routed_exit_chains": count_routed_exit_chains(chains),
+        "selected_risk_update_payloads": sum(len(chain.payloads.get("risk_update") or []) for chain in chains),
+        "selected_exit_payloads": sum(len(chain.payloads.get("exit") or []) for chain in chains),
+        "sent_risk_update_events": count_checks(chains, "send_risk_update"),
+        "routed_risk_update_events": count_checks(chains, "route_risk_update"),
+        "sent_exit_events": count_checks(chains, "send_exit"),
+        "routed_exit_events": count_checks(chains, "route_exit"),
         "cleanup_exit_chains": sum(1 for result in cleanup_results if result.get("ok") and result.get("action") == "exit_cleanup"),
         "closed_reverse_chains": count_confirmed_close_reverses(chains),
     }
@@ -2088,6 +2212,10 @@ def evaluate_flow_requirements(
         ("bracket_chains", "min_bracket_chains"),
         ("filled_entry_chains", "min_filled_entry_chains"),
         ("routed_exit_chains", "min_routed_exit_chains"),
+        ("sent_risk_update_events", "min_sent_risk_update_events"),
+        ("routed_risk_update_events", "min_routed_risk_update_events"),
+        ("sent_exit_events", "min_sent_exit_events"),
+        ("routed_exit_events", "min_routed_exit_events"),
         ("cleanup_exit_chains", "min_cleanup_exit_chains"),
         ("closed_reverse_chains", "min_closed_reverse_chains"),
     ]
@@ -2293,6 +2421,7 @@ def execute_replay(args: argparse.Namespace, chains: list[ReplayChain], summary:
         for chain in chains:
             chain.checks.append({"name": "account_flat_after", "ok": False, "symbol": chain.symbol, "error": str(exc)})
     flow_requirements = evaluate_flow_requirements(args, chains, cleanup_results)
+    chain_observability = evaluate_chain_observability(chains)
     if not args.skip_health:
         health_after = phase0_health(args)
     else:
@@ -2302,10 +2431,11 @@ def execute_replay(args: argparse.Namespace, chains: list[ReplayChain], summary:
     cleanup_ok = all(item.get("ok") for item in cleanup_results) and all(item.get("ok") for item in post_cleanup_results)
     account_ok = bool(account_before.get("ok")) and bool(account_after.get("ok"))
     flow_ok = bool(flow_requirements.get("ok"))
+    observability_ok = bool(chain_observability.get("ok"))
     stability_ok = bool(stability_after.get("ok"))
     summary.update(
         {
-            "ok": chain_ok and cleanup_ok and account_ok and flow_ok and stability_ok,
+            "ok": chain_ok and cleanup_ok and account_ok and flow_ok and observability_ok and stability_ok,
             "burst_results": {
                 "total": len(burst_results),
                 "ok": sum(1 for item in burst_results if item.get("ok")),
@@ -2324,6 +2454,7 @@ def execute_replay(args: argparse.Namespace, chains: list[ReplayChain], summary:
             "classifications": count_by(chains, lambda chain: chain.classification),
             "account_flat": {"before": account_before, "after": account_after},
             "flow_requirements": flow_requirements,
+            "chain_observability": chain_observability,
             "stability": {"before": stability_before, "after": stability_after},
             "chains": [chain_report(chain) for chain in chains],
         }
@@ -2598,6 +2729,10 @@ def apply_strict_canary_preset(args: argparse.Namespace) -> argparse.Namespace:
     args.min_bracket_chains = 3
     args.min_filled_entry_chains = 1
     args.min_routed_exit_chains = 1
+    args.min_sent_risk_update_events = 6
+    args.min_routed_risk_update_events = 6
+    args.min_sent_exit_events = 3
+    args.min_routed_exit_events = 3
     args.min_cleanup_exit_chains = 0
     args.min_closed_reverse_chains = 1
     args.stability_lookback_minutes = 5.0
@@ -2609,6 +2744,8 @@ def apply_strict_canary_preset(args: argparse.Namespace) -> argparse.Namespace:
     args.followup_stress_concurrent = True
     args.risk_burst_workers = 3
     args.exit_burst_workers = 3
+    args.risk_repeat = 3
+    args.exit_repeat = 3
     args.followup_burst_spacing_seconds = 0.0
     args.risk_spacing_seconds = 0.0
     args.exit_spacing_seconds = 0.0
@@ -2672,6 +2809,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--min-bracket-chains", type=int, default=0)
     parser.add_argument("--min-filled-entry-chains", type=int, default=0)
     parser.add_argument("--min-routed-exit-chains", type=int, default=0)
+    parser.add_argument("--min-sent-risk-update-events", type=int, default=0)
+    parser.add_argument("--min-routed-risk-update-events", type=int, default=0)
+    parser.add_argument("--min-sent-exit-events", type=int, default=0)
+    parser.add_argument("--min-routed-exit-events", type=int, default=0)
     parser.add_argument("--min-cleanup-exit-chains", type=int, default=0)
     parser.add_argument("--min-closed-reverse-chains", type=int, default=0)
     parser.add_argument("--stability-lookback-minutes", type=float, default=5.0)
@@ -2691,6 +2832,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--risk-burst-workers", type=int, default=1)
     parser.add_argument("--exit-burst-workers", type=int, default=1)
+    parser.add_argument("--risk-repeat", type=int, default=1)
+    parser.add_argument("--exit-repeat", type=int, default=1)
     parser.add_argument("--followup-burst-spacing-seconds", type=float, default=0.0)
     parser.add_argument("--risk-spacing-seconds", type=float, default=0.5)
     parser.add_argument("--exit-spacing-seconds", type=float, default=0.5)

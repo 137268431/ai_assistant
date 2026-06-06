@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import plistlib
@@ -24,6 +25,15 @@ LABEL_PREFIX = "com.lzwglory.ai-assistant.today-tv-replay-stress"
 WATCHDOG_LABEL = f"{LABEL_PREFIX}.watchdog"
 WATCHDOG_ROOT = ARTIFACT_ROOT / "watchdog"
 DEFAULT_PYTHON = Path("/Users/lzwglory/miniforge3/bin/python3.12")
+REQUIRED_STABILITY_VALUE_KEYS = (
+    "firing_alerts",
+    "broker_pending_requests",
+    "order_failures_window",
+    "signal_attention_window",
+    "order_operation_p95",
+    "gateway_serial_wait_p95",
+    "gateway_serial_timeouts_window",
+)
 
 
 def safe_label_part(value: str) -> str:
@@ -45,6 +55,28 @@ def launch_agents_dir() -> Path:
 
 def python_executable() -> Path:
     return DEFAULT_PYTHON if DEFAULT_PYTHON.exists() else Path(sys.executable)
+
+
+def file_fingerprint(path: Path) -> dict[str, Any]:
+    try:
+        stat = path.stat()
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except Exception as exc:
+        return {"path": str(path), "ok": False, "error": str(exc)}
+    return {
+        "path": str(path),
+        "ok": True,
+        "sha256": digest,
+        "size": stat.st_size,
+        "mtime_et": datetime.fromtimestamp(stat.st_mtime, ET).isoformat(),
+    }
+
+
+def launch_code_fingerprints() -> dict[str, Any]:
+    return {
+        "run_today_tv_replay_stress": file_fingerprint(RUN_SCRIPT),
+        "manage_today_tv_replay_stress_launchd": file_fingerprint(Path(__file__).resolve()),
+    }
 
 
 def label_for_run(run_id: str) -> str:
@@ -262,6 +294,15 @@ def select_current_runner_item(items: list[dict[str, Any]]) -> dict[str, Any]:
     return max(candidates, key=runner_item_priority)
 
 
+def split_current_runner_items(items: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    current = select_current_runner_item(items)
+    if not current:
+        return {}, []
+    current_label = str(current.get("label") or "")
+    historical = [item for item in items if str(item.get("label") or "") != current_label]
+    return current, historical
+
+
 def resolve_artifact_path(value: Any, *, base_dir: Path) -> Path:
     text = str(value or "").strip()
     if not text:
@@ -285,6 +326,99 @@ def load_json_file(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     return read_json(path)
+
+
+def check_ok(checks: list[dict[str, Any]], name: str) -> bool:
+    return any(isinstance(check, dict) and check.get("name") == name and check.get("ok") is True for check in checks)
+
+
+def any_check_ok(checks: list[dict[str, Any]], names: set[str]) -> bool:
+    return any(isinstance(check, dict) and check.get("name") in names and check.get("ok") is True for check in checks)
+
+
+def chain_observability_from_reports(chains: list[dict[str, Any]]) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    risk_outcome_names = {"route_risk_update", "risk_skipped_no_child_orders"}
+    exit_outcome_names = {"route_exit", "exit_skipped_no_fill", "exit_skipped_no_source_event", "exit_skipped_no_bracket"}
+    for chain in chains:
+        if not isinstance(chain, dict):
+            continue
+        checks = chain.get("checks") if isinstance(chain.get("checks"), list) else []
+        failed_checks = [check for check in checks if isinstance(check, dict) and check.get("ok") is False]
+        risk_expected = int(chain.get("risk_events") or 0) > 0
+        exit_expected = int(chain.get("exit_events") or 0) > 0
+        row = {
+            "signal_id": chain.get("synthetic_signal_id"),
+            "symbol": chain.get("symbol"),
+            "direction": chain.get("direction"),
+            "classification": chain.get("classification"),
+            "entry_send_ok": check_ok(checks, "send_entry"),
+            "entry_route_ok": check_ok(checks, "route_entry"),
+            "entry_processed_ok": check_ok(checks, "entry_processed"),
+            "risk_expected": risk_expected,
+            "risk_observed_ok": (not risk_expected) or any_check_ok(checks, risk_outcome_names),
+            "risk_routed_ok": check_ok(checks, "route_risk_update"),
+            "exit_expected": exit_expected,
+            "exit_observed_ok": (not exit_expected) or any_check_ok(checks, exit_outcome_names),
+            "exit_routed_ok": check_ok(checks, "route_exit"),
+            "account_before_ok": check_ok(checks, "account_flat_before"),
+            "account_after_ok": check_ok(checks, "account_flat_after"),
+            "post_cleanup_ok": check_ok(checks, "post_cleanup_no_open_synthetic_orders"),
+            "failed_check_count": len(failed_checks),
+        }
+        row["ok"] = all(
+            bool(row.get(name))
+            for name in (
+                "entry_send_ok",
+                "entry_route_ok",
+                "entry_processed_ok",
+                "risk_observed_ok",
+                "exit_observed_ok",
+                "account_before_ok",
+                "account_after_ok",
+                "post_cleanup_ok",
+            )
+        ) and not failed_checks
+        if not row["ok"]:
+            failures.append(
+                {
+                    "signal_id": chain.get("synthetic_signal_id"),
+                    "symbol": chain.get("symbol"),
+                    "failed_fields": [name for name, value in row.items() if name.endswith("_ok") and not value],
+                    "failed_checks": [
+                        {
+                            "name": check.get("name"),
+                            "reason": check.get("reason") or check.get("error") or check.get("error_msg"),
+                        }
+                        for check in failed_checks[:10]
+                        if isinstance(check, dict)
+                    ],
+                }
+            )
+        rows.append(row)
+    return {"ok": bool(rows) and not failures, "total": len(rows), "failures": failures, "matrix": rows}
+
+
+def health_artifact_covers_monitoring(health: dict[str, Any]) -> dict[str, Any]:
+    missing: list[dict[str, Any]] = []
+    for phase in ("before", "after"):
+        phase_payload = health.get(phase) if isinstance(health.get(phase), dict) else {}
+        for key in ("stack", "monitoring", "alerts", "metrics"):
+            if key not in phase_payload:
+                missing.append({"phase": phase, "key": key})
+    return {"ok": not missing, "missing": missing}
+
+
+def stability_values_cover_monitoring(stability: dict[str, Any]) -> dict[str, Any]:
+    missing: list[dict[str, Any]] = []
+    for phase in ("before", "after"):
+        phase_payload = stability.get(phase) if isinstance(stability.get(phase), dict) else {}
+        values = phase_payload.get("values") if isinstance(phase_payload.get("values"), dict) else {}
+        for key in REQUIRED_STABILITY_VALUE_KEYS:
+            if key not in values:
+                missing.append({"phase": phase, "key": key})
+    return {"ok": not missing, "missing": missing, "required": list(REQUIRED_STABILITY_VALUE_KEYS)}
 
 
 def audit_success_attempt(base_dir: Path, retry_summary: dict[str, Any], checks: list[dict[str, Any]]) -> dict[str, Any]:
@@ -318,12 +452,16 @@ def audit_success_attempt(base_dir: Path, retry_summary: dict[str, Any], checks:
     add_check(checks, "success_attempt_chains_artifact_exists", bool(chain_reports), path=str(chains_path), chain_reports=len(chain_reports))
 
     flow = summary.get("flow_requirements") if isinstance(summary.get("flow_requirements"), dict) else {}
+    summary_chain_observability = summary.get("chain_observability") if isinstance(summary.get("chain_observability"), dict) else {}
     account = summary.get("account_flat") if isinstance(summary.get("account_flat"), dict) else {}
     stability = summary.get("stability") if isinstance(summary.get("stability"), dict) else {}
     burst = summary.get("burst_results") if isinstance(summary.get("burst_results"), dict) else {}
     cleanup = summary.get("cleanup_results") if isinstance(summary.get("cleanup_results"), dict) else {}
     post_cleanup = summary.get("post_cleanup_results") if isinstance(summary.get("post_cleanup_results"), dict) else {}
     chains = summary.get("chains") if isinstance(summary.get("chains"), list) else []
+    chain_observability = summary_chain_observability or chain_observability_from_reports(chains or chain_reports)
+    health_coverage = health_artifact_covers_monitoring(health)
+    stability_coverage = stability_values_cover_monitoring(stability)
     flow_counts = flow.get("counts") if isinstance(flow.get("counts"), dict) else {}
     flow_thresholds = flow.get("thresholds") if isinstance(flow.get("thresholds"), dict) else {}
     selected_chains = int(summary.get("selected_chains") or flow_counts.get("selected_chains") or len(chains) or 0)
@@ -343,9 +481,30 @@ def audit_success_attempt(base_dir: Path, retry_summary: dict[str, Any], checks:
     )
     add_check(
         checks,
+        "followup_payload_amplification",
+        int(summary.get("selected_risk_payloads") or 0) >= 6
+        and int(summary.get("selected_exit_payloads") or 0) >= 6
+        and int(summary.get("risk_repeat") or 0) >= 3
+        and int(summary.get("exit_repeat") or 0) >= 3,
+        selected_risk_payloads=summary.get("selected_risk_payloads"),
+        selected_exit_payloads=summary.get("selected_exit_payloads"),
+        risk_repeat=summary.get("risk_repeat"),
+        exit_repeat=summary.get("exit_repeat"),
+    )
+    add_check(
+        checks,
         "chain_reports_cover_selected_chains",
         bool(chain_reports) and len(chain_reports) >= selected_chains >= 3,
         chain_reports=len(chain_reports),
+        selected_chains=selected_chains,
+    )
+    add_check(checks, "chain_observability_summary_exists", bool(summary_chain_observability), total=chain_observability.get("total"))
+    add_check(
+        checks,
+        "chain_observability_ok",
+        bool(chain_observability.get("ok")) and int(chain_observability.get("total") or 0) >= selected_chains >= 3,
+        failures=chain_observability.get("failures") or [],
+        total=chain_observability.get("total"),
         selected_chains=selected_chains,
     )
     add_check(checks, "flow_requirements_ok", bool(flow.get("ok")), failures=flow.get("failures") or [], counts=flow.get("counts") or {})
@@ -353,6 +512,10 @@ def audit_success_attempt(base_dir: Path, retry_summary: dict[str, Any], checks:
         ("bracket_chains", "min_bracket_chains"),
         ("filled_entry_chains", "min_filled_entry_chains"),
         ("routed_exit_chains", "min_routed_exit_chains"),
+        ("sent_risk_update_events", "min_sent_risk_update_events"),
+        ("routed_risk_update_events", "min_routed_risk_update_events"),
+        ("sent_exit_events", "min_sent_exit_events"),
+        ("routed_exit_events", "min_routed_exit_events"),
         ("closed_reverse_chains", "min_closed_reverse_chains"),
     ):
         threshold = int(flow_thresholds.get(threshold_name) or 0)
@@ -364,6 +527,8 @@ def audit_success_attempt(base_dir: Path, retry_summary: dict[str, Any], checks:
     add_check(checks, "account_flat_after_ok", bool((account.get("after") or {}).get("ok")), details=account.get("after") or {})
     add_check(checks, "stability_before_ok", bool((stability.get("before") or {}).get("ok")), details=stability.get("before") or {})
     add_check(checks, "stability_after_ok", bool((stability.get("after") or {}).get("ok")), details=stability.get("after") or {})
+    add_check(checks, "health_artifact_covers_monitoring", bool(health_coverage.get("ok")), missing=health_coverage.get("missing") or [])
+    add_check(checks, "stability_values_cover_monitoring", bool(stability_coverage.get("ok")), missing=stability_coverage.get("missing") or [])
     add_check(checks, "burst_no_failed", int(burst.get("failed") or 0) == 0 and int(burst.get("total") or 0) > 0, burst_results=burst)
     add_check(checks, "cleanup_no_failed", int(cleanup.get("failed") or 0) == 0, cleanup_results=cleanup)
     add_check(checks, "post_cleanup_no_failed", int(post_cleanup.get("failed") or 0) == 0, post_cleanup_results=post_cleanup)
@@ -395,9 +560,18 @@ def audit_success_attempt(base_dir: Path, retry_summary: dict[str, Any], checks:
             "followup_stress_concurrent": summary.get("followup_stress_concurrent"),
             "risk_burst_workers": summary.get("risk_burst_workers"),
             "exit_burst_workers": summary.get("exit_burst_workers"),
+            "selected_risk_payloads": summary.get("selected_risk_payloads"),
+            "selected_exit_payloads": summary.get("selected_exit_payloads"),
+            "risk_repeat": summary.get("risk_repeat"),
+            "exit_repeat": summary.get("exit_repeat"),
             "classifications": summary.get("classifications"),
             "flow_counts": flow_counts,
             "flow_thresholds": flow_thresholds,
+            "chain_observability": {
+                "ok": chain_observability.get("ok"),
+                "total": chain_observability.get("total"),
+                "failures": chain_observability.get("failures") or [],
+            },
             "burst_results": burst,
             "cleanup_results": cleanup,
             "post_cleanup_results": post_cleanup,
@@ -429,8 +603,13 @@ def build_evidence_summary(audit_payload: dict[str, Any]) -> dict[str, Any]:
         "followup_stress_concurrent": attempt.get("followup_stress_concurrent"),
         "risk_burst_workers": attempt.get("risk_burst_workers"),
         "exit_burst_workers": attempt.get("exit_burst_workers"),
+        "selected_risk_payloads": attempt.get("selected_risk_payloads"),
+        "selected_exit_payloads": attempt.get("selected_exit_payloads"),
+        "risk_repeat": attempt.get("risk_repeat"),
+        "exit_repeat": attempt.get("exit_repeat"),
         "flow_counts": attempt.get("flow_counts") or {},
         "flow_thresholds": attempt.get("flow_thresholds") or {},
+        "chain_observability": attempt.get("chain_observability") or {},
         "burst_results": attempt.get("burst_results") or {},
         "cleanup_results": attempt.get("cleanup_results") or {},
         "post_cleanup_results": attempt.get("post_cleanup_results") or {},
@@ -505,11 +684,16 @@ def status_payload() -> dict[str, Any]:
                 "retry_summary": compact_retry_summary(artifact_dir, launch=launch) if artifact_dir else {},
             }
         )
+    current_item, historical_items = split_current_runner_items(items)
     return {
         "ok": True,
         "labels": labels,
         "count": len(items),
         "running_count": sum(1 for item in items if item.get("loaded") and item.get("launch", {}).get("state") == "running"),
+        "current_label": current_item.get("label"),
+        "current_item": current_item,
+        "historical_count": len(historical_items),
+        "historical_labels": [item.get("label") for item in historical_items],
         "items": items,
     }
 
@@ -654,6 +838,7 @@ def write_start_files(run_id: str) -> tuple[str, Path, Path, Path]:
         "artifact_dir": str(artifact_dir),
         "created_at_cn": datetime.now(CN).strftime("%Y-%m-%d %H:%M:%S %Z"),
         "created_at_et": datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "script_fingerprints": launch_code_fingerprints(),
     }
     (artifact_dir / "runner.launchd.meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return label, artifact_dir, plist_path, wrapper
@@ -692,16 +877,26 @@ def stop(args: argparse.Namespace) -> dict[str, Any]:
     labels = [args.label] if args.label else labels_from_plists()
     if not labels:
         return {"ok": True, "stopped": [], "reason": "no_known_runner"}
+    if getattr(args, "dry_run", False):
+        return {"ok": True, "action": "would_stop", "stopped": [{"label": label, "ok": True} for label in labels]}
     stopped: list[dict[str, Any]] = []
     for label in labels:
         meta = meta_for_label(label)
         plist = Path(meta.get("plist") or launch_agents_dir() / f"{label}.plist")
         proc = run(["launchctl", "bootout", launch_domain(), str(plist)])
+        combined_output = f"{proc.stdout}\n{proc.stderr}"
+        already_unloaded = proc.returncode != 0 and (
+            "No such process" in combined_output
+            or "Could not find service" in combined_output
+            or "service is not loaded" in combined_output
+            or "Load failed: 5" in combined_output
+        )
         stopped.append(
             {
                 "label": label,
                 "plist": str(plist),
-                "ok": proc.returncode == 0,
+                "ok": proc.returncode == 0 or already_unloaded,
+                "action": "stopped" if proc.returncode == 0 else "already_unloaded" if already_unloaded else "stop_failed",
                 "returncode": proc.returncode,
                 "stdout": proc.stdout,
                 "stderr": proc.stderr,
@@ -906,6 +1101,18 @@ def collect_replay_readiness(*, retries: int = 2, retry_sleep_seconds: float = 2
         risk_burst_workers=summary.get("risk_burst_workers"),
         exit_burst_workers=summary.get("exit_burst_workers"),
     )
+    add_check(
+        checks,
+        "plan_followup_payload_amplification",
+        int(summary.get("selected_risk_payloads") or 0) >= 6
+        and int(summary.get("selected_exit_payloads") or 0) >= 6
+        and int(summary.get("risk_repeat") or 0) >= 3
+        and int(summary.get("exit_repeat") or 0) >= 3,
+        selected_risk_payloads=summary.get("selected_risk_payloads"),
+        selected_exit_payloads=summary.get("selected_exit_payloads"),
+        risk_repeat=summary.get("risk_repeat"),
+        exit_repeat=summary.get("exit_repeat"),
+    )
     add_check(checks, "account_flat_readiness", bool(account.get("ok")), failures=account.get("failures") or [], symbols=account.get("symbols") or [])
     add_check(checks, "stack_health_readiness", bool((health.get("stack") or {}).get("ok")), failures=(health.get("stack") or {}).get("failures") or [])
     add_check(checks, "monitoring_health_readiness", bool((health.get("monitoring") or {}).get("ok")), failures=(health.get("monitoring") or {}).get("failures") or [])
@@ -920,6 +1127,10 @@ def collect_replay_readiness(*, retries: int = 2, retry_sleep_seconds: float = 2
             "followup_stress_concurrent": summary.get("followup_stress_concurrent"),
             "risk_burst_workers": summary.get("risk_burst_workers"),
             "exit_burst_workers": summary.get("exit_burst_workers"),
+            "selected_risk_payloads": summary.get("selected_risk_payloads"),
+            "selected_exit_payloads": summary.get("selected_exit_payloads"),
+            "risk_repeat": summary.get("risk_repeat"),
+            "exit_repeat": summary.get("exit_repeat"),
             "selected_symbols": [item.get("symbol") for item in summary.get("selected") or []],
             "exclude_reasons": summary.get("exclude_reasons") or {},
         },
@@ -1055,6 +1266,23 @@ def print_payload(payload: dict[str, Any], *, text: bool = False) -> None:
         )
         if summary.get("selected_symbols"):
             print("selected_symbols=" + ",".join(str(item) for item in summary.get("selected_symbols") or []))
+        stability = replay.get("stability") if isinstance(replay.get("stability"), dict) else {}
+        values = stability.get("values") if isinstance(stability.get("values"), dict) else {}
+        if stability:
+            print(
+                "stability_ok={ok} firing_alerts={alerts} broker_pending={pending} order_failures={order_failures} "
+                "signal_attention={signal_attention} order_p95={order_p95} gateway_wait_p95={gateway_wait} "
+                "gateway_timeouts={gateway_timeouts}".format(
+                    ok=stability.get("ok"),
+                    alerts=values.get("firing_alerts"),
+                    pending=values.get("broker_pending_requests"),
+                    order_failures=values.get("order_failures_window"),
+                    signal_attention=values.get("signal_attention_window"),
+                    order_p95=values.get("order_operation_p95"),
+                    gateway_wait=values.get("gateway_serial_wait_p95"),
+                    gateway_timeouts=values.get("gateway_serial_timeouts_window"),
+                )
+            )
         return
     if payload.get("kind") == "finalize":
         audit_payload = payload.get("audit") or {}
@@ -1074,14 +1302,28 @@ def print_payload(payload: dict[str, Any], *, text: bool = False) -> None:
         status = payload.get("status") or payload.get("previous_status") or {}
         print(f"count={status.get('count', '')} running_count={status.get('running_count', '')}")
         return
-    print(f"ok={payload.get('ok')} count={payload.get('count', '')} running_count={payload.get('running_count', '')}")
-    for item in payload.get("items") or []:
+    current_item = payload.get("current_item") if isinstance(payload.get("current_item"), dict) else {}
+    historical_labels = payload.get("historical_labels") if isinstance(payload.get("historical_labels"), list) else []
+    print(
+        "ok={ok} count={count} running_count={running_count} current_label={current_label} historical_count={historical_count}".format(
+            ok=payload.get("ok"),
+            count=payload.get("count", ""),
+            running_count=payload.get("running_count", ""),
+            current_label=payload.get("current_label") or "",
+            historical_count=payload.get("historical_count", ""),
+        )
+    )
+    display_items = [current_item] if current_item else payload.get("items") or []
+    for item in display_items:
         launch = item.get("launch") or {}
         retry = item.get("retry_summary") or {}
+        meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+        replay_fp = ((meta.get("script_fingerprints") or {}).get("run_today_tv_replay_stress") or {})
+        replay_sha = str(replay_fp.get("sha256") or "")
         print(
             (
-                "label={label} loaded={loaded} state={state} pid={pid} phase={phase} reason={reason} "
-                "attempts={attempts} stale={stale} updated_at_et={updated}"
+                "current label={label} loaded={loaded} state={state} pid={pid} phase={phase} reason={reason} "
+                "attempts={attempts} stale={stale} updated_at_et={updated} run_script_sha={sha}"
             ).format(
                 label=item.get("label"),
                 loaded=item.get("loaded"),
@@ -1092,8 +1334,11 @@ def print_payload(payload: dict[str, Any], *, text: bool = False) -> None:
                 attempts=retry.get("attempts"),
                 stale=retry.get("stale"),
                 updated=retry.get("updated_at_et"),
+                sha=replay_sha[:12],
             )
         )
+    if historical_labels:
+        print("historical_labels=" + ",".join(str(label) for label in historical_labels))
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

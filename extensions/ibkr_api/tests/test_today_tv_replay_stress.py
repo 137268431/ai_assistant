@@ -17,6 +17,7 @@ from run_today_tv_replay_stress import (  # noqa: E402
     apply_max_chains,
     build_chains,
     cleanup_synthetic_orders,
+    evaluate_chain_observability,
     evaluate_flow_requirements,
     evaluate_stability,
     is_nyse_trading_day,
@@ -285,7 +286,32 @@ class TodayTvReplayStressTest(unittest.TestCase):
         self.assertTrue(args.followup_stress_concurrent)
         self.assertEqual(3, args.risk_burst_workers)
         self.assertEqual(3, args.exit_burst_workers)
+        self.assertEqual(3, args.risk_repeat)
+        self.assertEqual(3, args.exit_repeat)
+        self.assertEqual(6, args.min_routed_risk_update_events)
+        self.assertEqual(3, args.min_routed_exit_events)
         self.assertEqual(0.0, args.followup_burst_spacing_seconds)
+
+    def test_rewrite_chain_payloads_can_amplify_followups_for_stress(self):
+        events = [_event("entry"), _event("risk_update"), _event("exit")]
+        chain = build_chains(events, [], [], broker_mode="paper")[0][0]
+
+        rewrite_chain_payloads(
+            [chain],
+            run_id="SIMTV_AMP",
+            broker_mode="paper",
+            data_environment="live",
+            include_pre_alert=False,
+            risk_repeat=3,
+            exit_repeat=3,
+            base_time=datetime(2026, 6, 5, 10, 0, 0, tzinfo=ET),
+        )
+
+        self.assertEqual(3, len(chain.payloads["risk_update"]))
+        self.assertEqual(3, len(chain.payloads["exit"]))
+        self.assertEqual(3, len({payload["event_id"] for payload in chain.payloads["risk_update"]}))
+        self.assertEqual([1, 2, 3], [payload["stress_repeat_index"] for payload in chain.payloads["risk_update"]])
+        self.assertTrue(all(payload["extra"]["followup_stress_amplified"] for payload in chain.payloads["exit"]))
 
     def test_send_followups_bursts_risk_updates_before_exit_burst(self):
         events = [
@@ -467,6 +493,9 @@ class TodayTvReplayStressTest(unittest.TestCase):
             {"role": "stop_loss", "status": "Canceled"},
         ]
         chain.checks.append({"name": "route_exit", "ok": True})
+        chain.checks.append({"name": "send_risk_update", "ok": True})
+        chain.checks.append({"name": "route_risk_update", "ok": True})
+        chain.checks.append({"name": "send_exit", "ok": True})
         chain.final_reverses = [{"action_type": "close", "status": "confirmed"}]
         cleanup_results = [{"ok": True, "action": "exit_cleanup"}]
 
@@ -476,6 +505,10 @@ class TodayTvReplayStressTest(unittest.TestCase):
                 min_bracket_chains=1,
                 min_filled_entry_chains=1,
                 min_routed_exit_chains=1,
+                min_sent_risk_update_events=1,
+                min_routed_risk_update_events=1,
+                min_sent_exit_events=1,
+                min_routed_exit_events=1,
                 min_cleanup_exit_chains=1,
                 min_closed_reverse_chains=1,
             ),
@@ -484,6 +517,48 @@ class TodayTvReplayStressTest(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
+
+    def test_chain_observability_requires_entry_followup_account_and_cleanup_checks(self):
+        chain = build_chains([_event("entry"), _event("risk_update"), _event("exit")], [], [], broker_mode="paper")[0][0]
+        chain.synthetic_signal_id = "sim-signal"
+        chain.checks.extend(
+            [
+                {"name": "send_entry", "ok": True},
+                {"name": "route_entry", "ok": True},
+                {"name": "entry_processed", "ok": True},
+                {"name": "route_risk_update", "ok": True},
+                {"name": "exit_skipped_no_fill", "ok": True},
+                {"name": "account_flat_before", "ok": True},
+                {"name": "account_flat_after", "ok": True},
+                {"name": "post_cleanup_no_open_synthetic_orders", "ok": True},
+            ]
+        )
+
+        result = evaluate_chain_observability([chain])
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["matrix"][0]["risk_observed_ok"])
+        self.assertTrue(result["matrix"][0]["exit_observed_ok"])
+
+    def test_chain_observability_fails_when_entry_route_is_missing(self):
+        chain = build_chains([_event("entry"), _event("risk_update"), _event("exit")], [], [], broker_mode="paper")[0][0]
+        chain.synthetic_signal_id = "sim-signal"
+        chain.checks.extend(
+            [
+                {"name": "send_entry", "ok": True},
+                {"name": "entry_processed", "ok": True},
+                {"name": "route_risk_update", "ok": True},
+                {"name": "route_exit", "ok": True},
+                {"name": "account_flat_before", "ok": True},
+                {"name": "account_flat_after", "ok": True},
+                {"name": "post_cleanup_no_open_synthetic_orders", "ok": True},
+            ]
+        )
+
+        result = evaluate_chain_observability([chain])
+
+        self.assertFalse(result["ok"])
+        self.assertIn("entry_route_ok", result["failures"][0]["failed_fields"])
 
     def test_run_single_attempt_raises_plan_diagnostic_for_insufficient_full_chains(self):
         chain = build_chains([_event("entry")], [], [], broker_mode="paper")[0][0]

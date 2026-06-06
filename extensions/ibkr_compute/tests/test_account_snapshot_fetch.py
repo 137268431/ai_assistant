@@ -257,6 +257,20 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertEqual(0, lifecycle.summary_calls)
         self.assertEqual("ok", buying_power["account_snapshot_health"]["state"])
 
+    def test_buying_power_reuses_fresh_include_pnl_full_snapshot_cache(self):
+        app = _FakeApiApp()
+        lifecycle = _BuyingPowerLifecycle()
+        service = _BuyingPowerService(lifecycle)
+
+        full_snapshot = _with_fake_api_app(app, lambda: _build_ibkr_account_snapshot(service, include_pnl=True))
+        buying_power = _with_fake_api_app(app, lambda: _build_ibkr_account_buying_power_snapshot(service))
+
+        self.assertTrue(full_snapshot["summary_available"])
+        self.assertEqual("account_snapshot", buying_power["source"])
+        self.assertEqual(1, lifecycle.snapshot_calls)
+        self.assertEqual(0, lifecycle.summary_calls)
+        self.assertEqual("ok", buying_power["account_snapshot_health"]["state"])
+
     def test_buying_power_snapshot_single_flight_for_summary_fetch(self):
         app = _FakeApiApp()
         lifecycle = _BuyingPowerLifecycle(delay=0.05)
