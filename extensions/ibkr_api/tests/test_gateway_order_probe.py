@@ -293,6 +293,9 @@ class GatewayOrderProbeTest(unittest.TestCase):
         self.assertFalse(results[1]["ok"])
         self.assertTrue(results[1]["timed_out"])
         self.assertEqual("submit_timeout", results[1]["error"])
+        self.assertEqual(["MSFT-1"], results[1]["order_ids"])
+        self.assertTrue(results[1]["late_after_submit_timeout"])
+        self.assertTrue(results[1]["late_ok"])
 
     def test_place_acceptance_allows_expected_buying_power_blocks(self):
         args = Namespace(expect_buying_power_blocks=True, min_buying_power_blocks=1)

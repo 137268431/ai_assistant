@@ -4,11 +4,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import queue
 import sys
-import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass
 from datetime import datetime
 from math import ceil
@@ -593,67 +591,118 @@ def submit_one(client: fee_probe.ApiClient, plan: OrderProbePlan, *, delay_s: fl
     }
 
 
+def submit_timeout_result(
+    plan: OrderProbePlan,
+    *,
+    timeout_s: float,
+    reason: str = "submit_timeout",
+    late_result: dict[str, Any] | None = None,
+    cancelled: bool = False,
+) -> dict[str, Any]:
+    late_payload = dict(late_result or {})
+    result = {
+        "ok": False,
+        "symbol": plan.symbol,
+        "payload": plan.payload(),
+        "error": reason,
+        "timed_out": True,
+        "timeout_s": round(max(0.0, float(timeout_s or 0.0)), 3),
+        "order_ids": list(late_payload.get("order_ids") or []),
+    }
+    if cancelled:
+        result["cancelled_before_start"] = True
+    if late_payload:
+        result["late_after_submit_timeout"] = True
+        result["late_ok"] = bool(late_payload.get("ok"))
+        result["late_error"] = late_payload.get("error") or ""
+        result["late_elapsed_s"] = late_payload.get("elapsed_s")
+        result["response"] = late_payload.get("response") or {}
+    return result
+
+
 def submit_burst(args: argparse.Namespace, plans: list[OrderProbePlan]) -> list[dict[str, Any]]:
-    client = fee_probe.ApiClient(args.api_base_url, timeout=float(args.http_timeout_sec))
     workers = max(1, min(len(plans), int(args.burst_workers or 1)))
     spacing = max(0.0, float(args.burst_spacing_seconds or 0.0))
     submit_timeout = float(getattr(args, "submit_timeout_sec", 0.0) or 0.0)
     if submit_timeout <= 0:
         submit_timeout = max(float(args.http_timeout_sec) + 5.0, spacing * max(0, len(plans) - 1) + float(args.http_timeout_sec) + 5.0)
 
-    work: queue.Queue[tuple[int, OrderProbePlan]] = queue.Queue()
-    result_queue: queue.Queue[tuple[int, dict[str, Any]]] = queue.Queue()
-    stop_event = threading.Event()
-    for index, plan in enumerate(plans):
-        work.put((index, plan))
-
-    def worker() -> None:
-        while not stop_event.is_set():
-            try:
-                index, plan = work.get_nowait()
-            except queue.Empty:
-                return
-            if stop_event.is_set():
-                return
-            try:
-                result = submit_one(client, plan, delay_s=index * spacing)
-            except Exception as exc:
-                result = {"ok": False, "symbol": plan.symbol, "error": str(exc), "order_ids": []}
-            result_queue.put((index, result))
-
-    threads = [
-        threading.Thread(target=worker, name=f"gateway-probe-submit-{index + 1}", daemon=True)
-        for index in range(workers)
-    ]
-    for thread in threads:
-        thread.start()
-
     effective_timeout = max(0.01, submit_timeout)
-    deadline = time.monotonic() + effective_timeout
+    started_at = time.monotonic()
+    deadline = started_at + effective_timeout
     results_by_index: dict[int, dict[str, Any]] = {}
-    while len(results_by_index) < len(plans):
+
+    def run_submit(index: int, plan: OrderProbePlan) -> dict[str, Any]:
+        target_start = started_at + (index * spacing)
+        while True:
+            sleep_for = target_start - time.monotonic()
+            if sleep_for <= 0:
+                break
+            remaining_before_delay = deadline - time.monotonic()
+            if remaining_before_delay <= 0:
+                return submit_timeout_result(plan, timeout_s=effective_timeout, reason="submit_timeout_before_start")
+            time.sleep(min(sleep_for, remaining_before_delay, 0.25))
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            break
+            return submit_timeout_result(plan, timeout_s=effective_timeout, reason="submit_timeout_before_start")
+        request_timeout = max(1.0, min(float(args.http_timeout_sec), remaining + 1.0))
+        client = fee_probe.ApiClient(args.api_base_url, timeout=request_timeout)
         try:
-            index, result = result_queue.get(timeout=min(0.5, remaining))
-        except queue.Empty:
-            continue
-        results_by_index[index] = result
+            result = submit_one(client, plan, delay_s=0.0)
+        except Exception as exc:
+            result = {"ok": False, "symbol": plan.symbol, "payload": plan.payload(), "error": str(exc), "order_ids": []}
+        result["_finished_monotonic"] = time.monotonic()
+        return result
 
-    if len(results_by_index) < len(plans):
-        stop_event.set()
-        for index, plan in enumerate(plans):
-            if index not in results_by_index:
-                results_by_index[index] = {
-                    "ok": False,
-                    "symbol": plan.symbol,
-                    "payload": plan.payload(),
-                    "error": "submit_timeout",
-                    "timed_out": True,
-                    "timeout_s": round(effective_timeout, 3),
-                    "order_ids": [],
-                }
+    def collect_result(index: int, plan: OrderProbePlan, future, *, timed_out: bool = False) -> None:
+        try:
+            result = future.result()
+        except Exception as exc:
+            result = {"ok": False, "symbol": plan.symbol, "payload": plan.payload(), "error": str(exc), "order_ids": []}
+        finished_at = float(result.pop("_finished_monotonic", time.monotonic()) or time.monotonic())
+        if timed_out or finished_at > deadline:
+            results_by_index[index] = submit_timeout_result(plan, timeout_s=effective_timeout, late_result=result)
+        else:
+            results_by_index[index] = result
+
+    executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="gateway-probe-submit")
+    try:
+        future_by_index = {
+            executor.submit(run_submit, index, plan): index
+            for index, plan in enumerate(plans)
+        }
+        pending = set(future_by_index)
+        while pending:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            done, pending = wait(pending, timeout=min(0.5, remaining), return_when=FIRST_COMPLETED)
+            for future in done:
+                index = future_by_index[future]
+                collect_result(index, plans[index], future)
+
+        if pending:
+            running_after_deadline = set()
+            for future in list(pending):
+                index = future_by_index[future]
+                if future.cancel():
+                    results_by_index[index] = submit_timeout_result(
+                        plans[index],
+                        timeout_s=effective_timeout,
+                        cancelled=True,
+                    )
+                    pending.remove(future)
+                else:
+                    running_after_deadline.add(future)
+            if running_after_deadline:
+                # Do not proceed to cleanup while local submit workers are still active;
+                # late order ids are kept so cleanup can still cancel broker-side orders.
+                done, _ = wait(running_after_deadline)
+                for future in done:
+                    index = future_by_index[future]
+                    collect_result(index, plans[index], future, timed_out=True)
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
 
     return [results_by_index[index] for index in range(len(plans))]
 

@@ -71,7 +71,10 @@ logger = logging.getLogger(__name__)
 
 
 TICK_BY_TICK_DUPLICATE_WINDOW_SECONDS = 15.0
-BRACKET_SUBMISSION_CONFIRM_TIMEOUT_SECONDS = 12.0
+# Large bracket bursts can delay openOrder/orderStatus callbacks even when the
+# raw placeOrder socket write succeeds immediately.
+BRACKET_SUBMISSION_CONFIRM_TIMEOUT_SECONDS = 30.0
+ORDER_MODIFICATION_CONFIRM_TIMEOUT_SECONDS = 12.0
 CANCEL_CONFIRM_TIMEOUT_SECONDS = 12.0
 CANCEL_ALL_RECONCILE_TIMEOUT_SECONDS = 180.0
 CANCEL_ALL_RECONCILE_POLL_INTERVAL_SECONDS = 1.0
@@ -1978,7 +1981,7 @@ class _IBGatewayApp(EWrapper, EClient):
             return {"ok": False, "error": "missing_order_id"}
 
         deadline = time.time() + max(0.5, float(timeout or 0.0))
-        request_timeout = max(1, min(3, int(max(1.0, float(timeout or 0.0)))))
+        request_timeout = max(1, min(15, int(max(1.0, float(timeout or 0.0)))))
         ignored_warnings: dict[str, list[dict]] = {}
 
         while time.time() < deadline:
@@ -2068,7 +2071,7 @@ class _IBGatewayApp(EWrapper, EClient):
             return {"ok": False, "error": "missing_order_ids", "orders": {}, "missing_order_ids": []}
 
         deadline = time.time() + max(0.5, float(timeout or 0.0))
-        request_timeout = max(1, min(3, int(max(1.0, float(timeout or 0.0)))))
+        request_timeout = max(1, min(15, int(max(1.0, float(timeout or 0.0)))))
         confirmed: dict[str, dict] = {}
         failures: dict[str, dict] = {}
         ignored_warnings: dict[str, list[dict]] = {}
@@ -3623,7 +3626,11 @@ class BrokerAdapter:
             self.client.place_order(contract, order)
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
-        entry_result = self.client.await_order_submission(str(order_id), timeout=3.0, poll_interval=0.2)
+        entry_result = self.client.await_order_submission(
+            str(order_id),
+            timeout=ORDER_MODIFICATION_CONFIRM_TIMEOUT_SECONDS,
+            poll_interval=0.2,
+        )
         if not entry_result.get("ok"):
             order_error = entry_result.get("details") or {}
             error_message = str(entry_result.get("error") or "order_submission_failed")
@@ -3761,7 +3768,7 @@ class BrokerAdapter:
                 str(order_id),
                 expected_price=expected_price,
                 fields=expected_fields,
-                timeout=3.0,
+                timeout=ORDER_MODIFICATION_CONFIRM_TIMEOUT_SECONDS,
                 poll_interval=0.2,
             )
             if not confirm_result.get("ok"):

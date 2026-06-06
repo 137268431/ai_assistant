@@ -1497,6 +1497,26 @@ class IBGatewayOrderSubmissionWarningTest(unittest.TestCase):
         self.assertEqual([warning], result["orders"]["101"]["ignored_warnings"])
         self.assertNotIn("101", client._order_errors)
 
+    def test_await_order_submissions_uses_burst_tolerant_open_order_timeout(self):
+        client = self._client()
+        calls = []
+
+        def request_open_orders(timeout=1, force=False):
+            calls.append({"timeout": timeout, "force": force})
+            return [{"orderId": "101", "status": "PreSubmitted"}]
+
+        client.request_open_orders = request_open_orders
+
+        result = ib_gateway._IBGatewayApp.await_order_submissions(
+            client,
+            ["101"],
+            timeout=30,
+            poll_interval=0.01,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual([{"timeout": 15, "force": True}], calls)
+
     def test_await_order_submissions_still_fails_true_rejection(self):
         rejection = {"order_id": "101", "code": 201, "message": "Order rejected - reason:Invalid Price"}
         client = self._client(
