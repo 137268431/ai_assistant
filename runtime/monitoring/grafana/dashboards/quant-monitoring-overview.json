@@ -3510,14 +3510,14 @@
       "id": 42,
       "type": "timeseries",
       "title": "真实订单命令 QPS / Real Order Command QPS",
-      "description": "只展示真实下单、改价、撤单、保护单操作；不含 tracker 轮询。",
+      "description": "只展示真实下单、改价、撤单、保护单操作；不含 tracker 轮询。短线名为 中文/English；order_family_type 显示 bracket_oco、entry、LMT/STP 等角色或订单类型。",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "gridPos": {
-        "h": 7,
-        "w": 8,
+        "h": 8,
+        "w": 24,
         "x": 0,
         "y": 80
       },
@@ -3528,10 +3528,208 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (operation, order_family_type, result) (rate(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=~\"place_bracket|place_entry|place_take_profit|place_stop_loss|place_bracket_order|place_market_close|adjust_stop_loss|adjust_take_profit|cancel_order|cancel_all_orders|cancel_entry|cancel_take_profit|cancel_stop_loss|modify_manual|modify_order|ibapi_place|ibapi_cancel|modify|cancel\"}[$__rate_interval]))",
-          "legendFormat": "{{operation}} {{order_family_type}} {{result}}",
+          "expr": "sum by (order_family_type, result) (rate(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_bracket\"}[$__rate_interval]))",
+          "legendFormat": "组合单/Bracket {{order_family_type}} {{result}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result) (rate(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_entry\"}[$__rate_interval]))",
+          "legendFormat": "入场/Entry {{order_family_type}} {{result}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result) (rate(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_take_profit\"}[$__rate_interval]))",
+          "legendFormat": "止盈/TP {{order_family_type}} {{result}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result) (rate(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_stop_loss\"}[$__rate_interval]))",
+          "legendFormat": "止损/SL {{order_family_type}} {{result}}",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result) (rate(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_bracket_order\"}[$__rate_interval]))",
+          "legendFormat": "括号入口/Submit {{order_family_type}} {{result}}",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result) (rate(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_market_close\"}[$__rate_interval]))",
+          "legendFormat": "平仓/Close {{order_family_type}} {{result}}",
+          "range": true,
+          "refId": "F"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result) (rate(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"adjust_stop_loss\"}[$__rate_interval]))",
+          "legendFormat": "调止损/Adj SL {{order_family_type}} {{result}}",
+          "range": true,
+          "refId": "G"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result) (rate(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"adjust_take_profit\"}[$__rate_interval]))",
+          "legendFormat": "调止盈/Adj TP {{order_family_type}} {{result}}",
+          "range": true,
+          "refId": "H"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result) (rate(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_order\"}[$__rate_interval]))",
+          "legendFormat": "撤单/Cancel req {{order_family_type}} {{result}}",
+          "range": true,
+          "refId": "I"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result) (rate(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_all_orders\"}[$__rate_interval]))",
+          "legendFormat": "撤全部/Cancel all {{order_family_type}} {{result}}",
+          "range": true,
+          "refId": "J"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result) (rate(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_entry\"}[$__rate_interval]))",
+          "legendFormat": "撤入场/Cancel entry {{order_family_type}} {{result}}",
+          "range": true,
+          "refId": "K"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result) (rate(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_take_profit\"}[$__rate_interval]))",
+          "legendFormat": "撤止盈/Cancel TP {{order_family_type}} {{result}}",
+          "range": true,
+          "refId": "L"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result) (rate(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_stop_loss\"}[$__rate_interval]))",
+          "legendFormat": "撤止损/Cancel SL {{order_family_type}} {{result}}",
+          "range": true,
+          "refId": "M"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result) (rate(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"modify_manual\"}[$__rate_interval]))",
+          "legendFormat": "手动改单/Manual mod {{order_family_type}} {{result}}",
+          "range": true,
+          "refId": "N"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result) (rate(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"modify_order\"}[$__rate_interval]))",
+          "legendFormat": "改单请求/Modify req {{order_family_type}} {{result}}",
+          "range": true,
+          "refId": "O"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result) (rate(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"ibapi_place\"}[$__rate_interval]))",
+          "legendFormat": "IB下单/IB place {{order_family_type}} {{result}}",
+          "range": true,
+          "refId": "P"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result) (rate(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"ibapi_cancel\"}[$__rate_interval]))",
+          "legendFormat": "IB撤单/IB cancel {{order_family_type}} {{result}}",
+          "range": true,
+          "refId": "Q"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result) (rate(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"modify\"}[$__rate_interval]))",
+          "legendFormat": "IB改单/IB modify {{order_family_type}} {{result}}",
+          "range": true,
+          "refId": "R"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result) (rate(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel\"}[$__rate_interval]))",
+          "legendFormat": "IB撤单确认/IB cancel ok {{order_family_type}} {{result}}",
+          "range": true,
+          "refId": "S"
         }
       ],
       "fieldConfig": {
@@ -3591,7 +3789,7 @@
           "displayMode": "table",
           "placement": "right",
           "showLegend": true,
-          "width": 220
+          "width": 520
         },
         "tooltip": {
           "mode": "multi",
@@ -3603,16 +3801,16 @@
       "id": 43,
       "type": "table",
       "title": "订单失败 / Order Failures",
-      "description": "只显示 result 非 ok/synced/seen 的可行动失败。",
+      "description": "只显示真实订单命令中 result 非 ok/synced/seen 的可行动失败；不把 tracker skipped/empty 当作下单失败。",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "gridPos": {
-        "h": 7,
-        "w": 8,
-        "x": 8,
-        "y": 80
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 88
       },
       "targets": [
         {
@@ -3621,10 +3819,208 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (operation, order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", result!~\"ok|synced|seen\"}[$__range])) > 0",
-          "legendFormat": "{{operation}} {{order_family_type}} {{result}} {{reason_code}}",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_bracket\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "legendFormat": "失败 | Failure 组合单/Bracket {{order_family_type}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_entry\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "legendFormat": "失败 | Failure 入场/Entry {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_take_profit\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "legendFormat": "失败 | Failure 止盈/TP {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_stop_loss\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "legendFormat": "失败 | Failure 止损/SL {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_bracket_order\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "legendFormat": "失败 | Failure 括号入口/Submit {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_market_close\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "legendFormat": "失败 | Failure 平仓/Close {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "F"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"adjust_stop_loss\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "legendFormat": "失败 | Failure 调止损/Adj SL {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "G"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"adjust_take_profit\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "legendFormat": "失败 | Failure 调止盈/Adj TP {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "H"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_order\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "legendFormat": "失败 | Failure 撤单/Cancel req {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "I"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_all_orders\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "legendFormat": "失败 | Failure 撤全部/Cancel all {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "J"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_entry\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "legendFormat": "失败 | Failure 撤入场/Cancel entry {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "K"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_take_profit\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "legendFormat": "失败 | Failure 撤止盈/Cancel TP {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "L"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_stop_loss\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "legendFormat": "失败 | Failure 撤止损/Cancel SL {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "M"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"modify_manual\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "legendFormat": "失败 | Failure 手动改单/Manual mod {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "N"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"modify_order\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "legendFormat": "失败 | Failure 改单请求/Modify req {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "O"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"ibapi_place\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "legendFormat": "失败 | Failure IB下单/IB place {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "P"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"ibapi_cancel\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "legendFormat": "失败 | Failure IB撤单/IB cancel {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "Q"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"modify\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "legendFormat": "失败 | Failure IB改单/IB modify {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "R"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "legendFormat": "失败 | Failure IB撤单确认/IB cancel ok {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "S"
         }
       ],
       "fieldConfig": {
@@ -3669,17 +4065,17 @@
     {
       "id": 44,
       "type": "timeseries",
-      "title": "真实订单操作 p95 / Real Order Operation p95",
-      "description": "真实订单操作延迟；tracker 轮询延迟单独放右下诊断。",
+      "title": "真实订单操作耗时 / Real Order Operation Latency",
+      "description": "真实订单操作耗时；每个操作同时显示 p95 和 平均/avg。avg 看常态速度，p95 看慢尾；tracker 轮询耗时单独放右下诊断。",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "gridPos": {
-        "h": 7,
-        "w": 8,
-        "x": 16,
-        "y": 80
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 94
       },
       "targets": [
         {
@@ -3688,10 +4084,417 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=~\"place_bracket|place_entry|place_take_profit|place_stop_loss|place_bracket_order|place_market_close|adjust_stop_loss|adjust_take_profit|cancel_order|cancel_all_orders|cancel_entry|cancel_take_profit|cancel_stop_loss|modify_manual|modify_order|ibapi_place|ibapi_cancel|modify|cancel\"}[$__rate_interval])))",
-          "legendFormat": "{{operation}} {{result}}",
+          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=\"place_bracket\"}[$__rate_interval])))",
+          "legendFormat": "p95 组合单/Bracket {{result}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_sum{service=~\"$service\", environment=~\"$environment\", operation=\"place_bracket\"}[$__rate_interval])) / clamp_min(sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_count{service=~\"$service\", environment=~\"$environment\", operation=\"place_bracket\"}[$__rate_interval])), 1e-9)",
+          "legendFormat": "平均 | avg 组合单/Bracket {{result}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=\"place_entry\"}[$__rate_interval])))",
+          "legendFormat": "p95 入场/Entry {{result}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_sum{service=~\"$service\", environment=~\"$environment\", operation=\"place_entry\"}[$__rate_interval])) / clamp_min(sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_count{service=~\"$service\", environment=~\"$environment\", operation=\"place_entry\"}[$__rate_interval])), 1e-9)",
+          "legendFormat": "平均 | avg 入场/Entry {{result}}",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=\"place_take_profit\"}[$__rate_interval])))",
+          "legendFormat": "p95 止盈/TP {{result}}",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_sum{service=~\"$service\", environment=~\"$environment\", operation=\"place_take_profit\"}[$__rate_interval])) / clamp_min(sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_count{service=~\"$service\", environment=~\"$environment\", operation=\"place_take_profit\"}[$__rate_interval])), 1e-9)",
+          "legendFormat": "平均 | avg 止盈/TP {{result}}",
+          "range": true,
+          "refId": "F"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=\"place_stop_loss\"}[$__rate_interval])))",
+          "legendFormat": "p95 止损/SL {{result}}",
+          "range": true,
+          "refId": "G"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_sum{service=~\"$service\", environment=~\"$environment\", operation=\"place_stop_loss\"}[$__rate_interval])) / clamp_min(sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_count{service=~\"$service\", environment=~\"$environment\", operation=\"place_stop_loss\"}[$__rate_interval])), 1e-9)",
+          "legendFormat": "平均 | avg 止损/SL {{result}}",
+          "range": true,
+          "refId": "H"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=\"place_bracket_order\"}[$__rate_interval])))",
+          "legendFormat": "p95 括号入口/Submit {{result}}",
+          "range": true,
+          "refId": "I"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_sum{service=~\"$service\", environment=~\"$environment\", operation=\"place_bracket_order\"}[$__rate_interval])) / clamp_min(sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_count{service=~\"$service\", environment=~\"$environment\", operation=\"place_bracket_order\"}[$__rate_interval])), 1e-9)",
+          "legendFormat": "平均 | avg 括号入口/Submit {{result}}",
+          "range": true,
+          "refId": "J"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=\"place_market_close\"}[$__rate_interval])))",
+          "legendFormat": "p95 平仓/Close {{result}}",
+          "range": true,
+          "refId": "K"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_sum{service=~\"$service\", environment=~\"$environment\", operation=\"place_market_close\"}[$__rate_interval])) / clamp_min(sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_count{service=~\"$service\", environment=~\"$environment\", operation=\"place_market_close\"}[$__rate_interval])), 1e-9)",
+          "legendFormat": "平均 | avg 平仓/Close {{result}}",
+          "range": true,
+          "refId": "L"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=\"adjust_stop_loss\"}[$__rate_interval])))",
+          "legendFormat": "p95 调止损/Adj SL {{result}}",
+          "range": true,
+          "refId": "M"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_sum{service=~\"$service\", environment=~\"$environment\", operation=\"adjust_stop_loss\"}[$__rate_interval])) / clamp_min(sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_count{service=~\"$service\", environment=~\"$environment\", operation=\"adjust_stop_loss\"}[$__rate_interval])), 1e-9)",
+          "legendFormat": "平均 | avg 调止损/Adj SL {{result}}",
+          "range": true,
+          "refId": "N"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=\"adjust_take_profit\"}[$__rate_interval])))",
+          "legendFormat": "p95 调止盈/Adj TP {{result}}",
+          "range": true,
+          "refId": "O"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_sum{service=~\"$service\", environment=~\"$environment\", operation=\"adjust_take_profit\"}[$__rate_interval])) / clamp_min(sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_count{service=~\"$service\", environment=~\"$environment\", operation=\"adjust_take_profit\"}[$__rate_interval])), 1e-9)",
+          "legendFormat": "平均 | avg 调止盈/Adj TP {{result}}",
+          "range": true,
+          "refId": "P"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_order\"}[$__rate_interval])))",
+          "legendFormat": "p95 撤单/Cancel req {{result}}",
+          "range": true,
+          "refId": "Q"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_sum{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_order\"}[$__rate_interval])) / clamp_min(sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_count{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_order\"}[$__rate_interval])), 1e-9)",
+          "legendFormat": "平均 | avg 撤单/Cancel req {{result}}",
+          "range": true,
+          "refId": "R"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_all_orders\"}[$__rate_interval])))",
+          "legendFormat": "p95 撤全部/Cancel all {{result}}",
+          "range": true,
+          "refId": "S"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_sum{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_all_orders\"}[$__rate_interval])) / clamp_min(sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_count{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_all_orders\"}[$__rate_interval])), 1e-9)",
+          "legendFormat": "平均 | avg 撤全部/Cancel all {{result}}",
+          "range": true,
+          "refId": "T"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_entry\"}[$__rate_interval])))",
+          "legendFormat": "p95 撤入场/Cancel entry {{result}}",
+          "range": true,
+          "refId": "U"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_sum{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_entry\"}[$__rate_interval])) / clamp_min(sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_count{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_entry\"}[$__rate_interval])), 1e-9)",
+          "legendFormat": "平均 | avg 撤入场/Cancel entry {{result}}",
+          "range": true,
+          "refId": "V"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_take_profit\"}[$__rate_interval])))",
+          "legendFormat": "p95 撤止盈/Cancel TP {{result}}",
+          "range": true,
+          "refId": "W"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_sum{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_take_profit\"}[$__rate_interval])) / clamp_min(sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_count{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_take_profit\"}[$__rate_interval])), 1e-9)",
+          "legendFormat": "平均 | avg 撤止盈/Cancel TP {{result}}",
+          "range": true,
+          "refId": "X"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_stop_loss\"}[$__rate_interval])))",
+          "legendFormat": "p95 撤止损/Cancel SL {{result}}",
+          "range": true,
+          "refId": "Y"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_sum{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_stop_loss\"}[$__rate_interval])) / clamp_min(sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_count{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_stop_loss\"}[$__rate_interval])), 1e-9)",
+          "legendFormat": "平均 | avg 撤止损/Cancel SL {{result}}",
+          "range": true,
+          "refId": "Z"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=\"modify_manual\"}[$__rate_interval])))",
+          "legendFormat": "p95 手动改单/Manual mod {{result}}",
+          "range": true,
+          "refId": "AA"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_sum{service=~\"$service\", environment=~\"$environment\", operation=\"modify_manual\"}[$__rate_interval])) / clamp_min(sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_count{service=~\"$service\", environment=~\"$environment\", operation=\"modify_manual\"}[$__rate_interval])), 1e-9)",
+          "legendFormat": "平均 | avg 手动改单/Manual mod {{result}}",
+          "range": true,
+          "refId": "AB"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=\"modify_order\"}[$__rate_interval])))",
+          "legendFormat": "p95 改单请求/Modify req {{result}}",
+          "range": true,
+          "refId": "AC"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_sum{service=~\"$service\", environment=~\"$environment\", operation=\"modify_order\"}[$__rate_interval])) / clamp_min(sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_count{service=~\"$service\", environment=~\"$environment\", operation=\"modify_order\"}[$__rate_interval])), 1e-9)",
+          "legendFormat": "平均 | avg 改单请求/Modify req {{result}}",
+          "range": true,
+          "refId": "AD"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=\"ibapi_place\"}[$__rate_interval])))",
+          "legendFormat": "p95 IB下单/IB place {{result}}",
+          "range": true,
+          "refId": "AE"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_sum{service=~\"$service\", environment=~\"$environment\", operation=\"ibapi_place\"}[$__rate_interval])) / clamp_min(sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_count{service=~\"$service\", environment=~\"$environment\", operation=\"ibapi_place\"}[$__rate_interval])), 1e-9)",
+          "legendFormat": "平均 | avg IB下单/IB place {{result}}",
+          "range": true,
+          "refId": "AF"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=\"ibapi_cancel\"}[$__rate_interval])))",
+          "legendFormat": "p95 IB撤单/IB cancel {{result}}",
+          "range": true,
+          "refId": "AG"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_sum{service=~\"$service\", environment=~\"$environment\", operation=\"ibapi_cancel\"}[$__rate_interval])) / clamp_min(sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_count{service=~\"$service\", environment=~\"$environment\", operation=\"ibapi_cancel\"}[$__rate_interval])), 1e-9)",
+          "legendFormat": "平均 | avg IB撤单/IB cancel {{result}}",
+          "range": true,
+          "refId": "AH"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=\"modify\"}[$__rate_interval])))",
+          "legendFormat": "p95 IB改单/IB modify {{result}}",
+          "range": true,
+          "refId": "AI"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_sum{service=~\"$service\", environment=~\"$environment\", operation=\"modify\"}[$__rate_interval])) / clamp_min(sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_count{service=~\"$service\", environment=~\"$environment\", operation=\"modify\"}[$__rate_interval])), 1e-9)",
+          "legendFormat": "平均 | avg IB改单/IB modify {{result}}",
+          "range": true,
+          "refId": "AJ"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=\"cancel\"}[$__rate_interval])))",
+          "legendFormat": "p95 IB撤单确认/IB cancel ok {{result}}",
+          "range": true,
+          "refId": "AK"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_sum{service=~\"$service\", environment=~\"$environment\", operation=\"cancel\"}[$__rate_interval])) / clamp_min(sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_count{service=~\"$service\", environment=~\"$environment\", operation=\"cancel\"}[$__rate_interval])), 1e-9)",
+          "legendFormat": "平均 | avg IB撤单确认/IB cancel ok {{result}}",
+          "range": true,
+          "refId": "AL"
         }
       ],
       "fieldConfig": {
@@ -3751,7 +4554,7 @@
           "displayMode": "table",
           "placement": "right",
           "showLegend": true,
-          "width": 220
+          "width": 520
         },
         "tooltip": {
           "mode": "multi",
@@ -3763,16 +4566,16 @@
       "id": 45,
       "type": "table",
       "title": "真实订单命令累计 / Real Order Command Counts",
-      "description": "这里才是下单/改价/撤单类命令累计；tracker_live_orders_fetch 不再放入订单命令。",
+      "description": "当前时间范围内的下单/改价/撤单类命令累计；tracker_live_orders_fetch 不放入订单命令。",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
+        "w": 12,
         "x": 0,
-        "y": 87
+        "y": 104
       },
       "targets": [
         {
@@ -3781,10 +4584,208 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (operation, order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=~\"place_bracket|place_entry|place_take_profit|place_stop_loss|place_bracket_order|place_market_close|adjust_stop_loss|adjust_take_profit|cancel_order|cancel_all_orders|cancel_entry|cancel_take_profit|cancel_stop_loss|modify_manual|modify_order|ibapi_place|ibapi_cancel|modify|cancel\"}[$__range]))",
-          "legendFormat": "{{operation}} {{order_family_type}} {{result}} {{reason_code}}",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_bracket\"}[$__range]))",
+          "legendFormat": "组合单/Bracket {{order_family_type}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_entry\"}[$__range]))",
+          "legendFormat": "入场/Entry {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_take_profit\"}[$__range]))",
+          "legendFormat": "止盈/TP {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_stop_loss\"}[$__range]))",
+          "legendFormat": "止损/SL {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_bracket_order\"}[$__range]))",
+          "legendFormat": "括号入口/Submit {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_market_close\"}[$__range]))",
+          "legendFormat": "平仓/Close {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "F"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"adjust_stop_loss\"}[$__range]))",
+          "legendFormat": "调止损/Adj SL {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "G"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"adjust_take_profit\"}[$__range]))",
+          "legendFormat": "调止盈/Adj TP {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "H"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_order\"}[$__range]))",
+          "legendFormat": "撤单/Cancel req {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "I"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_all_orders\"}[$__range]))",
+          "legendFormat": "撤全部/Cancel all {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "J"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_entry\"}[$__range]))",
+          "legendFormat": "撤入场/Cancel entry {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "K"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_take_profit\"}[$__range]))",
+          "legendFormat": "撤止盈/Cancel TP {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "L"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_stop_loss\"}[$__range]))",
+          "legendFormat": "撤止损/Cancel SL {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "M"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"modify_manual\"}[$__range]))",
+          "legendFormat": "手动改单/Manual mod {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "N"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"modify_order\"}[$__range]))",
+          "legendFormat": "改单请求/Modify req {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "O"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"ibapi_place\"}[$__range]))",
+          "legendFormat": "IB下单/IB place {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "P"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"ibapi_cancel\"}[$__range]))",
+          "legendFormat": "IB撤单/IB cancel {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "Q"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"modify\"}[$__range]))",
+          "legendFormat": "IB改单/IB modify {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "R"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel\"}[$__range]))",
+          "legendFormat": "IB撤单确认/IB cancel ok {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "S"
         }
       ],
       "fieldConfig": {
@@ -3837,9 +4838,9 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 87
+        "w": 12,
+        "x": 12,
+        "y": 104
       },
       "targets": [
         {
@@ -3848,8 +4849,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"tracker_live_orders_fetch\"}[$__range]))",
-          "legendFormat": "订单追踪：拉取 open orders {{result}} {{reason_code}}",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"tracker_live_orders_fetch\"}[$__range]))",
+          "legendFormat": "拉取/Open orders {{order_family_type}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "A"
         },
@@ -3859,8 +4860,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"tracker_poll\"}[$__range]))",
-          "legendFormat": "订单追踪：定时/强制轮询 {{result}} {{reason_code}}",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"tracker_poll\"}[$__range]))",
+          "legendFormat": "轮询/Tracker poll {{order_family_type}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "B"
         },
@@ -3870,10 +4871,32 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (operation, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=~\"execution_fill|pb_order_sync|tracker_update\"}[$__range]))",
-          "legendFormat": "同步：{{operation}} {{result}} {{reason_code}}",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"tracker_update\"}[$__range]))",
+          "legendFormat": "状态/Tracker update {{order_family_type}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"execution_fill\"}[$__range]))",
+          "legendFormat": "成交/Fill {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"pb_order_sync\"}[$__range]))",
+          "legendFormat": "写库/PB sync {{order_family_type}} {{result}} {{reason_code}}",
+          "range": true,
+          "refId": "E"
         }
       ],
       "fieldConfig": {
@@ -3918,17 +4941,17 @@
     {
       "id": 47,
       "type": "timeseries",
-      "title": "订单追踪 p95 / Order Tracker p95",
-      "description": "tracker 正常毫秒级；偶发尖刺用于诊断，不作为真实下单慢的结论。",
+      "title": "订单追踪耗时 / Order Tracker Latency",
+      "description": "订单追踪/同步相关耗时；每个操作同时显示 p95 和 平均/avg。tracker 慢用于诊断追踪链路，不作为真实下单慢的结论。",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 87
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 112
       },
       "targets": [
         {
@@ -3937,10 +4960,109 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=~\"tracker_update|tracker_poll|tracker_live_orders_fetch|execution_fill|pb_order_sync\"}[$__rate_interval])))",
-          "legendFormat": "{{operation}} {{result}}",
+          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=\"tracker_live_orders_fetch\"}[$__rate_interval])))",
+          "legendFormat": "p95 拉取/Open orders {{result}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_sum{service=~\"$service\", environment=~\"$environment\", operation=\"tracker_live_orders_fetch\"}[$__rate_interval])) / clamp_min(sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_count{service=~\"$service\", environment=~\"$environment\", operation=\"tracker_live_orders_fetch\"}[$__rate_interval])), 1e-9)",
+          "legendFormat": "平均 | avg 拉取/Open orders {{result}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=\"tracker_poll\"}[$__rate_interval])))",
+          "legendFormat": "p95 轮询/Tracker poll {{result}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_sum{service=~\"$service\", environment=~\"$environment\", operation=\"tracker_poll\"}[$__rate_interval])) / clamp_min(sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_count{service=~\"$service\", environment=~\"$environment\", operation=\"tracker_poll\"}[$__rate_interval])), 1e-9)",
+          "legendFormat": "平均 | avg 轮询/Tracker poll {{result}}",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=\"tracker_update\"}[$__rate_interval])))",
+          "legendFormat": "p95 状态/Tracker update {{result}}",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_sum{service=~\"$service\", environment=~\"$environment\", operation=\"tracker_update\"}[$__rate_interval])) / clamp_min(sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_count{service=~\"$service\", environment=~\"$environment\", operation=\"tracker_update\"}[$__rate_interval])), 1e-9)",
+          "legendFormat": "平均 | avg 状态/Tracker update {{result}}",
+          "range": true,
+          "refId": "F"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=\"execution_fill\"}[$__rate_interval])))",
+          "legendFormat": "p95 成交/Fill {{result}}",
+          "range": true,
+          "refId": "G"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_sum{service=~\"$service\", environment=~\"$environment\", operation=\"execution_fill\"}[$__rate_interval])) / clamp_min(sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_count{service=~\"$service\", environment=~\"$environment\", operation=\"execution_fill\"}[$__rate_interval])), 1e-9)",
+          "legendFormat": "平均 | avg 成交/Fill {{result}}",
+          "range": true,
+          "refId": "H"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=\"pb_order_sync\"}[$__rate_interval])))",
+          "legendFormat": "p95 写库/PB sync {{result}}",
+          "range": true,
+          "refId": "I"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_sum{service=~\"$service\", environment=~\"$environment\", operation=\"pb_order_sync\"}[$__rate_interval])) / clamp_min(sum by (operation, result) (rate(ibkr_order_operation_duration_seconds_count{service=~\"$service\", environment=~\"$environment\", operation=\"pb_order_sync\"}[$__rate_interval])), 1e-9)",
+          "legendFormat": "平均 | avg 写库/PB sync {{result}}",
+          "range": true,
+          "refId": "J"
         }
       ],
       "fieldConfig": {
@@ -4000,7 +5122,7 @@
           "displayMode": "table",
           "placement": "right",
           "showLegend": true,
-          "width": 220
+          "width": 520
         },
         "tooltip": {
           "mode": "multi",
@@ -4010,6 +5132,30 @@
     },
     {
       "id": 48,
+      "type": "text",
+      "title": "订单线名词典 / Order Line Guide",
+      "description": "解释订单链路面板中每条中英文线名的作用，以及 avg 与 p95 的判读方式。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 122
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### 耗时判读 / Latency reading\n- `平均 | avg` 看常态速度；`p95` 看最慢 5% 尾部延迟。avg 正常但 p95 高，多半是偶发尖刺；两者都高，说明链路整体变慢。\n- `QPS` 是每秒发生频率；`累计 / Counts` 是当前 dashboard 时间范围内发生次数；`empty` 表示正常但没有待处理/open orders。\n\n### 真实订单命令 / Real order commands\n| 线名 / Line | 作用 / Purpose |\n|---|---|\n| 组合单/Bracket | 一次完整括号单/OCO 提交，汇总入场、止盈、止损保护腿。 |\n| 入场/Entry | 入场订单子腿提交结果。 |\n| 止盈/TP | 止盈保护单提交/确认结果。 |\n| 止损/SL | 止损保护单提交/确认结果。 |\n| IB下单/IB place | 底层 IB API `placeOrder` 调用；`order_family_type` 会显示 LMT/STP/MKT 等类型。 |\n| 撤单/改单/调止盈/调止损 | 真实订单变更命令，用来判断保护单调整或撤单是否发生。 |\n\n### 订单追踪 / Order tracker\n| 线名 / Line | 作用 / Purpose |\n|---|---|\n| 拉取/Open orders | 从 broker 拉取当前订单快照；`empty` 通常是正常无 open orders。 |\n| 轮询/Tracker poll | 订单追踪器一轮定时或强制轮询。 |\n| 状态/Tracker update | tracker 合并订单状态；`synced` 写库，`seen` 表示看到但无需写库。 |\n| 成交/Fill | IB socket 成交回报持久化。 |\n| 写库/PB sync | 订单状态同步到 PocketBase。 |"
+      }
+    },
+    {
+      "id": 49,
       "type": "row",
       "title": "05 - HTTP 与依赖 / HTTP and Dependencies",
       "collapsed": false,
@@ -4021,12 +5167,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 95
+        "y": 132
       },
       "panels": []
     },
     {
-      "id": 49,
+      "id": 50,
       "type": "timeseries",
       "title": "业务 HTTP 错误 / Business HTTP Errors",
       "description": "真实业务 HTTP 错误；健康检查和状态接口单独拆出去。",
@@ -4038,7 +5184,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 96
+        "y": 133
       },
       "targets": [
         {
@@ -4130,7 +5276,7 @@
       }
     },
     {
-      "id": 50,
+      "id": 51,
       "type": "timeseries",
       "title": "状态接口超时 / Status Endpoint Timeouts",
       "description": "/ibkr/status ReadTimeout 是服务间状态接口读取超时；修复后用于确认是否仍有状态构建慢、回环或依赖阻塞。",
@@ -4142,7 +5288,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 96
+        "y": 133
       },
       "targets": [
         {
@@ -4223,7 +5369,7 @@
       }
     },
     {
-      "id": 51,
+      "id": 52,
       "type": "timeseries",
       "title": "HTTP p95 延迟 / HTTP p95 Latency",
       "description": "",
@@ -4235,7 +5381,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 96
+        "y": 133
       },
       "targets": [
         {
@@ -4327,7 +5473,7 @@
       }
     },
     {
-      "id": 52,
+      "id": 53,
       "type": "timeseries",
       "title": "入口 QPS / Inbound Request QPS",
       "description": "",
@@ -4339,7 +5485,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 103
+        "y": 140
       },
       "targets": [
         {
@@ -4421,7 +5567,7 @@
       }
     },
     {
-      "id": 53,
+      "id": 54,
       "type": "timeseries",
       "title": "出站 QPS / Outbound Request QPS",
       "description": "",
@@ -4433,7 +5579,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 103
+        "y": 140
       },
       "targets": [
         {
@@ -4515,7 +5661,7 @@
       }
     },
     {
-      "id": 54,
+      "id": 55,
       "type": "row",
       "title": "06 - 账户、历史与主机 / Account History and Host",
       "collapsed": false,
@@ -4527,12 +5673,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 110
+        "y": 147
       },
       "panels": []
     },
     {
-      "id": 55,
+      "id": 56,
       "type": "stat",
       "title": "账户资金 / Account Capital",
       "description": "",
@@ -4544,7 +5690,7 @@
         "h": 6,
         "w": 8,
         "x": 0,
-        "y": 111
+        "y": 148
       },
       "targets": [
         {
@@ -4628,7 +5774,7 @@
       }
     },
     {
-      "id": 56,
+      "id": 57,
       "type": "timeseries",
       "title": "保证金与敞口 / Margin and Exposure",
       "description": "",
@@ -4640,7 +5786,7 @@
         "h": 6,
         "w": 8,
         "x": 8,
-        "y": 111
+        "y": 148
       },
       "targets": [
         {
@@ -4754,7 +5900,7 @@
       }
     },
     {
-      "id": 57,
+      "id": 58,
       "type": "timeseries",
       "title": "主机资源 / Host Resource",
       "description": "",
@@ -4766,7 +5912,7 @@
         "h": 6,
         "w": 8,
         "x": 16,
-        "y": 111
+        "y": 148
       },
       "targets": [
         {
@@ -4873,7 +6019,7 @@
       }
     },
     {
-      "id": 58,
+      "id": 59,
       "type": "timeseries",
       "title": "账户资金趋势 / Account Capital Trend",
       "description": "",
@@ -4885,7 +6031,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 117
+        "y": 154
       },
       "targets": [
         {
@@ -5000,7 +6146,7 @@
       }
     },
     {
-      "id": 59,
+      "id": 60,
       "type": "timeseries",
       "title": "历史数据与回补 / History and Backfill",
       "description": "",
@@ -5012,7 +6158,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 117
+        "y": 154
       },
       "targets": [
         {
@@ -5105,7 +6251,7 @@
       }
     },
     {
-      "id": 60,
+      "id": 61,
       "type": "row",
       "title": "99 - 诊断明细 / Diagnostics",
       "collapsed": false,
@@ -5117,12 +6263,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 124
+        "y": 161
       },
       "panels": []
     },
     {
-      "id": 61,
+      "id": 62,
       "type": "table",
       "title": "良性 IB 消息 / Benign IB Messages",
       "description": "例如 2100 benign 通常是账户数据订阅取消/切换；不放主错误趋势。",
@@ -5134,7 +6280,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 125
+        "y": 162
       },
       "targets": [
         {
@@ -5189,7 +6335,7 @@
       }
     },
     {
-      "id": 62,
+      "id": 63,
       "type": "table",
       "title": "空轮询与后台任务 / Empty Polling and Background Jobs",
       "description": "empty 表示正常后台轮询但没有待处理项，用于排障，不作为业务结果。",
@@ -5201,7 +6347,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 125
+        "y": 162
       },
       "targets": [
         {
@@ -5267,7 +6413,7 @@
       }
     },
     {
-      "id": 63,
+      "id": 64,
       "type": "timeseries",
       "title": "Gateway Probe p95 / Gateway Probe p95",
       "description": "Gateway socket 探测延迟，保留在诊断区，避免与 Gateway 状态重复。",
@@ -5279,7 +6425,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 125
+        "y": 162
       },
       "targets": [
         {
@@ -5360,7 +6506,7 @@
       }
     },
     {
-      "id": 64,
+      "id": 65,
       "type": "table",
       "title": "状态接口影响规模 / Status Endpoint Impact",
       "description": "状态页/监控拉取超时的最近 5m 影响规模，和业务 HTTP 错误分开。",
@@ -5372,7 +6518,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 133
+        "y": 170
       },
       "targets": [
         {
@@ -5427,7 +6573,7 @@
       }
     },
     {
-      "id": 65,
+      "id": 66,
       "type": "table",
       "title": "最近 5m 真实错误影响 / Real Error Impact 5m",
       "description": "只统计真实错误影响；benign 和 empty 已下沉到诊断明细。",
@@ -5439,7 +6585,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 133
+        "y": 170
       },
       "targets": [
         {
@@ -5505,7 +6651,7 @@
       }
     },
     {
-      "id": 66,
+      "id": 67,
       "type": "row",
       "title": "12 - Gateway 订单串行队列 / Gateway Order Serial Queue",
       "collapsed": false,
@@ -5517,12 +6663,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 140
+        "y": 177
       },
       "panels": []
     },
     {
-      "id": 67,
+      "id": 68,
       "type": "timeseries",
       "title": "Gateway 串行队列等待 p95 / Gateway Serial Queue Wait p95",
       "description": "IB Gateway 下单/改单/撤单串行 gate 的排队等待 p95；持续升高表示订单突发或锁竞争。",
@@ -5534,7 +6680,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 141
+        "y": 178
       },
       "targets": [
         {
@@ -5616,7 +6762,7 @@
       }
     },
     {
-      "id": 68,
+      "id": 69,
       "type": "timeseries",
       "title": "Gateway 串行队列超时 / Gateway Serial Queue Timeouts",
       "description": "选定时间范围内等待 Gateway order serial gate 超时的次数；任何非 0 都需要排查。",
@@ -5628,7 +6774,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 141
+        "y": 178
       },
       "targets": [
         {
@@ -5710,7 +6856,7 @@
       }
     },
     {
-      "id": 69,
+      "id": 70,
       "type": "row",
       "title": "13 - 信号到订单流转 / Signal-to-Order Flow",
       "collapsed": false,
@@ -5722,12 +6868,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 148
+        "y": 185
       },
       "panels": []
     },
     {
-      "id": 70,
+      "id": 71,
       "type": "stat",
       "title": "流转漏斗 30d / Flow Funnel 30d",
       "description": "近 30 天从业务信号、校验、需关注事件、成功开仓到当前活跃状态的总览。",
@@ -5739,7 +6885,7 @@
         "h": 6,
         "w": 8,
         "x": 0,
-        "y": 149
+        "y": 186
       },
       "targets": [
         {
@@ -5853,7 +6999,7 @@
       "timeFrom": "30d"
     },
     {
-      "id": 71,
+      "id": 72,
       "type": "timeseries",
       "title": "每日信号 vs 成功开仓 / Daily Signals vs Successful Entries",
       "description": "最近 30 天滚动 1 天业务信号数与成功/已接受开仓命令对比；保护单、平仓和 tracker 轮询不计入开仓。",
@@ -5865,7 +7011,7 @@
         "h": 6,
         "w": 16,
         "x": 8,
-        "y": 149
+        "y": 186
       },
       "targets": [
         {
@@ -5960,7 +7106,7 @@
       "timeFrom": "30d"
     },
     {
-      "id": 72,
+      "id": 73,
       "type": "timeseries",
       "title": "所有信号变化 / All Signal Changes",
       "description": "最近 30 天所有非 empty 信号阶段事件变化，用于观察信号处理链路整体运转。",
@@ -5972,7 +7118,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 155
+        "y": 192
       },
       "targets": [
         {
@@ -6055,7 +7201,7 @@
       "timeFrom": "30d"
     },
     {
-      "id": 73,
+      "id": 74,
       "type": "timeseries",
       "title": "所有真实订单变化 / All Real Order Changes",
       "description": "最近 30 天真实订单命令按 operation/result 的滚动 1 天变化；不包含 tracker 轮询。",
@@ -6067,7 +7213,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 155
+        "y": 192
       },
       "targets": [
         {
@@ -6150,7 +7296,7 @@
       "timeFrom": "30d"
     },
     {
-      "id": 74,
+      "id": 75,
       "type": "table",
       "title": "信号流转明细 30d / Signal Flow Diagnostics 30d",
       "description": "最近 30 天信号阶段、来源、结果与原因码聚合明细，用于定位信号为何没有进入开仓。",
@@ -6162,7 +7308,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 162
+        "y": 199
       },
       "targets": [
         {
@@ -6218,7 +7364,7 @@
       "timeFrom": "30d"
     },
     {
-      "id": 75,
+      "id": 76,
       "type": "table",
       "title": "订单流转明细 30d / Order Flow Diagnostics 30d",
       "description": "最近 30 天真实订单命令聚合明细，配合每日趋势查看开仓、保护单、改单、撤单的变化。",
@@ -6230,7 +7376,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 162
+        "y": 199
       },
       "targets": [
         {

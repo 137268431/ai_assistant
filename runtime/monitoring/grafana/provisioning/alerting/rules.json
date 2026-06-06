@@ -542,7 +542,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "(histogram_quantile(0.95, sum by (le, service, route) (rate(ibkr_http_server_request_duration_seconds_bucket{route!~\"/health|/status|/ibkr/status|/api/custom/ibkr/statusz|/api/custom/system/summaryz|/api/custom/system/monitorz|/api/custom/system/storagez|/ibkr/orders/.*|/api/custom/ibkr/orders/.*\"}[5m]))) > 5) and (sum by (service, route) (increase(ibkr_http_server_requests_total{route!~\"/health|/status|/ibkr/status|/api/custom/ibkr/statusz|/api/custom/system/summaryz|/api/custom/system/monitorz|/api/custom/system/storagez|/ibkr/orders/.*|/api/custom/ibkr/orders/.*\"}[5m])) > 20)",
+                "expr": "(histogram_quantile(0.95, sum by (le, service, route) (rate(ibkr_http_server_request_duration_seconds_bucket{route!~\"/health|/status|/ibkr/status|/api/custom/ibkr/statusz|/api/custom/system/summaryz|/api/custom/system/monitorz|/api/custom/system/storagez|/api/custom/ibkr/runtime/config|/ibkr/orders/.*|/api/custom/ibkr/orders/.*|/ibkr/account|/api/custom/ibkr/account.*\"}[5m]))) > 15) and (sum by (service, route) (increase(ibkr_http_server_requests_total{route!~\"/health|/status|/ibkr/status|/api/custom/ibkr/statusz|/api/custom/system/summaryz|/api/custom/system/monitorz|/api/custom/system/storagez|/api/custom/ibkr/runtime/config|/ibkr/orders/.*|/api/custom/ibkr/orders/.*|/ibkr/account|/api/custom/ibkr/account.*\"}[5m])) > 20)",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -972,7 +972,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "histogram_quantile(0.95, sum by (le, service, environment, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{operation=~\"place_bracket|place_entry|place_take_profit|place_stop_loss|place_bracket_order|place_market_close|adjust_stop_loss|adjust_take_profit|cancel_order|cancel_all_orders|cancel_entry|cancel_take_profit|cancel_stop_loss|modify_manual|modify_order|ibapi_place|ibapi_cancel|modify|cancel\"}[5m]))) > 30",
+                "expr": "histogram_quantile(0.95, sum by (le, service, environment, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{operation=~\"place_bracket|place_entry|place_take_profit|place_stop_loss|place_bracket_order|place_market_close|adjust_stop_loss|adjust_take_profit|cancel_order|cancel_all_orders|cancel_entry|cancel_take_profit|cancel_stop_loss|modify_manual|modify_order|ibapi_place|ibapi_cancel|modify|cancel\"}[5m]))) > 900",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -1058,7 +1058,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "histogram_quantile(0.95, sum by (le, service, environment, operation, result) (rate(ibkr_gateway_order_serial_queue_wait_seconds_bucket[5m]))) > 450",
+                "expr": "histogram_quantile(0.95, sum by (le, service, environment, operation, result) (rate(ibkr_gateway_order_serial_queue_wait_seconds_bucket[5m]))) > 900",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,

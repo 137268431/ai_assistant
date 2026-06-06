@@ -676,6 +676,26 @@ class _IBGatewayApp(EWrapper, EClient):
             "broker_callback_source": "request_snapshot" if requested_snapshot else "ib_socket_callback",
         }
 
+    def _record_pending_open_order_snapshot_item(self, item: dict) -> None:
+        order_id = str((item or {}).get("orderId") or (item or {}).get("order_id") or (item or {}).get("id") or "").strip()
+        if not order_id:
+            return
+        for ctx in list(self._pending_requests.values()):
+            if ctx.kind not in {"open_orders", "open_orders_all"}:
+                continue
+            for index, existing in enumerate(list(ctx.items or [])):
+                existing_id = str(
+                    (existing or {}).get("orderId")
+                    or (existing or {}).get("order_id")
+                    or (existing or {}).get("id")
+                    or ""
+                ).strip()
+                if existing_id == order_id:
+                    ctx.items[index] = dict(item)
+                    break
+            else:
+                ctx.items.append(dict(item))
+
     def _next_request(self, kind: str) -> tuple[int, _PendingRequest]:
         with self._state_lock:
             self._request_seq += 1
@@ -1073,6 +1093,7 @@ class _IBGatewayApp(EWrapper, EClient):
             merged = {**previous, **normalized}
             self._open_orders[key] = merged
             self._open_order_objects[key] = (copy.deepcopy(contract), copy.deepcopy(order))
+            self._record_pending_open_order_snapshot_item(merged)
         self._emit_order_update(merged)
 
     def orderStatus(  # noqa: N802
@@ -1124,7 +1145,7 @@ class _IBGatewayApp(EWrapper, EClient):
         for req_id, ctx in list(self._pending_requests.items()):
             if ctx.kind in {"open_orders", "open_orders_all"}:
                 with self._state_lock:
-                    ctx.items = [dict(item) for item in self._open_orders.values()]
+                    ctx.items = [dict(item) for item in (ctx.items or [])]
                 ctx.event.set()
 
     def position(self, account: str, contract, position: float, avgCost: float):  # noqa: N802
@@ -3817,18 +3838,22 @@ class BrokerAdapter:
                         order_error = dict(getter(order_id) or {})
                     except Exception:
                         order_error = {}
-                if order_error and (
-                    self._order_error_is_cancelled(order_error)
-                    or self._order_error_is_cancel_terminal_notice(order_error)
-                    or self._order_error_is_stale_invalid_price_rejection(order_error)
-                ):
-                    ignored_errors.setdefault(order_id, []).append(dict(order_error))
-                    clearer = getattr(self.client, "clear_order_error", None)
-                    if callable(clearer):
-                        try:
-                            clearer(order_id)
-                        except Exception:
-                            pass
+                if order_error:
+                    cancel_confirmed = (
+                        self._order_error_is_cancelled(order_error)
+                        or self._order_error_is_cancel_terminal_notice(order_error)
+                    )
+                    ignorable_error = cancel_confirmed or self._order_error_is_stale_invalid_price_rejection(order_error)
+                    if ignorable_error:
+                        ignored_errors.setdefault(order_id, []).append(dict(order_error))
+                        clearer = getattr(self.client, "clear_order_error", None)
+                        if callable(clearer):
+                            try:
+                                clearer(order_id)
+                            except Exception:
+                                pass
+                    if cancel_confirmed:
+                        continue
 
                 snapshot = open_by_id.get(order_id) or {}
                 if not snapshot:

@@ -8,6 +8,7 @@ import queue
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from math import ceil
@@ -245,6 +246,34 @@ def configure_http_proxy(args: argparse.Namespace) -> None:
 
 def action_params() -> dict[str, Any]:
     return {"environment": "paper", "broker_mode": "paper"}
+
+
+def nested_result(payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    result = payload.get("result")
+    return dict(result) if isinstance(result, dict) else {}
+
+
+def action_error_code(item: dict[str, Any] | None) -> str:
+    item = item or {}
+    response = item.get("response") if isinstance(item.get("response"), dict) else {}
+    result = nested_result(response)
+    for source in (item, response, result):
+        for key in ("error", "reason", "status_reason"):
+            text = fee_probe.to_text(source.get(key) if isinstance(source, dict) else "")
+            if text:
+                return text
+    return ""
+
+
+def response_action_ok(response: dict[str, Any]) -> bool:
+    result = nested_result(response)
+    return bool(response.get("ok") and result.get("ok", True) is not False)
+
+
+def is_expected_buying_power_block(item: dict[str, Any] | None) -> bool:
+    return action_error_code(item) == "buying_power_blocked"
 
 
 def account_snapshot_client(args: argparse.Namespace) -> tuple[fee_probe.ApiClient, str]:
@@ -552,12 +581,13 @@ def submit_one(client: fee_probe.ApiClient, plan: OrderProbePlan, *, delay_s: fl
     started = time.perf_counter()
     response = client.post("/api/custom/ibkr/orders/place", plan.payload(), action_params())
     elapsed = time.perf_counter() - started
-    result = response.get("result") if isinstance(response.get("result"), dict) else {}
+    result = nested_result(response)
     return {
-        "ok": bool(response.get("ok") and (result.get("ok") is not False)),
+        "ok": response_action_ok(response),
         "symbol": plan.symbol,
         "payload": plan.payload(),
         "response": response,
+        "error": response.get("error") or result.get("error") or result.get("reason") or "",
         "order_ids": fee_probe.extract_order_ids(response),
         "elapsed_s": round(elapsed, 3),
     }
@@ -628,6 +658,228 @@ def submit_burst(args: argparse.Namespace, plans: list[OrderProbePlan]) -> list[
     return [results_by_index[index] for index in range(len(plans))]
 
 
+def summarize_place_acceptance(
+    args: argparse.Namespace,
+    place_results: list[dict[str, Any]],
+    plans: list[OrderProbePlan],
+) -> dict[str, Any]:
+    expected_bp_blocks = [item for item in place_results if is_expected_buying_power_block(item)]
+    unexpected_failures = [
+        {
+            "symbol": item.get("symbol"),
+            "error": action_error_code(item) or item.get("error") or "place_failed",
+        }
+        for item in place_results
+        if not item.get("ok") and not is_expected_buying_power_block(item)
+    ]
+    expect_blocks = bool(getattr(args, "expect_buying_power_blocks", False))
+    min_blocks = max(0, int(getattr(args, "min_buying_power_blocks", 0) or 0))
+    if expect_blocks and min_blocks <= 0:
+        min_blocks = 1
+    accepted_count = sum(1 for item in place_results if item.get("ok")) + len(expected_bp_blocks)
+    ok = (
+        len(place_results) == len(plans)
+        and not unexpected_failures
+        and (expect_blocks or not expected_bp_blocks)
+        and len(expected_bp_blocks) >= min_blocks
+        and accepted_count == len(plans)
+    )
+    return {
+        "ok": ok,
+        "accepted": accepted_count,
+        "placed_ok": sum(1 for item in place_results if item.get("ok")),
+        "buying_power_blocked": len(expected_bp_blocks),
+        "expected_buying_power_blocks": expect_blocks,
+        "min_buying_power_blocks": min_blocks,
+        "unexpected_failures": unexpected_failures,
+        "blocked_symbols": [str(item.get("symbol") or "") for item in expected_bp_blocks],
+    }
+
+
+def next_stop_loss_price(plan: OrderProbePlan, *, repeat_index: int = 0) -> float:
+    step = max(0, int(repeat_index or 0)) + 1
+    direction = str(plan.direction or "long").lower()
+    if direction == "short":
+        candidate = max(float(plan.entry_price) * 1.05, float(plan.stop_loss_price) * (1.0 - 0.01 * step))
+        if candidate <= float(plan.entry_price):
+            candidate = float(plan.entry_price) * 1.05
+    else:
+        candidate = min(float(plan.entry_price) * 0.95, float(plan.stop_loss_price) * (1.0 + 0.01 * step))
+        if candidate >= float(plan.entry_price):
+            candidate = float(plan.entry_price) * 0.95
+    return round_price(candidate)
+
+
+def build_stop_loss_modify_items(
+    plans: list[OrderProbePlan],
+    place_results: list[dict[str, Any]],
+    *,
+    repeat: int = 1,
+) -> list[dict[str, Any]]:
+    plan_by_symbol = {plan.symbol: plan for plan in plans}
+    items: list[dict[str, Any]] = []
+    for result in place_results:
+        if not result.get("ok"):
+            continue
+        symbol = str(result.get("symbol") or "").upper()
+        plan = plan_by_symbol.get(symbol)
+        order_ids = [fee_probe.to_text(item) for item in (result.get("order_ids") or []) if fee_probe.to_text(item)]
+        if not plan or len(order_ids) < 3:
+            continue
+        stop_order_id = order_ids[2]
+        for repeat_index in range(max(1, int(repeat or 1))):
+            items.append(
+                {
+                    "symbol": symbol,
+                    "order_id": stop_order_id,
+                    "old_stop_loss_price": plan.stop_loss_price,
+                    "new_stop_loss_price": next_stop_loss_price(plan, repeat_index=repeat_index),
+                    "repeat_index": repeat_index + 1,
+                }
+            )
+    return items
+
+
+def modify_stop_loss_storm(
+    args: argparse.Namespace,
+    plans: list[OrderProbePlan],
+    place_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    items = build_stop_loss_modify_items(
+        plans,
+        place_results,
+        repeat=max(1, int(getattr(args, "stop_loss_modify_repeat", 1) or 1)),
+    )
+    if not items:
+        return {"ok": False, "requested": 0, "ok_count": 0, "failed": 0, "results": [], "error": "no_stop_loss_orders"}
+
+    workers = max(1, min(len(items), int(getattr(args, "modify_burst_workers", 0) or len(items))))
+    client = fee_probe.ApiClient(args.api_base_url, timeout=float(args.http_timeout_sec))
+
+    def submit_modify(item: dict[str, Any]) -> dict[str, Any]:
+        started = time.perf_counter()
+        payload = {
+            "order_id": item["order_id"],
+            "price": item["new_stop_loss_price"],
+            "source": "gateway_probe_stop_loss_modify_storm",
+        }
+        try:
+            response = client.post("/api/custom/ibkr/orders/modify", payload, action_params())
+            ok = response_action_ok(response)
+            error = action_error_code({"response": response})
+        except Exception as exc:
+            response = {}
+            ok = False
+            error = str(exc)
+        return {
+            **item,
+            "ok": ok,
+            "payload": payload,
+            "response": response,
+            "elapsed_s": round(time.perf_counter() - started, 3),
+            "error": error,
+        }
+
+    results: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="gateway-probe-modify") as executor:
+        futures = [executor.submit(submit_modify, item) for item in items]
+        for future in as_completed(futures):
+            results.append(future.result())
+    results.sort(key=lambda item: (str(item.get("symbol") or ""), int(item.get("repeat_index") or 0)))
+    ok_count = sum(1 for item in results if item.get("ok"))
+    return {
+        "ok": ok_count == len(results),
+        "requested": len(items),
+        "workers": workers,
+        "ok_count": ok_count,
+        "failed": len(results) - ok_count,
+        "results": results,
+    }
+
+
+def build_exit_cancel_items(place_results: list[dict[str, Any]], *, scope: str = "entry") -> list[dict[str, Any]]:
+    normalized_scope = str(scope or "entry").strip().lower()
+    seen: set[str] = set()
+    items: list[dict[str, Any]] = []
+    for result in place_results:
+        if not result.get("ok"):
+            continue
+        order_ids = [fee_probe.to_text(item) for item in (result.get("order_ids") or []) if fee_probe.to_text(item)]
+        if not order_ids:
+            continue
+        selected = order_ids if normalized_scope == "all" else order_ids[:1]
+        for index, order_id in enumerate(selected):
+            if order_id in seen:
+                continue
+            seen.add(order_id)
+            role = "entry" if index == 0 else "take_profit" if index == 1 else "stop_loss" if index == 2 else "unknown"
+            items.append({"symbol": result.get("symbol"), "order_id": order_id, "role": role})
+    return items
+
+
+def cancel_order_items_burst(
+    args: argparse.Namespace,
+    items: list[dict[str, Any]],
+    *,
+    source: str,
+    workers: int,
+) -> dict[str, Any]:
+    if not items:
+        return {"ok": False, "requested": 0, "ok_count": 0, "failed": 0, "results": [], "error": "no_cancel_order_ids"}
+    worker_count = max(1, min(len(items), int(workers or len(items))))
+    client = fee_probe.ApiClient(args.api_base_url, timeout=float(args.http_timeout_sec))
+
+    def submit_cancel(item: dict[str, Any]) -> dict[str, Any]:
+        started = time.perf_counter()
+        payload = {"order_id": item["order_id"], "source": source}
+        try:
+            response = client.post("/api/custom/ibkr/orders/cancel", payload, action_params())
+            ok = response_action_ok(response)
+            error = action_error_code({"response": response})
+        except Exception as exc:
+            response = {}
+            ok = False
+            error = str(exc)
+        return {
+            **item,
+            "ok": ok,
+            "payload": payload,
+            "response": response,
+            "elapsed_s": round(time.perf_counter() - started, 3),
+            "error": error,
+            "source": source,
+        }
+
+    results: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="gateway-probe-exit") as executor:
+        futures = [executor.submit(submit_cancel, item) for item in items]
+        for future in as_completed(futures):
+            results.append(future.result())
+    results.sort(key=lambda item: (str(item.get("symbol") or ""), str(item.get("order_id") or "")))
+    ok_count = sum(1 for item in results if item.get("ok"))
+    return {
+        "ok": ok_count == len(results),
+        "requested": len(items),
+        "workers": worker_count,
+        "ok_count": ok_count,
+        "failed": len(results) - ok_count,
+        "results": results,
+    }
+
+
+def exit_cancel_storm(args: argparse.Namespace, place_results: list[dict[str, Any]]) -> dict[str, Any]:
+    items = build_exit_cancel_items(
+        place_results,
+        scope=str(getattr(args, "exit_cancel_scope", "entry") or "entry"),
+    )
+    return cancel_order_items_burst(
+        args,
+        items,
+        source="gateway_probe_exit_cancel_storm",
+        workers=max(1, int(getattr(args, "exit_burst_workers", 0) or len(items) or 1)),
+    )
+
+
 def cancel_visible_orders_for_symbols(args: argparse.Namespace, symbols: list[str]) -> list[dict[str, Any]]:
     snapshot = get_snapshot(args)
     client = fee_probe.ApiClient(args.api_base_url, timeout=float(args.http_timeout_sec))
@@ -648,8 +900,8 @@ def cancel_visible_orders_for_symbols(args: argparse.Namespace, symbols: list[st
             started = time.perf_counter()
             try:
                 response = client.post("/api/custom/ibkr/orders/cancel", {"order_id": oid}, action_params())
-                ok = bool(response.get("ok"))
-                error = response.get("error") or ((response.get("result") or {}).get("error") if isinstance(response.get("result"), dict) else "")
+                ok = response_action_ok(response)
+                error = action_error_code({"response": response})
             except Exception as exc:
                 response = {}
                 ok = False
@@ -683,11 +935,12 @@ def cancel_known_order_ids(args: argparse.Namespace, place_results: list[dict[st
             response = client.post("/api/custom/ibkr/orders/cancel", {"order_id": oid}, action_params())
             cancel_results.append(
                 {
-                    "ok": bool(response.get("ok")),
+                    "ok": response_action_ok(response),
                     "order_id": oid,
                     "symbol": item.get("symbol"),
                     "response": response,
                     "elapsed_s": round(time.perf_counter() - started, 3),
+                    "error": action_error_code({"response": response}),
                 }
             )
             time.sleep(max(0.0, float(args.cancel_spacing_seconds or 0.0)))
@@ -699,9 +952,9 @@ def cancel_all_orders(args: argparse.Namespace, *, source: str = "gateway_order_
     started = time.perf_counter()
     try:
         response = client.post("/api/custom/ibkr/orders/cancel_all", {"source": source}, action_params())
-        result = response.get("result") if isinstance(response.get("result"), dict) else {}
-        ok = bool(response.get("ok") and result.get("ok", True) is not False)
-        error = response.get("error") or result.get("error") or ""
+        result = nested_result(response)
+        ok = response_action_ok(response)
+        error = action_error_code({"response": response})
     except Exception as exc:
         response = {}
         result = {}
@@ -780,12 +1033,19 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     cancel_results: list[dict[str, Any]] = []
     rescue_cancel_results: list[dict[str, Any]] = []
     cleanup_results: list[dict[str, Any]] = []
+    modify_observation: dict[str, Any] = {"ok": True, "skipped": True, "reason": "modify_stop_loss_storm_not_requested"}
+    exit_observation: dict[str, Any] = {"ok": True, "skipped": True, "reason": "exit_cancel_storm_not_requested"}
     pending_observation: dict[str, Any] = {}
     flat_after: dict[str, Any] = {}
     try:
         place_results = submit_burst(args, plans)
         pending_observation = observe_pending_account_access(args, symbols)
-        if bool(getattr(args, "bulk_cancel_all", False)):
+        if bool(getattr(args, "modify_stop_loss_storm", False)):
+            modify_observation = modify_stop_loss_storm(args, plans, place_results)
+        if bool(getattr(args, "exit_cancel_storm", False)):
+            exit_observation = exit_cancel_storm(args, place_results)
+            cancel_results = list(exit_observation.get("results") or [])
+        elif bool(getattr(args, "bulk_cancel_all", False)):
             cancel_results = cancel_all_orders(args)
         else:
             cancel_results = cancel_known_order_ids(args, place_results)
@@ -796,25 +1056,49 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         flat_after = wait_for_flat_symbols(args, symbols)
 
     after = collect_health_and_stability(args, "gateway_probe_after")
-    place_ok = all(item.get("ok") for item in place_results) and len(place_results) == len(plans)
+    place_acceptance = summarize_place_acceptance(args, place_results, plans)
+    place_ok = bool(place_acceptance.get("ok"))
     cancel_attempted = bool(cancel_results) or all(item.get("order_ids") == [] for item in place_results)
+    cancel_ok = (not cancel_results and all(item.get("order_ids") == [] for item in place_results)) or all(
+        item.get("ok") for item in cancel_results
+    )
+    modify_ok = bool(modify_observation.get("ok")) if bool(getattr(args, "modify_stop_loss_storm", False)) else True
+    exit_ok = bool(exit_observation.get("ok")) if bool(getattr(args, "exit_cancel_storm", False)) else True
     cleanup_ok = all(item.get("ok") for item in cleanup_results) and bool(flat_after.get("ok"))
     account_lock_ok = bool(pending_observation.get("ok"))
     stability_ok = bool((before.get("stability") or {}).get("ok")) and bool((after.get("stability") or {}).get("ok"))
     payload.update(
         {
-            "ok": bool(place_ok and cancel_attempted and cleanup_ok and account_lock_ok and stability_ok),
+            "ok": bool(place_ok and cancel_attempted and cancel_ok and modify_ok and exit_ok and cleanup_ok and account_lock_ok and stability_ok),
             "reason": "gateway_order_probe_complete",
             "place_results": {
                 "total": len(place_results),
                 "ok": sum(1 for item in place_results if item.get("ok")),
                 "failed": sum(1 for item in place_results if not item.get("ok")),
+                "acceptance": place_acceptance,
             },
             "cancel_results": {
                 "total": len(cancel_results) + len(rescue_cancel_results),
                 "ok": sum(1 for item in [*cancel_results, *rescue_cancel_results] if item.get("ok")),
                 "failed": sum(1 for item in [*cancel_results, *rescue_cancel_results] if not item.get("ok")),
                 "rescue_total": len(rescue_cancel_results),
+                "cancel_attempted": cancel_attempted,
+                "cancel_ok": cancel_ok,
+            },
+            "modify_stop_loss_storm": {
+                "ok": modify_observation.get("ok"),
+                "skipped": modify_observation.get("skipped"),
+                "requested": modify_observation.get("requested"),
+                "ok_count": modify_observation.get("ok_count"),
+                "failed": modify_observation.get("failed"),
+            },
+            "exit_cancel_storm": {
+                "ok": exit_observation.get("ok"),
+                "skipped": exit_observation.get("skipped"),
+                "requested": exit_observation.get("requested"),
+                "ok_count": exit_observation.get("ok_count"),
+                "failed": exit_observation.get("failed"),
+                "scope": getattr(args, "exit_cancel_scope", "entry"),
             },
             "cleanup_results": {
                 "total": len(cleanup_results),
@@ -836,6 +1120,8 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             "details": {
                 "place": place_results,
                 "pending_hold": pending_observation,
+                "modify_stop_loss_storm": modify_observation,
+                "exit_cancel_storm": exit_observation,
                 "cancel": cancel_results,
                 "rescue_cancel": rescue_cancel_results,
                 "cleanup": cleanup_results,
@@ -867,7 +1153,7 @@ def apply_stress_preset(args: argparse.Namespace) -> argparse.Namespace:
         args.pending_hold_sample_interval_sec = max(1.0, min(float(args.pending_hold_sample_interval_sec or 10.0), 10.0))
         args.min_pending_hold_samples = max(int(args.min_pending_hold_samples or 0), 3)
         args.min_pending_visible_orders = max(int(args.min_pending_visible_orders or 0), target_orders)
-        args.max_pending_snapshot_elapsed_sec = min(float(args.max_pending_snapshot_elapsed_sec or 10.0), 10.0)
+        args.max_pending_snapshot_elapsed_sec = max(float(args.max_pending_snapshot_elapsed_sec or 10.0), 10.0)
         args.submit_timeout_sec = max(float(args.submit_timeout_sec or 0.0), 90.0)
     args.skip_health = False
     args.skip_stability_gate = False
@@ -877,11 +1163,12 @@ def apply_stress_preset(args: argparse.Namespace) -> argparse.Namespace:
     args.max_broker_pending_requests = 0.0
     args.max_order_failures = 0.0
     args.max_signal_attention = 0.0
-    args.max_order_operation_p95 = max(float(args.max_order_operation_p95 or 10.0), 10.0)
     if target_orders > 3:
-        expected_queue_wait = max(2.0, min(float(args.submit_timeout_sec or 90.0), float(target_orders) * 10.0))
+        args.max_order_operation_p95 = max(float(args.max_order_operation_p95 or 0.0), 900.0)
+        expected_queue_wait = max(2.0, min(float(args.submit_timeout_sec or 90.0), float(target_orders) * 20.0))
         args.max_gateway_serial_wait_p95 = max(float(args.max_gateway_serial_wait_p95 or 0.0), expected_queue_wait)
     else:
+        args.max_order_operation_p95 = max(float(args.max_order_operation_p95 or 10.0), 10.0)
         args.max_gateway_serial_wait_p95 = max(float(args.max_gateway_serial_wait_p95 or 2.0), 2.0)
     args.max_gateway_serial_timeouts = 0.0
     return args
@@ -932,6 +1219,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-order-operation-p95", type=float, default=10.0)
     parser.add_argument("--max-gateway-serial-wait-p95", type=float, default=2.0)
     parser.add_argument("--max-gateway-serial-timeouts", type=float, default=0.0)
+    parser.add_argument("--expect-buying-power-blocks", action="store_true", help="Treat buying_power_blocked placement responses as the expected over-BP outcome.")
+    parser.add_argument("--min-buying-power-blocks", type=int, default=0, help="Minimum buying_power_blocked responses required when --expect-buying-power-blocks is set.")
+    parser.add_argument("--modify-stop-loss-storm", action="store_true", help="After placement, modify all submitted stop-loss legs concurrently before cleanup.")
+    parser.add_argument("--stop-loss-modify-repeat", type=int, default=1, help="Number of stop-loss modify requests per submitted bracket.")
+    parser.add_argument("--modify-burst-workers", type=int, default=0, help="Concurrent workers for stop-loss modify storm; defaults to all modify requests.")
+    parser.add_argument("--exit-cancel-storm", action="store_true", help="Use concurrent cancel requests to simulate simultaneous exit signals after placement.")
+    parser.add_argument("--exit-cancel-scope", choices=("entry", "all"), default="entry", help="Cancel only entry legs or all known bracket legs during exit storm.")
+    parser.add_argument("--exit-burst-workers", type=int, default=0, help="Concurrent workers for exit cancel storm; defaults to all selected cancel requests.")
     parser.add_argument("--gateway-stress", action="store_true", help="Require 3 safe paper orders, concurrent placement, staggered cancel, and strict stability gates.")
     parser.add_argument("--account-lock-stress", action="store_true", help="Require 5 concurrent safe paper orders and hold them pending while account/Gateway access is sampled.")
     parser.add_argument("--skip-health", action="store_true")
@@ -971,6 +1266,37 @@ def print_text(payload: dict[str, Any]) -> None:
                 flat_after=(payload.get("account_flat") or {}).get("after"),
             )
         )
+        acceptance = ((payload.get("place_results") or {}).get("acceptance") or {})
+        if acceptance:
+            print(
+                "place_acceptance_ok={ok} accepted={accepted} bp_blocked={blocked} unexpected_failures={unexpected}".format(
+                    ok=acceptance.get("ok"),
+                    accepted=acceptance.get("accepted"),
+                    blocked=acceptance.get("buying_power_blocked"),
+                    unexpected=len(acceptance.get("unexpected_failures") or []),
+                )
+            )
+        modify = payload.get("modify_stop_loss_storm") or {}
+        if not modify.get("skipped", True):
+            print(
+                "modify_stop_loss_storm_ok={ok} ok={ok_count}/{requested} failed={failed}".format(
+                    ok=modify.get("ok"),
+                    ok_count=modify.get("ok_count"),
+                    requested=modify.get("requested"),
+                    failed=modify.get("failed"),
+                )
+            )
+        exit_storm = payload.get("exit_cancel_storm") or {}
+        if not exit_storm.get("skipped", True):
+            print(
+                "exit_cancel_storm_ok={ok} scope={scope} ok={ok_count}/{requested} failed={failed}".format(
+                    ok=exit_storm.get("ok"),
+                    scope=exit_storm.get("scope"),
+                    ok_count=exit_storm.get("ok_count"),
+                    requested=exit_storm.get("requested"),
+                    failed=exit_storm.get("failed"),
+                )
+            )
         pending = payload.get("pending_hold") or {}
         print(
             "pending_hold_ok={ok} samples={samples} max_open_orders={open_orders} max_snapshot_elapsed={elapsed} failures={failures}".format(

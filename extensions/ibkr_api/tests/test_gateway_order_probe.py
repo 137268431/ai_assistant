@@ -294,6 +294,68 @@ class GatewayOrderProbeTest(unittest.TestCase):
         self.assertTrue(results[1]["timed_out"])
         self.assertEqual("submit_timeout", results[1]["error"])
 
+    def test_place_acceptance_allows_expected_buying_power_blocks(self):
+        args = Namespace(expect_buying_power_blocks=True, min_buying_power_blocks=1)
+        plans = [
+            probe.OrderProbePlan("AAPL", "long", 1, 100.0, 50.0, 57.5, 42.5),
+            probe.OrderProbePlan("MSFT", "long", 1, 200.0, 100.0, 115.0, 85.0),
+        ]
+        results = [
+            {"ok": True, "symbol": "AAPL", "order_ids": ["1", "2", "3"]},
+            {
+                "ok": False,
+                "symbol": "MSFT",
+                "response": {"ok": False, "result": {"ok": False, "error": "buying_power_blocked"}},
+            },
+        ]
+
+        summary = probe.summarize_place_acceptance(args, results, plans)
+
+        self.assertTrue(summary["ok"])
+        self.assertEqual(2, summary["accepted"])
+        self.assertEqual(1, summary["buying_power_blocked"])
+        self.assertEqual(["MSFT"], summary["blocked_symbols"])
+
+    def test_place_acceptance_rejects_unexpected_place_failures(self):
+        args = Namespace(expect_buying_power_blocks=True, min_buying_power_blocks=1)
+        plans = [probe.OrderProbePlan("AAPL", "long", 1, 100.0, 50.0, 57.5, 42.5)]
+        results = [{"ok": False, "symbol": "AAPL", "response": {"ok": False, "result": {"error": "order_rejected"}}}]
+
+        summary = probe.summarize_place_acceptance(args, results, plans)
+
+        self.assertFalse(summary["ok"])
+        self.assertEqual("order_rejected", summary["unexpected_failures"][0]["error"])
+
+    def test_build_stop_loss_modify_items_targets_submitted_stop_legs(self):
+        plans = [
+            probe.OrderProbePlan("AAPL", "long", 10, 100.0, 50.0, 57.5, 42.5),
+            probe.OrderProbePlan("MSFT", "long", 5, 200.0, 100.0, 115.0, 85.0),
+        ]
+        place_results = [
+            {"ok": True, "symbol": "AAPL", "order_ids": ["101", "102", "103"]},
+            {"ok": False, "symbol": "MSFT", "order_ids": []},
+        ]
+
+        items = probe.build_stop_loss_modify_items(plans, place_results, repeat=1)
+
+        self.assertEqual(1, len(items))
+        self.assertEqual("103", items[0]["order_id"])
+        self.assertEqual("AAPL", items[0]["symbol"])
+        self.assertGreater(items[0]["new_stop_loss_price"], 42.5)
+        self.assertLess(items[0]["new_stop_loss_price"], 50.0)
+
+    def test_build_exit_cancel_items_defaults_to_entry_legs(self):
+        items = probe.build_exit_cancel_items(
+            [
+                {"ok": True, "symbol": "AAPL", "order_ids": ["101", "102", "103"]},
+                {"ok": True, "symbol": "MSFT", "order_ids": ["201", "202", "203"]},
+            ],
+            scope="entry",
+        )
+
+        self.assertEqual(["101", "201"], [item["order_id"] for item in items])
+        self.assertEqual(["entry", "entry"], [item["role"] for item in items])
+
 
 if __name__ == "__main__":
     unittest.main()

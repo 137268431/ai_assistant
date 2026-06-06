@@ -1099,7 +1099,10 @@ def metric_snapshot(prometheus_url: str, environment: str, *, host: str = "", lo
     lookback = f"{lookback_m}m"
     queries = {
         "broker_pending_requests": f'sum(ibkr_broker_pending_requests{{environment="{environment}"}})',
-        "order_failures_window": f'sum(increase(ibkr_order_events_total{{environment="{environment}",result!~"ok|synced|seen"}}[{lookback}]))',
+        "order_failures_window": (
+            f'sum(increase(ibkr_order_events_total{{environment="{environment}",'
+            f'operation=~"{ORDER_COMMAND_OPERATION_REGEX}",result!~"ok|synced|seen"}}[{lookback}]))'
+        ),
         "signal_attention_window": f'sum(increase(ibkr_signal_events_total{{environment="{environment}",result=~"error|rejected|blocked|deferred|unauthenticated"}}[{lookback}]))',
         "order_operation_p95": (
             "histogram_quantile(0.95, sum by (le) "

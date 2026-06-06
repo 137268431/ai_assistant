@@ -1331,6 +1331,94 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
         self.assertEqual(["101", "102", "103"], adapter.client.cancelled)
         self.assertTrue(all(call["include_all"] and call["force"] for call in adapter.client.request_calls))
 
+    def test_cancel_all_orders_treats_cancel_notice_as_confirmed_even_with_stale_open_row(self):
+        class FakeStaleCancelClient:
+            def __init__(self):
+                self.cancelled = []
+                self.cleared = []
+
+            def request_open_orders(self, timeout=1, include_all=False, force=False):
+                return [{"orderId": "101", "status": "Submitted"}]
+
+            def clear_order_error(self, order_id):
+                self.cleared.append(str(order_id))
+
+            def cancel_open_order(self, order_id):
+                self.cancelled.append(str(order_id))
+
+            def get_order_error(self, order_id):
+                return {"code": 202, "message": "Order Canceled - reason:", "order_id": str(order_id)}
+
+            def get_order_snapshot(self, order_id):
+                return {"orderId": str(order_id), "status": "Submitted"}
+
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeStaleCancelClient()
+
+        with mock.patch("ibkr_compute.broker.ib_gateway.record_order_event"):
+            result = ib_gateway.BrokerAdapter.cancel_all_orders(adapter)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(1, result["requested"])
+        self.assertEqual(1, result["submitted"])
+        self.assertEqual(1, result["cancelled"])
+        self.assertEqual([], result["errors"])
+        self.assertIn("101", result["reconcile"]["ignored_errors"])
+
+    def test_open_order_snapshot_request_does_not_return_stale_cached_orders(self):
+        app = ib_gateway._IBGatewayApp.__new__(ib_gateway._IBGatewayApp)
+        app._pending_requests = {
+            1: ib_gateway._PendingRequest(kind="open_orders_all"),
+        }
+        app._open_orders = {"101": {"orderId": "101", "status": "Submitted"}}
+        app._open_order_objects = {}
+        app._state_lock = threading.RLock()
+        app._listener_lock = threading.RLock()
+        app._order_update_listeners = []
+
+        app.openOrderEnd()
+
+        self.assertEqual([], app._pending_requests[1].items)
+
+    def test_open_order_snapshot_request_returns_only_orders_seen_in_snapshot(self):
+        class Contract:
+            conId = 265598
+            symbol = "AAPL"
+            localSymbol = "AAPL"
+            currency = "USD"
+            secType = "STK"
+
+        class Order:
+            account = "DU123"
+            action = "BUY"
+            orderType = "LMT"
+            totalQuantity = 1
+            lmtPrice = 100.0
+            auxPrice = 0.0
+            parentId = 0
+            tif = "DAY"
+            orderRef = "entry_test"
+            permId = 0
+            clientId = 0
+
+        class OrderState:
+            status = "Submitted"
+
+        app = ib_gateway._IBGatewayApp.__new__(ib_gateway._IBGatewayApp)
+        app._pending_requests = {
+            1: ib_gateway._PendingRequest(kind="open_orders_all"),
+        }
+        app._open_orders = {"101": {"orderId": "101", "status": "Submitted"}}
+        app._open_order_objects = {}
+        app._state_lock = threading.RLock()
+        app._listener_lock = threading.RLock()
+        app._order_update_listeners = []
+
+        app.openOrder(102, Contract(), Order(), OrderState())
+        app.openOrderEnd()
+
+        self.assertEqual(["102"], [item["orderId"] for item in app._pending_requests[1].items])
+
     def test_modify_order_normalizes_price_updates_before_confirmation(self):
         class FakeModifyClient:
             def __init__(self):
