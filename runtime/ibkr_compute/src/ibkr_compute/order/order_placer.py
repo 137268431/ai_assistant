@@ -14,7 +14,7 @@ from ibkr_compute.core.time_utils import ET
 from typing import Any, Dict, List
 
 from ibkr_compute.broker import BrokerAdapter
-from ibkr_compute.observability.prometheus import record_order_event
+from ibkr_compute.observability.prometheus import record_gateway_order_serial_event, record_order_event
 from ibkr_compute.order.buying_power_reservations import BuyingPowerReservationStore
 from ibkr_compute.order.gateway_serial import GatewayOrderMutationGate, GatewayOrderMutationTimeout
 
@@ -259,10 +259,23 @@ class OrderPlacer:
     def place_bracket_order(self, *args, **kwargs) -> Dict[str, Any]:
         metadata = self._bracket_call_metadata(args, kwargs)
         try:
-            with self.gateway_gate.hold("place_bracket_order", **metadata):
-                return self._place_bracket_order_unlocked(*args, **kwargs)
+            with self.gateway_gate.hold("place_bracket_order", **metadata) as gate_info:
+                result = self._place_bracket_order_unlocked(*args, **kwargs)
+            record_gateway_order_serial_event(
+                environment=self.environment,
+                operation="place_bracket_order",
+                result="ok" if result.get("ok") else "error",
+                queue_wait_s=gate_info.get("queue_wait_s"),
+            )
+            return result
         except GatewayOrderMutationTimeout as exc:
             logger.error("Gateway order queue timeout: operation=%s timeout=%ss", exc.operation, exc.timeout_s)
+            record_gateway_order_serial_event(
+                environment=self.environment,
+                operation=exc.operation,
+                result="timeout",
+                queue_wait_s=exc.timeout_s,
+            )
             return {
                 "ok": False,
                 "error": "gateway_order_queue_timeout",
@@ -574,10 +587,23 @@ class OrderPlacer:
     def place_market_close(self, *args, **kwargs) -> Dict[str, Any]:
         metadata = self._market_close_call_metadata(args, kwargs)
         try:
-            with self.gateway_gate.hold("place_market_close", **metadata):
-                return self._place_market_close_unlocked(*args, **kwargs)
+            with self.gateway_gate.hold("place_market_close", **metadata) as gate_info:
+                result = self._place_market_close_unlocked(*args, **kwargs)
+            record_gateway_order_serial_event(
+                environment=self.environment,
+                operation="place_market_close",
+                result="ok" if result.get("ok") else "error",
+                queue_wait_s=gate_info.get("queue_wait_s"),
+            )
+            return result
         except GatewayOrderMutationTimeout as exc:
             logger.error("Gateway close queue timeout: operation=%s timeout=%ss", exc.operation, exc.timeout_s)
+            record_gateway_order_serial_event(
+                environment=self.environment,
+                operation=exc.operation,
+                result="timeout",
+                queue_wait_s=exc.timeout_s,
+            )
             return {
                 "ok": False,
                 "error": "gateway_order_queue_timeout",

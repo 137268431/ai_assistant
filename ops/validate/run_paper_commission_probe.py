@@ -25,6 +25,8 @@ DEFAULT_HOST = os.environ.get("IBKR_DEPLOY_HOST", "root@206.119.171.246")
 DEFAULT_DB_PATH = os.environ.get("PB_DB_PATH", "/opt/pocketbase/pb_data/data.db")
 DEFAULT_SQLITE_SCRIPT = Path(__file__).resolve().parents[1] / "db" / "remote_pb_sqlite.sh"
 CONFIRM_TEXT = "PAPER_FEE_PROBE"
+DEFAULT_ACCOUNT_SNAPSHOT_PATH = "/api/custom/ibkr/account_snapshot"
+DEFAULT_RUNTIME_ACCOUNT_SNAPSHOT_PATH = "/ibkr/account"
 
 SEC_TRANSACTION_FEE_RATE = 0.0000206
 FINRA_TAF_RATE = 0.000195
@@ -452,8 +454,17 @@ def action_params() -> dict[str, Any]:
     }
 
 
-def get_account_snapshot(client: ApiClient) -> dict[str, Any]:
-    return client.get("/api/custom/ibkr/account_snapshot", account_params())
+def account_snapshot_path(args: argparse.Namespace) -> str:
+    explicit_path = to_text(getattr(args, "account_snapshot_path", ""))
+    if explicit_path:
+        return explicit_path
+    if to_text(getattr(args, "account_base_url", "")):
+        return DEFAULT_RUNTIME_ACCOUNT_SNAPSHOT_PATH
+    return DEFAULT_ACCOUNT_SNAPSHOT_PATH
+
+
+def get_account_snapshot(client: ApiClient, path: str = DEFAULT_ACCOUNT_SNAPSHOT_PATH) -> dict[str, Any]:
+    return client.get(path or DEFAULT_ACCOUNT_SNAPSHOT_PATH, account_params())
 
 
 def check_clean_preflight(snapshot: dict[str, Any], symbol: str) -> None:
@@ -538,11 +549,13 @@ def cleanup_symbol(
     quantity: int,
     place_result: dict[str, Any],
     *,
+    snapshot_fn: Callable[[], dict[str, Any]] | None = None,
     timeout_s: float = 60.0,
     interval_s: float = 2.0,
 ) -> dict[str, Any]:
     cleanup: dict[str, Any] = {"attempted": True, "close": {}, "cancel_results": []}
-    snapshot = get_account_snapshot(client)
+    load_snapshot = snapshot_fn or (lambda: get_account_snapshot(client))
+    snapshot = load_snapshot()
     if has_nonzero_position(snapshot, symbol):
         close_payload = close_payload_from_snapshot(
             snapshot,
@@ -554,20 +567,20 @@ def cleanup_symbol(
         cleanup["close_payload"] = close_payload
         cleanup["close"] = client.post("/api/custom/ibkr/positions/close", close_payload, action_params())
         time.sleep(1.0)
-        snapshot = get_account_snapshot(client)
+        snapshot = load_snapshot()
     cleanup["cancel_results"] = cancel_residual_orders(client, snapshot, symbol)
     try:
         cleanup["final_snapshot"] = wait_for(
             f"{symbol}_flat_cleanup",
-            lambda: get_account_snapshot(client),
+            load_snapshot,
             lambda value: is_flat_for_symbol(value, symbol),
             timeout_s=timeout_s,
             interval_s=interval_s,
         )
     except ProbeError:
-        latest = get_account_snapshot(client)
+        latest = load_snapshot()
         cleanup["cancel_results"].extend(cancel_residual_orders(client, latest, symbol))
-        cleanup["final_snapshot"] = get_account_snapshot(client)
+        cleanup["final_snapshot"] = load_snapshot()
     cleanup["flat"] = is_flat_for_symbol(cleanup["final_snapshot"], symbol)
     return cleanup
 
@@ -604,10 +617,16 @@ def run_probe(args: argparse.Namespace) -> int:
     direction = to_text(args.direction).lower()
     quantity = int(args.quantity)
     client = ApiClient(args.api_base_url, timeout=float(args.http_timeout_sec))
+    snapshot_base_url = to_text(args.account_base_url) or args.api_base_url
+    snapshot_path = account_snapshot_path(args)
+    snapshot_client = ApiClient(snapshot_base_url, timeout=float(args.http_timeout_sec))
+    snapshot_fn = lambda: get_account_snapshot(snapshot_client, snapshot_path)
     started_ms = int(time.time() * 1000)
 
     print(f"Paper commission probe: symbol={symbol} qty={quantity} direction={direction}")
-    snapshot = get_account_snapshot(client)
+    if snapshot_base_url != args.api_base_url or snapshot_path != DEFAULT_ACCOUNT_SNAPSHOT_PATH:
+        print(f"Account snapshot source: {normalize_base_url(snapshot_base_url)}{snapshot_path}")
+    snapshot = snapshot_fn()
     check_clean_preflight(snapshot, symbol)
     reference_price = fetch_latest_reference_price(args, symbol)
     take_profit, stop_loss = build_bracket_prices(reference_price, direction)
@@ -640,7 +659,7 @@ def run_probe(args: argparse.Namespace) -> int:
     try:
         filled_snapshot = wait_for(
             f"{symbol}_entry_position",
-            lambda: get_account_snapshot(client),
+            snapshot_fn,
             lambda value: has_nonzero_position(value, symbol),
             timeout_s=float(args.timeout_sec),
             interval_s=float(args.poll_interval_sec),
@@ -655,13 +674,14 @@ def run_probe(args: argparse.Namespace) -> int:
             direction,
             quantity,
             place_response,
+            snapshot_fn=snapshot_fn,
             timeout_s=float(args.timeout_sec),
             interval_s=float(args.poll_interval_sec),
         )
 
     close_ids = extract_order_ids(cleanup.get("close") if isinstance(cleanup.get("close"), dict) else {})
     order_ids = list(dict.fromkeys([*order_ids, *close_ids]))
-    final_snapshot = cleanup.get("final_snapshot") if isinstance(cleanup.get("final_snapshot"), dict) else get_account_snapshot(client)
+    final_snapshot = cleanup.get("final_snapshot") if isinstance(cleanup.get("final_snapshot"), dict) else snapshot_fn()
     if not is_flat_for_symbol(final_snapshot, symbol):
         raise ProbeError(f"cleanup_failed_not_flat:{compact_json(final_snapshot)[:1500]}")
     if entry_error is not None:
@@ -678,6 +698,16 @@ def run_probe(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Place and clean up a tiny paper order to classify IBKR paper commissions.")
     parser.add_argument("--api-base-url", "--runtime-url", dest="api_base_url", default=DEFAULT_API_BASE_URL)
+    parser.add_argument(
+        "--account-base-url",
+        default=os.environ.get("IBKR_ACCOUNT_BASE_URL") or os.environ.get("IBKR_RUNTIME_BASE_URL") or "",
+        help="Optional direct runtime/compute base URL for account snapshots; defaults to --api-base-url.",
+    )
+    parser.add_argument(
+        "--account-snapshot-path",
+        default="",
+        help="Override account snapshot path. Defaults to /ibkr/account when --account-base-url is set, otherwise /api/custom/ibkr/account_snapshot.",
+    )
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--db-path", default=DEFAULT_DB_PATH)
     parser.add_argument("--sqlite-script", default=str(DEFAULT_SQLITE_SCRIPT))

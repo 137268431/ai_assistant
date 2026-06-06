@@ -3,6 +3,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "src"
@@ -178,13 +179,21 @@ class GatewaySerialAndReservationTest(unittest.TestCase):
         )
         modify_thread = threading.Thread(target=lambda: modifier.modify_order("999", {"auxPrice": 99.0}))
 
-        place_thread.start()
-        self.assertTrue(started.wait(timeout=1.0))
-        modify_thread.start()
-        place_thread.join(timeout=2.0)
-        modify_thread.join(timeout=2.0)
+        with mock.patch("ibkr_compute.order.order_placer.record_gateway_order_serial_event") as placer_metric, mock.patch(
+            "ibkr_compute.order.order_modifier.record_gateway_order_serial_event"
+        ) as modifier_metric:
+            place_thread.start()
+            self.assertTrue(started.wait(timeout=1.0))
+            modify_thread.start()
+            place_thread.join(timeout=2.0)
+            modify_thread.join(timeout=2.0)
 
         self.assertEqual(["place_start", "place_end", "modify_start"], events)
+        placer_metric.assert_called()
+        modifier_metric.assert_called()
+        self.assertEqual("place_bracket_order", placer_metric.call_args.kwargs["operation"])
+        self.assertEqual("modify_order", modifier_metric.call_args.kwargs["operation"])
+        self.assertGreaterEqual(modifier_metric.call_args.kwargs["queue_wait_s"], 0.0)
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from ibkr_compute.api.runtime.views import (
     _build_ibkr_gateway_stop_response,
     _build_ibkr_monitor_response,
     _build_ibkr_panic_reset_response,
+    _build_ibkr_signal_wakeup_response,
     _build_ibkr_start_response,
     _build_ibkr_status_response,
     _build_ibkr_stop_response,
@@ -33,6 +34,7 @@ def register_runtime_routes(app):
         register_runtime_proxy_route(app, "ibkr_2fa_takeover", "/ibkr/2fa/takeover", ["POST"])
         register_runtime_proxy_route(app, "ibkr_2fa_probe", "/ibkr/2fa/probe", ["POST"])
         register_runtime_proxy_route(app, "ibkr_panic_reset", "/ibkr/panic-reset", ["POST"])
+        register_runtime_proxy_route(app, "ibkr_signal_wakeup", "/ibkr/signals/wakeup", ["POST"])
 
         @app.route("/ibkr/dashboard", methods=["GET"])
         def ibkr_dashboard():
@@ -86,6 +88,10 @@ def register_runtime_routes(app):
     @app.route("/ibkr/panic-reset", methods=["POST"])
     def ibkr_panic_reset():
         return build_json_request_response(_build_ibkr_panic_reset_response)
+
+    @app.route("/ibkr/signals/wakeup", methods=["POST"])
+    def ibkr_signal_wakeup():
+        return build_json_request_response(_build_ibkr_signal_wakeup_response)
 
     @app.route("/ibkr/dashboard", methods=["GET"])
     def ibkr_dashboard():

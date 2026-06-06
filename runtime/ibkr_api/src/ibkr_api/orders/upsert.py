@@ -10,6 +10,78 @@ from ibkr_api.orders.timestamps import format_timestamp_ms, resolve_order_status
 from ibkr_api.orders.values import ensure_object, first_defined, to_float, to_int, to_text
 
 
+def _first_positive_value(*values: Any) -> Any:
+    for value in values:
+        number = to_float(value)
+        if number is not None and number > 0:
+            return value
+    return None
+
+
+def _resolve_nonzero_planned_limit_price(
+    *,
+    role: str,
+    incoming_limit_price: Any,
+    incoming_stop_trigger: Any,
+    payload: dict[str, Any],
+    existing: dict[str, Any],
+    existing_extra: dict[str, Any],
+    extra: dict[str, Any],
+) -> Any:
+    if (to_float(incoming_limit_price) or 0) > 0:
+        return incoming_limit_price
+
+    common = (
+        existing.get("limit_price"),
+        existing_extra.get("limit_price"),
+        extra.get("limit_price"),
+    )
+    if role == "entry":
+        return _first_positive_value(
+            *common,
+            payload.get("submitted_entry_limit_price"),
+            payload.get("submitted_limit_price"),
+            payload.get("submitted_limit_cap_price"),
+            payload.get("bounded_limit_price"),
+            payload.get("entry_limit_price"),
+            payload.get("order_flow_entry_limit_price"),
+            extra.get("submitted_entry_limit_price"),
+            extra.get("submitted_limit_price"),
+            extra.get("submitted_limit_cap_price"),
+            extra.get("bounded_limit_price"),
+            extra.get("entry_limit_price"),
+            extra.get("order_flow_entry_limit_price"),
+        )
+    if role in {"take_profit", "repair_tp"}:
+        return _first_positive_value(
+            *common,
+            payload.get("tp_price"),
+            payload.get("take_profit"),
+            existing.get("tp_price"),
+            existing_extra.get("tp_price"),
+            extra.get("tp_price"),
+            extra.get("take_profit"),
+            extra.get("initial_take_profit"),
+        )
+    if role in {"stop_loss", "repair_sl"}:
+        return _first_positive_value(
+            incoming_stop_trigger,
+            *common,
+            payload.get("sl_price"),
+            payload.get("stop_loss"),
+            payload.get("stop_price"),
+            existing.get("sl_price"),
+            existing_extra.get("sl_price"),
+            existing_extra.get("stop_price"),
+            extra.get("sl_price"),
+            extra.get("stop_loss"),
+            extra.get("stop_price"),
+            extra.get("auxPrice"),
+            extra.get("aux_price"),
+        )
+    return None
+
+
 def build_order_record_payload(payload: dict[str, Any], existing_row: dict[str, Any] | None, environment: str) -> dict[str, Any]:
     existing = existing_row or {}
     existing_extra = ensure_object(existing.get("extra"))
@@ -24,7 +96,7 @@ def build_order_record_payload(payload: dict[str, Any], existing_row: dict[str, 
     resolved_direction = first_defined(payload.get("direction"), existing.get("direction"), existing_extra.get("direction"), "") or ""
     resolved_quantity = first_defined(payload.get("quantity"), existing.get("quantity"), existing_extra.get("quantity"), 0)
     incoming_limit_price = payload.get("limit_price")
-    incoming_role = to_text(first_defined(payload.get("role"), existing.get("role"), existing_extra.get("role"), ""))
+    incoming_role = to_text(first_defined(payload.get("role"), existing.get("role"), existing_extra.get("role"), "")).lower()
     incoming_order_type = to_text(first_defined(payload.get("order_type"), existing.get("order_type"), existing_extra.get("order_type"), "")).lower()
     incoming_stop_trigger = first_defined(
         payload.get("auxPrice"),
@@ -38,7 +110,22 @@ def build_order_record_payload(payload: dict[str, Any], existing_row: dict[str, 
     is_stop_order = incoming_role in {"stop_loss", "repair_sl"} or incoming_order_type in {"stp", "stop", "stoploss"}
     if is_stop_order and to_float(incoming_limit_price) == 0:
         incoming_limit_price = incoming_stop_trigger if (to_float(incoming_stop_trigger) or 0) > 0 else None
-    resolved_limit_price = first_defined(incoming_limit_price, existing.get("limit_price"), existing_extra.get("limit_price"), 0)
+    is_planned_leg = incoming_role in {"entry", "take_profit", "repair_tp", "stop_loss", "repair_sl"}
+    if is_planned_leg and (to_float(incoming_limit_price) or 0) <= 0:
+        resolved_limit_price = first_defined(
+            _resolve_nonzero_planned_limit_price(
+                role=incoming_role,
+                incoming_limit_price=incoming_limit_price,
+                incoming_stop_trigger=incoming_stop_trigger,
+                payload=payload,
+                existing=existing,
+                existing_extra=existing_extra,
+                extra=extra,
+            ),
+            0,
+        )
+    else:
+        resolved_limit_price = first_defined(incoming_limit_price, existing.get("limit_price"), existing_extra.get("limit_price"), 0)
     resolved_filled_qty = first_defined(
         payload.get("filled_qty"),
         payload.get("quantity") if status == "Filled" else None,

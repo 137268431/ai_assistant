@@ -972,7 +972,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "histogram_quantile(0.95, sum by (le, service, environment, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket[5m]))) > 2",
+                "expr": "histogram_quantile(0.95, sum by (le, service, environment, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{operation=~\"place_bracket|place_entry|place_take_profit|place_stop_loss|place_bracket_order|place_market_close|adjust_stop_loss|adjust_take_profit|cancel_order|cancel_all_orders|cancel_entry|cancel_take_profit|cancel_stop_loss|modify_manual|modify_order|ibapi_place|ibapi_cancel|modify|cancel\"}[5m]))) > 2",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -1035,6 +1035,178 @@
           },
           "labels": {
             "severity": "warning",
+            "alert_source": "grafana"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "gateway_order_serial_wait_high",
+          "title": "GatewayOrderSerialQueueWaitHigh",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "histogram_quantile(0.95, sum by (le, service, environment, operation, result) (rate(ibkr_gateway_order_serial_queue_wait_seconds_bucket[5m]))) > 2",
+                "hide": false,
+                "instant": true,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": false,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0.5
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "A"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "hide": false,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B",
+                "type": "classic_conditions"
+              }
+            }
+          ],
+          "dashboardUid": "quant-monitoring-overview",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "3m",
+          "annotations": {
+            "summary": "Gateway 订单串行队列等待过高",
+            "description": "IB Gateway order mutation 串行队列等待变慢，可能说明多信号下单/改单/撤单压力过高。"
+          },
+          "labels": {
+            "severity": "warning",
+            "alert_source": "grafana"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "gateway_order_serial_timeout",
+          "title": "GatewayOrderSerialTimeout",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "sum by (service, environment, operation) (increase(ibkr_gateway_order_serial_timeouts_total[5m])) > 0",
+                "hide": false,
+                "instant": true,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": false,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0.5
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "A"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "hide": false,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B",
+                "type": "classic_conditions"
+              }
+            }
+          ],
+          "dashboardUid": "quant-monitoring-overview",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "1m",
+          "annotations": {
+            "summary": "Gateway 订单串行队列超时",
+            "description": "IB Gateway order mutation 等待串行锁超时，需要立即检查下单/改单/撤单链路。"
+          },
+          "labels": {
+            "severity": "critical",
             "alert_source": "grafana"
           },
           "isPaused": false
@@ -1316,7 +1488,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "max by (service, environment, source) (ibkr_account_buying_power_guard_state{source=~\"account_snapshot|account_summary|account_data_circuit\", state=\"unavailable\"}) > 0",
+                "expr": "max by (service, environment, source) (ibkr_account_buying_power_guard_state{source=~\"account_snapshot|account_summary\", state=\"unavailable\"}) > 0",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -1402,7 +1574,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "(max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=~\"account_snapshot|account_summary|account_data_circuit\"}) < max by (service, environment, source) (ibkr_account_buying_power_block_floor_usd{source=~\"account_snapshot|account_summary|account_data_circuit\"})) and (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=~\"account_snapshot|account_summary|account_data_circuit\"}) >= 0)",
+                "expr": "(max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=~\"account_snapshot|account_summary\"}) < max by (service, environment, source) (ibkr_account_buying_power_block_floor_usd{source=~\"account_snapshot|account_summary\"})) and (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=~\"account_snapshot|account_summary\"}) >= 0)",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -1488,7 +1660,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "(max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=~\"account_snapshot|account_summary|account_data_circuit\"}) < max by (service, environment, source) (ibkr_account_buying_power_warn_floor_usd{source=~\"account_snapshot|account_summary|account_data_circuit\"})) and (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=~\"account_snapshot|account_summary|account_data_circuit\"}) >= max by (service, environment, source) (ibkr_account_buying_power_block_floor_usd{source=~\"account_snapshot|account_summary|account_data_circuit\"}))",
+                "expr": "(max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=~\"account_snapshot|account_summary\"}) < max by (service, environment, source) (ibkr_account_buying_power_warn_floor_usd{source=~\"account_snapshot|account_summary\"})) and (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=~\"account_snapshot|account_summary\"}) >= max by (service, environment, source) (ibkr_account_buying_power_block_floor_usd{source=~\"account_snapshot|account_summary\"}))",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -1574,7 +1746,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "max by (service, environment, source) (ibkr_account_snapshot_available{source=~\"account_snapshot|account_summary|account_data_circuit\"}) == 0",
+                "expr": "max by (service, environment, source) (ibkr_account_snapshot_available{source=~\"account_snapshot|account_summary\"}) == 0",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,

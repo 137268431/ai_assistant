@@ -1604,8 +1604,26 @@
             );
         }
 
+        function resolveEntryPlanPrice(order) {
+            return firstPositiveNumber(
+                order?.limit_price,
+                order?.extra?.limit_price,
+                order?.extra?.submitted_entry_limit_price,
+                order?.extra?.submitted_limit_price,
+                order?.extra?.submitted_limit_cap_price,
+                order?.extra?.bounded_limit_price,
+                order?.extra?.entry_limit_price,
+                order?.extra?.order_flow_entry_limit_price,
+                order?.extra?.original_entry,
+                order?.extra?.reference_entry,
+                order?.extra?.entry_price,
+                order?.extra?.entry
+            );
+        }
+
         function resolveDisplayPrice(order) {
-            const role = String(order?.role || '').trim();
+            const role = String(order?.role || '').trim().toLowerCase();
+            if (role === 'entry') return resolveEntryPlanPrice(order);
             if (role === 'stop_loss' || role === 'repair_sl') return resolveStopLossPrice(order, order);
             if (role === 'take_profit' || role === 'repair_tp') return resolveTakeProfitPrice(order, order);
             return firstPositiveNumber(order?.limit_price, order?.extra?.limit_price, order?.fill_price);
@@ -1958,6 +1976,7 @@
             const lifecycleFlowUrl = buildOrderLifecycleFlowUrl(null, group);
             const tpPrice = resolveTakeProfitPrice(primary, tpOrder);
             const slPrice = resolveStopLossPrice(primary, slOrder);
+            const entryPlanPrice = resolveEntryPlanPrice(primary);
             const entryQuantity = (group.entryOrders || []).reduce((sum, order) => sum + (Number(order.quantity || 0) || 0), 0);
             const filledQuantity = (group.entryOrders || []).reduce((sum, order) => sum + actualFilledQty(order), 0);
             const exitText = group.exitOrder
@@ -2013,7 +2032,7 @@
                         <div class="group-grid">
                             ${renderMetric('方向', escapeHtml(getTradeDirectionLabel(group.direction)))}
                             ${renderMetric('Entry开仓单', `${escapeHtml(String(group.entryOrderCount || 0))}<br><span class="metric-subvalue">交易组(去重) ${(group.tradeGroupIds || []).length || 0}；Entry可多单</span>`)}
-                            ${renderMetric('Entry计划 / 真实成交', `${escapeHtml(formatMoney(primary?.limit_price))}<br>${buildActualEntryFillMetric(group)}`)}
+                            ${renderMetric('Entry计划 / 真实成交', `${escapeHtml(formatMoney(entryPlanPrice))}<br>${buildActualEntryFillMetric(group)}`)}
                             ${renderMetric('Qty / Actual Filled', `${escapeHtml(formatQty(entryQuantity))} / ${escapeHtml(formatQty(filledQuantity))}`)}
                             ${renderMetric('TP止盈', buildProtectionMetric('止盈', tpOrder, tpPrice))}
                             ${renderMetric('SL止损', buildProtectionMetric('止损', slOrder, slPrice))}

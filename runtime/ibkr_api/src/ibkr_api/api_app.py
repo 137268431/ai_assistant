@@ -861,6 +861,33 @@ def _request_json_request(
     )
 
 
+def _trigger_runtime_signal_wakeup(payload: dict[str, Any]) -> dict[str, Any]:
+    body = dict(payload or {})
+    body.setdefault("source", "tv_webhook")
+    body.setdefault("reason", "tv_primary_routed")
+    result = _request_json_request(
+        "POST",
+        RUNTIME_BASE_URL,
+        "/ibkr/signals/wakeup",
+        json_body=body,
+        timeout=1.0,
+    )
+    response_payload = result.get("payload") if isinstance(result, dict) else {}
+    response_payload = response_payload if isinstance(response_payload, dict) else {}
+    error = str(result.get("error") or response_payload.get("error") or "") if isinstance(result, dict) else ""
+    return {
+        "ok": bool((result or {}).get("ok") and response_payload.get("ok", True)),
+        "woke": bool(response_payload.get("woke")),
+        "reason": str(response_payload.get("reason") or ""),
+        "error": error,
+        "status_code": int((result or {}).get("status_code") or 0),
+        "target_url": str((result or {}).get("target_url") or ""),
+        "elapsed_ms": (result or {}).get("elapsed_ms"),
+        "timeout_s": (result or {}).get("timeout_s"),
+        "payload": response_payload,
+    }
+
+
 def _get_state_payload(state_key: str, environment: str, *, date: str = "global") -> dict[str, Any]:
     return _get_state_payload_support(
         pb,
@@ -1087,6 +1114,11 @@ _callback_toast = _callback_toast_support
 def _process_tv_primary_event(payload: dict, *, api_received_at_ms: int | None = None):
     environment = resolve_data_environment((payload or {}).get("market_data_mode") or (payload or {}).get("data_environment") or (payload or {}).get("environment"))
     async_route = _parse_boolean(_config_value("tv_webhook_async_route_enabled", "TRUE", environment), True)
+    runtime_wakeup = (
+        _trigger_runtime_signal_wakeup
+        if _parse_boolean(_config_value("tv_webhook_runtime_wakeup_enabled", "TRUE", environment), True)
+        else None
+    )
     return _process_tv_primary_event_support(
         pb,
         payload=payload,
@@ -1100,6 +1132,7 @@ def _process_tv_primary_event(payload: dict, *, api_received_at_ms: int | None =
         signal_chat_id_fn=_signal_chat_id,
         console_base_url=_console_base_url(),
         strategy_capacity_getter=_strategy_capacity_snapshot,
+        runtime_wakeup=runtime_wakeup,
         async_route=async_route,
         spool_on_persist_failure=async_route,
     )

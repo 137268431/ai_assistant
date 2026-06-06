@@ -145,7 +145,7 @@ def _build_signal_ingest_response(pb, *, payload, **_kwargs):
     }, 200
 
 
-def _process(pb, payload, *, config_value=_config_value):
+def _process(pb, payload, *, config_value=_config_value, runtime_wakeup=None, async_route=False, route_executor=None):
     return process_tv_primary_event(
         pb,
         payload,
@@ -153,6 +153,9 @@ def _process(pb, payload, *, config_value=_config_value):
         escape_filter_string=_escape,
         build_signal_ingest_response=_build_signal_ingest_response,
         config_value=config_value,
+        runtime_wakeup=runtime_wakeup,
+        async_route=async_route,
+        route_executor=route_executor,
     )
 
 
@@ -574,6 +577,7 @@ class TvPrimaryIngestTests(unittest.TestCase):
     def test_async_route_persists_received_event_before_routing(self):
         pb = _FakePB()
         jobs = []
+        wakeup_calls = []
         payload = {
             "source": "tv",
             "event_type": "pre_alert",
@@ -594,6 +598,7 @@ class TvPrimaryIngestTests(unittest.TestCase):
             escape_filter_string=_escape,
             build_signal_ingest_response=_build_signal_ingest_response,
             config_value=_config_value,
+            runtime_wakeup=lambda payload: wakeup_calls.append(dict(payload)) or {"ok": True, "woke": True},
             async_route=True,
             route_executor=jobs.append,
         )
@@ -608,6 +613,62 @@ class TvPrimaryIngestTests(unittest.TestCase):
 
         self.assertEqual(pb.records[TV_EVENT_COLLECTION][0]["status"], "routed")
         self.assertEqual(pb.records["ibkr_targets"][0]["symbol"], "TSLA")
+        self.assertEqual(wakeup_calls, [])
+
+    def test_async_entry_triggers_runtime_wakeup_after_background_route(self):
+        pb = _FakePB()
+        jobs = []
+        wakeup_calls = []
+        pb.create_record(
+            "ibkr_targets",
+            {
+                "symbol": "AAPL",
+                "date": "2026-05-29",
+                "environment": "live",
+                "direction_bias": "long",
+                "score": 90,
+                "status": "active",
+                "extra": {"source": "tradingview", "activity_rank": 1},
+            },
+        )
+
+        response, status = _process(
+            pb,
+            {
+                "source": "tv",
+                "event_type": "entry",
+                "event_id": "tv-entry-async-wakeup",
+                "signal_id": "tv-entry-async-wakeup",
+                "symbol": "AAPL",
+                "direction": "long",
+                "entry_price": 188.25,
+                "quantity": 12,
+                "stop_loss": 185.80,
+                "take_profit": 193.10,
+                "market_date": "2026-05-29",
+                "environment": "paper",
+                "us_time": "2026-05-29 09:45:00",
+                "activity_score": 91,
+                **_mtf_payload(status="pass", score=100.0),
+            },
+            runtime_wakeup=lambda payload: wakeup_calls.append(dict(payload)) or {"ok": True, "woke": True},
+            async_route=True,
+            route_executor=jobs.append,
+        )
+
+        self.assertEqual(status, 202)
+        self.assertTrue(response["queued"])
+        self.assertTrue(response["runtime_wakeup"]["deferred"])
+        self.assertEqual(wakeup_calls, [])
+
+        jobs[0]()
+
+        self.assertEqual(1, len(wakeup_calls))
+        self.assertEqual("entry", wakeup_calls[0]["event_type"])
+        self.assertEqual("ibkr_signals", wakeup_calls[0]["route_target"])
+        self.assertEqual(pb.records["ibkr_signals"][0]["id"], wakeup_calls[0]["route_record_id"])
+        event_extra = pb.records[TV_EVENT_COLLECTION][0]["extra"]
+        self.assertTrue(event_extra["runtime_wakeup"]["ok"])
 
     def test_pre_alert_preserves_first_activation_metadata_on_later_updates(self):
         pb = _FakePB()
@@ -755,6 +816,103 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertEqual(saved["extra"]["mtf"]["status"], "pass")
         self.assertEqual(pb.records[TV_EVENT_COLLECTION][0]["broker_mode"], "paper")
 
+    def test_entry_route_success_triggers_runtime_wakeup(self):
+        pb = _FakePB()
+        wakeup_calls = []
+        pb.create_record(
+            "ibkr_targets",
+            {
+                "symbol": "AAPL",
+                "date": "2026-05-29",
+                "environment": "live",
+                "direction_bias": "long",
+                "score": 90,
+                "status": "active",
+                "extra": {"source": "tradingview", "activity_rank": 1},
+            },
+        )
+
+        response, status = _process(
+            pb,
+            {
+                "source": "tv",
+                "event_type": "entry",
+                "event_id": "tv-entry-wakeup-1",
+                "signal_id": "tv-entry-wakeup-1",
+                "symbol": "AAPL",
+                "direction": "long",
+                "entry_price": 188.25,
+                "quantity": 12,
+                "stop_loss": 185.80,
+                "take_profit": 193.10,
+                "market_date": "2026-05-29",
+                "environment": "paper",
+                "us_time": "2026-05-29 09:45:00",
+                "activity_score": 91,
+                **_mtf_payload(status="pass", score=100.0),
+            },
+            runtime_wakeup=lambda payload: wakeup_calls.append(dict(payload)) or {"ok": True, "woke": True},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(response["ok"])
+        self.assertEqual(1, len(wakeup_calls))
+        self.assertEqual("tv-entry-wakeup-1", wakeup_calls[0]["tv_event_id"])
+        self.assertEqual("entry", wakeup_calls[0]["event_type"])
+        self.assertEqual("ibkr_signals", wakeup_calls[0]["route_target"])
+        self.assertEqual(pb.records["ibkr_signals"][0]["id"], wakeup_calls[0]["route_record_id"])
+        self.assertTrue(response["runtime_wakeup"]["ok"])
+        self.assertTrue(pb.records[TV_EVENT_COLLECTION][0]["extra"]["runtime_wakeup"]["ok"])
+
+    def test_runtime_wakeup_failure_does_not_fail_entry_route(self):
+        pb = _FakePB()
+        pb.create_record(
+            "ibkr_targets",
+            {
+                "symbol": "AAPL",
+                "date": "2026-05-29",
+                "environment": "live",
+                "direction_bias": "long",
+                "score": 90,
+                "status": "active",
+                "extra": {"source": "tradingview", "activity_rank": 1},
+            },
+        )
+
+        def failing_wakeup(_payload):
+            raise RuntimeError("runtime offline")
+
+        with mock.patch("ibkr_api.tradingview.tv_primary.logger.warning") as warning:
+            response, status = _process(
+                pb,
+                {
+                    "source": "tv",
+                    "event_type": "entry",
+                    "event_id": "tv-entry-wakeup-fails",
+                    "signal_id": "tv-entry-wakeup-fails",
+                    "symbol": "AAPL",
+                    "direction": "long",
+                    "entry_price": 188.25,
+                    "quantity": 12,
+                    "stop_loss": 185.80,
+                    "take_profit": 193.10,
+                    "market_date": "2026-05-29",
+                    "environment": "paper",
+                    "us_time": "2026-05-29 09:45:00",
+                    "activity_score": 91,
+                    **_mtf_payload(status="pass", score=100.0),
+                },
+                runtime_wakeup=failing_wakeup,
+            )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(response["ok"])
+        self.assertEqual("ibkr_signals", response["target"])
+        self.assertFalse(response["runtime_wakeup"]["ok"])
+        self.assertEqual("runtime_wakeup_failed", response["runtime_wakeup"]["reason"])
+        self.assertEqual("routed", pb.records[TV_EVENT_COLLECTION][0]["status"])
+        warning.assert_called_once()
+
     def test_entry_persists_runner_safety_tp_metadata(self):
         pb = _FakePB()
         pb.create_record(
@@ -886,6 +1044,7 @@ class TvPrimaryIngestTests(unittest.TestCase):
 
     def test_risk_update_routes_to_adjust_bracket_reverse_signal(self):
         pb = _FakePB()
+        wakeup_calls = []
         pb.create_record(
             "orders",
             {
@@ -924,11 +1083,16 @@ class TvPrimaryIngestTests(unittest.TestCase):
                 "market_data_mode": "live",
                 "bar_time_ms": 1770001200000,
             },
+            runtime_wakeup=lambda payload: wakeup_calls.append(dict(payload)) or {"ok": True, "woke": True},
         )
 
         self.assertEqual(status, 200)
         self.assertTrue(response["ok"])
+        self.assertEqual(1, len(wakeup_calls))
+        self.assertEqual("risk_update", wakeup_calls[0]["event_type"])
+        self.assertEqual("ibkr_reverse_signals", wakeup_calls[0]["route_target"])
         reverse = pb.records["ibkr_reverse_signals"][0]
+        self.assertEqual(reverse["id"], wakeup_calls[0]["route_record_id"])
         self.assertEqual(reverse["source"], "tradingview")
         self.assertEqual(reverse["action_type"], "adjust_bracket")
         self.assertEqual(reverse["environment"], "paper")
@@ -938,6 +1102,8 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertEqual(reverse["extra"]["sl_order_id"], "sl-100")
         self.assertEqual(reverse["extra"]["tp_order_id"], "tp-100")
         self.assertEqual(reverse["extra"]["new_sl"], 187.10)
+        self.assertTrue(response["runtime_wakeup"]["ok"])
+        self.assertTrue(pb.records[TV_EVENT_COLLECTION][0]["extra"]["runtime_wakeup"]["ok"])
 
     def test_risk_update_uses_origin_signal_alias_without_symbol_only_linkage(self):
         pb = _FakePB()

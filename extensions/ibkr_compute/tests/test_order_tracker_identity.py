@@ -248,6 +248,56 @@ class OrderTrackerIdentityTest(unittest.TestCase):
         self.assertEqual(192.93, upsert["limit_price"])
         self.assertEqual(192.93, upsert["sl_price"])
 
+    def test_sync_entry_order_preserves_submitted_limit_when_broker_price_zero(self):
+        pb_client = FakePBClient(
+            rows=[
+                {
+                    "id": "rvty-entry",
+                    "unique_id": "entry_BATS_RVTY_short_20260605_0946_2_mr_sdUpper",
+                    "symbol": "RVTY",
+                    "environment": "paper",
+                    "role": "entry",
+                    "status": "Filled",
+                    "broker_order_id": "207",
+                    "trade_group_id": "BATS_RVTY_short_20260605_0946_2_mr_sdUpper",
+                    "entry_order_unique_id": "entry_BATS_RVTY_short_20260605_0946_2_mr_sdUpper",
+                    "signal_id": "BATS_RVTY_short_20260605_0946_2_mr_sdUpper",
+                    "direction": "short",
+                    "quantity": 50,
+                    "filled_qty": 50,
+                    "limit_price": 0,
+                    "extra": {
+                        "submitted_entry_limit_price": 99.64,
+                        "submitted_limit_cap_price": 99.64,
+                        "original_entry": 99.79,
+                        "reference_entry": 99.79,
+                    },
+                }
+            ]
+        )
+        tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="paper")
+
+        tracker._sync_to_pb(
+            {
+                "orderId": "207",
+                "ticker": "RVTY",
+                "side": "SELL",
+                "orderType": "LMT",
+                "totalSize": 50,
+                "filledQuantity": 50,
+                "avgPrice": 99.79,
+                "price": 0,
+                "status": "Filled",
+                "cOID": "entry_BATS_RVTY_short_20260605_0946_2_mr_sdUpper",
+            }
+        )
+
+        self.assertEqual(1, len(pb_client.upserts))
+        upsert = pb_client.upserts[0]
+        self.assertEqual("entry", upsert["role"])
+        self.assertEqual(99.64, upsert["limit_price"])
+        self.assertEqual(99.79, upsert["fill_price"])
+
     def test_sync_filled_order_uses_broker_execution_time(self):
         pb_client = FakePBClient()
         tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="paper")

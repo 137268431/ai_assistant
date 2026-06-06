@@ -192,6 +192,60 @@ class OrderTracker:
         return {}
 
     @classmethod
+    def _first_positive_float(cls, *values: Any) -> float:
+        for value in values:
+            number = cls._to_float(value, 0.0)
+            if number > 0:
+                return number
+        return 0.0
+
+    @classmethod
+    def _existing_planned_limit_price(
+        cls,
+        *,
+        role: str,
+        existing_order: dict | None,
+        existing_extra: dict,
+        stop_trigger_price: float = 0.0,
+    ) -> float:
+        existing = existing_order or {}
+        normalized_role = str(role or "").strip().lower()
+        common = (
+            existing.get("limit_price"),
+            existing_extra.get("limit_price"),
+        )
+        if normalized_role == "entry":
+            return cls._first_positive_float(
+                *common,
+                existing_extra.get("submitted_entry_limit_price"),
+                existing_extra.get("submitted_limit_price"),
+                existing_extra.get("submitted_limit_cap_price"),
+                existing_extra.get("bounded_limit_price"),
+                existing_extra.get("entry_limit_price"),
+                existing_extra.get("order_flow_entry_limit_price"),
+            )
+        if normalized_role in {"take_profit", "repair_tp"}:
+            return cls._first_positive_float(
+                *common,
+                existing.get("tp_price"),
+                existing_extra.get("tp_price"),
+                existing_extra.get("take_profit"),
+                existing_extra.get("initial_take_profit"),
+            )
+        if normalized_role in {"stop_loss", "repair_sl"}:
+            return cls._first_positive_float(
+                stop_trigger_price,
+                *common,
+                existing.get("sl_price"),
+                existing_extra.get("sl_price"),
+                existing_extra.get("stop_loss"),
+                existing_extra.get("stop_price"),
+                existing_extra.get("auxPrice"),
+                existing_extra.get("aux_price"),
+            )
+        return 0.0
+
+    @classmethod
     def _parse_ibkr_execution_time_ms(cls, value: Any) -> int:
         text = cls._normalize_text(value)
         if not text:
@@ -1695,6 +1749,15 @@ class OrderTracker:
                     )
 
                 existing_extra = self._ensure_object((existing_order or {}).get("extra"))
+                if limit_price <= 0:
+                    preserved_limit_price = self._existing_planned_limit_price(
+                        role=role,
+                        existing_order=existing_order,
+                        existing_extra=existing_extra,
+                        stop_trigger_price=stop_trigger_price,
+                    )
+                    if preserved_limit_price > 0:
+                        limit_price = preserved_limit_price
                 event_times = dict(now_times)
                 fill_times: dict[str, Any] = {}
                 if mapped_status == "Filled":

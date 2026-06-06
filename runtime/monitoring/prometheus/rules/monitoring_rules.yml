@@ -50,7 +50,7 @@ groups:
       description: instance={{ $labels.instance }} mountpoint={{ $labels.mountpoint
         }}.
   - alert: AccountBuyingPowerGuardUnavailable
-    expr: max by (service, environment, source) (ibkr_account_buying_power_guard_state{source=~"account_snapshot|account_summary|account_data_circuit",
+    expr: max by (service, environment, source) (ibkr_account_buying_power_guard_state{source=~"account_snapshot|account_summary",
       state="unavailable"}) > 0
     for: 2m
     labels:
@@ -60,9 +60,9 @@ groups:
       description: 账户购买力风控不可用，自动开仓会暂停。service={{ $labels.service }} environment={{
         $labels.environment }}.
   - alert: AccountBuyingPowerRemainingCritical
-    expr: (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=~"account_snapshot|account_summary|account_data_circuit"})
-      < max by (service, environment, source) (ibkr_account_buying_power_block_floor_usd{source=~"account_snapshot|account_summary|account_data_circuit"}))
-      and (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=~"account_snapshot|account_summary|account_data_circuit"})
+    expr: (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=~"account_snapshot|account_summary"})
+      < max by (service, environment, source) (ibkr_account_buying_power_block_floor_usd{source=~"account_snapshot|account_summary"}))
+      and (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=~"account_snapshot|account_summary"})
       >= 0)
     for: 2m
     labels:
@@ -160,13 +160,31 @@ groups:
         }} result={{ $labels.result }} reason={{ $labels.reason_code }}.
   - alert: OrderOperationP95LatencyHigh
     expr: histogram_quantile(0.95, sum by (le, service, environment, operation, result)
-      (rate(ibkr_order_operation_duration_seconds_bucket[5m]))) > 2
+      (rate(ibkr_order_operation_duration_seconds_bucket{operation=~"place_bracket|place_entry|place_take_profit|place_stop_loss|place_bracket_order|place_market_close|adjust_stop_loss|adjust_take_profit|cancel_order|cancel_all_orders|cancel_entry|cancel_take_profit|cancel_stop_loss|modify_manual|modify_order|ibapi_place|ibapi_cancel|modify|cancel"}[5m]))) > 2
     for: 5m
     labels:
       severity: warning
     annotations:
       summary: Order operation p95 latency is high
       description: operation={{ $labels.operation }} result={{ $labels.result }}.
+  - alert: GatewayOrderSerialQueueWaitHigh
+    expr: histogram_quantile(0.95, sum by (le, service, environment, operation, result)
+      (rate(ibkr_gateway_order_serial_queue_wait_seconds_bucket[5m]))) > 2
+    for: 3m
+    labels:
+      severity: warning
+    annotations:
+      summary: Gateway order serial queue wait is high
+      description: operation={{ $labels.operation }} result={{ $labels.result }}.
+  - alert: GatewayOrderSerialTimeout
+    expr: sum by (service, environment, operation) (increase(ibkr_gateway_order_serial_timeouts_total[5m]))
+      > 0
+    for: 1m
+    labels:
+      severity: critical
+    annotations:
+      summary: Gateway order serial queue timed out
+      description: operation={{ $labels.operation }}.
   - alert: HostMemoryHigh
     expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100
       > 90
@@ -186,10 +204,10 @@ groups:
       summary: Host CPU usage is high
       description: instance={{ $labels.instance }}.
   - alert: AccountBuyingPowerRemainingLow
-    expr: (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=~"account_snapshot|account_summary|account_data_circuit"})
-      < max by (service, environment, source) (ibkr_account_buying_power_warn_floor_usd{source=~"account_snapshot|account_summary|account_data_circuit"}))
-      and (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=~"account_snapshot|account_summary|account_data_circuit"})
-      >= max by (service, environment, source) (ibkr_account_buying_power_block_floor_usd{source=~"account_snapshot|account_summary|account_data_circuit"}))
+    expr: (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=~"account_snapshot|account_summary"})
+      < max by (service, environment, source) (ibkr_account_buying_power_warn_floor_usd{source=~"account_snapshot|account_summary"}))
+      and (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=~"account_snapshot|account_summary"})
+      >= max by (service, environment, source) (ibkr_account_buying_power_block_floor_usd{source=~"account_snapshot|account_summary"}))
     for: 2m
     labels:
       severity: warning
@@ -197,7 +215,7 @@ groups:
       summary: Account buying power is near the block floor
       description: 账户剩余购买力低于预警阈值但尚未低于禁止阈值。remaining={{ $value }}.
   - alert: AccountSnapshotUnavailable
-    expr: max by (service, environment, source) (ibkr_account_snapshot_available{source=~"account_snapshot|account_summary|account_data_circuit"})
+    expr: max by (service, environment, source) (ibkr_account_snapshot_available{source=~"account_snapshot|account_summary"})
       == 0
     for: 2m
     labels:

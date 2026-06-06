@@ -23,6 +23,8 @@ TV_EVENT_TYPES = {"pre_alert", "entry", "risk_update", "exit", "heartbeat"}
 TV_EVENT_COLLECTION = "tv_webhook_events"
 TRADINGVIEW_SOURCE = "tradingview"
 TV_WEBHOOK_SPOOL_DIR_ENV = "IBKR_TV_WEBHOOK_SPOOL_DIR"
+TV_RUNTIME_WAKEUP_EVENT_TYPES = {"entry", "risk_update", "exit"}
+TV_RUNTIME_WAKEUP_TARGETS = {"ibkr_signals", "ibkr_reverse_signals"}
 TV_REAL_ACTIVE_ORDER_STATUSES = {"presubmitted", "pre_submitted", "submitted", "submitted_waiting_fill"}
 TV_REAL_FILLED_ORDER_STATUSES = {
     "executed",
@@ -1892,6 +1894,82 @@ def _dispatch_route_async(route_fn: Callable[[], None], route_executor: Callable
         return False
 
 
+def _should_trigger_runtime_wakeup(event_type: str, route_payload: dict[str, Any], status_code: int) -> bool:
+    return (
+        event_type in TV_RUNTIME_WAKEUP_EVENT_TYPES
+        and int(status_code or 0) < 400
+        and isinstance(route_payload, dict)
+        and bool(route_payload.get("ok"))
+        and _text(route_payload.get("target")) in TV_RUNTIME_WAKEUP_TARGETS
+    )
+
+
+def _runtime_wakeup_request_payload(
+    data: dict[str, Any],
+    event: dict[str, Any],
+    route_payload: dict[str, Any],
+    *,
+    event_id: str,
+    event_type: str,
+    environment: str,
+    broker_mode: str,
+    event_status: str,
+    route_finished_at_ms: int,
+) -> dict[str, Any]:
+    return {
+        "source": "tv_webhook",
+        "reason": "tv_primary_routed",
+        "tv_event_id": event_id,
+        "tv_event_record_id": _text((event or {}).get("id")),
+        "event_type": event_type,
+        "symbol": _symbol(data),
+        "signal_id": _text(route_payload.get("signal_id") or data.get("signal_id")),
+        "route_target": _text(route_payload.get("target")),
+        "route_record_id": _text(route_payload.get("id")),
+        "route_status": event_status,
+        "route_payload_status": _text(route_payload.get("status")),
+        "environment": environment,
+        "data_environment": environment,
+        "broker_mode": broker_mode,
+        "route_finished_at_ms": int(route_finished_at_ms or 0),
+    }
+
+
+def _call_runtime_wakeup(
+    runtime_wakeup: Callable[[dict[str, Any]], dict[str, Any] | None] | None,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    if not callable(runtime_wakeup):
+        return {}
+    try:
+        result = runtime_wakeup(dict(payload))
+    except Exception as exc:
+        logger.warning("TV-primary runtime signal wakeup failed: %s", exc)
+        return {
+            "ok": False,
+            "woke": False,
+            "reason": "runtime_wakeup_failed",
+            "error": str(exc),
+            "request": dict(payload),
+        }
+    if isinstance(result, dict):
+        return {**result, "request": dict(payload)}
+    return {"ok": bool(result), "woke": bool(result), "request": dict(payload)}
+
+
+def _async_runtime_wakeup_diagnostic(
+    event_type: str,
+    runtime_wakeup: Callable[[dict[str, Any]], dict[str, Any] | None] | None,
+) -> dict[str, Any]:
+    if event_type not in TV_RUNTIME_WAKEUP_EVENT_TYPES:
+        return {}
+    return {
+        "enabled": callable(runtime_wakeup),
+        "deferred": callable(runtime_wakeup),
+        "trigger": "after_route_success",
+    }
+
+
 def _route_persisted_tv_event(
     pb: Any,
     data: dict[str, Any],
@@ -1911,6 +1989,7 @@ def _route_persisted_tv_event(
     signal_chat_id_fn: Callable[[str], str] | None,
     console_base_url: str,
     strategy_capacity_getter: Callable[[str], dict[str, Any]] | None = None,
+    runtime_wakeup: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
 ) -> tuple[dict[str, Any], int]:
     try:
         if event_type == "heartbeat":
@@ -1975,6 +2054,31 @@ def _route_persisted_tv_event(
         }:
             event_status = "rejected"
         route_finished_at_ms = _epoch_ms()
+        final_extra = _event_extra_with_final_latency(
+            event,
+            data,
+            api_received_at_ms=received_at_ms,
+            route_finished_at_ms=route_finished_at_ms,
+        )
+        response_payload = {**route_payload, "tv_event_id": event_id, "event_type": event_type}
+        if _should_trigger_runtime_wakeup(event_type, route_payload, status_code):
+            wakeup_result = _call_runtime_wakeup(
+                runtime_wakeup,
+                _runtime_wakeup_request_payload(
+                    data,
+                    event,
+                    route_payload,
+                    event_id=event_id,
+                    event_type=event_type,
+                    environment=environment,
+                    broker_mode=broker_mode,
+                    event_status=event_status,
+                    route_finished_at_ms=route_finished_at_ms,
+                ),
+            )
+            if wakeup_result:
+                final_extra["runtime_wakeup"] = wakeup_result
+                response_payload["runtime_wakeup"] = wakeup_result
         _patch_event(
             pb,
             event,
@@ -1983,15 +2087,10 @@ def _route_persisted_tv_event(
                 "route_target": _text(route_payload.get("target")),
                 "route_record_id": _text(route_payload.get("id")),
                 "error_msg": _text(route_payload.get("error") or route_payload.get("reason")),
-                "extra": _event_extra_with_final_latency(
-                    event,
-                    data,
-                    api_received_at_ms=received_at_ms,
-                    route_finished_at_ms=route_finished_at_ms,
-                ),
+                "extra": final_extra,
             },
         )
-        return {**route_payload, "tv_event_id": event_id, "event_type": event_type}, status_code
+        return response_payload, status_code
     except TvPrimaryError as exc:
         route_finished_at_ms = _epoch_ms()
         _patch_event(
@@ -2042,6 +2141,7 @@ def process_tv_primary_event(
     signal_chat_id_fn: Callable[[str], str] | None = None,
     console_base_url: str = "",
     strategy_capacity_getter: Callable[[str], dict[str, Any]] | None = None,
+    runtime_wakeup: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
     async_route: bool = False,
     spool_on_persist_failure: bool = False,
     route_executor: Callable[[Callable[[], None]], Any] | None = None,
@@ -2084,6 +2184,7 @@ def process_tv_primary_event(
                     signal_chat_id_fn=signal_chat_id_fn,
                     console_base_url=console_base_url,
                     strategy_capacity_getter=strategy_capacity_getter,
+                    runtime_wakeup=runtime_wakeup,
                 )
 
             _dispatch_route_async(route_existing, route_executor=route_executor)
@@ -2165,10 +2266,11 @@ def process_tv_primary_event(
                 signal_chat_id_fn=signal_chat_id_fn,
                 console_base_url=console_base_url,
                 strategy_capacity_getter=strategy_capacity_getter,
+                runtime_wakeup=runtime_wakeup,
             )
 
         dispatched = _dispatch_route_async(route_current, route_executor=route_executor)
-        return {
+        response_payload = {
             "ok": dispatched,
             "accepted": True,
             "queued": dispatched,
@@ -2177,7 +2279,11 @@ def process_tv_primary_event(
             "id": _text(event.get("id")),
             "tv_event_id": event_id,
             "event_type": event_type,
-        }, 202 if dispatched else 503
+        }
+        wakeup_diagnostic = _async_runtime_wakeup_diagnostic(event_type, runtime_wakeup)
+        if wakeup_diagnostic:
+            response_payload["runtime_wakeup"] = wakeup_diagnostic
+        return response_payload, 202 if dispatched else 503
 
     return _route_persisted_tv_event(
         pb,
@@ -2197,6 +2303,7 @@ def process_tv_primary_event(
         signal_chat_id_fn=signal_chat_id_fn,
         console_base_url=console_base_url,
         strategy_capacity_getter=strategy_capacity_getter,
+        runtime_wakeup=runtime_wakeup,
     )
 
 

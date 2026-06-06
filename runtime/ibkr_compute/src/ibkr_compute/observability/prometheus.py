@@ -643,6 +643,17 @@ if _client_available():
         ("service", "environment", "operation", "result"),
         buckets=_DEFAULT_BUCKETS,
     )
+    ORDER_SERIAL_QUEUE_WAIT = Histogram(
+        "ibkr_gateway_order_serial_queue_wait_seconds",
+        "Queue wait before entering the shared IB Gateway order mutation gate.",
+        ("service", "environment", "operation", "result"),
+        buckets=_DEFAULT_BUCKETS,
+    )
+    ORDER_SERIAL_TIMEOUTS = Counter(
+        "ibkr_gateway_order_serial_timeouts_total",
+        "Timeouts while waiting for the shared IB Gateway order mutation gate.",
+        ("service", "environment", "operation"),
+    )
     SIGNAL_EVENTS = Counter(
         "ibkr_signal_events_total",
         "Signal processing events.",
@@ -686,7 +697,8 @@ else:  # pragma: no cover
     BROKER_CONNECTS = BROKER_CONNECT_DURATION = BROKER_READY = BROKER_CONNECTED = BROKER_DISCONNECTS = BROKER_ERRORS = None
     BROKER_REQUESTS = BROKER_REQUEST_DURATION = BROKER_PENDING_REQUESTS = None
     HISTORY_EVENTS = HISTORY_DURATION = HISTORY_ACTIVE = HISTORY_ROWS = None
-    ORDER_EVENTS = ORDER_DURATION = SIGNAL_EVENTS = SIGNAL_RECORDS = SIGNAL_DURATION = None
+    ORDER_EVENTS = ORDER_DURATION = ORDER_SERIAL_QUEUE_WAIT = ORDER_SERIAL_TIMEOUTS = None
+    SIGNAL_EVENTS = SIGNAL_RECORDS = SIGNAL_DURATION = None
 
 
 def install_flask_metrics(app: Any, service_name: str | None = None) -> None:
@@ -1505,6 +1517,19 @@ def record_order_event(*, environment: str = "", operation: str, order_family_ty
     if ORDER_DURATION is not None and duration_s is not None:
         ORDER_DURATION.labels(service, env, op, result_label).observe(max(0.0, float(duration_s or 0.0)))
 
+
+
+def record_gateway_order_serial_event(*, environment: str = "", operation: str, result: str = "ok", queue_wait_s: float | None = None) -> None:
+    if not _client_available():
+        return
+    service = resolve_source_service()
+    env = _sanitize_label(environment or os.environ.get("IBKR_BROKER_MODE") or "unknown")
+    op = _sanitize_label(operation or "gateway_order_mutation")
+    result_label = _sanitize_label(result or "ok")
+    if ORDER_SERIAL_QUEUE_WAIT is not None and queue_wait_s is not None:
+        ORDER_SERIAL_QUEUE_WAIT.labels(service, env, op, result_label).observe(max(0.0, float(queue_wait_s or 0.0)))
+    if ORDER_SERIAL_TIMEOUTS is not None and result_label == "timeout":
+        ORDER_SERIAL_TIMEOUTS.labels(service, env, op).inc()
 
 def record_signal_event(*, environment: str = "", stage: str, signal_source: str = "unknown", result: str, reason_code: str = "", duration_s: float | None = None) -> None:
     if not _client_available():

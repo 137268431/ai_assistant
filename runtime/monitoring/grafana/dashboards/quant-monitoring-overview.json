@@ -3550,7 +3550,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (operation, order_family_type, result) (rate(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=~\"place_bracket|place_entry|place_take_profit|place_stop_loss|adjust_stop_loss|adjust_take_profit|cancel_order|cancel_take_profit|cancel_stop_loss|modify_manual|ibapi_place|ibapi_cancel|modify|cancel\"}[$__rate_interval]))",
+          "expr": "sum by (operation, order_family_type, result) (rate(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=~\"place_bracket|place_entry|place_take_profit|place_stop_loss|place_bracket_order|place_market_close|adjust_stop_loss|adjust_take_profit|cancel_order|cancel_all_orders|cancel_entry|cancel_take_profit|cancel_stop_loss|modify_manual|modify_order|ibapi_place|ibapi_cancel|modify|cancel\"}[$__rate_interval]))",
           "legendFormat": "{{operation}} {{order_family_type}} {{result}}",
           "range": true,
           "refId": "A"
@@ -3712,7 +3712,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=~\"place_bracket|place_entry|place_take_profit|place_stop_loss|adjust_stop_loss|adjust_take_profit|cancel_order|cancel_take_profit|cancel_stop_loss|modify_manual|ibapi_place|ibapi_cancel|modify|cancel\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=~\"place_bracket|place_entry|place_take_profit|place_stop_loss|place_bracket_order|place_market_close|adjust_stop_loss|adjust_take_profit|cancel_order|cancel_all_orders|cancel_entry|cancel_take_profit|cancel_stop_loss|modify_manual|modify_order|ibapi_place|ibapi_cancel|modify|cancel\"}[$__rate_interval])))",
           "legendFormat": "{{operation}} {{result}}",
           "range": true,
           "refId": "A"
@@ -3807,7 +3807,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (operation, order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=~\"place_bracket|place_entry|place_take_profit|place_stop_loss|adjust_stop_loss|adjust_take_profit|cancel_order|cancel_take_profit|cancel_stop_loss|modify_manual|ibapi_place|ibapi_cancel|modify|cancel\"}[$__range]))",
+          "expr": "sum by (operation, order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=~\"place_bracket|place_entry|place_take_profit|place_stop_loss|place_bracket_order|place_market_close|adjust_stop_loss|adjust_take_profit|cancel_order|cancel_all_orders|cancel_entry|cancel_take_profit|cancel_stop_loss|modify_manual|modify_order|ibapi_place|ibapi_cancel|modify|cancel\"}[$__range]))",
           "legendFormat": "{{operation}} {{order_family_type}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "A"
@@ -5545,6 +5545,221 @@
           ],
           "countRows": false,
           "fields": ""
+        }
+      }
+    },
+    {
+      "id": 66,
+      "type": "row",
+      "title": "12 - Gateway 订单串行队列 / Gateway Order Serial Queue",
+      "collapsed": false,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 140
+      },
+      "panels": []
+    },
+    {
+      "id": 67,
+      "type": "timeseries",
+      "title": "Gateway 串行队列等待 p95 / Gateway Serial Queue Wait p95",
+      "description": "多信号同时触发时，进入 IB Gateway order mutation 串行锁前的等待耗时；不含 signal_id/order_id/symbol 高基数标签。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 141
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_gateway_order_serial_queue_wait_seconds_bucket{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval])))",
+          "legendFormat": "{{operation}} {{result}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 2
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "width": 420
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 68,
+      "type": "timeseries",
+      "title": "Gateway 串行队列超时 / Gateway Serial Queue Timeouts",
+      "description": "IB Gateway order mutation 等待串行锁超时次数；出现非 0 说明下单/改单/撤单链路存在拥塞或卡死风险。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 141
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (operation) (increase(ibkr_gateway_order_serial_timeouts_total{service=~\"$service\", environment=~\"$environment\"}[$__range]))",
+          "legendFormat": "{{operation}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 2
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "width": 420
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
         }
       }
     }

@@ -30,3 +30,4 @@ from ibkr_compute.api.runtime.gateway_views import (
     _build_ibkr_gateway_stop_response,
 )
 from ibkr_compute.api.runtime.restore import _maybe_restore_ibkr_service
+from ibkr_compute.api.runtime.signal_views import _build_ibkr_signal_wakeup_response

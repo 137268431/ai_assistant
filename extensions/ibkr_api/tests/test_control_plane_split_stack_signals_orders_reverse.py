@@ -851,6 +851,65 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
         self.assertEqual("2026-06-01 11:11:02", record["extra"]["filled_us_time"])
         self.assertEqual(1780326662000, record["extra"]["filled_bar_time_ms"])
 
+    def test_order_record_payload_recovers_entry_limit_from_submitted_extra_when_broker_price_zero(self):
+        existing_row = {
+            "id": "order-1",
+            "unique_id": "entry_BATS_RVTY_short_20260605_0946_2_mr_sdUpper",
+            "order_type": "LMT",
+            "order_id": "207",
+            "broker_order_id": "207",
+            "symbol": "RVTY",
+            "environment": "paper",
+            "direction": "short",
+            "quantity": 50,
+            "limit_price": 0,
+            "status": "Filled",
+            "filled_qty": 50,
+            "fill_price": 99.79,
+            "signal_id": "BATS_RVTY_short_20260605_0946_2_mr_sdUpper",
+            "trade_group_id": "BATS_RVTY_short_20260605_0946_2_mr_sdUpper",
+            "entry_order_unique_id": "entry_BATS_RVTY_short_20260605_0946_2_mr_sdUpper",
+            "role": "entry",
+            "relation_status": "active",
+            "position_side": "short",
+            "bar_time_ms": 1780667302000,
+            "us_time": "2026-06-05 09:48:22",
+            "cn_time": "2026-06-05 21:48:22",
+            "extra": {
+                "submitted_entry_limit_price": 99.64,
+                "submitted_limit_cap_price": 99.64,
+                "original_entry": 99.79,
+                "reference_entry": 99.79,
+            },
+        }
+        request_payload = {
+            "environment": "paper",
+            "unique_id": "entry_BATS_RVTY_short_20260605_0946_2_mr_sdUpper",
+            "order_type": "LMT",
+            "order_id": "207",
+            "broker_order_id": "207",
+            "symbol": "RVTY",
+            "direction": "short",
+            "quantity": 50,
+            "limit_price": 0,
+            "status": "Filled",
+            "filled_qty": 50,
+            "fill_price": 99.79,
+            "signal_id": "BATS_RVTY_short_20260605_0946_2_mr_sdUpper",
+            "trade_group_id": "BATS_RVTY_short_20260605_0946_2_mr_sdUpper",
+            "entry_order_unique_id": "entry_BATS_RVTY_short_20260605_0946_2_mr_sdUpper",
+            "role": "entry",
+            "us_time": "2026-06-05 12:33:58",
+            "cn_time": "2026-06-06 00:33:58",
+            "bar_time_ms": 1780677238265,
+            "extra": {"broker_update_source": "request_snapshot"},
+        }
+
+        record = build_order_record_payload(request_payload, existing_row, "paper")
+
+        self.assertEqual(99.64, record["limit_price"])
+        self.assertEqual(99.79, record["fill_price"])
+
     def test_order_record_payload_accepts_explicit_fill_time_correction(self):
         existing_row = {
             "id": "order-1",

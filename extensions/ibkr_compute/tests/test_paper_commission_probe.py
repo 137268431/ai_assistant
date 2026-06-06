@@ -1,5 +1,6 @@
 import sys
 import unittest
+from argparse import Namespace
 from pathlib import Path
 
 
@@ -48,6 +49,20 @@ class PaperCommissionProbeHelpersTest(unittest.TestCase):
         }
 
         self.assertTrue(probe.is_flat_for_symbol(snapshot, "TSLA"))
+
+    def test_account_snapshot_path_defaults_to_runtime_when_snapshot_base_is_set(self):
+        self.assertEqual(
+            "/ibkr/account",
+            probe.account_snapshot_path(Namespace(account_base_url="http://127.0.0.1:8010", account_snapshot_path="")),
+        )
+        self.assertEqual(
+            "/api/custom/ibkr/account_snapshot",
+            probe.account_snapshot_path(Namespace(account_base_url="", account_snapshot_path="")),
+        )
+        self.assertEqual(
+            "/custom/account",
+            probe.account_snapshot_path(Namespace(account_base_url="", account_snapshot_path="/custom/account")),
+        )
 
     def test_preflight_rejects_non_paper_snapshot(self):
         with self.assertRaisesRegex(probe.ProbeError, "refusing_non_paper_environment"):

@@ -11,3 +11,5 @@ node_modules/
 .history/
 .playwright-cli/
 output/
+artifacts/validation/tv_replay_stress/
+artifacts/validation/gateway_order_probe/

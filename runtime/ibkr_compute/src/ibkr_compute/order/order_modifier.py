@@ -10,7 +10,7 @@ import time
 from typing import Any, Dict
 
 from ibkr_compute.broker import BrokerAdapter
-from ibkr_compute.observability.prometheus import record_order_event
+from ibkr_compute.observability.prometheus import record_gateway_order_serial_event, record_order_event
 from ibkr_compute.order.gateway_serial import GatewayOrderMutationGate, GatewayOrderMutationTimeout
 
 logger = logging.getLogger(__name__)
@@ -61,12 +61,18 @@ class OrderModifier:
         started = time.perf_counter()
         family = str(order_family_type or "").strip() or self._infer_modify_family(updates)
         try:
-            with self.gateway_gate.hold("modify_order", order_id=str(order_id or "").strip(), family=family):
+            with self.gateway_gate.hold("modify_order", order_id=str(order_id or "").strip(), family=family) as gate_info:
                 result = self.broker.modify_order(
                     str(order_id or "").strip(),
                     dict(updates or {}),
                     account_id=str(acct_id or self.account_id or "").strip(),
                 )
+            record_gateway_order_serial_event(
+                environment=self.environment,
+                operation="modify_order",
+                result="ok" if result.get("ok") else "error",
+                queue_wait_s=gate_info.get("queue_wait_s"),
+            )
         except GatewayOrderMutationTimeout as exc:
             result = {
                 "ok": False,
@@ -75,6 +81,12 @@ class OrderModifier:
                 "gateway_operation": exc.operation,
                 "order_id": str(order_id or "").strip(),
             }
+            record_gateway_order_serial_event(
+                environment=self.environment,
+                operation=exc.operation,
+                result="timeout",
+                queue_wait_s=exc.timeout_s,
+            )
         record_order_event(
             operation=str(operation or "modify_manual"),
             order_family_type=family,
@@ -116,8 +128,14 @@ class OrderModifier:
     ) -> Dict[str, Any]:
         started = time.perf_counter()
         try:
-            with self.gateway_gate.hold("cancel_order", order_id=str(order_id or "").strip()):
+            with self.gateway_gate.hold("cancel_order", order_id=str(order_id or "").strip()) as gate_info:
                 result = self.broker.cancel_order(str(order_id or "").strip())
+            record_gateway_order_serial_event(
+                environment=self.environment,
+                operation="cancel_order",
+                result="ok" if result.get("ok") else "error",
+                queue_wait_s=gate_info.get("queue_wait_s"),
+            )
         except GatewayOrderMutationTimeout as exc:
             result = {
                 "ok": False,
@@ -126,6 +144,12 @@ class OrderModifier:
                 "gateway_operation": exc.operation,
                 "order_id": str(order_id or "").strip(),
             }
+            record_gateway_order_serial_event(
+                environment=self.environment,
+                operation=exc.operation,
+                result="timeout",
+                queue_wait_s=exc.timeout_s,
+            )
         record_order_event(
             operation=str(operation or "cancel_order"),
             order_family_type=str(order_family_type or "unknown"),
@@ -139,9 +163,22 @@ class OrderModifier:
 
     def cancel_all_orders(self, acct_id: str = None) -> Dict[str, Any]:
         try:
-            with self.gateway_gate.hold("cancel_all_orders"):
-                return self.broker.cancel_all_orders()
+            with self.gateway_gate.hold("cancel_all_orders") as gate_info:
+                result = self.broker.cancel_all_orders()
+            record_gateway_order_serial_event(
+                environment=self.environment,
+                operation="cancel_all_orders",
+                result="ok" if result.get("ok") else "error",
+                queue_wait_s=gate_info.get("queue_wait_s"),
+            )
+            return result
         except GatewayOrderMutationTimeout as exc:
+            record_gateway_order_serial_event(
+                environment=self.environment,
+                operation=exc.operation,
+                result="timeout",
+                queue_wait_s=exc.timeout_s,
+            )
             return {
                 "ok": False,
                 "error": "gateway_order_queue_timeout",
