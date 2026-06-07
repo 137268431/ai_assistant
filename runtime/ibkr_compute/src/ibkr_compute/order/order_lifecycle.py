@@ -162,6 +162,33 @@ class OrderLifecycle:
     def _account_data_backoff_remaining(self) -> float:
         return max(0.0, float(self._account_data_backoff_until or 0.0) - time.time())
 
+    def _account_data_backoff_applies(self, operation: str) -> bool:
+        reason = str(self._account_data_backoff_reason or "").strip().lower()
+        if not reason:
+            return True
+        normalized = str(operation or "").strip().lower()
+        if "account_data_circuit_open" in reason:
+            return True
+        if "account_data_request_queue_timeout" in reason:
+            if normalized == "account_snapshot":
+                return "account_updates" in reason or "account_snapshot" in reason
+            if normalized == "account_summary":
+                return "account_summary" in reason
+            if normalized == "positions":
+                return "positions" in reason
+            if normalized == "account_pnl":
+                return "pnl" in reason
+            return True
+        if normalized == "account_snapshot":
+            return "account_updates" in reason or "account_snapshot" in reason
+        if normalized == "account_summary":
+            return "account_summary" in reason
+        if normalized == "positions":
+            return "positions" in reason
+        if normalized == "account_pnl":
+            return "pnl" in reason
+        return True
+
     def _mark_account_data_backoff(self, exc: Exception | str, *, operation: str) -> None:
         reason = self._account_data_error_text(exc) or "account_data_unavailable"
         self._account_data_backoff_until = max(
@@ -182,6 +209,8 @@ class OrderLifecycle:
     def _should_skip_account_data_fetch(self, *, operation: str) -> bool:
         remaining = self._account_data_backoff_remaining()
         if remaining <= 0:
+            return False
+        if not self._account_data_backoff_applies(operation):
             return False
         now = time.time()
         if now - float(self._account_data_backoff_last_warn_at or 0.0) >= 15.0:

@@ -41,6 +41,17 @@ def _account_snapshot_cache_bypass() -> bool:
     return False
 
 
+def _account_snapshot_orders_fast(default: bool = False) -> bool:
+    profile = str(request.args.get("snapshot_profile") or request.args.get("profile") or "").strip().lower()
+    if profile in {"orders_fast", "fast_orders", "live_orders_fast"}:
+        return True
+    if get_query_arg_bool("orders_fast", False):
+        return True
+    if get_query_arg_bool("fast_orders", False):
+        return True
+    return bool(default)
+
+
 def register_account_routes(app):
     if should_proxy_runtime_requests():
         register_runtime_proxy_route(app, "ibkr_account", "/ibkr/account", ["GET"])
@@ -67,6 +78,7 @@ def register_account_routes(app):
                     include_pnl=get_query_arg_bool("include_pnl", True),
                     force_refresh=bypass_cache,
                     allow_stale=not bypass_cache,
+                    orders_fast=_account_snapshot_orders_fast(),
                 )
             )
         except Exception as exc:
@@ -83,6 +95,7 @@ def register_account_routes(app):
             include_pnl=False,
             force_refresh=bypass_cache,
             allow_stale=not bypass_cache,
+            orders_fast=_account_snapshot_orders_fast(),
         )
         return jsonify(
             {
@@ -106,6 +119,7 @@ def register_account_routes(app):
             include_pnl=False,
             force_refresh=bypass_cache,
             allow_stale=not bypass_cache,
+            orders_fast=_account_snapshot_orders_fast(default=True),
         )
         return jsonify(
             {

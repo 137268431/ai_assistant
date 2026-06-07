@@ -15,7 +15,15 @@ def _to_text(value: Any) -> str:
 
 
 def _truthy(value: Any) -> bool:
-    return _to_text(value).lower() in {"1", "true", "yes", "on"}
+    text = _to_text(value).lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off", ""}:
+        return False
+    try:
+        return float(text) != 0.0
+    except (TypeError, ValueError):
+        return False
 
 
 def _disabled(value: Any) -> bool:

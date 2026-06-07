@@ -2871,7 +2871,7 @@ class TradingServiceSignalsMixin:
         if not callable(ack) or not signal_id:
             return False
         try:
-            ack(
+            ack_result = ack(
                 signal_id=signal_id,
                 status=status,
                 note=note,
@@ -2879,7 +2879,11 @@ class TradingServiceSignalsMixin:
                 extra=dict(extra or {}),
                 lifecycle_update=True,
             )
-            return True
+            if isinstance(ack_result, dict) and any(
+                key in ack_result for key in ("success", "ok", "updated", "idempotent", "signal_status")
+            ):
+                return True
+            return False
         except TypeError:
             # Older test doubles or clients may not yet support lifecycle-only ack.
             return False

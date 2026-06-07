@@ -29,7 +29,17 @@ def fetch_snapshot_sources(service, account_id: str, *, include_pnl: bool = True
         if include_pnl and callable(pnl_getter):
             fetchers["pnl"] = lambda: pnl_getter(account_id)
     if hasattr(service, "order_tracker") and service.order_tracker:
-        fetchers["orders"] = service.order_tracker.get_live_orders
+        cached_getter = getattr(service.order_tracker, "get_cached_live_orders", None)
+        cached_orders = []
+        if callable(cached_getter):
+            try:
+                cached_orders = list(cached_getter() or [])
+            except Exception:
+                cached_orders = []
+        if cached_orders:
+            fetchers["orders"] = lambda: cached_orders
+        else:
+            fetchers["orders"] = service.order_tracker.get_live_orders
 
     if fetchers:
         with ThreadPoolExecutor(max_workers=len(fetchers), thread_name_prefix="ibkr-account") as executor:

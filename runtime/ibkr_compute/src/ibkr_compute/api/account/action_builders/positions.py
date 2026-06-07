@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from ibkr_compute.api.account.action_builders.common import _build_snapshot_action_response
@@ -325,6 +326,7 @@ def _position_snapshot_from_payload(payload: dict[str, Any], *, symbol: str, con
 
 
 def _build_ibkr_close_position_response(service, payload: dict) -> tuple[dict, int]:
+    action_started_at = time.perf_counter()
     payload = payload or {}
     api_app = _api_app()
     conid = int(_app_coerce_float(payload.get("conid"), 0) or 0)
@@ -362,6 +364,7 @@ def _build_ibkr_close_position_response(service, payload: dict) -> tuple[dict, i
         position=position_value,
         direction=direction,
     )
+    operation_started_at = time.perf_counter()
     result = service.order_placer.place_market_close(
         conid=conid,
         symbol=symbol,
@@ -396,11 +399,12 @@ def _build_ibkr_close_position_response(service, payload: dict) -> tuple[dict, i
                 "reason": "cancel_bracket_after_close_disabled",
             },
         }
+    operation_elapsed_s = time.perf_counter() - operation_started_at
     return _build_snapshot_action_response(
         service,
         "close_position",
         result,
-        delay_seconds=0.75,
+        delay_seconds=0.0,
         extra={
             "symbol": symbol,
             "conid": conid,
@@ -408,6 +412,8 @@ def _build_ibkr_close_position_response(service, payload: dict) -> tuple[dict, i
             "direction": direction,
             "position_snapshot": position_snapshot,
         },
+        action_started_at=action_started_at,
+        operation_elapsed_s=operation_elapsed_s,
     )
 
 

@@ -77,6 +77,12 @@ class _FakeApiApp:
     def _ibkr_service_environment(self, _service):
         return "paper"
 
+    def _coerce_float(self, value, default=None):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
 
 class _SnapshotOrderPlacer:
     def get_active_account_id(self, use_paper=False):
@@ -116,6 +122,19 @@ class _SnapshotService:
     def __init__(self, lifecycle: _SnapshotLifecycle):
         self.order_placer = _SnapshotOrderPlacer()
         self.order_lifecycle = lifecycle
+
+
+class _FastOrderTracker:
+    def __init__(self, rows: list[dict]):
+        self.rows = rows
+        self.cached_calls = 0
+
+    def get_cached_live_orders(self, *, include_all: bool = False):
+        self.cached_calls += 1
+        return list(self.rows)
+
+    def get_live_orders(self):
+        return list(self.rows)
 
 
 class _DefaultConfig:
@@ -179,7 +198,10 @@ class _BuyingPowerService(_SnapshotService):
 
 
 def _with_fake_api_app(app, fn):
-    with mock.patch("ibkr_compute.api.account.snapshot_builder.context._api_app", return_value=app):
+    with (
+        mock.patch("ibkr_compute.api.account.snapshot_builder.context._api_app", return_value=app),
+        mock.patch("ibkr_compute.api.account.live.runtime._api_app", return_value=app),
+    ):
         return fn()
 
 
@@ -274,6 +296,62 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertEqual("empty_error", payload["cache_state"])
         self.assertEqual("account snapshot timeout", payload["refresh_error"])
         self.assertEqual(2, lifecycle.snapshot_calls)
+
+    def test_orders_fast_snapshot_uses_cached_orders_without_account_snapshot_fetch(self):
+        app = _FakeApiApp()
+        lifecycle = _SnapshotLifecycle(delay=0.05)
+        service = _SnapshotService(lifecycle)
+        service.order_tracker = _FastOrderTracker(
+            [
+                {
+                    "orderId": "1001",
+                    "ticker": "AAPL",
+                    "status": "Submitted",
+                    "side": "BUY",
+                    "orderType": "LMT",
+                    "totalSize": 10,
+                    "price": 123.45,
+                }
+            ]
+        )
+
+        payload = _with_fake_api_app(
+            app,
+            lambda: _build_ibkr_account_snapshot(
+                service,
+                include_pnl=False,
+                force_refresh=True,
+                allow_stale=False,
+                orders_fast=True,
+            ),
+        )
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual("orders_fast", payload["snapshot_profile"])
+        self.assertEqual("account_snapshot_orders_fast", payload["source"])
+        self.assertEqual(0, lifecycle.snapshot_calls)
+        self.assertEqual(1, service.order_tracker.cached_calls)
+        self.assertEqual(1, payload["counts"]["open_orders"])
+        self.assertEqual("1001", payload["live_open_orders"][0]["order_id"])
+        self.assertEqual("orders_fast_summary_cache_unavailable", payload["errors"]["summary"])
+
+    def test_orders_fast_snapshot_reuses_cached_full_summary(self):
+        app = _FakeApiApp()
+        lifecycle = _SnapshotLifecycle()
+        service = _SnapshotService(lifecycle)
+        service.order_tracker = _FastOrderTracker([])
+
+        full = _with_fake_api_app(app, lambda: _build_ibkr_account_snapshot(service, include_pnl=False))
+        lifecycle.fail = True
+        fast = _with_fake_api_app(
+            app,
+            lambda: _build_ibkr_account_snapshot(service, include_pnl=False, force_refresh=True, orders_fast=True),
+        )
+
+        self.assertTrue(full["summary_available"])
+        self.assertTrue(fast["summary_available"])
+        self.assertEqual("snapshot_cache", fast["orders_fast_diagnostics"]["summary_source"])
+        self.assertEqual(1, lifecycle.snapshot_calls)
 
     def test_buying_power_reuses_fresh_full_snapshot_cache(self):
         app = _FakeApiApp()

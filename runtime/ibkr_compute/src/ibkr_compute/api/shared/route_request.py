@@ -21,6 +21,10 @@ def coerce_request_bool(value, default: bool = False) -> bool:
         return True
     if text in {"0", "false", "no", "off"}:
         return False
+    try:
+        return float(text) != 0.0
+    except (TypeError, ValueError):
+        pass
     return default
 
 

@@ -442,6 +442,8 @@ class Config:
         "ibkr_order_poll_interval_active_sec": "5",
         "ibkr_order_poll_interval_idle_sec": "15",
         "ibkr_order_fast_track_sec": "30",
+        "ibkr_order_symbol_queue_enabled": "true",
+        "ibkr_order_symbol_queue_max_active_symbols": "4",
         "ibkr_gateway_order_serial_enabled": "true",
         "ibkr_gateway_order_serial_timeout_sec": "900",
         "ibkr_order_question_suppress_enabled": "false",

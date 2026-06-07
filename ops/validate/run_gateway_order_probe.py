@@ -312,9 +312,21 @@ def account_snapshot_client(args: argparse.Namespace, *, timeout_sec: float | No
     return fee_probe.ApiClient(base_url, timeout=timeout), fee_probe.account_snapshot_path(snapshot_args)
 
 
-def get_snapshot(args: argparse.Namespace, *, timeout_sec: float | None = None) -> dict[str, Any]:
+def account_snapshot_params(*, orders_fast: bool = False) -> dict[str, Any]:
+    params = dict(fee_probe.account_params())
+    if orders_fast:
+        params.update({"include_pnl": "0", "orders_fast": "1", "snapshot_profile": "orders_fast"})
+    return params
+
+
+def get_snapshot(
+    args: argparse.Namespace,
+    *,
+    timeout_sec: float | None = None,
+    orders_fast: bool = False,
+) -> dict[str, Any]:
     client, path = account_snapshot_client(args, timeout_sec=timeout_sec)
-    return fee_probe.get_account_snapshot(client, path)
+    return client.get(path or fee_probe.DEFAULT_ACCOUNT_SNAPSHOT_PATH, account_snapshot_params(orders_fast=orders_fast))
 
 
 def is_flat_for_symbols(snapshot: dict[str, Any], symbols: list[str]) -> bool:
@@ -357,6 +369,8 @@ def summarize_account_snapshot(snapshot: dict[str, Any], symbols: list[str]) -> 
         "websocket_ready": snapshot.get("websocket_ready"),
         "summary_available": snapshot.get("summary_available"),
         "stale": snapshot.get("stale"),
+        "snapshot_profile": snapshot.get("snapshot_profile"),
+        "source": snapshot.get("source"),
         "selected_open_order_count": total_open,
         "selected_symbols": selected,
     }
@@ -375,7 +389,7 @@ def account_access_ok(summary: dict[str, Any]) -> bool:
 def sample_account_access(args: argparse.Namespace, symbols: list[str], *, phase: str, sample_index: int) -> dict[str, Any]:
     started = time.perf_counter()
     try:
-        snapshot = get_snapshot(args)
+        snapshot = get_snapshot(args, orders_fast=bool(getattr(args, "pending_snapshot_orders_fast", True)))
         fee_probe.assert_paper_snapshot(snapshot)
         summary = summarize_account_snapshot(snapshot, symbols)
         ok = account_access_ok(summary)
@@ -1373,6 +1387,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--min-pending-hold-samples", type=int, default=0)
     parser.add_argument("--min-pending-visible-orders", type=int, default=0)
     parser.add_argument("--max-pending-snapshot-elapsed-sec", type=float, default=10.0)
+    parser.set_defaults(pending_snapshot_orders_fast=True)
+    parser.add_argument("--no-pending-snapshot-orders-fast", action="store_false", dest="pending_snapshot_orders_fast", help="Use the full account snapshot during pending-hold samples instead of the cache-only live-orders fast path.")
     parser.add_argument("--cleanup-timeout-sec", type=float, default=60.0)
     parser.add_argument("--cleanup-http-timeout-sec", type=float, default=0.0, help="Bound account snapshot/order cleanup HTTP calls; defaults to min(http timeout, 60s).")
     parser.add_argument("--symbol-cleanup-timeout-sec", type=float, default=0.0, help="Per-symbol cleanup wait cap; defaults to min(cleanup timeout, 45s).")

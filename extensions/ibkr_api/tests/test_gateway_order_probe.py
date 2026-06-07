@@ -402,6 +402,28 @@ class GatewayOrderProbeTest(unittest.TestCase):
         self.assertFalse(summary["ok"])
         self.assertEqual("order_rejected", summary["unexpected_failures"][0]["error"])
 
+    def test_get_snapshot_can_request_orders_fast_profile(self):
+        args = Namespace()
+        calls = []
+
+        class _Client:
+            def get(self, path, params=None):
+                calls.append((path, dict(params or {})))
+                return {"ok": True}
+
+        with mock.patch.object(probe, "account_snapshot_client", return_value=(_Client(), "/ibkr/account")), mock.patch.object(
+            probe.fee_probe,
+            "account_params",
+            return_value={"environment": "paper", "broker_mode": "paper", "cache_bust": 123},
+        ):
+            payload = probe.get_snapshot(args, orders_fast=True)
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual("/ibkr/account", calls[0][0])
+        self.assertEqual("1", calls[0][1]["orders_fast"])
+        self.assertEqual("orders_fast", calls[0][1]["snapshot_profile"])
+        self.assertEqual("0", calls[0][1]["include_pnl"])
+
     def test_build_stop_loss_modify_items_targets_submitted_stop_legs(self):
         plans = [
             probe.OrderProbePlan("AAPL", "long", 10, 100.0, 50.0, 57.5, 42.5),

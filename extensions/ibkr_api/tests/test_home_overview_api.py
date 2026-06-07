@@ -592,7 +592,7 @@ class HomeOverviewApiTest(unittest.TestCase):
             builder=builder,
             ttl_seconds=15,
             stale_seconds=45,
-            force=request_cache_bypass({"cache_bust": "1"}),
+            force=request_cache_bypass({"cache_bust": "1780805505054"}),
         )
 
         self.assertEqual(first["value"], 1)

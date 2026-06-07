@@ -362,7 +362,7 @@ class BuyingPowerManualOrderActionTest(unittest.TestCase):
             "ok": True,
             "summary": {"buying_power": 30000, "net_liquidation": 100000},
         }
-        order_actions._build_snapshot_action_response = lambda _service, action, result, delay_seconds=0, extra=None: (
+        order_actions._build_snapshot_action_response = lambda _service, action, result, delay_seconds=0, extra=None, **_kwargs: (
             {"ok": bool(result.get("ok")), "action": action, "result": result, **dict(extra or {})},
             200,
         )

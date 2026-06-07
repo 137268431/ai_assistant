@@ -21,6 +21,7 @@ from ibkr_compute.order.buying_power_reservations import (
     merge_reservation_snapshot_into_guard,
 )
 from ibkr_compute.order.gateway_serial import GatewayOrderMutationGate, GatewayOrderMutationTimeout
+from ibkr_compute.order.symbol_queue import SymbolOrderCommandScheduler
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ class OrderPlacer:
         broker: BrokerAdapter | None = None,
         gateway_gate: GatewayOrderMutationGate | None = None,
         reservation_store: BuyingPowerReservationStore | None = None,
+        symbol_scheduler: SymbolOrderCommandScheduler | None = None,
     ):
         self.account_id = account_id or ACCOUNT_ID
         self.pb_client = pb_client
@@ -48,6 +50,10 @@ class OrderPlacer:
         self.gateway_gate = gateway_gate or GatewayOrderMutationGate(config=config, environment=self.environment)
         self.reservation_store = reservation_store or BuyingPowerReservationStore(
             pb_client=pb_client,
+            environment=self.environment,
+        )
+        self.symbol_scheduler = symbol_scheduler or SymbolOrderCommandScheduler(
+            config=config,
             environment=self.environment,
         )
         self._order_count = 0
@@ -273,43 +279,62 @@ class OrderPlacer:
     def place_bracket_order(self, *args, **kwargs) -> Dict[str, Any]:
         pre_submit_buying_power_guard = kwargs.pop("buying_power_guard", None)
         metadata = self._bracket_call_metadata(args, kwargs)
+        return self.symbol_scheduler.submit(
+            symbol=metadata.get("symbol"),
+            operation="place_bracket_order",
+            priority=50,
+            metadata=metadata,
+            fn=lambda: self._place_bracket_order_queued(
+                args,
+                kwargs,
+                pre_submit_buying_power_guard=pre_submit_buying_power_guard,
+                metadata=metadata,
+            ),
+        )
+
+    def _place_bracket_order_queued(
+        self,
+        args: tuple,
+        kwargs: dict,
+        *,
+        pre_submit_buying_power_guard: Any = None,
+        metadata: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        metadata = dict(metadata or self._bracket_call_metadata(args, kwargs))
+        reservation: Dict[str, Any] | None = None
         try:
-            with self.gateway_gate.hold("place_bracket_order", **metadata) as gate_info:
-                buying_power_decision = self._recheck_buying_power_inside_gateway_gate(
-                    args,
-                    kwargs,
-                    pre_submit_guard=pre_submit_buying_power_guard,
-                )
-                if not buying_power_decision.get("ok"):
-                    result = dict(buying_power_decision)
-                    record_order_event(
-                        environment=self.environment,
-                        operation="place_bracket",
-                        order_family_type=str(kwargs.get("order_family_type") or "bracket_oco"),
-                        result="error",
-                        reason_code=str(result.get("error") or "buying_power_blocked"),
-                    )
-                    record_gateway_order_serial_event(
-                        environment=self.environment,
-                        operation="place_bracket_order",
-                        result="error",
-                        queue_wait_s=gate_info.get("queue_wait_s"),
-                    )
-                    return result
-                result = self._place_bracket_order_unlocked(*args, **kwargs)
-                if isinstance(buying_power_decision.get("buying_power_guard"), dict):
-                    result["buying_power_guard"] = dict(buying_power_decision["buying_power_guard"])
-                    if isinstance(pre_submit_buying_power_guard, dict):
-                        result["pre_submit_buying_power_guard"] = dict(pre_submit_buying_power_guard)
-            record_gateway_order_serial_event(
-                environment=self.environment,
-                operation="place_bracket_order",
-                result="ok" if result.get("ok") else "error",
-                queue_wait_s=gate_info.get("queue_wait_s"),
+            buying_power_decision = self._reserve_buying_power_before_gateway_write(
+                args,
+                kwargs,
+                pre_submit_guard=pre_submit_buying_power_guard,
             )
+            if not buying_power_decision.get("ok"):
+                result = dict(buying_power_decision)
+                record_order_event(
+                    environment=self.environment,
+                    operation="place_bracket",
+                    order_family_type=str(kwargs.get("order_family_type") or "bracket_oco"),
+                    result="error",
+                    reason_code=str(result.get("error") or "buying_power_blocked"),
+                )
+                return result
+            reservation = dict(buying_power_decision.get("reservation") or {})
+            result = self._place_bracket_order_unlocked(
+                *args,
+                buying_power_pre_reservation=reservation or None,
+                **kwargs,
+            )
+            if isinstance(buying_power_decision.get("buying_power_guard"), dict):
+                result["buying_power_guard"] = dict(buying_power_decision["buying_power_guard"])
+                if isinstance(pre_submit_buying_power_guard, dict):
+                    result["pre_submit_buying_power_guard"] = dict(pre_submit_buying_power_guard)
+            if reservation and not (result.get("ok") or result.get("protection_incomplete")):
+                self._release_buying_power_reservation(reservation, reason="submission_failed")
             return result
         except GatewayOrderMutationTimeout as exc:
             logger.error("Gateway order queue timeout: operation=%s timeout=%ss", exc.operation, exc.timeout_s)
+            if reservation:
+                self._release_buying_power_reservation(reservation, reason="gateway_order_queue_timeout")
             record_gateway_order_serial_event(
                 environment=self.environment,
                 operation=exc.operation,
@@ -323,8 +348,12 @@ class OrderPlacer:
                 "gateway_operation": exc.operation,
                 **metadata,
             }
+        except Exception:
+            if reservation:
+                self._release_buying_power_reservation(reservation, reason="submission_exception")
+            raise
 
-    def _recheck_buying_power_inside_gateway_gate(
+    def _reserve_buying_power_before_gateway_write(
         self,
         args: tuple,
         kwargs: dict,
@@ -395,12 +424,62 @@ class OrderPlacer:
                 "pre_submit_buying_power_guard": dict(guard),
                 "gateway_order_gate_recheck": True,
             }
+        reserver = getattr(self.reservation_store, "reserve_entry_if_available", None)
+        if callable(reserver):
+            names = ("conid", "symbol", "direction", "quantity", "entry_price", "take_profit_price", "stop_loss_price")
+            payload = {name: kwargs.get(name) for name in names if name in kwargs}
+            for index, name in enumerate(names):
+                if index < len(args) and name not in payload:
+                    payload[name] = args[index]
+            reserve_result = reserver(
+                pre_submit_guard=dict(guard),
+                config=self.config,
+                signal_id=kwargs.get("signal_id") or "",
+                trade_group_id=kwargs.get("trade_group_id") or kwargs.get("bracket_group") or "",
+                symbol=payload.get("symbol"),
+                direction=payload.get("direction"),
+                quantity=payload.get("quantity"),
+                entry_price=payload.get("entry_price"),
+                exposure=exposure,
+                source="pre_gateway_submission",
+            )
+            if not reserve_result.get("ok"):
+                return {
+                    "ok": False,
+                    "error": reserve_result.get("error") or "buying_power_blocked",
+                    "reason": reserve_result.get("reason") or reserve_result.get("error") or "buying_power_blocked",
+                    "buying_power_guard": reserve_result.get("buying_power_guard") or recheck_guard,
+                    "pre_submit_buying_power_guard": dict(guard),
+                    "gateway_order_gate_recheck": True,
+                }
+            return {
+                "ok": True,
+                "reservation": dict(reserve_result.get("reservation") or {}),
+                "buying_power_guard": reserve_result.get("buying_power_guard") or recheck_guard,
+                "pre_submit_buying_power_guard": dict(guard),
+                "gateway_order_gate_recheck": True,
+            }
         return {
             "ok": True,
             "buying_power_guard": recheck_guard,
             "pre_submit_buying_power_guard": dict(guard),
             "gateway_order_gate_recheck": True,
         }
+
+    def _release_buying_power_reservation(self, reservation: Dict[str, Any], *, reason: str) -> None:
+        releaser = getattr(self.reservation_store, "release", None)
+        if not callable(releaser):
+            return
+        try:
+            releaser(
+                reservation_key=reservation.get("key") or "",
+                entry_order_id=reservation.get("entry_order_id") or "",
+                trade_group_id=reservation.get("trade_group_id") or "",
+                signal_id=reservation.get("signal_id") or "",
+                reason=reason,
+            )
+        except Exception as exc:
+            logger.warning("Failed to release buying-power reservation: %s", exc)
 
     def _bracket_requested_exposure(self, args: tuple, kwargs: dict) -> float:
         names = ("conid", "symbol", "direction", "quantity", "entry_price", "take_profit_price", "stop_loss_price")
@@ -433,9 +512,18 @@ class OrderPlacer:
                 payload[name] = kwargs.get(name)
         return payload
 
-    def _reserve_submitted_entry_exposure(self, payload: Dict[str, Any], *, symbol: str, direction: str, signal_id: str) -> None:
+    def _reserve_submitted_entry_exposure(
+        self,
+        payload: Dict[str, Any],
+        *,
+        symbol: str,
+        direction: str,
+        signal_id: str,
+        pre_reservation: Dict[str, Any] | None = None,
+    ) -> None:
         store = getattr(self, "reservation_store", None)
         reserver = getattr(store, "reserve_entry", None)
+        attacher = getattr(store, "attach_entry_order_id", None)
         if not callable(reserver):
             return
         order_ids = [str(item or "").strip() for item in (payload.get("order_ids") or []) if str(item or "").strip()]
@@ -448,6 +536,17 @@ class OrderPlacer:
         if not (payload.get("ok") or payload.get("protection_incomplete")):
             return
         try:
+            if pre_reservation and callable(attacher):
+                result = attacher(
+                    reservation_key=pre_reservation.get("key") or "",
+                    entry_order_id=entry_order_id,
+                    trade_group_id=payload.get("trade_group_id") or payload.get("bracket_group") or "",
+                    signal_id=signal_id,
+                    symbol=symbol,
+                )
+                if result.get("ok"):
+                    payload["buying_power_reservation"] = dict(result.get("reservation") or {})
+                    return
             result = reserver(
                 signal_id=signal_id,
                 trade_group_id=payload.get("trade_group_id") or payload.get("bracket_group") or "",
@@ -487,6 +586,7 @@ class OrderPlacer:
         order_family_type: str = "",
         entry_algo_strategy: str = "",
         entry_adaptive_priority: str = "",
+        buying_power_pre_reservation: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         started = time.perf_counter()
         acct_id = self.get_active_account_id(use_paper)
@@ -514,24 +614,36 @@ class OrderPlacer:
             stop_loss_price,
             acct_id or "-",
         )
-        result = self.broker.place_bracket_order(
-            conid=int(conid or 0),
-            symbol=str(symbol or "").upper(),
-            direction=str(direction or "").lower(),
-            quantity=entry_quantity,
-            entry_price=float(entry_price or 0.0),
-            take_profit_price=float(take_profit_price or 0.0),
-            stop_loss_price=float(stop_loss_price or 0.0),
-            take_profit_quantity=tp_quantity,
-            stop_loss_quantity=sl_quantity,
-            entry_order_type=str(entry_order_type or "LMT").upper(),
-            account_id=acct_id,
-            order_ref_suffix=str(order_ref_suffix or ""),
-            trade_group_id=resolved_trade_group_id,
-            order_family_type=resolved_family_type,
-            entry_algo_strategy=str(entry_algo_strategy or ""),
-            entry_adaptive_priority=str(entry_adaptive_priority or ""),
-        )
+        broker_kwargs = {
+            "conid": int(conid or 0),
+            "symbol": str(symbol or "").upper(),
+            "direction": str(direction or "").lower(),
+            "quantity": entry_quantity,
+            "entry_price": float(entry_price or 0.0),
+            "take_profit_price": float(take_profit_price or 0.0),
+            "stop_loss_price": float(stop_loss_price or 0.0),
+            "take_profit_quantity": tp_quantity,
+            "stop_loss_quantity": sl_quantity,
+            "entry_order_type": str(entry_order_type or "LMT").upper(),
+            "account_id": acct_id,
+            "order_ref_suffix": str(order_ref_suffix or ""),
+            "trade_group_id": resolved_trade_group_id,
+            "order_family_type": resolved_family_type,
+            "entry_algo_strategy": str(entry_algo_strategy or ""),
+            "entry_adaptive_priority": str(entry_adaptive_priority or ""),
+        }
+        if getattr(self.broker, "uses_internal_gateway_write_lock", False):
+            broker_kwargs["metric_environment"] = self.environment
+            result = self.broker.place_bracket_order(**broker_kwargs)
+        else:
+            with self.gateway_gate.hold("place_bracket_order", symbol=str(symbol or "").upper()) as gate_info:
+                result = self.broker.place_bracket_order(**broker_kwargs)
+            record_gateway_order_serial_event(
+                environment=self.environment,
+                operation="place_bracket_order",
+                result="ok" if result.get("ok") else "error",
+                queue_wait_s=gate_info.get("queue_wait_s"),
+            )
         self._record_bracket_order_metrics(
             result=result,
             order_family_type=result.get("order_family_type") or resolved_family_type,
@@ -640,6 +752,7 @@ class OrderPlacer:
             symbol=str(symbol or "").upper(),
             direction=str(direction or "").lower(),
             signal_id=signal_id,
+            pre_reservation=buying_power_pre_reservation,
         )
         return payload
 
@@ -721,15 +834,34 @@ class OrderPlacer:
 
     def place_market_close(self, *args, **kwargs) -> Dict[str, Any]:
         metadata = self._market_close_call_metadata(args, kwargs)
+        return self.symbol_scheduler.submit(
+            symbol=metadata.get("symbol"),
+            operation="place_market_close",
+            priority=10,
+            metadata=metadata,
+            fn=lambda: self._place_market_close_queued(args, kwargs, metadata=metadata),
+        )
+
+    def _place_market_close_queued(
+        self,
+        args: tuple,
+        kwargs: dict,
+        *,
+        metadata: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        metadata = dict(metadata or self._market_close_call_metadata(args, kwargs))
         try:
-            with self.gateway_gate.hold("place_market_close", **metadata) as gate_info:
+            if getattr(self.broker, "uses_internal_gateway_write_lock", False):
                 result = self._place_market_close_unlocked(*args, **kwargs)
-            record_gateway_order_serial_event(
-                environment=self.environment,
-                operation="place_market_close",
-                result="ok" if result.get("ok") else "error",
-                queue_wait_s=gate_info.get("queue_wait_s"),
-            )
+            else:
+                with self.gateway_gate.hold("place_market_close", **metadata) as gate_info:
+                    result = self._place_market_close_unlocked(*args, **kwargs)
+                record_gateway_order_serial_event(
+                    environment=self.environment,
+                    operation="place_market_close",
+                    result="ok" if result.get("ok") else "error",
+                    queue_wait_s=gate_info.get("queue_wait_s"),
+                )
             return result
         except GatewayOrderMutationTimeout as exc:
             logger.error("Gateway close queue timeout: operation=%s timeout=%ss", exc.operation, exc.timeout_s)
@@ -805,18 +937,21 @@ class OrderPlacer:
             limit_price,
             acct_id or "-",
         )
-        result = self.broker.place_market_close(
-            conid=int(conid or 0),
-            symbol=symbol,
-            direction=direction,
-            quantity=int(quantity or 0),
-            account_id=acct_id,
-            order_ref=close_order_ref,
-            order_type=order_type,
-            limit_price=limit_price,
-            wait_for_fill=wait_for_fill,
-            fill_timeout=fill_timeout,
-        )
+        broker_kwargs = {
+            "conid": int(conid or 0),
+            "symbol": symbol,
+            "direction": direction,
+            "quantity": int(quantity or 0),
+            "account_id": acct_id,
+            "order_ref": close_order_ref,
+            "order_type": order_type,
+            "limit_price": limit_price,
+            "wait_for_fill": wait_for_fill,
+            "fill_timeout": fill_timeout,
+        }
+        if getattr(self.broker, "uses_internal_gateway_write_lock", False):
+            broker_kwargs["metric_environment"] = self.environment
+        result = self.broker.place_market_close(**broker_kwargs)
         order_ids: List[str] = []
         for key in ("order_ids", "submitted_order_ids", "broker_order_ids", "submitted_broker_order_ids"):
             value = result.get(key)
@@ -1161,10 +1296,22 @@ class OrderPlacer:
             )
 
     def status(self) -> dict:
+        symbol_queue_status = {}
+        gateway_gate_status = {}
+        try:
+            symbol_queue_status = self.symbol_scheduler.status()
+        except Exception:
+            symbol_queue_status = {}
+        try:
+            gateway_gate_status = self.gateway_gate.status()
+        except Exception:
+            gateway_gate_status = {}
         return {
             "account_id": self.account_id,
             "total_orders": self._order_count,
             "question_suppression_enabled": self._suppression_enabled,
             "question_suppression_attempted": self._suppression_attempted,
             "question_suppression_message_ids": list(self._suppression_message_ids),
+            "symbol_queue": symbol_queue_status,
+            "gateway_order_gate": gateway_gate_status,
         }

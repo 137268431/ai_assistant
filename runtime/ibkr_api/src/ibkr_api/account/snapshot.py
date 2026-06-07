@@ -360,7 +360,7 @@ def build_account_snapshot_response(
     include_pnl = _include_pnl_param(payload)
     if include_pnl is not None:
         params.append(("include_pnl", include_pnl))
-    for cache_key in ("cache_bust", "cache", "_"):
+    for cache_key in ("cache_bust", "cache", "_", "orders_fast", "fast_orders", "snapshot_profile", "profile"):
         cache_value = payload.get(cache_key)
         if cache_value not in (None, ""):
             params.append((cache_key, to_text(cache_value)))

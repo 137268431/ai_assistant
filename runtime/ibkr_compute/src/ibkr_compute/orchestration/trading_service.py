@@ -61,6 +61,7 @@ from ibkr_compute.order.order_modifier import OrderModifier
 from ibkr_compute.order.order_lifecycle import OrderLifecycle
 from ibkr_compute.order.buying_power_reservations import BuyingPowerReservationStore
 from ibkr_compute.order.gateway_serial import GatewayOrderMutationGate
+from ibkr_compute.order.symbol_queue import SymbolOrderCommandScheduler
 from ibkr_compute.order_flow import OrderFlowManager
 from ibkr_compute.orchestration.account_snapshot_refresh import TradingServiceAccountSnapshotRefreshMixin
 from ibkr_compute.orchestration.auth_recovery import TradingServiceAuthRecoveryMixin
@@ -300,6 +301,7 @@ class IBKRTradingService(
         )
 
         self.gateway_order_gate = GatewayOrderMutationGate(config=self.config, environment=ENVIRONMENT)
+        self.symbol_order_scheduler = SymbolOrderCommandScheduler(config=self.config, environment=ENVIRONMENT)
         self.buying_power_reservations = BuyingPowerReservationStore(
             pb_client=self.pb,
             environment=ENVIRONMENT,
@@ -311,6 +313,7 @@ class IBKRTradingService(
             broker=self.broker,
             gateway_gate=self.gateway_order_gate,
             reservation_store=self.buying_power_reservations,
+            symbol_scheduler=self.symbol_order_scheduler,
         )
         self.order_modifier = OrderModifier(
             pb_client=self.pb,
@@ -318,6 +321,7 @@ class IBKRTradingService(
             config=self.config,
             environment=ENVIRONMENT,
             gateway_gate=self.gateway_order_gate,
+            symbol_scheduler=self.symbol_order_scheduler,
         )
         self.order_tracker = OrderTracker(
             pb_client=self.pb,

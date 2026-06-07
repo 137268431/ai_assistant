@@ -70,6 +70,12 @@ class OrderTracker:
                 add_fill_listener(self.on_execution_fill_update)
             except Exception as exc:
                 logger.debug("Failed to register execution fill listener: %s", exc)
+        add_order_listener = getattr(self.broker, "add_order_update_listener", None)
+        if callable(add_order_listener):
+            try:
+                add_order_listener(self.on_broker_order_update)
+            except Exception as exc:
+                logger.debug("Failed to register broker order listener: %s", exc)
 
     def _get_int_setting(self, key: str, fallback: int) -> int:
         if not self.config:
@@ -138,6 +144,25 @@ class OrderTracker:
     def _account_data_backoff_remaining(self) -> float:
         return max(0.0, float(self._account_data_backoff_until or 0.0) - time.time())
 
+    def _account_data_backoff_applies(self, operation: str) -> bool:
+        reason = str(self._account_data_backoff_reason or "").strip().lower()
+        if not reason:
+            return True
+        if "account_data_circuit_open" in reason:
+            return True
+        normalized = str(operation or "").strip().lower()
+        if "account_data_request_queue_timeout" in reason:
+            if normalized == "live_orders":
+                return "open_orders" in reason
+            if normalized == "recent_execution_fills":
+                return "executions" in reason
+            return True
+        if normalized == "live_orders":
+            return "open_orders" in reason
+        if normalized == "recent_execution_fills":
+            return "executions" in reason
+        return True
+
     def _mark_account_data_backoff(self, exc: Exception | str, *, operation: str) -> None:
         reason = self._account_data_error_text(exc) or "account_data_unavailable"
         retry_after = self._retry_after_seconds(reason)
@@ -156,6 +181,8 @@ class OrderTracker:
     def _should_skip_account_data_fetch(self, *, operation: str) -> bool:
         remaining = self._account_data_backoff_remaining()
         if remaining <= 0:
+            return False
+        if not self._account_data_backoff_applies(operation):
             return False
         now = time.time()
         if now - float(self._account_data_backoff_last_warn_at or 0.0) >= 15.0:
@@ -526,6 +553,33 @@ class OrderTracker:
         )
         return []
 
+    def get_cached_live_orders(self, *, include_all: bool = False) -> List[Dict]:
+        getter = getattr(self.broker, "list_cached_open_orders", None)
+        if not callable(getter):
+            return []
+        try:
+            rows = list(getter(include_all=include_all) or [])
+        except TypeError:
+            rows = list(getter() or [])
+        except Exception as exc:
+            logger.debug("Cached live orders fetch failed: %s", exc)
+            return []
+
+        results: List[Dict] = []
+        seen: set[str] = set()
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            order_id = self._normalize_text(item.get("orderId") or item.get("order_id") or item.get("id"))
+            if not order_id or order_id in seen:
+                continue
+            merged = self._merge_order_with_known_state(order_id, item)
+            status = self._extract_order_status(merged)
+            if include_all or self._is_open_order_status(status):
+                results.append(merged)
+                seen.add(order_id)
+        return results
+
     def _build_fill_history_index(self, fills: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Dict[str, Any]]:
         index: Dict[str, Dict[str, Any]] = {}
         if fills is None:
@@ -652,6 +706,23 @@ class OrderTracker:
             retry_delay=retry_delay,
             force=force,
         )
+        cached_broker_orders = self.get_cached_live_orders(include_all=True)
+        if cached_broker_orders:
+            bulk_by_id: Dict[str, Dict[str, Any]] = {}
+            for item in bulk_list or []:
+                if not isinstance(item, dict):
+                    continue
+                order_id = self._normalize_text(item.get("orderId") or item.get("order_id") or item.get("id"))
+                if order_id:
+                    bulk_by_id[order_id] = dict(item)
+            for item in cached_broker_orders:
+                order_id = self._normalize_text(item.get("orderId") or item.get("order_id") or item.get("id"))
+                if not order_id:
+                    continue
+                existing = dict(bulk_by_id.get(order_id) or {})
+                existing.update(item)
+                bulk_by_id[order_id] = existing
+            bulk_list = list(bulk_by_id.values())
         if not bulk_list and seed_sources:
             try:
                 bulk_list = self.get_live_orders(
@@ -736,6 +807,11 @@ class OrderTracker:
                 "bulk_order_ids": [
                     self._normalize_text(item.get("orderId") or item.get("order_id") or item.get("id"))
                     for item in bulk_list or []
+                    if isinstance(item, dict) and self._normalize_text(item.get("orderId") or item.get("order_id") or item.get("id"))
+                ],
+                "cached_order_ids": [
+                    self._normalize_text(item.get("orderId") or item.get("order_id") or item.get("id"))
+                    for item in cached_broker_orders or []
                     if isinstance(item, dict) and self._normalize_text(item.get("orderId") or item.get("order_id") or item.get("id"))
                 ],
             },
@@ -1114,7 +1190,7 @@ class OrderTracker:
         merged.update(order)
         merged["orderId"] = order_id
         merged["_order_update_source"] = str(source or "")
-        merged["broker_realtime_callback"] = bool(source == "ws" and order.get("broker_realtime_callback"))
+        merged["broker_realtime_callback"] = bool(source in {"ws", "broker"} and order.get("broker_realtime_callback"))
         merged = self._stabilize_live_order_merge(prev, merged)
         merged = self._stamp_known_order(merged, seen_live=True)
         should_sync = self._order_needs_sync(prev, merged)
@@ -1225,6 +1301,15 @@ class OrderTracker:
         if not isinstance(order, dict):
             return
         applied = self._handle_live_order_payload(order, source="ws")
+        if applied:
+            self._live_update_count += 1
+            self._last_live_update = time.time()
+            self._mark_order_activity()
+
+    def on_broker_order_update(self, order: Dict):
+        if not isinstance(order, dict):
+            return
+        applied = self._handle_live_order_payload(order, source="broker")
         if applied:
             self._live_update_count += 1
             self._last_live_update = time.time()

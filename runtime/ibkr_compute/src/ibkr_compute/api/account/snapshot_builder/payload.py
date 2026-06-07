@@ -25,7 +25,8 @@ from ibkr_compute.api.account.snapshot_builder.context import (
 )
 from ibkr_compute.api.account.snapshot_builder.fetch import fetch_snapshot_sources
 from ibkr_compute.api.account.snapshot_builder.recovery import (
-    load_pb_fallback_order_ids,
+    load_pb_fallback_order_rows,
+    pb_order_rows_to_live_orders,
     recover_live_open_orders,
 )
 
@@ -516,12 +517,18 @@ def _build_fresh_ibkr_account_snapshot_payload(service, context: dict) -> dict:
     source_errors = snapshot_sources.get("errors") if isinstance(snapshot_sources.get("errors"), dict) else {}
     if source_errors.get("positions") and not bool(snapshot_sources.get("positions_loaded")):
         raise RuntimeError(str(source_errors.get("positions") or "account_positions_unavailable"))
-    fallback_ids = load_pb_fallback_order_ids(api_app, service)
+    fallback_rows = load_pb_fallback_order_rows(api_app, service)
+    fallback_ids = [
+        str(row.get("broker_order_id") or row.get("order_id") or "").strip()
+        for row in fallback_rows
+        if isinstance(row, dict) and str(row.get("broker_order_id") or row.get("order_id") or "").strip()
+    ]
     merged_orders_raw, live_open_payload = recover_live_open_orders(
         api_app,
         service,
         snapshot_sources["orders_raw"],
         fallback_ids,
+        fallback_rows=fallback_rows,
     )
     positions, orders, live_open_orders, live_open_payload = _normalize_snapshot_rows(
         context["account_id"],
@@ -570,6 +577,172 @@ def _build_fresh_ibkr_account_snapshot_payload(service, context: dict) -> dict:
     return _decorate_account_snapshot_health(payload)
 
 
+def _load_cached_full_snapshot_for_orders_fast(api_app, context: dict) -> dict:
+    seen: set[tuple] = set()
+    candidate_keys = [
+        context["cache_key"],
+        (context["runtime_environment"], context["account_id"], False),
+        (context["runtime_environment"], context["account_id"], True),
+    ]
+    for cache_key in candidate_keys:
+        if cache_key in seen:
+            continue
+        seen.add(cache_key)
+        cached = load_cached_snapshot(api_app, cache_key, allow_stale=True)
+        if isinstance(cached, dict) and cached:
+            return dict(cached)
+    return {}
+
+
+def _cached_live_order_rows(service) -> tuple[list[dict], str]:
+    tracker = getattr(service, "order_tracker", None)
+    getter = getattr(tracker, "get_cached_live_orders", None)
+    if not callable(getter):
+        return [], "unavailable"
+    try:
+        rows = list(getter(include_all=True) or [])
+    except TypeError:
+        try:
+            rows = list(getter() or [])
+        except Exception:
+            return [], "error"
+    except Exception:
+        return [], "error"
+    return [dict(item) for item in rows if isinstance(item, dict)], "callback_cache"
+
+
+def _order_identity(order: dict) -> str:
+    if not isinstance(order, dict):
+        return ""
+    return str(order.get("orderId") or order.get("order_id") or order.get("id") or "").strip()
+
+
+def _merge_cached_and_pb_order_rows(cached_rows: list[dict], fallback_rows: list[dict]) -> list[dict]:
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for item in cached_rows or []:
+        order_id = _order_identity(item)
+        if order_id:
+            if order_id in seen:
+                continue
+            seen.add(order_id)
+        merged.append(dict(item))
+    for item in pb_order_rows_to_live_orders(fallback_rows):
+        order_id = _order_identity(item)
+        if order_id and order_id in seen:
+            continue
+        if order_id:
+            seen.add(order_id)
+        merged.append(item)
+    return merged
+
+
+def _build_orders_fast_live_open_payload(cached_rows: list[dict], fallback_rows: list[dict]) -> dict:
+    pb_orders = pb_order_rows_to_live_orders(fallback_rows)
+    cached_ids = [_order_identity(item) for item in cached_rows or [] if _order_identity(item)]
+    pb_ids = [_order_identity(item) for item in pb_orders if _order_identity(item)]
+    open_like_cached = [
+        item for item in cached_rows or []
+        if str(item.get("status") or item.get("order_status") or item.get("orderStatus") or "").strip().upper()
+        not in {"", "FILLED", "EXECUTED", "CANCELLED", "CANCELED", "INACTIVE", "REJECTED", "EXPIRED", "API_CANCELLED"}
+    ]
+    orders = _merge_cached_and_pb_order_rows(open_like_cached, fallback_rows)
+    return {
+        "orders": orders,
+        "coverage": {
+            "coverage_state": "cache_only",
+            "bulk_open_count": len(open_like_cached),
+            "recovered_from_status_count": 0,
+            "tracker_seed_count": 0,
+            "pb_seed_count": len(pb_ids),
+            "unresolved_seed_count": 0,
+            "unresolved_order_ids": [],
+        },
+        "diagnostics": {
+            "seed_sources": {order_id: ["pb"] for order_id in pb_ids},
+            "recovered_order_ids": [],
+            "resolved_closed_order_ids": [],
+            "bulk_order_ids": cached_ids,
+            "cached_order_ids": cached_ids,
+            "pb_seed_order_ids": pb_ids,
+            "cache_only": True,
+        },
+    }
+
+
+def _build_orders_fast_ibkr_account_snapshot_payload(service, context: dict) -> dict:
+    api_app = context["api_app"]
+    cached_full = _load_cached_full_snapshot_for_orders_fast(api_app, context)
+    fallback_rows = load_pb_fallback_order_rows(api_app, service)
+    cached_order_rows, cached_order_source = _cached_live_order_rows(service)
+    merged_orders_raw = _merge_cached_and_pb_order_rows(cached_order_rows, fallback_rows)
+    live_open_payload = _build_orders_fast_live_open_payload(cached_order_rows, fallback_rows)
+    cached_positions = cached_full.get("positions") if isinstance(cached_full.get("positions"), list) else []
+    positions, orders, live_open_orders, live_open_payload = _normalize_snapshot_rows(
+        context["account_id"],
+        cached_positions,
+        merged_orders_raw,
+        live_open_payload,
+        [
+            str(row.get("broker_order_id") or row.get("order_id") or "").strip()
+            for row in fallback_rows
+            if isinstance(row, dict) and str(row.get("broker_order_id") or row.get("order_id") or "").strip()
+        ],
+    )
+    summary = dict(cached_full.get("summary") or {})
+    summary_raw = dict(cached_full.get("summary_raw") or {})
+    pnl_raw = dict(cached_full.get("pnl_raw") or {})
+    if not summary:
+        summary = _build_snapshot_summary(summary_raw, context["account_id"], positions, pnl_raw)
+    guard = dict(cached_full.get("buying_power_guard") or {})
+    if not guard:
+        guard = build_buying_power_guard(
+            summary,
+            config=getattr(service, "config", None),
+            environment=context["runtime_environment"],
+        )
+    guard.setdefault("source", "orders_fast_cached_summary" if cached_full else "orders_fast")
+    errors = dict(cached_full.get("errors") or {})
+    if not _summary_snapshot_available(summary):
+        errors.setdefault("summary", "orders_fast_summary_cache_unavailable")
+    payload = {
+        "ok": True,
+        "environment": context["runtime_environment"],
+        "account_id": context["account_id"],
+        "service_running": bool(getattr(service, "is_running", False)),
+        "service_starting": bool(getattr(service, "is_starting", False)),
+        "session_authenticated": bool((context["service_status"].get("session") or {}).get("authenticated")),
+        "gateway_running": bool((context["service_status"].get("gateway") or {}).get("running")),
+        "websocket_ready": bool((context["service_status"].get("websocket") or {}).get("ready")),
+        "summary": summary,
+        "buying_power_guard": guard,
+        "summary_raw": summary_raw,
+        "pnl_raw": pnl_raw,
+        "include_pnl": bool(context["include_pnl"]),
+        "positions": positions,
+        "orders": orders,
+        "live_open_orders": live_open_orders,
+        "live_order_coverage": live_open_payload.get("coverage") or {},
+        "recovery_diagnostics": live_open_payload.get("diagnostics") or {},
+        "counts": _build_snapshot_counts(positions, orders, live_open_orders),
+        "errors": errors,
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "source": "account_snapshot_orders_fast",
+        "snapshot_profile": "orders_fast",
+        "orders_fast": True,
+        "orders_fast_diagnostics": {
+            "order_source": cached_order_source,
+            "cached_order_count": len(cached_order_rows),
+            "pb_fallback_order_count": len(fallback_rows),
+            "summary_source": "snapshot_cache" if cached_full else "unavailable",
+            "summary_cache_state": str(cached_full.get("cache_state") or "") if cached_full else "",
+            "summary_cache_age_s": cached_full.get("cache_age_s") if cached_full else None,
+            "skipped_account_data_fetch": True,
+        },
+    }
+    return _decorate_account_snapshot_health(payload)
+
+
 def refresh_account_snapshot_cache(service, *, include_pnl: bool = False) -> dict:
     return _build_ibkr_account_snapshot(service, include_pnl=include_pnl, force_refresh=True, allow_stale=True)
 
@@ -580,9 +753,12 @@ def _build_ibkr_account_snapshot(
     include_pnl: bool = True,
     force_refresh: bool = False,
     allow_stale: bool = True,
+    orders_fast: bool = False,
 ) -> dict:
     context = build_snapshot_context(service, include_pnl=include_pnl)
     api_app = context["api_app"]
+    if orders_fast:
+        return _build_orders_fast_ibkr_account_snapshot_payload(service, context)
     cache_key = context["cache_key"]
     if not force_refresh:
         cached = load_cached_snapshot(api_app, cache_key, allow_stale=allow_stale)

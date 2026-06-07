@@ -654,6 +654,24 @@ if _client_available():
         "Timeouts while waiting for the shared IB Gateway order mutation gate.",
         ("service", "environment", "operation"),
     )
+    ORDER_SYMBOL_QUEUE_WAIT = Histogram(
+        "ibkr_order_symbol_queue_wait_seconds",
+        "Wait time before a command starts in the per-symbol order queue.",
+        ("service", "environment", "operation", "result"),
+        buckets=_DEFAULT_BUCKETS,
+    )
+    ORDER_SYMBOL_QUEUE_ACTIVE = Histogram(
+        "ibkr_order_symbol_queue_active_seconds",
+        "Active execution time for commands run by the per-symbol order queue.",
+        ("service", "environment", "operation", "result"),
+        buckets=_DEFAULT_BUCKETS,
+    )
+    ORDER_SYMBOL_QUEUE_ACTIVE_SYMBOLS = Histogram(
+        "ibkr_order_symbol_queue_active_symbols",
+        "Number of active symbols observed when a per-symbol order command starts.",
+        ("service", "environment", "operation", "result"),
+        buckets=(1, 2, 3, 4, 5, 8, 12, 16, float("inf")),
+    )
     SIGNAL_EVENTS = Counter(
         "ibkr_signal_events_total",
         "Signal processing events.",
@@ -698,6 +716,7 @@ else:  # pragma: no cover
     BROKER_REQUESTS = BROKER_REQUEST_DURATION = BROKER_PENDING_REQUESTS = None
     HISTORY_EVENTS = HISTORY_DURATION = HISTORY_ACTIVE = HISTORY_ROWS = None
     ORDER_EVENTS = ORDER_DURATION = ORDER_SERIAL_QUEUE_WAIT = ORDER_SERIAL_TIMEOUTS = None
+    ORDER_SYMBOL_QUEUE_WAIT = ORDER_SYMBOL_QUEUE_ACTIVE = ORDER_SYMBOL_QUEUE_ACTIVE_SYMBOLS = None
     SIGNAL_EVENTS = SIGNAL_RECORDS = SIGNAL_DURATION = None
 
 
@@ -1531,6 +1550,30 @@ def record_gateway_order_serial_event(*, environment: str = "", operation: str, 
     if ORDER_SERIAL_TIMEOUTS is not None and result_label == "timeout":
         ORDER_SERIAL_TIMEOUTS.labels(service, env, op).inc()
 
+
+def record_symbol_order_queue_event(
+    *,
+    environment: str = "",
+    operation: str,
+    result: str = "ok",
+    queue_wait_s: float | None = None,
+    active_elapsed_s: float | None = None,
+    active_symbols: int | None = None,
+) -> None:
+    if not _client_available():
+        return
+    service = resolve_source_service()
+    env = _sanitize_label(environment or os.environ.get("IBKR_BROKER_MODE") or "unknown")
+    op = _sanitize_label(operation or "order_command")
+    result_label = _sanitize_label(result or "ok")
+    if ORDER_SYMBOL_QUEUE_WAIT is not None and queue_wait_s is not None:
+        ORDER_SYMBOL_QUEUE_WAIT.labels(service, env, op, result_label).observe(max(0.0, float(queue_wait_s or 0.0)))
+    if ORDER_SYMBOL_QUEUE_ACTIVE is not None and active_elapsed_s is not None:
+        ORDER_SYMBOL_QUEUE_ACTIVE.labels(service, env, op, result_label).observe(max(0.0, float(active_elapsed_s or 0.0)))
+    if ORDER_SYMBOL_QUEUE_ACTIVE_SYMBOLS is not None and active_symbols is not None:
+        ORDER_SYMBOL_QUEUE_ACTIVE_SYMBOLS.labels(service, env, op, result_label).observe(max(0.0, float(active_symbols or 0)))
+
+
 def record_signal_event(*, environment: str = "", stage: str, signal_source: str = "unknown", result: str, reason_code: str = "", duration_s: float | None = None) -> None:
     if not _client_available():
         return
@@ -1640,6 +1683,7 @@ __all__ = [
     "record_order_event",
     "record_signal_event",
     "record_signal_record_created",
+    "record_symbol_order_queue_event",
     "refresh_component_version_metrics",
     "register_flask_metrics",
     "register_prometheus_metrics",

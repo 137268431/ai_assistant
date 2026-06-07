@@ -128,33 +128,44 @@ def _notify_manual_buying_power_event(
 
 
 def _build_ibkr_cancel_order_response(service, payload: dict) -> tuple[dict, int]:
+    action_started_at = time.perf_counter()
     order_id = str((payload or {}).get("order_id") or (payload or {}).get("id") or "").strip()
     acct_id = str((payload or {}).get("account_id") or "").strip() or None
     if not order_id:
         return {"ok": False, "error": "Missing order_id"}, 400
 
+    operation_started_at = time.perf_counter()
     result = service.order_modifier.cancel_order(order_id, acct_id=acct_id)
+    operation_elapsed_s = time.perf_counter() - operation_started_at
     return _build_snapshot_action_response(
         service,
         "cancel_order",
         result,
-        delay_seconds=0.5,
+        delay_seconds=0.0,
         extra={"order_id": order_id},
+        action_started_at=action_started_at,
+        operation_elapsed_s=operation_elapsed_s,
     )
 
 
 def _build_ibkr_cancel_all_orders_response(service, payload: dict) -> tuple[dict, int]:
+    action_started_at = time.perf_counter()
     acct_id = str((payload or {}).get("account_id") or "").strip() or None
+    operation_started_at = time.perf_counter()
     result = service.order_modifier.cancel_all_orders(acct_id=acct_id)
+    operation_elapsed_s = time.perf_counter() - operation_started_at
     return _build_snapshot_action_response(
         service,
         "cancel_all_orders",
         result,
-        delay_seconds=0.5,
+        delay_seconds=0.0,
+        action_started_at=action_started_at,
+        operation_elapsed_s=operation_elapsed_s,
     )
 
 
 def _build_ibkr_modify_order_response(service, payload: dict) -> tuple[dict, int]:
+    action_started_at = time.perf_counter()
     order_id = str((payload or {}).get("order_id") or (payload or {}).get("id") or "").strip()
     acct_id = str((payload or {}).get("account_id") or "").strip() or None
     updates = {}
@@ -175,20 +186,25 @@ def _build_ibkr_modify_order_response(service, payload: dict) -> tuple[dict, int
     if not updates:
         return {"ok": False, "error": "No valid modify fields supplied"}, 400
 
+    operation_started_at = time.perf_counter()
     result = service.order_modifier.modify_order(order_id, updates, acct_id=acct_id)
+    operation_elapsed_s = time.perf_counter() - operation_started_at
     return _build_snapshot_action_response(
         service,
         "modify_order",
         result,
-        delay_seconds=0.5,
+        delay_seconds=0.0,
         extra={
             "order_id": order_id,
             "updates": updates,
         },
+        action_started_at=action_started_at,
+        operation_elapsed_s=operation_elapsed_s,
     )
 
 
 def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]:
+    action_started_at = time.perf_counter()
     api_app = _api_app()
     runtime_environment = api_app._ibkr_service_environment(service)
     if runtime_environment == "backtest":
@@ -425,6 +441,7 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
         }, 409
 
     signal_id = f"MANUAL_{runtime_environment.upper()}_{symbol}_{int(time.time())}"
+    operation_started_at = time.perf_counter()
     result = service.order_placer.place_bracket_order(
         conid=conid,
         symbol=symbol,
@@ -438,6 +455,7 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
         entry_order_type=order_type,
         buying_power_guard=buying_power_guard,
     )
+    operation_elapsed_s = time.perf_counter() - operation_started_at
     submitted_buying_power_guard = (
         dict(result.get("buying_power_guard"))
         if isinstance(result.get("buying_power_guard"), dict)
@@ -458,7 +476,7 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
         service,
         "place_order",
         result,
-        delay_seconds=0.75,
+        delay_seconds=0.0,
         extra={
             "environment": runtime_environment,
             "symbol": symbol,
@@ -473,6 +491,8 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
             "buying_power_guard": submitted_buying_power_guard,
             "pre_submit_buying_power_guard": buying_power_guard,
         },
+        action_started_at=action_started_at,
+        operation_elapsed_s=operation_elapsed_s,
     )
 
 
