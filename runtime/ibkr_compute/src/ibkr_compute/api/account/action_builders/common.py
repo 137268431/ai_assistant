@@ -6,6 +6,61 @@ from ibkr_compute.api.account.snapshot import _build_ibkr_account_snapshot
 from ibkr_compute.observability.prometheus import record_order_event
 
 
+_CLOSED_ORDER_STATUSES = {"FILLED", "EXECUTED", "CANCELLED", "CANCELED", "INACTIVE", "REJECTED", "EXPIRED", "API_CANCELLED"}
+
+
+def _cached_order_rows(service) -> list[dict]:
+    tracker = getattr(service, "order_tracker", None)
+    getter = getattr(tracker, "get_cached_live_orders", None)
+    if not callable(getter):
+        return []
+    try:
+        rows = getter(include_all=True)
+    except TypeError:
+        try:
+            rows = getter()
+        except Exception:
+            return []
+    except Exception:
+        return []
+    return [dict(item) for item in list(rows or []) if isinstance(item, dict)]
+
+
+def _order_status(row: dict) -> str:
+    return str(row.get("status") or row.get("order_status") or row.get("orderStatus") or "").strip().upper()
+
+
+def _build_fast_action_snapshot(service) -> dict:
+    rows = _cached_order_rows(service)
+    open_rows = [item for item in rows if _order_status(item) not in _CLOSED_ORDER_STATUSES]
+    return {
+        "ok": True,
+        "environment": str(getattr(service, "environment", "") or ""),
+        "source": "account_action_orders_fast",
+        "snapshot_profile": "orders_fast_action",
+        "orders_fast": True,
+        "summary_available": None,
+        "orders": rows,
+        "live_open_orders": open_rows,
+        "counts": {
+            "orders": len(rows),
+            "open_orders": len(open_rows),
+            "cancelable_orders": len(open_rows),
+            "editable_orders": len(open_rows),
+            "positions": 0,
+            "open_positions": 0,
+        },
+        "orders_fast_diagnostics": {
+            "order_source": "callback_cache",
+            "cached_order_count": len(rows),
+            "pb_fallback_order_count": 0,
+            "pb_fallback_skipped": True,
+            "skipped_account_data_fetch": True,
+            "skipped_full_snapshot": True,
+        },
+    }
+
+
 def _build_snapshot_action_response(
     service,
     action: str,
@@ -34,11 +89,15 @@ def _build_snapshot_action_response(
         }
         force_refresh = bool(snapshot_force_refresh) if snapshot_force_refresh is not None else action not in fast_snapshot_actions
         allow_stale = bool(snapshot_allow_stale) if snapshot_allow_stale is not None else action in fast_snapshot_actions
-        snapshot = _build_ibkr_account_snapshot(
-            service,
-            force_refresh=force_refresh,
-            allow_stale=allow_stale,
-        )
+        use_orders_fast_snapshot = action in fast_snapshot_actions
+        if use_orders_fast_snapshot:
+            snapshot = _build_fast_action_snapshot(service)
+        else:
+            snapshot = _build_ibkr_account_snapshot(
+                service,
+                force_refresh=force_refresh,
+                allow_stale=allow_stale,
+            )
         ok = bool((result or {}).get("ok"))
         payload = {
             "ok": ok,

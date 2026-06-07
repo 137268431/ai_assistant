@@ -447,11 +447,20 @@ class GatewaySerialAndReservationTest(unittest.TestCase):
         self.assertEqual(2, result["submitted"])
 
     def test_action_response_reports_total_operation_and_snapshot_elapsed(self):
+        class _Tracker:
+            def get_cached_live_orders(self, *, include_all=False):
+                self.include_all = include_all
+                return [
+                    {"orderId": "101", "status": "Submitted"},
+                    {"orderId": "102", "status": "Cancelled"},
+                ]
+
         class _Service:
             environment = "paper"
+            order_tracker = _Tracker()
 
         started_at = time.perf_counter() - 0.05
-        with mock.patch.object(action_common, "_build_ibkr_account_snapshot", return_value={"ok": True}):
+        with mock.patch.object(action_common, "_build_ibkr_account_snapshot", return_value={"ok": True}) as snapshot_builder:
             payload, status = action_common._build_snapshot_action_response(
                 _Service(),
                 "place_order",
@@ -464,6 +473,10 @@ class GatewaySerialAndReservationTest(unittest.TestCase):
         self.assertGreaterEqual(payload["order_action_elapsed_s"], 0.04)
         self.assertEqual(0.04, payload["order_operation_elapsed_s"])
         self.assertGreaterEqual(payload["order_snapshot_elapsed_s"], 0.0)
+        snapshot_builder.assert_not_called()
+        self.assertEqual("account_action_orders_fast", payload["snapshot"]["source"])
+        self.assertEqual(2, payload["snapshot"]["counts"]["orders"])
+        self.assertEqual(1, payload["snapshot"]["counts"]["open_orders"])
 
     def test_modify_price_confirmation_uses_local_callback_before_refresh(self):
         class _Client:

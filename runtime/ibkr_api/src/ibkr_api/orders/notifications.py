@@ -1385,21 +1385,16 @@ def _trade_ledger_order_qty(order_record: Any) -> float:
     return to_float(_record_or_extra_value(order_record, "quantity", "totalSize", "totalQuantity")) or 0.0
 
 
-def _trade_ledger_fill_price(order_record: Any) -> float:
-    return (
-        to_float(
-            _record_or_extra_value(
-                order_record,
-                "fill_price",
-                "avg_price",
-                "avgFillPrice",
-                "avgPrice",
-                "last_fill_price",
-                "lastFillPrice",
-                "execution_price",
-            )
-        )
-        or 0.0
+def _trade_ledger_fill_price(order_record: Any) -> float | None:
+    return _positive_number(
+        order_record,
+        "fill_price",
+        "avg_price",
+        "avgFillPrice",
+        "avgPrice",
+        "last_fill_price",
+        "lastFillPrice",
+        "execution_price",
     )
 
 
@@ -1590,7 +1585,7 @@ def _trade_ledger_event_model(order_record: dict[str, Any], previous_order: dict
         "event_type": event_type,
         "status": current_status,
         "filled_qty": round(current_filled, 8),
-        "fill_price": round(_trade_ledger_fill_price(order_record), 8),
+        "fill_price": round(_trade_ledger_fill_price(order_record) or 0.0, 8),
     }
     digest = hashlib.sha1(json.dumps(digest_payload, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()[:16]
     display_status = current_status

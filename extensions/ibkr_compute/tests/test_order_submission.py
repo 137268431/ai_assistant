@@ -66,9 +66,9 @@ class FakeClient:
     def await_order_submission(self, order_id, timeout=3.0, poll_interval=0.2):
         return dict(self.ack_result)
 
-    def await_order_submissions(self, order_ids, timeout=5.0, poll_interval=0.2):
+    def await_order_submissions(self, order_ids, timeout=5.0, poll_interval=0.2, **kwargs):
         self.await_order_submissions_calls.append(
-            {"order_ids": list(order_ids or []), "timeout": timeout, "poll_interval": poll_interval}
+            {"order_ids": list(order_ids or []), "timeout": timeout, "poll_interval": poll_interval, **kwargs}
         )
         if self.submission_result is not None:
             return dict(self.submission_result)
@@ -191,6 +191,24 @@ class FakeBracketBroker:
             "submission": {"ok": True},
             "protection_complete": True,
         }
+
+
+class FakePendingConfirmBracketBroker(FakeBracketBroker):
+    def place_bracket_order(self, **kwargs):
+        payload = super().place_bracket_order(**kwargs)
+        payload.pop("protection_complete", None)
+        payload["confirmation_mode"] = "background"
+        payload["pending_confirmation"] = True
+        payload["protection_confirmation_pending"] = True
+        payload["submission"] = {
+            "ok": True,
+            "pending_confirmation": True,
+            "confirmation_mode": "background",
+            "order_ids": list(payload.get("order_ids") or []),
+            "orders": {},
+            "missing_order_ids": [],
+        }
+        return payload
 
 
 class FakeMarketCloseBroker:
@@ -627,6 +645,46 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
         self.assertTrue(result["protection_complete"])
         self.assertEqual(["206", "207", "208"], result["order_ids"])
         self.assertEqual(ib_gateway.BRACKET_SUBMISSION_CONFIRM_TIMEOUT_SECONDS, adapter.client.await_order_submissions_calls[-1]["timeout"])
+
+    def test_place_bracket_order_can_fast_ack_and_confirm_in_background(self):
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeClient(open_orders=[{"orderId": "205"}])
+        adapter.resolve_contract = lambda **kwargs: {
+            "conid": 346218218,
+            "symbol": "DELL",
+            "sec_type": "STK",
+            "exchange": "SMART",
+            "currency": "USD",
+        }
+
+        original_order = ib_gateway.Order
+        original_contract = ib_gateway.Contract
+        try:
+            ib_gateway.Order = FakeOrder
+            ib_gateway.Contract = FakeContract
+            with mock.patch.object(adapter, "_start_bracket_submission_background_confirmation") as background_confirm:
+                result = ib_gateway.BrokerAdapter.place_bracket_order(
+                    adapter,
+                    conid=346218218,
+                    symbol="DELL",
+                    direction="long",
+                    quantity=53,
+                    entry_price=191.23,
+                    take_profit_price=195.48,
+                    stop_loss_price=188.4,
+                    confirmation_mode="background",
+                )
+        finally:
+            ib_gateway.Order = original_order
+            ib_gateway.Contract = original_contract
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["pending_confirmation"])
+        self.assertTrue(result["protection_confirmation_pending"])
+        self.assertEqual("background", result["confirmation_mode"])
+        self.assertEqual(["206", "207", "208"], result["order_ids"])
+        self.assertEqual([], adapter.client.await_order_submissions_calls)
+        background_confirm.assert_called_once()
 
     def test_place_bracket_order_sets_child_oca_metadata(self):
         adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
@@ -1463,6 +1521,10 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
         self.assertEqual(88.91, adapter.client.order.auxPrice)
         self.assertEqual(88.91, result["price_normalization"]["auxPrice"]["normalized"])
 
+    def test_ib_unset_double_price_is_treated_as_missing(self):
+        self.assertEqual(0.0, ib_gateway._safe_float("1.7976931348623157e+308", 0.0))
+        self.assertEqual(0.0, ib_gateway._safe_float(float("inf"), 0.0))
+
 
 class IBGatewayOrderSubmissionWarningTest(unittest.TestCase):
     @staticmethod
@@ -1749,6 +1811,30 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
         self.assertEqual("Patient", broker.calls[0]["entry_adaptive_priority"])
         self.assertEqual("Adaptive", result["entry_algo_strategy"])
         self.assertEqual("Patient", result["entry_adaptive_priority"])
+
+    def test_order_placer_treats_background_confirmation_as_pending_not_incomplete(self):
+        pb_client = FakeOrderPBClient()
+        broker = FakePendingConfirmBracketBroker()
+        placer = OrderPlacer(pb_client=pb_client, broker=broker, account_id="DU123")
+
+        result = placer.place_bracket_order(
+            conid=123,
+            symbol="AAPL",
+            direction="long",
+            quantity=10,
+            entry_price=100.15,
+            take_profit_price=104.0,
+            stop_loss_price=98.0,
+            signal_id="sig-aapl",
+            confirmation_mode="background",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["pending_confirmation"])
+        self.assertTrue(result["protection_confirmation_pending"])
+        self.assertFalse(result["protection_incomplete"])
+        self.assertEqual("", result["recommended_action"])
+        self.assertEqual("background", broker.calls[0]["confirmation_mode"])
 
     def test_bracket_order_links_origin_signal_execution_metadata_in_live_data_env(self):
         pb_client = FakeOrderAndSignalPBClient(

@@ -335,6 +335,33 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertEqual("1001", payload["live_open_orders"][0]["order_id"])
         self.assertEqual("orders_fast_summary_cache_unavailable", payload["errors"]["summary"])
 
+    def test_orders_fast_snapshot_skips_full_runtime_status(self):
+        class _SlowStatusService(_SnapshotService):
+            status_calls = 0
+
+            def status(self, *args, **kwargs):
+                self.status_calls += 1
+                time.sleep(0.05)
+                return {"gateway": {"running": True}}
+
+        app = _FakeApiApp()
+        service = _SlowStatusService(_SnapshotLifecycle(delay=0.05))
+        service.order_tracker = _FastOrderTracker([])
+
+        payload = _with_fake_api_app(
+            app,
+            lambda: _build_ibkr_account_snapshot(
+                service,
+                include_pnl=False,
+                force_refresh=True,
+                allow_stale=False,
+                orders_fast=True,
+            ),
+        )
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(0, service.status_calls)
+
     def test_orders_fast_snapshot_reuses_cached_full_summary(self):
         app = _FakeApiApp()
         lifecycle = _SnapshotLifecycle()

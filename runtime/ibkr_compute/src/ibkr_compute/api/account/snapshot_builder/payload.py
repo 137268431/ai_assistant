@@ -673,8 +673,8 @@ def _build_orders_fast_live_open_payload(cached_rows: list[dict], fallback_rows:
 def _build_orders_fast_ibkr_account_snapshot_payload(service, context: dict) -> dict:
     api_app = context["api_app"]
     cached_full = _load_cached_full_snapshot_for_orders_fast(api_app, context)
-    fallback_rows = load_pb_fallback_order_rows(api_app, service)
     cached_order_rows, cached_order_source = _cached_live_order_rows(service)
+    fallback_rows = [] if cached_order_rows else load_pb_fallback_order_rows(api_app, service)
     merged_orders_raw = _merge_cached_and_pb_order_rows(cached_order_rows, fallback_rows)
     live_open_payload = _build_orders_fast_live_open_payload(cached_order_rows, fallback_rows)
     cached_positions = cached_full.get("positions") if isinstance(cached_full.get("positions"), list) else []
@@ -734,6 +734,7 @@ def _build_orders_fast_ibkr_account_snapshot_payload(service, context: dict) -> 
             "order_source": cached_order_source,
             "cached_order_count": len(cached_order_rows),
             "pb_fallback_order_count": len(fallback_rows),
+            "pb_fallback_skipped": bool(cached_order_rows),
             "summary_source": "snapshot_cache" if cached_full else "unavailable",
             "summary_cache_state": str(cached_full.get("cache_state") or "") if cached_full else "",
             "summary_cache_age_s": cached_full.get("cache_age_s") if cached_full else None,
@@ -755,7 +756,7 @@ def _build_ibkr_account_snapshot(
     allow_stale: bool = True,
     orders_fast: bool = False,
 ) -> dict:
-    context = build_snapshot_context(service, include_pnl=include_pnl)
+    context = build_snapshot_context(service, include_pnl=include_pnl, fast_status=orders_fast)
     api_app = context["api_app"]
     if orders_fast:
         return _build_orders_fast_ibkr_account_snapshot_payload(service, context)

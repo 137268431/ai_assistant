@@ -1378,7 +1378,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--entry-distance-pct", type=float, default=0.50)
     parser.add_argument("--protection-gap-pct", type=float, default=0.15)
     parser.add_argument("--burst-workers", type=int, default=1)
-    parser.add_argument("--burst-spacing-seconds", type=float, default=0.0)
+    parser.add_argument(
+        "--burst-spacing-seconds",
+        type=float,
+        default=0.25,
+        help="Stagger simulated signal submissions so the Gateway is stressed without flooding API/runtime threads at once.",
+    )
     parser.add_argument("--cancel-spacing-seconds", type=float, default=0.75)
     parser.add_argument("--bulk-cancel-all", action="store_true", help="Use one paper cancel_all request for stress cleanup instead of cancelling every known order leg.")
     parser.add_argument("--post-place-sleep-seconds", type=float, default=1.0)

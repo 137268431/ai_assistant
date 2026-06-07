@@ -147,8 +147,12 @@ class AccountSnapshotRoutesTest(unittest.TestCase):
                     "environment": "paper",
                     "summary": {},
                     "positions": [],
-                    "orders": [],
-                    "live_open_orders": [],
+                    "orders": [
+                        {"order_id": "1001", "symbol": "AAPL", "status": "Submitted", "total_quantity": 10}
+                    ],
+                    "live_open_orders": [
+                        {"order_id": "1001", "symbol": "AAPL", "status": "Submitted", "total_quantity": 10}
+                    ],
                     "counts": {},
                 },
                 "target_url": "http://runtime/ibkr/account",
@@ -184,8 +188,12 @@ class AccountSnapshotRoutesTest(unittest.TestCase):
                     "environment": "paper",
                     "summary": {},
                     "positions": [],
-                    "orders": [],
-                    "live_open_orders": [],
+                    "orders": [
+                        {"order_id": "1001", "symbol": "AAPL", "status": "Submitted", "total_quantity": 10}
+                    ],
+                    "live_open_orders": [
+                        {"order_id": "1001", "symbol": "AAPL", "status": "Submitted", "total_quantity": 10}
+                    ],
                     "counts": {},
                 },
                 "target_url": "http://runtime/ibkr/account",
@@ -193,8 +201,9 @@ class AccountSnapshotRoutesTest(unittest.TestCase):
                 "timeout_s": timeout,
             }
 
+        pb = _FakePB(rows={"orders": [{"id": "slow-pb-row"}], "ibkr_signals": []})
         payload, status_code = build_account_snapshot_response(
-            _FakePB(rows={"orders": [], "ibkr_signals": []}),
+            pb,
             payload={
                 "broker_mode": "paper",
                 "environment": "paper",
@@ -217,6 +226,9 @@ class AccountSnapshotRoutesTest(unittest.TestCase):
             ],
             calls[0],
         )
+        self.assertEqual(1, payload["counts"]["open_orders"])
+        self.assertTrue(payload["orders_fast_enrichment"]["skipped_pb_relation_queries"])
+        self.assertEqual([], pb.calls)
 
     def test_enrich_account_snapshot_builds_reconciliation_fields(self):
         pb = _FakePB()

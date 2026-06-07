@@ -185,11 +185,13 @@ def _coerce_float(value, default: float | None = None) -> float | None:
     if isinstance(value, bool):
         return default
     if isinstance(value, (int, float)):
-        return float(value)
+        number = float(value)
+        return default if number != number or abs(number) >= 1e100 else number
     text = str(value).strip().replace(",", "")
     if not text:
         return default
     try:
-        return float(text)
+        number = float(text)
     except Exception:
         return default
+    return default if number != number or abs(number) >= 1e100 else number

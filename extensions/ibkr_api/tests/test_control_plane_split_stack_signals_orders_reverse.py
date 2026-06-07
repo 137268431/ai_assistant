@@ -1147,6 +1147,36 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
             pb.updated[0][2]["extra"]["feishu_trade_ledger_notified_keys"],
         )
 
+    def test_order_callback_ledger_card_hides_ib_unset_double_prices(self):
+        card = build_order_callback_ledger_card(
+            {
+                "symbol": "SPOT",
+                "environment": "paper",
+                "status": "Canceled",
+                "role": "take_profit",
+                "order_type": "LMT",
+                "position_side": "long",
+                "quantity": 20,
+                "filled_qty": 0,
+                "broker_order_id": "4000",
+                "avgFillPrice": "1.7976931348623157e+308",
+                "avg_price": "1.7976931348623157e+308",
+                "extra": {"ib_callback_type": "orderStatus", "lastFillPrice": "1.7976931348623157e+308"},
+            },
+            {
+                "status": "Canceled",
+                "event_label": "已取消",
+                "event_type": "status_change",
+                "callback_type": "orderStatus",
+                "filled_qty": 0,
+                "fill_delta": 0,
+            },
+        )
+
+        content = card["elements"][0]["content"]
+        self.assertIn("**均价 / 最新成交价**: - / -", content)
+        self.assertNotIn("179769313486", content)
+
     def test_sync_order_callback_ledger_notification_includes_exit_loss_from_group_prices(self):
         class _LedgerPB:
             def __init__(self):

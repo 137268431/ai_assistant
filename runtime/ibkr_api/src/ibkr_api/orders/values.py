@@ -61,9 +61,12 @@ def to_float(value: Any) -> float | None:
     if value is None or value == "":
         return None
     try:
-        return float(value)
+        number = float(value)
     except Exception:
         return None
+    if number != number or abs(number) >= 1e100:
+        return None
+    return number
 
 
 def escape_filter_string(value: Any) -> str:

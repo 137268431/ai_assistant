@@ -20,10 +20,30 @@ def _resolve_snapshot_account_id(api_app, service) -> str:
     return account_id
 
 
-def build_snapshot_context(service, *, include_pnl: bool = True) -> dict:
+def _component_status(service, attr_name: str) -> dict:
+    component = getattr(service, attr_name, None)
+    status_fn = getattr(component, "status", None)
+    if not callable(status_fn):
+        return {}
+    try:
+        payload = status_fn()
+    except Exception:
+        return {}
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _build_fast_snapshot_status(service) -> dict:
+    return {
+        "gateway": _component_status(service, "gateway_manager"),
+        "session": _component_status(service, "session_keeper"),
+        "websocket": _component_status(service, "ws_client"),
+    }
+
+
+def build_snapshot_context(service, *, include_pnl: bool = True, fast_status: bool = False) -> dict:
     api_app = _api_app()
     runtime_environment = api_app._ibkr_service_environment(service)
-    service_status = get_service_status_snapshot(service)
+    service_status = _build_fast_snapshot_status(service) if fast_status else get_service_status_snapshot(service)
     account_id = _resolve_snapshot_account_id(api_app, service)
     include_pnl_flag = bool(include_pnl)
     return {

@@ -78,14 +78,16 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
     if isinstance(value, bool):
         return default
     if isinstance(value, (int, float)):
-        return float(value)
+        number = float(value)
+        return default if number != number or abs(number) >= 1e100 else number
     text = str(value or "").strip().replace(",", "")
     if not text:
         return default
     try:
-        return float(text)
+        number = float(text)
     except Exception:
         return default
+    return default if number != number or abs(number) >= 1e100 else number
 
 
 def _safe_int(value: Any, default: int = 0) -> int:

@@ -48,6 +48,18 @@ def _safe_float(value, default: float = 0.0) -> float:
     return number
 
 
+def _payload_bool(value, default: bool = False) -> bool:
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "y", "on"}:
+            return True
+        if text in {"0", "false", "no", "n", "off"}:
+            return False
+    if value in (None, ""):
+        return bool(default)
+    return bool(value)
+
+
 def _merge_snapshot_guard_metadata(guard: dict, snapshot_guard: dict | None) -> dict:
     if not isinstance(snapshot_guard, dict):
         return guard
@@ -441,6 +453,28 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
         }, 409
 
     signal_id = f"MANUAL_{runtime_environment.upper()}_{symbol}_{int(time.time())}"
+    config = getattr(service, "config", None)
+    config_has_value = getattr(config, "has_value_for_environment", None)
+    has_fast_accept_config = False
+    if callable(config_has_value):
+        try:
+            has_fast_accept_config = bool(config_has_value("ibkr_order_place_fast_accept_enabled", runtime_environment))
+        except Exception:
+            has_fast_accept_config = False
+    fast_accept_enabled = runtime_environment == "paper" if not has_fast_accept_config else _config_bool(
+        config,
+        "ibkr_order_place_fast_accept_enabled",
+        runtime_environment,
+        runtime_environment == "paper",
+    )
+    if "wait_for_confirmation" in (payload or {}):
+        fast_accept_enabled = not _payload_bool((payload or {}).get("wait_for_confirmation"), True)
+    if "fast_ack" in (payload or {}):
+        fast_accept_enabled = _payload_bool((payload or {}).get("fast_ack"), fast_accept_enabled)
+    if "async_confirm" in (payload or {}):
+        fast_accept_enabled = _payload_bool((payload or {}).get("async_confirm"), fast_accept_enabled)
+    confirmation_mode = "background" if fast_accept_enabled else "sync"
+
     operation_started_at = time.perf_counter()
     result = service.order_placer.place_bracket_order(
         conid=conid,
@@ -454,6 +488,7 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
         signal_id=signal_id,
         entry_order_type=order_type,
         buying_power_guard=buying_power_guard,
+        confirmation_mode=confirmation_mode,
     )
     operation_elapsed_s = time.perf_counter() - operation_started_at
     submitted_buying_power_guard = (
@@ -490,6 +525,8 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
             "signal_id": signal_id,
             "buying_power_guard": submitted_buying_power_guard,
             "pre_submit_buying_power_guard": buying_power_guard,
+            "confirmation_mode": confirmation_mode,
+            "fast_ack": bool(fast_accept_enabled),
         },
         action_started_at=action_started_at,
         operation_elapsed_s=operation_elapsed_s,

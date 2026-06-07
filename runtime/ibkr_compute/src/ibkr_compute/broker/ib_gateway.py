@@ -77,6 +77,11 @@ TICK_BY_TICK_DUPLICATE_WINDOW_SECONDS = 15.0
 # raw placeOrder socket write succeeds immediately.
 BRACKET_SUBMISSION_CONFIRM_TIMEOUT_SECONDS = 120.0
 try:
+    _BRACKET_BACKGROUND_CONFIRM_TIMEOUT = float(os.environ.get("IBKR_BRACKET_BACKGROUND_CONFIRM_TIMEOUT_SEC", "180") or 180.0)
+except (TypeError, ValueError):
+    _BRACKET_BACKGROUND_CONFIRM_TIMEOUT = 180.0
+BRACKET_BACKGROUND_CONFIRM_TIMEOUT_SECONDS = max(30.0, _BRACKET_BACKGROUND_CONFIRM_TIMEOUT)
+try:
     _ORDER_MOD_CONFIRM_TIMEOUT = float(os.environ.get("IBKR_ORDER_MODIFICATION_CONFIRM_TIMEOUT_SEC", "30") or 30.0)
 except (TypeError, ValueError):
     _ORDER_MOD_CONFIRM_TIMEOUT = 30.0
@@ -2190,6 +2195,8 @@ class _IBGatewayApp(EWrapper, EClient):
         *,
         timeout: float = 5.0,
         poll_interval: float = 0.2,
+        open_orders_fallback_delay: float | None = None,
+        open_orders_fallback_interval: float | None = None,
     ) -> dict:
         expected_ids = [str(item or "").strip() for item in (order_ids or []) if str(item or "").strip()]
         if not expected_ids:
@@ -2198,7 +2205,17 @@ class _IBGatewayApp(EWrapper, EClient):
         started_at = time.time()
         deadline = started_at + max(0.5, float(timeout or 0.0))
         request_timeout = max(1, min(30, int(max(1.0, float(timeout or 0.0)))))
-        next_open_orders_at = started_at + float(ORDER_CONFIRM_OPEN_ORDERS_FALLBACK_DELAY_SECONDS or 0.0)
+        fallback_delay_s = (
+            float(ORDER_CONFIRM_OPEN_ORDERS_FALLBACK_DELAY_SECONDS or 0.0)
+            if open_orders_fallback_delay is None
+            else max(0.0, float(open_orders_fallback_delay or 0.0))
+        )
+        fallback_interval_s = (
+            float(ORDER_CONFIRM_OPEN_ORDERS_FALLBACK_INTERVAL_SECONDS or 0.05)
+            if open_orders_fallback_interval is None
+            else max(0.05, float(open_orders_fallback_interval or 0.05))
+        )
+        next_open_orders_at = started_at + fallback_delay_s
         confirmed: dict[str, dict] = {}
         failures: dict[str, dict] = {}
         ignored_warnings: dict[str, list[dict]] = {}
@@ -2264,7 +2281,7 @@ class _IBGatewayApp(EWrapper, EClient):
                     ).strip()
                     if open_order_id in missing_ids:
                         confirm_order(open_order_id, source="open_orders", order=dict(open_order))
-                next_open_orders_at = time.time() + float(ORDER_CONFIRM_OPEN_ORDERS_FALLBACK_INTERVAL_SECONDS or 0.05)
+                next_open_orders_at = time.time() + fallback_interval_s
 
             time.sleep(max(0.05, float(poll_interval or 0.2)))
 
@@ -2418,6 +2435,78 @@ class BrokerAdapter:
                 queue_wait_s=wait_s,
             )
             _GLOBAL_GATEWAY_ORDER_WRITE_LOCK.release()
+
+    def _confirm_bracket_submission_background(
+        self,
+        *,
+        order_ids: list[int],
+        group: str,
+        order_family_type: str,
+        metric_environment: str = "",
+    ) -> None:
+        expected_ids = [str(item) for item in order_ids if str(item or "").strip()]
+        if not expected_ids:
+            return
+        started = time.perf_counter()
+        result = "error"
+        reason = "order_submission_unconfirmed"
+        try:
+            confirmation = self.client.await_order_submissions(
+                expected_ids,
+                timeout=BRACKET_BACKGROUND_CONFIRM_TIMEOUT_SECONDS,
+                poll_interval=0.5,
+                open_orders_fallback_delay=5.0,
+                open_orders_fallback_interval=5.0,
+            )
+            result = "ok" if confirmation.get("ok") else "error"
+            reason = str(confirmation.get("error") or "ok")
+            if not confirmation.get("ok"):
+                logger.warning(
+                    "Background bracket confirmation failed: group=%s order_ids=%s result=%s",
+                    group,
+                    ",".join(expected_ids),
+                    confirmation,
+                )
+            else:
+                logger.info("Background bracket confirmation complete: group=%s order_ids=%s", group, ",".join(expected_ids))
+        except Exception as exc:  # pragma: no cover - defensive runtime guard
+            reason = exc.__class__.__name__
+            logger.warning(
+                "Background bracket confirmation crashed: group=%s order_ids=%s error=%s",
+                group,
+                ",".join(expected_ids),
+                exc,
+            )
+        finally:
+            record_order_event(
+                environment=str(metric_environment or ""),
+                operation="place_bracket_background_confirm",
+                order_family_type=str(order_family_type or "bracket_oco"),
+                result=result,
+                reason_code=reason,
+                duration_s=time.perf_counter() - started,
+            )
+
+    def _start_bracket_submission_background_confirmation(
+        self,
+        *,
+        order_ids: list[int],
+        group: str,
+        order_family_type: str,
+        metric_environment: str = "",
+    ) -> None:
+        thread = threading.Thread(
+            target=self._confirm_bracket_submission_background,
+            kwargs={
+                "order_ids": list(order_ids or []),
+                "group": str(group or ""),
+                "order_family_type": str(order_family_type or "bracket_oco"),
+                "metric_environment": str(metric_environment or ""),
+            },
+            name=f"bracket-confirm-{str(group or 'order')[:32]}",
+            daemon=True,
+        )
+        thread.start()
 
     def connect(self) -> bool:
         return self.client.connect_and_start(timeout=self.connect_timeout)
@@ -3719,6 +3808,7 @@ class BrokerAdapter:
         entry_algo_strategy: str = "",
         entry_adaptive_priority: str = "",
         metric_environment: str = "",
+        confirmation_mode: str = "",
     ) -> dict:
         contract_info = self.resolve_contract(symbol=symbol, conid=conid)
         if not contract_info:
@@ -3838,6 +3928,46 @@ class BrokerAdapter:
                 "take_profit_price": normalized_tp_price,
                 "stop_loss_price": normalized_sl_price,
                 "price_normalization": price_normalization,
+                "entry_algo_strategy": algo_strategy,
+                "entry_adaptive_priority": adaptive_priority if algo_strategy.lower() == "adaptive" else "",
+            }
+
+        normalized_confirmation_mode = str(confirmation_mode or "").strip().lower()
+        if normalized_confirmation_mode in {"async", "background", "fast_ack", "fast-ack"}:
+            self._start_bracket_submission_background_confirmation(
+                order_ids=list(order_ids),
+                group=group,
+                order_family_type=order_family_type,
+                metric_environment=metric_environment,
+            )
+            return {
+                "ok": True,
+                "order_ids": [str(order_ids[0]), str(order_ids[1]), str(order_ids[2])],
+                "bracket_group": group,
+                "trade_group_id": group,
+                "oca_group": oca_group,
+                "order_family_type": order_family_type,
+                "quantity": entry_quantity,
+                "take_profit_quantity": tp_quantity,
+                "stop_loss_quantity": sl_quantity,
+                "entry_coid": entry_ref,
+                "tp_coid": tp_ref,
+                "sl_coid": sl_ref,
+                "entry_price": normalized_entry_price if entry.orderType == "LMT" else float(entry_price or 0.0),
+                "take_profit_price": normalized_tp_price,
+                "stop_loss_price": normalized_sl_price,
+                "price_normalization": price_normalization,
+                "submission": {
+                    "ok": True,
+                    "pending_confirmation": True,
+                    "confirmation_mode": "background",
+                    "order_ids": [str(order_ids[0]), str(order_ids[1]), str(order_ids[2])],
+                    "orders": {},
+                    "missing_order_ids": [],
+                },
+                "confirmation_mode": "background",
+                "pending_confirmation": True,
+                "protection_confirmation_pending": True,
                 "entry_algo_strategy": algo_strategy,
                 "entry_adaptive_priority": adaptive_priority if algo_strategy.lower() == "adaptive" else "",
             }

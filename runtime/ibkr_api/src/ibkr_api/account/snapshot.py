@@ -38,6 +38,15 @@ def _monitor_probe_param(payload: dict[str, Any]) -> bool:
     return parse_boolean(payload.get("monitor_probe"), False) or parse_boolean(payload.get("lite"), False)
 
 
+def _orders_fast_param(payload: dict[str, Any]) -> bool:
+    profile = to_text(payload.get("snapshot_profile") or payload.get("profile")).lower()
+    return (
+        profile in {"orders_fast", "fast_orders", "live_orders_fast"}
+        or parse_boolean(payload.get("orders_fast"), False)
+        or parse_boolean(payload.get("fast_orders"), False)
+    )
+
+
 def _build_account_monitor_probe_response(
     *,
     environment: str,
@@ -338,6 +347,54 @@ def enrich_account_snapshot(pb: Any, payload: dict[str, Any], environment: str) 
     return payload
 
 
+def enrich_account_snapshot_orders_fast(payload: dict[str, Any], environment: str) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return payload
+    payload["environment"] = environment
+    payload["broker_mode"] = environment
+    _enrich_buying_power_summary(payload)
+    broker_orders = [item for item in list(payload.get("orders") or []) if isinstance(item, dict)]
+    live_open_orders_raw = (
+        [item for item in list(payload.get("live_open_orders") or []) if isinstance(item, dict)]
+        or [
+            item for item in broker_orders
+            if not _is_closed_order_status((item or {}).get("status_key") or (item or {}).get("status"))
+        ]
+    )
+    live_open_orders = [
+        item for item in live_open_orders_raw
+        if isinstance(item, dict) and _is_broker_confirmed_live_order(item)
+    ]
+    payload["orders"] = broker_orders
+    payload["live_open_orders"] = live_open_orders
+    counts = ensure_object(payload.get("counts"))
+    payload["counts"] = {
+        **counts,
+        "orders": len(broker_orders),
+        "open_orders": len(live_open_orders),
+        "cancelable_orders": len([
+            item for item in live_open_orders
+            if item.get("can_cancel") is not False and not item.get("cannot_cancel_order")
+        ]),
+        "editable_orders": len([
+            item for item in live_open_orders
+            if item.get("can_modify") is not False and not item.get("order_not_editable")
+        ]),
+    }
+    payload["order_reconciliation"] = {
+        "broker_total_orders": len(broker_orders),
+        "broker_open_orders": len(live_open_orders),
+        "coverage_state": to_text(ensure_object(payload.get("live_order_coverage")).get("coverage_state")) or "cache_only",
+        "orders_fast": True,
+    }
+    payload["orders_fast_enrichment"] = {
+        "skipped_pb_relation_queries": True,
+        "broker_total_orders": len(broker_orders),
+        "broker_open_orders": len(live_open_orders),
+    }
+    return payload
+
+
 def build_account_snapshot_response(
     pb: Any,
     *,
@@ -356,6 +413,7 @@ def build_account_snapshot_response(
             runtime_base_url=runtime_base_url,
             upstream_timeout=upstream_timeout,
         )
+    orders_fast = _orders_fast_param(payload)
     params = [("broker_mode", environment), ("environment", environment)]
     include_pnl = _include_pnl_param(payload)
     if include_pnl is not None:
@@ -398,7 +456,10 @@ def build_account_snapshot_response(
             "diagnostics": diagnostics,
         }, 502 if status_code < 400 else status_code
     enrich_started = time.monotonic()
-    enriched = enrich_account_snapshot(pb, dict(upstream_payload), environment)
+    if orders_fast:
+        enriched = enrich_account_snapshot_orders_fast(dict(upstream_payload), environment)
+    else:
+        enriched = enrich_account_snapshot(pb, dict(upstream_payload), environment)
     enrichment_elapsed_ms = round((time.monotonic() - enrich_started) * 1000.0, 1)
     total_elapsed_ms = round((time.monotonic() - started) * 1000.0, 1)
     existing_diagnostics = ensure_object(enriched.get("diagnostics"))

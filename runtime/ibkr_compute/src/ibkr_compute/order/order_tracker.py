@@ -198,9 +198,10 @@ class OrderTracker:
     @staticmethod
     def _to_float(value: Any, default: float = 0.0) -> float:
         try:
-            return float(value)
+            number = float(value)
         except (TypeError, ValueError):
             return default
+        return default if number != number or abs(number) >= 1e100 else number
 
     @staticmethod
     def _normalize_text(value: Any) -> str:

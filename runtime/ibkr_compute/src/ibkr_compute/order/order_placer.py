@@ -106,11 +106,26 @@ class OrderPlacer:
             if str(role or "").strip()
         }
         result_ok = bool(payload.get("ok"))
+        protection_pending = bool(
+            payload.get("protection_confirmation_pending")
+            or payload.get("pending_confirmation")
+            or (
+                isinstance(payload.get("submission"), dict)
+                and payload.get("submission", {}).get("pending_confirmation")
+            )
+        )
         protection_incomplete = bool(payload.get("protection_incomplete")) or (
-            "protection_complete" in payload and not bool(payload.get("protection_complete"))
+            not protection_pending
+            and "protection_complete" in payload
+            and not bool(payload.get("protection_complete"))
         )
         reason = str(payload.get("error") or payload.get("reason") or "ok")
-        bracket_result = "ok" if result_ok and not protection_incomplete else "incomplete" if result_ok else "error"
+        bracket_result = (
+            "pending" if result_ok and protection_pending
+            else "ok" if result_ok and not protection_incomplete
+            else "incomplete" if result_ok
+            else "error"
+        )
         record_order_event(
             environment=self.environment,
             operation="place_bracket",
@@ -128,6 +143,9 @@ class OrderPlacer:
             if role in missing_roles:
                 role_result = "missing"
                 role_reason = "protection_missing"
+            elif role != "entry" and protection_pending:
+                role_result = "pending"
+                role_reason = "protection_confirmation_pending"
             elif role != "entry" and protection_incomplete:
                 role_result = "unconfirmed"
                 role_reason = "protection_incomplete"
@@ -587,6 +605,7 @@ class OrderPlacer:
         entry_algo_strategy: str = "",
         entry_adaptive_priority: str = "",
         buying_power_pre_reservation: Dict[str, Any] | None = None,
+        confirmation_mode: str = "",
     ) -> Dict[str, Any]:
         started = time.perf_counter()
         acct_id = self.get_active_account_id(use_paper)
@@ -631,6 +650,7 @@ class OrderPlacer:
             "order_family_type": resolved_family_type,
             "entry_algo_strategy": str(entry_algo_strategy or ""),
             "entry_adaptive_priority": str(entry_adaptive_priority or ""),
+            "confirmation_mode": str(confirmation_mode or ""),
         }
         if getattr(self.broker, "uses_internal_gateway_write_lock", False):
             broker_kwargs["metric_environment"] = self.environment
@@ -688,10 +708,18 @@ class OrderPlacer:
             for item in (result.get("missing_order_ids") or [])
             if str(item or "").strip()
         ]
-        protection_complete = bool(result.get("protection_complete"))
-        protection_incomplete = bool(missing_order_ids) or (
-            "protection_complete" in result and not protection_complete and bool(result.get("order_ids"))
+        protection_confirmation_pending = bool(
+            result.get("protection_confirmation_pending")
+            or result.get("pending_confirmation")
+            or (
+                isinstance(result.get("submission"), dict)
+                and result.get("submission", {}).get("pending_confirmation")
+            )
         )
+        protection_complete = bool(result.get("protection_complete"))
+        protection_incomplete = (not protection_confirmation_pending) and (bool(missing_order_ids) or (
+            "protection_complete" in result and not protection_complete and bool(result.get("order_ids"))
+        ))
         returned_family_type = str(
             result.get("order_family_type")
             or resolved_family_type
@@ -727,6 +755,7 @@ class OrderPlacer:
             "submission": result.get("submission"),
             "protection_complete": protection_complete,
             "protection_incomplete": protection_incomplete,
+            "protection_confirmation_pending": protection_confirmation_pending,
             "missing_order_ids": missing_order_ids,
             "missing_protection_roles": list(result.get("missing_protection_roles") or []),
             "protection_order_statuses": dict(result.get("protection_order_statuses") or {}),
@@ -745,6 +774,8 @@ class OrderPlacer:
             "price_normalization": dict(result.get("price_normalization") or {}),
             "entry_algo_strategy": str(result.get("entry_algo_strategy") or entry_algo_strategy or ""),
             "entry_adaptive_priority": str(result.get("entry_adaptive_priority") or entry_adaptive_priority or ""),
+            "confirmation_mode": str(result.get("confirmation_mode") or confirmation_mode or ""),
+            "pending_confirmation": bool(result.get("pending_confirmation") or protection_confirmation_pending),
             "raw_response": result.get("raw"),
         }
         self._reserve_submitted_entry_exposure(
