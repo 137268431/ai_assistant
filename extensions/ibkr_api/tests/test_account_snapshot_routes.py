@@ -247,6 +247,46 @@ class AccountSnapshotRoutesTest(unittest.TestCase):
         self.assertTrue(payload["orders_fast_enrichment"]["skipped_pb_relation_queries"])
         self.assertEqual([], pb.calls)
 
+    def test_build_account_snapshot_response_forwards_open_orders_only_profile(self):
+        calls = []
+
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            calls.append(list(params or []))
+            return {
+                "ok": True,
+                "status_code": 200,
+                "payload": {
+                    "ok": True,
+                    "environment": "paper",
+                    "summary": {},
+                    "positions": [],
+                    "orders": [],
+                    "live_open_orders": [],
+                    "counts": {},
+                },
+                "target_url": "http://runtime/ibkr/account",
+                "elapsed_ms": 1.0,
+                "timeout_s": timeout,
+            }
+
+        payload, status_code = build_account_snapshot_response(
+            _FakePB(rows={"orders": [], "ibkr_signals": []}),
+            payload={
+                "broker_mode": "paper",
+                "environment": "paper",
+                "orders_fast": "1",
+                "snapshot_profile": "orders_fast",
+                "open_orders_only": "1",
+            },
+            normalize_environment=lambda value, default="live": value or default,
+            request_json_request=request_json_request,
+            runtime_base_url="http://runtime",
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertIn(("open_orders_only", "1"), calls[0])
+
     def test_orders_fast_uses_pb_pending_fallback_when_runtime_times_out(self):
         def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
             return {

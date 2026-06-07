@@ -128,10 +128,20 @@ class _FastOrderTracker:
     def __init__(self, rows: list[dict]):
         self.rows = rows
         self.cached_calls = 0
+        self.include_all_values: list[bool] = []
 
     def get_cached_live_orders(self, *, include_all: bool = False):
         self.cached_calls += 1
-        return list(self.rows)
+        self.include_all_values.append(bool(include_all))
+        if include_all:
+            return list(self.rows)
+        closed_statuses = {"FILLED", "EXECUTED", "CANCELLED", "CANCELED", "INACTIVE", "REJECTED", "EXPIRED", "API_CANCELLED"}
+        return [
+            row
+            for row in self.rows
+            if str(row.get("status") or row.get("order_status") or row.get("orderStatus") or "").strip().upper()
+            not in closed_statuses
+        ]
 
     def get_live_orders(self):
         return list(self.rows)
@@ -365,6 +375,54 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertEqual(1, payload["counts"]["open_orders"])
         self.assertEqual("1001", payload["live_open_orders"][0]["order_id"])
         self.assertEqual("orders_fast_summary_cache_unavailable", payload["errors"]["summary"])
+
+    def test_orders_fast_open_only_omits_closed_history_rows(self):
+        app = _FakeApiApp()
+        lifecycle = _SnapshotLifecycle(delay=0.05)
+        service = _SnapshotService(lifecycle)
+        service.order_tracker = _FastOrderTracker(
+            [
+                {
+                    "orderId": "1001",
+                    "ticker": "AAPL",
+                    "status": "Submitted",
+                    "side": "BUY",
+                    "orderType": "LMT",
+                    "totalSize": 10,
+                    "price": 123.45,
+                },
+                {
+                    "orderId": "1002",
+                    "ticker": "MSFT",
+                    "status": "Filled",
+                    "side": "BUY",
+                    "orderType": "LMT",
+                    "totalSize": 2,
+                    "price": 250.00,
+                },
+            ]
+        )
+
+        payload = _with_fake_api_app(
+            app,
+            lambda: _build_ibkr_account_snapshot(
+                service,
+                include_pnl=False,
+                force_refresh=True,
+                allow_stale=False,
+                orders_fast=True,
+                orders_fast_open_only=True,
+            ),
+        )
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual([False], service.order_tracker.include_all_values)
+        self.assertTrue(payload["orders_fast_open_orders_only"])
+        self.assertTrue(payload["orders_fast_diagnostics"]["historical_orders_omitted"])
+        self.assertEqual(["1001"], [order["order_id"] for order in payload["orders"]])
+        self.assertEqual(["1001"], [order["order_id"] for order in payload["live_open_orders"]])
+        self.assertEqual(1, payload["counts"]["orders"])
+        self.assertEqual(1, payload["counts"]["open_orders"])
 
     def test_orders_fast_snapshot_skips_full_runtime_status(self):
         class _SlowStatusService(_SnapshotService):

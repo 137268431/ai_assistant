@@ -52,6 +52,13 @@ def _account_snapshot_orders_fast(default: bool = False) -> bool:
     return bool(default)
 
 
+def _account_snapshot_open_orders_only(default: bool = False) -> bool:
+    for key in ("open_orders_only", "orders_open_only", "live_orders_only", "compact_orders"):
+        if get_query_arg_bool(key, False):
+            return True
+    return bool(default)
+
+
 def register_account_routes(app):
     if should_proxy_runtime_requests():
         register_runtime_proxy_route(app, "ibkr_account", "/ibkr/account", ["GET"])
@@ -79,6 +86,7 @@ def register_account_routes(app):
                     force_refresh=bypass_cache,
                     allow_stale=not bypass_cache,
                     orders_fast=_account_snapshot_orders_fast(),
+                    orders_fast_open_only=_account_snapshot_open_orders_only(),
                 )
             )
         except Exception as exc:
@@ -96,6 +104,7 @@ def register_account_routes(app):
             force_refresh=bypass_cache,
             allow_stale=not bypass_cache,
             orders_fast=_account_snapshot_orders_fast(),
+            orders_fast_open_only=_account_snapshot_open_orders_only(),
         )
         return jsonify(
             {

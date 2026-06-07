@@ -28,6 +28,7 @@ CN = ZoneInfo("Asia/Shanghai")
 DEFAULT_ARTIFACT_ROOT = Path("artifacts/validation/gateway_order_probe")
 DEFAULT_PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://127.0.0.1:9090")
 CONFIRM_TEXT = "PAPER_GATEWAY_ORDER_PROBE"
+REFERENCE_PRICE_INTERVAL = "5m"
 DEFAULT_SYMBOLS = (
     "TSLA,AAPL,MSFT,NVDA,AMD,META,GOOGL,AMZN,NFLX,ORCL,"
     "CRM,ADBE,INTC,CSCO,QCOM,AVGO,TXN,MU,IBM,NOW,SHOP,SNOW,PLTR,UBER,DDOG,NET,"
@@ -187,6 +188,7 @@ def fetch_latest_reference_context(args: argparse.Namespace, symbol: str) -> tup
             from ibkr_bars
             where symbol = {safe_symbol}
               and close > 0
+              and interval = {fee_probe.sqlite_literal(REFERENCE_PRICE_INTERVAL)}
               and environment in ('live', 'paper')
             order by bar_time_ms desc
             limit 1;
@@ -204,6 +206,59 @@ def fetch_latest_reference_context(args: argparse.Namespace, symbol: str) -> tup
             price = fee_probe.fetch_latest_reference_price(args, normalized)
     conid = _extract_conid_from_bar_row(row)
     return float(price), int(conid or 0)
+
+
+def fetch_latest_reference_contexts(args: argparse.Namespace, symbols: list[str]) -> dict[str, tuple[float, int]] | None:
+    normalized_symbols = [fee_probe.normalize_symbol(symbol) for symbol in symbols if fee_probe.normalize_symbol(symbol)]
+    if not normalized_symbols:
+        return {}
+    price_override = float(getattr(args, "reference_price", 0.0) or 0.0)
+    if price_override > 0:
+        return {symbol: (price_override, 0) for symbol in normalized_symbols}
+    requested_values = ", ".join(f"({fee_probe.sqlite_literal(symbol)})" for symbol in normalized_symbols)
+    interval_literal = fee_probe.sqlite_literal(REFERENCE_PRICE_INTERVAL)
+    rows: list[dict[str, Any]] = []
+    try:
+        rows = fee_probe.run_remote_sql(
+            args,
+            f"""
+            with requested(symbol) as (
+              values {requested_values}
+            ),
+            latest as (
+              select
+                requested.symbol as symbol,
+                (
+                  select rowid
+                  from ibkr_bars
+                  where ibkr_bars.symbol = requested.symbol
+                    and close > 0
+                    and interval = {interval_literal}
+                    and environment in ('live', 'paper')
+                  order by bar_time_ms desc
+                  limit 1
+                ) as rowid
+              from requested
+            )
+            select latest.symbol, ibkr_bars.close, ibkr_bars.environment, ibkr_bars.interval,
+                   ibkr_bars.us_time, ibkr_bars.bar_time_ms, ibkr_bars.extra
+            from latest
+            join ibkr_bars on ibkr_bars.rowid = latest.rowid
+            where latest.rowid is not null;
+            """,
+        )
+    except Exception:
+        return None
+
+    contexts: dict[str, tuple[float, int]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        symbol = fee_probe.normalize_symbol(row.get("symbol"))
+        price = fee_probe.to_float(row.get("close"), 0.0)
+        if symbol and price > 0:
+            contexts[symbol] = (float(price), int(_extract_conid_from_bar_row(row) or 0))
+    return contexts
 
 
 def fetch_latest_conid(args: argparse.Namespace, symbol: str) -> int:
@@ -315,7 +370,15 @@ def account_snapshot_client(args: argparse.Namespace, *, timeout_sec: float | No
 def account_snapshot_params(*, orders_fast: bool = False) -> dict[str, Any]:
     params = dict(fee_probe.account_params())
     if orders_fast:
-        params.update({"include_pnl": "0", "orders_fast": "1", "snapshot_profile": "orders_fast", "cache": "0"})
+        params.update(
+            {
+                "include_pnl": "0",
+                "orders_fast": "1",
+                "snapshot_profile": "orders_fast",
+                "open_orders_only": "1",
+                "cache": "0",
+            }
+        )
     return params
 
 
@@ -509,12 +572,20 @@ def select_probe_plan(args: argparse.Namespace) -> tuple[list[OrderProbePlan], l
 
     selected: list[OrderProbePlan] = []
     excluded: list[dict[str, Any]] = []
+    reference_contexts = fetch_latest_reference_contexts(args, symbols)
+    reference_contexts_available = reference_contexts is not None
+    reference_contexts = reference_contexts or {}
     for symbol in symbols:
         if len(selected) >= max(1, int(args.orders or 1)):
             break
         try:
             fee_probe.check_clean_preflight(snapshot, symbol)
-            reference_price, conid = fetch_latest_reference_context(args, symbol)
+            if reference_contexts_available:
+                if symbol not in reference_contexts:
+                    raise GatewayProbeError("latest_reference_context_unavailable")
+                reference_price, conid = reference_contexts[symbol]
+            else:
+                reference_price, conid = fetch_latest_reference_context(args, symbol)
             entry, tp, sl = build_non_marketable_bracket(
                 reference_price,
                 direction=args.direction,
@@ -1041,7 +1112,7 @@ def cancel_visible_orders_for_symbols(args: argparse.Namespace, symbols: list[st
                 "snapshot": summarize_account_snapshot(snapshot, symbols),
             }
         ]
-    client = fee_probe.ApiClient(args.api_base_url, timeout=float(args.http_timeout_sec))
+    client = fee_probe.ApiClient(args.api_base_url, timeout=cleanup_http_timeout(args))
     normalized_symbols = {fee_probe.normalize_symbol(symbol) for symbol in symbols if fee_probe.normalize_symbol(symbol)}
     seen: set[str] = set()
     cancel_results: list[dict[str, Any]] = []
@@ -1154,7 +1225,7 @@ def cancel_all_orders(args: argparse.Namespace, *, source: str = "gateway_order_
         final_result = result
         final_ok = ok
         final_error = error
-        if ok:
+        if ok and not bool(result.get("pending_confirmation")):
             break
         if attempt < max_attempts:
             time.sleep(retry_delay * attempt)

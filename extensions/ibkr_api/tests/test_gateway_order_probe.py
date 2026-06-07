@@ -76,11 +76,15 @@ class GatewayOrderProbeTest(unittest.TestCase):
 
         with mock.patch.object(probe, "get_snapshot", return_value=snapshot), mock.patch.object(
             probe,
+            "fetch_latest_reference_contexts",
+            return_value={symbol: (price, {"AAPL": 265598, "MSFT": 272093}[symbol]) for symbol, price in prices.items()},
+        ), mock.patch.object(
+            probe,
             "fetch_latest_reference_context",
-            side_effect=lambda _args, symbol: (prices[symbol], {"AAPL": 265598, "MSFT": 272093}[symbol]),
-        ):
+        ) as fallback_context:
             plans, excluded, summary = probe.select_probe_plan(args)
 
+        fallback_context.assert_not_called()
         self.assertEqual(["AAPL", "MSFT"], [plan.symbol for plan in plans])
         self.assertEqual([265598, 272093], [plan.conid for plan in plans])
         self.assertEqual(265598, plans[0].payload()["conid"])
@@ -89,6 +93,59 @@ class GatewayOrderProbeTest(unittest.TestCase):
         self.assertGreaterEqual(summary["total_requested_exposure"], 10000.0)
         self.assertEqual("TSLA", excluded[0]["symbol"])
         self.assertIn("pre_existing_position", excluded[0]["reason"])
+
+    def test_fetch_latest_reference_contexts_uses_one_batch_sql(self):
+        args = Namespace(reference_price=0.0)
+        rows = [
+            {"symbol": "AAPL", "close": "200.5", "extra": json.dumps({"conid": 265598})},
+            {"symbol": "MSFT", "close": 410.25, "extra": {"conidEx": 272093}},
+        ]
+
+        with mock.patch.object(probe.fee_probe, "run_remote_sql", return_value=rows) as run_sql:
+            contexts = probe.fetch_latest_reference_contexts(args, ["AAPL", "MSFT", ""])
+
+        run_sql.assert_called_once()
+        sql = run_sql.call_args.args[1]
+        self.assertIn("values ('AAPL'), ('MSFT')", sql)
+        self.assertIn("interval = '5m'", sql)
+        self.assertEqual((200.5, 265598), contexts["AAPL"])
+        self.assertEqual((410.25, 272093), contexts["MSFT"])
+
+    def test_fetch_latest_reference_contexts_respects_reference_price_override(self):
+        args = Namespace(reference_price=123.45)
+
+        with mock.patch.object(probe.fee_probe, "run_remote_sql") as run_sql:
+            contexts = probe.fetch_latest_reference_contexts(args, ["AAPL", "MSFT"])
+
+        run_sql.assert_not_called()
+        self.assertEqual({"AAPL": (123.45, 0), "MSFT": (123.45, 0)}, contexts)
+
+    def test_select_probe_plan_excludes_batch_missing_reference_without_fallback(self):
+        args = Namespace(
+            symbols="AAPL,BKNG,MSFT",
+            orders=3,
+            min_orders=2,
+            quantity=1,
+            direction="long",
+            target_notional_per_order=5000.0,
+            entry_distance_pct=0.5,
+            protection_gap_pct=0.15,
+            reference_price=0.0,
+        )
+        snapshot = {"ok": True, "environment": "paper", "broker_mode": "paper", "positions": [], "orders": [], "live_open_orders": []}
+
+        with mock.patch.object(probe, "get_snapshot", return_value=snapshot), mock.patch.object(
+            probe,
+            "fetch_latest_reference_contexts",
+            return_value={"AAPL": (200.0, 265598), "MSFT": (400.0, 272093)},
+        ), mock.patch.object(probe, "fetch_latest_reference_context") as fallback_context:
+            plans, excluded, summary = probe.select_probe_plan(args)
+
+        fallback_context.assert_not_called()
+        self.assertEqual(["AAPL", "MSFT"], [plan.symbol for plan in plans])
+        self.assertEqual("BKNG", excluded[0]["symbol"])
+        self.assertIn("latest_reference_context_unavailable", excluded[0]["reason"])
+        self.assertEqual(2, summary["selected_orders"])
 
     def test_load_probe_plan_reuses_dry_run_summary_without_fetching_prices(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -448,6 +505,7 @@ class GatewayOrderProbeTest(unittest.TestCase):
         self.assertEqual("/ibkr/account", calls[0][0])
         self.assertEqual("1", calls[0][1]["orders_fast"])
         self.assertEqual("orders_fast", calls[0][1]["snapshot_profile"])
+        self.assertEqual("1", calls[0][1]["open_orders_only"])
         self.assertEqual("0", calls[0][1]["include_pnl"])
         self.assertEqual("0", calls[0][1]["cache"])
 

@@ -615,13 +615,13 @@ def _load_cached_full_snapshot_for_orders_fast(api_app, context: dict) -> dict:
     return {}
 
 
-def _cached_live_order_rows(service) -> tuple[list[dict], str]:
+def _cached_live_order_rows(service, *, include_all: bool = True) -> tuple[list[dict], str]:
     tracker = getattr(service, "order_tracker", None)
     getter = getattr(tracker, "get_cached_live_orders", None)
     if not callable(getter):
         return [], "unavailable"
     try:
-        rows = list(getter(include_all=True) or [])
+        rows = list(getter(include_all=include_all) or [])
     except TypeError:
         try:
             rows = list(getter() or [])
@@ -691,10 +691,15 @@ def _build_orders_fast_live_open_payload(cached_rows: list[dict], fallback_rows:
     }
 
 
-def _build_orders_fast_ibkr_account_snapshot_payload(service, context: dict) -> dict:
+def _build_orders_fast_ibkr_account_snapshot_payload(
+    service,
+    context: dict,
+    *,
+    open_orders_only: bool = False,
+) -> dict:
     api_app = context["api_app"]
     cached_full = _load_cached_full_snapshot_for_orders_fast(api_app, context)
-    cached_order_rows, cached_order_source = _cached_live_order_rows(service)
+    cached_order_rows, cached_order_source = _cached_live_order_rows(service, include_all=not bool(open_orders_only))
     fallback_rows = [] if cached_order_rows else load_pb_fallback_order_rows(api_app, service)
     merged_orders_raw = _merge_cached_and_pb_order_rows(cached_order_rows, fallback_rows)
     live_open_payload = _build_orders_fast_live_open_payload(cached_order_rows, fallback_rows)
@@ -751,11 +756,14 @@ def _build_orders_fast_ibkr_account_snapshot_payload(service, context: dict) -> 
         "source": "account_snapshot_orders_fast",
         "snapshot_profile": "orders_fast",
         "orders_fast": True,
+        "orders_fast_open_orders_only": bool(open_orders_only),
         "orders_fast_diagnostics": {
             "order_source": cached_order_source,
             "cached_order_count": len(cached_order_rows),
             "pb_fallback_order_count": len(fallback_rows),
             "pb_fallback_skipped": bool(cached_order_rows),
+            "open_orders_only": bool(open_orders_only),
+            "historical_orders_omitted": bool(open_orders_only),
             "summary_source": "snapshot_cache" if cached_full else "unavailable",
             "summary_cache_state": str(cached_full.get("cache_state") or "") if cached_full else "",
             "summary_cache_age_s": cached_full.get("cache_age_s") if cached_full else None,
@@ -777,12 +785,17 @@ def _build_ibkr_account_snapshot(
     force_refresh: bool = False,
     allow_stale: bool = True,
     orders_fast: bool = False,
+    orders_fast_open_only: bool = False,
     fast_status: bool = False,
 ) -> dict:
     context = build_snapshot_context(service, include_pnl=include_pnl, fast_status=bool(orders_fast or fast_status))
     api_app = context["api_app"]
     if orders_fast:
-        return _build_orders_fast_ibkr_account_snapshot_payload(service, context)
+        return _build_orders_fast_ibkr_account_snapshot_payload(
+            service,
+            context,
+            open_orders_only=bool(orders_fast_open_only),
+        )
     cache_key = context["cache_key"]
     if not force_refresh:
         cached = load_cached_snapshot(api_app, cache_key, allow_stale=allow_stale)
