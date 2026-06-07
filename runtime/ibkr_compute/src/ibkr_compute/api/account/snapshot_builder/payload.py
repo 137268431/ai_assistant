@@ -378,7 +378,7 @@ def _build_account_data_circuit_buying_power_snapshot(service, context: dict, ci
 
 
 def _build_ibkr_account_buying_power_snapshot(service) -> dict:
-    context = build_snapshot_context(service, include_pnl=False)
+    context = build_snapshot_context(service, include_pnl=False, fast_status=True)
     api_app = context["api_app"]
     cache_key = (context["runtime_environment"], f"{context['account_id']}::buying_power", False)
 
@@ -409,6 +409,7 @@ def _build_ibkr_account_buying_power_snapshot(service) -> dict:
             include_pnl=False,
             force_refresh=False,
             allow_stale=False,
+            fast_status=True,
         )
         payload = _build_buying_power_payload_from_full_snapshot(full_refreshed, context)
         if payload:
@@ -755,8 +756,9 @@ def _build_ibkr_account_snapshot(
     force_refresh: bool = False,
     allow_stale: bool = True,
     orders_fast: bool = False,
+    fast_status: bool = False,
 ) -> dict:
-    context = build_snapshot_context(service, include_pnl=include_pnl, fast_status=orders_fast)
+    context = build_snapshot_context(service, include_pnl=include_pnl, fast_status=bool(orders_fast or fast_status))
     api_app = context["api_app"]
     if orders_fast:
         return _build_orders_fast_ibkr_account_snapshot_payload(service, context)

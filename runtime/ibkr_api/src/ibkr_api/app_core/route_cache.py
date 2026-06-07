@@ -90,15 +90,70 @@ class RouteSWRCache:
         ttl_seconds: float,
         stale_seconds: float,
         force: bool = False,
+        prefer_stale_on_force: bool = False,
     ) -> tuple[dict[str, Any], int]:
         ttl = max(0.0, float(ttl_seconds or 0.0))
         stale = max(0.0, float(stale_seconds or 0.0))
         if force or not self.enabled() or ttl <= 0:
-            payload, status_code = builder()
+            stale_entry = None
+            if force and self.enabled() and ttl > 0:
+                with self._lock:
+                    candidate = self._entries.get(key)
+                    event = self._in_flight.get(key)
+                if candidate and time.monotonic() <= float(candidate.get("stale_until") or 0.0):
+                    stale_entry = candidate
+                    if prefer_stale_on_force:
+                        if event is None:
+                            event = threading.Event()
+                            with self._lock:
+                                if key not in self._in_flight:
+                                    self._in_flight[key] = event
+                                    threading.Thread(
+                                        target=self._refresh,
+                                        args=(key, event),
+                                        kwargs={
+                                            "builder": builder,
+                                            "ttl_seconds": ttl,
+                                            "stale_seconds": stale,
+                                        },
+                                        daemon=True,
+                                    ).start()
+                                else:
+                                    event = self._in_flight[key]
+                        return self._with_meta(
+                            stale_entry["payload"],
+                            int(stale_entry["status_code"]),
+                            entry=stale_entry,
+                            state="bypass_stale_refresh",
+                            stale=time.monotonic() > float(stale_entry.get("expires_at") or 0.0),
+                        )
+            try:
+                payload, status_code = builder()
+            except Exception as exc:
+                if stale_entry is not None:
+                    return self._with_meta(
+                        stale_entry["payload"],
+                        int(stale_entry["status_code"]),
+                        entry=stale_entry,
+                        state="bypass_stale_error",
+                        stale=True,
+                        error=exc,
+                    )
+                raise
             entry = self._entry(payload, status_code, ttl, stale)
             if force and self.enabled() and status_code < 400 and ttl > 0:
                 with self._lock:
                     self._entries[key] = entry
+            elif force and self.enabled() and status_code >= 400 and stale_entry is not None:
+                error = (payload or {}).get("error") if isinstance(payload, dict) else None
+                return self._with_meta(
+                    stale_entry["payload"],
+                    int(stale_entry["status_code"]),
+                    entry=stale_entry,
+                    state="bypass_stale_error",
+                    stale=True,
+                    error=error or f"upstream_status_{status_code}",
+                )
             return self._with_meta(payload, status_code, entry=entry, state="bypass")
 
         now = time.monotonic()

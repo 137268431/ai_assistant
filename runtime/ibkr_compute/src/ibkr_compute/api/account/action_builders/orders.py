@@ -14,7 +14,7 @@ from ibkr_compute.api.account.snapshot import (
     _build_ibkr_account_buying_power_snapshot,
     _build_ibkr_account_snapshot,
 )
-from ibkr_compute.api.shared.service_status import get_service_status_snapshot
+from ibkr_compute.api.account.snapshot_builder.context import build_fast_snapshot_status
 from ibkr_compute.order.buying_power_reservations import (
     apply_reservations_to_buying_power_summary,
     merge_reservation_snapshot_into_guard,
@@ -238,7 +238,7 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
             "ibkr_live_trading_enabled": bool(live_trading_enabled),
         }, 403
 
-    service_status = get_service_status_snapshot(service)
+    service_status = build_fast_snapshot_status(service)
     session_authenticated = bool((service_status.get("session") or {}).get("authenticated"))
     service_running = bool(getattr(service, "is_running", False) or getattr(service, "is_starting", False))
     if not service_running:

@@ -15,6 +15,17 @@ def _clear_account_route_cache() -> None:
     _ACCOUNT_ROUTE_CACHE.clear()
 
 
+def _prefers_stale_orders_fast(payload: dict[str, Any]) -> bool:
+    profile = str((payload or {}).get("snapshot_profile") or (payload or {}).get("profile") or "").strip().lower()
+    if profile in {"orders_fast", "fast_orders", "live_orders_fast"}:
+        return True
+    for key in ("orders_fast", "fast_orders"):
+        value = str((payload or {}).get(key) or "").strip().lower()
+        if value in {"1", "true", "yes", "on"}:
+            return True
+    return False
+
+
 def register_account_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     pb = deps["pb"]
     normalize_environment = deps["normalize_environment"]
@@ -37,6 +48,7 @@ def register_account_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             ttl_seconds=cache_seconds("IBKR_ROUTE_CACHE_ACCOUNT_SNAPSHOT_TTL_SEC", 5.0),
             stale_seconds=cache_seconds("IBKR_ROUTE_CACHE_ACCOUNT_SNAPSHOT_STALE_SEC", 20.0),
             force=request_cache_bypass(query_payload),
+            prefer_stale_on_force=_prefers_stale_orders_fast(query_payload),
         )
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)

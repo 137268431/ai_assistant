@@ -89,6 +89,16 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+
+
+def _configure_ibapi_logging() -> None:
+    raw_level = str(os.environ.get("IBKR_IBAPI_LOG_LEVEL", "WARNING") or "WARNING").strip().upper()
+    level = getattr(logging, raw_level, logging.WARNING)
+    for logger_name in ("ibapi", "ibapi.client", "ibapi.decoder", "ibapi.utils", "ibapi.wrapper"):
+        logging.getLogger(logger_name).setLevel(level)
+
+
+_configure_ibapi_logging()
 logger = logging.getLogger("ibkr_service")
 
 

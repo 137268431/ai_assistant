@@ -499,6 +499,61 @@ class SystemScanSummaryTest(unittest.TestCase):
         self.assertEqual(second["_cache"]["state"], "hit")
         self.assertEqual(bypass["_cache"]["state"], "bypass")
 
+    def test_route_swr_cache_force_uses_stale_on_refresh_error(self):
+        cache = RouteSWRCache("test-route-cache")
+        key = canonical_cache_key("demo", {"a": "1", "cache_bust": "1"})
+
+        first, first_status = cache.get(
+            key,
+            builder=lambda: ({"ok": True, "value": 1}, 200),
+            ttl_seconds=30,
+            stale_seconds=30,
+        )
+        stale, stale_status = cache.get(
+            key,
+            builder=lambda: ({"ok": False, "error": "runtime_timeout"}, 502),
+            ttl_seconds=30,
+            stale_seconds=30,
+            force=request_cache_bypass({"cache_bust": "1"}),
+        )
+
+        self.assertEqual(200, first_status)
+        self.assertEqual(200, stale_status)
+        self.assertEqual(1, first["value"])
+        self.assertEqual(1, stale["value"])
+        self.assertEqual("bypass_stale_error", stale["_cache"]["state"])
+        self.assertTrue(stale["_cache"]["stale"])
+        self.assertIn("runtime_timeout", stale["_cache"]["error"])
+
+    def test_route_swr_cache_force_can_return_stale_while_refreshing(self):
+        cache = RouteSWRCache("test-route-cache")
+        key = canonical_cache_key("demo", {"a": "1", "cache_bust": "1"})
+        calls = []
+
+        cache.get(
+            key,
+            builder=lambda: ({"ok": True, "value": 1}, 200),
+            ttl_seconds=30,
+            stale_seconds=30,
+        )
+
+        def slow_builder():
+            calls.append("refresh")
+            return {"ok": True, "value": 2}, 200
+
+        stale, status = cache.get(
+            key,
+            builder=slow_builder,
+            ttl_seconds=30,
+            stale_seconds=30,
+            force=request_cache_bypass({"cache_bust": "1"}),
+            prefer_stale_on_force=True,
+        )
+
+        self.assertEqual(200, status)
+        self.assertEqual(1, stale["value"])
+        self.assertEqual("bypass_stale_refresh", stale["_cache"]["state"])
+
     def test_scan_summary_delivers_open_report_to_status_chat(self):
         sent = []
         states = {}

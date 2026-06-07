@@ -148,6 +148,16 @@ class _DefaultConfig:
         return default
 
 
+class _StatusComponent:
+    def __init__(self, payload: dict):
+        self.payload = dict(payload)
+        self.calls = 0
+
+    def status(self):
+        self.calls += 1
+        return dict(self.payload)
+
+
 class _BuyingPowerLifecycle:
     account_id = "DU123"
 
@@ -188,8 +198,19 @@ class _BuyingPowerService(_SnapshotService):
     def __init__(self, lifecycle: _BuyingPowerLifecycle, *, circuit: dict | None = None):
         super().__init__(lifecycle)
         self._circuit = dict(circuit or {})
+        self.status_calls = 0
+        self.gateway_manager = _StatusComponent(
+            {
+                "running": True,
+                "reachable": True,
+                "broker": {"account_data_circuit": self._circuit},
+            }
+        )
+        self.session_keeper = _StatusComponent({"authenticated": True})
+        self.ws_client = _StatusComponent({"ready": True})
 
     def status(self):
+        self.status_calls += 1
         return {
             "gateway": {"running": True, "reachable": True},
             "session": {"authenticated": True},
@@ -386,12 +407,14 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         service = _BuyingPowerService(lifecycle)
 
         full_snapshot = _with_fake_api_app(app, lambda: _build_ibkr_account_snapshot(service, include_pnl=False))
+        status_calls_after_full = service.status_calls
         buying_power = _with_fake_api_app(app, lambda: _build_ibkr_account_buying_power_snapshot(service))
 
         self.assertTrue(full_snapshot["summary_available"])
         self.assertEqual("account_snapshot", buying_power["source"])
         self.assertEqual(1, lifecycle.snapshot_calls)
         self.assertEqual(0, lifecycle.summary_calls)
+        self.assertEqual(status_calls_after_full, service.status_calls)
         self.assertEqual("ok", buying_power["account_snapshot_health"]["state"])
 
     def test_buying_power_reuses_fresh_include_pnl_full_snapshot_cache(self):
@@ -421,6 +444,7 @@ class AccountSnapshotFetchTest(unittest.TestCase):
 
         self.assertEqual(1, lifecycle.snapshot_calls)
         self.assertEqual(0, lifecycle.summary_calls)
+        self.assertEqual(0, service.status_calls)
         self.assertTrue(all(payload["source"] == "account_snapshot" for payload in payloads))
         self.assertTrue(all(payload["buying_power_guard"]["state"] == "ok" for payload in payloads))
 
@@ -435,6 +459,7 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertEqual("account_data_circuit_open", payload["buying_power_guard"]["reason"])
         self.assertEqual(42.0, payload["retry_after_s"])
         self.assertEqual(0, lifecycle.summary_calls)
+        self.assertEqual(0, service.status_calls)
 
 
 if __name__ == "__main__":

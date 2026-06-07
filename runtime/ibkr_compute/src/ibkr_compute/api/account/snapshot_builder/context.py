@@ -32,7 +32,7 @@ def _component_status(service, attr_name: str) -> dict:
     return dict(payload) if isinstance(payload, dict) else {}
 
 
-def _build_fast_snapshot_status(service) -> dict:
+def build_fast_snapshot_status(service) -> dict:
     return {
         "gateway": _component_status(service, "gateway_manager"),
         "session": _component_status(service, "session_keeper"),
@@ -43,7 +43,7 @@ def _build_fast_snapshot_status(service) -> dict:
 def build_snapshot_context(service, *, include_pnl: bool = True, fast_status: bool = False) -> dict:
     api_app = _api_app()
     runtime_environment = api_app._ibkr_service_environment(service)
-    service_status = _build_fast_snapshot_status(service) if fast_status else get_service_status_snapshot(service)
+    service_status = build_fast_snapshot_status(service) if fast_status else get_service_status_snapshot(service)
     account_id = _resolve_snapshot_account_id(api_app, service)
     include_pnl_flag = bool(include_pnl)
     return {
@@ -148,6 +148,7 @@ def get_snapshot_refresh_lock(api_app, cache_key: tuple[str, str, bool]) -> thre
 
 
 __all__ = [
+    "build_fast_snapshot_status",
     "build_snapshot_context",
     "get_snapshot_refresh_lock",
     "load_cached_snapshot",
