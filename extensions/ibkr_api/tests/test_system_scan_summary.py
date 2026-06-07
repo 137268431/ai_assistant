@@ -554,6 +554,21 @@ class SystemScanSummaryTest(unittest.TestCase):
         self.assertEqual(1, stale["value"])
         self.assertEqual("bypass_stale_refresh", stale["_cache"]["state"])
 
+    def test_route_swr_cache_can_clear_matching_keys(self):
+        cache = RouteSWRCache("test-route-cache")
+        keep_key = canonical_cache_key("demo", {"orders_fast": "1"})
+        drop_key = canonical_cache_key("demo", {"orders_fast": "0"})
+
+        cache.get(keep_key, builder=lambda: ({"ok": True, "value": "keep"}, 200), ttl_seconds=30, stale_seconds=30)
+        cache.get(drop_key, builder=lambda: ({"ok": True, "value": "drop"}, 200), ttl_seconds=30, stale_seconds=30)
+        cache.clear_matching(lambda key: key == drop_key)
+
+        keep, _ = cache.get(keep_key, builder=lambda: ({"ok": True, "value": "new-keep"}, 200), ttl_seconds=30, stale_seconds=30)
+        drop, _ = cache.get(drop_key, builder=lambda: ({"ok": True, "value": "new-drop"}, 200), ttl_seconds=30, stale_seconds=30)
+
+        self.assertEqual("keep", keep["value"])
+        self.assertEqual("new-drop", drop["value"])
+
     def test_scan_summary_delivers_open_report_to_status_chat(self):
         sent = []
         states = {}

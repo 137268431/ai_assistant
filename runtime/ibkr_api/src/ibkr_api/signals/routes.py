@@ -12,7 +12,7 @@ from ibkr_api.runtime.strategy_capacity import normalize_strategy_capacity_snaps
 _SIGNAL_ROUTE_CACHE = RouteSWRCache("signals")
 
 
-def _clear_signal_sensitive_read_caches() -> None:
+def _clear_signal_sensitive_read_caches(*, preserve_orders_fast: bool = False) -> None:
     _SIGNAL_ROUTE_CACHE.clear()
     for import_path, function_name in (
         ("ibkr_api.account.routes", "_clear_account_route_cache"),
@@ -23,7 +23,10 @@ def _clear_signal_sensitive_read_caches() -> None:
             module = __import__(import_path, fromlist=[function_name])
             clear_fn = getattr(module, function_name, None)
             if callable(clear_fn):
-                clear_fn()
+                if import_path == "ibkr_api.account.routes":
+                    clear_fn(preserve_orders_fast=preserve_orders_fast)
+                else:
+                    clear_fn()
         except Exception:
             pass
 

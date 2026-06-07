@@ -1,6 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SERVICE_SRC_ROOTS = [
     Path(__file__).resolve().parents[3] / "runtime" / "ibkr_api" / "src",
@@ -30,6 +31,7 @@ if "flask" not in sys.modules:
     sys.modules["flask"] = flask_stub
 
 from ibkr_api.account.snapshot import build_account_snapshot_response, enrich_account_snapshot
+from ibkr_api.account.routes import _account_snapshot_upstream_timeout, _prefers_stale_orders_fast
 from ibkr_api.account.snapshot_relations import build_relation_context
 
 
@@ -89,6 +91,21 @@ class _FakePB:
 
 
 class AccountSnapshotRoutesTest(unittest.TestCase):
+    def test_orders_fast_force_refresh_prefers_live_by_default(self):
+        payload = {"orders_fast": "1", "snapshot_profile": "orders_fast", "cache_bust": "123"}
+
+        self.assertFalse(_prefers_stale_orders_fast(payload))
+
+        explicit_stale = {**payload, "prefer_stale": "1"}
+        self.assertTrue(_prefers_stale_orders_fast(explicit_stale))
+
+    def test_orders_fast_route_uses_bounded_upstream_timeout(self):
+        with mock.patch.dict("os.environ", {"IBKR_ROUTE_CACHE_ACCOUNT_ORDERS_FAST_UPSTREAM_TIMEOUT_SEC": "3.5"}):
+            self.assertEqual(3.5, _account_snapshot_upstream_timeout({"orders_fast": "1"}))
+
+        with mock.patch.dict("os.environ", {"IBKR_ROUTE_CACHE_ACCOUNT_SNAPSHOT_UPSTREAM_TIMEOUT_SEC": "17"}):
+            self.assertEqual(17.0, _account_snapshot_upstream_timeout({"orders_fast": "0"}))
+
     def test_build_account_snapshot_response_forwards_include_pnl_flag(self):
         calls = []
 

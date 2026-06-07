@@ -82,6 +82,15 @@ class RouteSWRCache:
             self._entries.clear()
             self._in_flight.clear()
 
+    def clear_matching(self, predicate: Callable[[tuple[Any, ...]], bool]) -> None:
+        with self._lock:
+            for key in list(self._entries):
+                if predicate(key):
+                    self._entries.pop(key, None)
+            for key in list(self._in_flight):
+                if predicate(key):
+                    self._in_flight.pop(key, None)
+
     def get(
         self,
         key: tuple[Any, ...],

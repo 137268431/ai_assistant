@@ -23,7 +23,10 @@ def _clear_order_sensitive_read_caches() -> None:
             module = __import__(import_path, fromlist=[function_name])
             clear_fn = getattr(module, function_name, None)
             if callable(clear_fn):
-                clear_fn()
+                if import_path in {"ibkr_api.account.routes", "ibkr_api.signals.routes"}:
+                    clear_fn(preserve_orders_fast=True)
+                else:
+                    clear_fn()
         except Exception:
             pass
 

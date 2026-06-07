@@ -359,6 +359,11 @@ def summarize_account_snapshot(snapshot: dict[str, Any], symbols: list[str]) -> 
             "open_order_count": len(open_orders),
             "open_order_ids": [fee_probe.order_id(order) for order in open_orders if fee_probe.order_id(order)],
         }
+    cache_meta = snapshot.get("_cache") if isinstance(snapshot.get("_cache"), dict) else {}
+    diagnostics = snapshot.get("diagnostics") if isinstance(snapshot.get("diagnostics"), dict) else {}
+    account_diagnostics = diagnostics.get("account_snapshot") if isinstance(diagnostics.get("account_snapshot"), dict) else {}
+    cache_state = fee_probe.to_text(cache_meta.get("state"))
+    cache_stale = bool(cache_meta.get("stale")) or cache_state in {"stale", "stale_error", "bypass_stale_error"}
     return {
         "ok": snapshot.get("ok") is not False,
         "environment": snapshot.get("environment"),
@@ -371,6 +376,11 @@ def summarize_account_snapshot(snapshot: dict[str, Any], symbols: list[str]) -> 
         "stale": snapshot.get("stale"),
         "snapshot_profile": snapshot.get("snapshot_profile"),
         "source": snapshot.get("source"),
+        "counts": snapshot.get("counts") if isinstance(snapshot.get("counts"), dict) else {},
+        "route_cache": cache_meta,
+        "route_cache_state": cache_state,
+        "route_cache_stale": cache_stale,
+        "account_snapshot_diagnostics": account_diagnostics,
         "selected_open_order_count": total_open,
         "selected_symbols": selected,
     }
@@ -383,6 +393,7 @@ def account_access_ok(summary: dict[str, Any]) -> bool:
         and summary.get("session_authenticated") is not False
         and summary.get("websocket_ready") is not False
         and summary.get("stale") is not True
+        and summary.get("route_cache_stale") is not True
     )
 
 
@@ -1206,6 +1217,13 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     before = collect_health_and_stability(args, "gateway_probe_before")
     if not (before.get("stability") or {}).get("ok"):
         raise GatewayProbeError(f"stability_precheck_failed:{compact_json(before.get('stability'))[:1200]}")
+    try:
+        payload["orders_fast_cache_warmup"] = {
+            "ok": True,
+            "snapshot": get_snapshot(args, orders_fast=True, timeout_sec=min(30.0, float(args.http_timeout_sec))),
+        }
+    except Exception as exc:
+        payload["orders_fast_cache_warmup"] = {"ok": False, "error": str(exc)}
 
     place_results: list[dict[str, Any]] = []
     cancel_results: list[dict[str, Any]] = []

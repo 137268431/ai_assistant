@@ -294,6 +294,32 @@ class GatewayOrderProbeTest(unittest.TestCase):
         self.assertFalse(result["failures"])
         self.assertEqual("account_summary_unavailable", result["warnings"][0]["name"])
 
+    def test_account_access_flags_stale_route_cache(self):
+        snapshot = {
+            "ok": True,
+            "environment": "paper",
+            "broker_mode": "paper",
+            "service_running": True,
+            "session_authenticated": True,
+            "websocket_ready": True,
+            "summary_available": True,
+            "stale": False,
+            "_cache": {"state": "bypass_stale_error", "stale": True, "age_s": 30.0},
+            "diagnostics": {"account_snapshot": {"upstream_elapsed_ms": 8000.0}},
+            "positions": [],
+            "orders": [{"symbol": "AAPL", "status": "Submitted", "order_id": "1"}],
+            "live_open_orders": [{"symbol": "AAPL", "status": "Submitted", "order_id": "1"}],
+            "counts": {"open_orders": 1},
+        }
+
+        summary = probe.summarize_account_snapshot(snapshot, ["AAPL"])
+
+        self.assertFalse(probe.account_access_ok(summary))
+        self.assertTrue(summary["route_cache_stale"])
+        self.assertEqual("bypass_stale_error", summary["route_cache_state"])
+        self.assertEqual({"open_orders": 1}, summary["counts"])
+        self.assertEqual(8000.0, summary["account_snapshot_diagnostics"]["upstream_elapsed_ms"])
+
     def test_pending_account_access_allows_extra_failed_samples_when_min_successes_pass(self):
         args = Namespace(
             pending_hold_seconds=0.5,
