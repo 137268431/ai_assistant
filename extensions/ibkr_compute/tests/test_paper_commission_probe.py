@@ -50,6 +50,16 @@ class PaperCommissionProbeHelpersTest(unittest.TestCase):
 
         self.assertTrue(probe.is_flat_for_symbol(snapshot, "TSLA"))
 
+    def test_flat_detection_rejects_failed_or_unusable_snapshot(self):
+        self.assertFalse(probe.is_flat_for_symbol({"ok": False, "error": "timeout"}, "TSLA"))
+        self.assertFalse(probe.is_flat_for_symbol({"ok": True, "positions": []}, "TSLA"))
+        self.assertTrue(
+            probe.is_flat_for_symbol(
+                {"ok": True, "counts": {"open_orders": 0, "open_positions": 0}},
+                "TSLA",
+            )
+        )
+
     def test_account_snapshot_path_defaults_to_runtime_when_snapshot_base_is_set(self):
         self.assertEqual(
             "/ibkr/account",

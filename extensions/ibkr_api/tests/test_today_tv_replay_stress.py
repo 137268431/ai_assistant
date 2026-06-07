@@ -21,6 +21,7 @@ from run_today_tv_replay_stress import (  # noqa: E402
     evaluate_flow_requirements,
     evaluate_stability,
     is_nyse_trading_day,
+    metric_snapshot,
     next_nyse_market_window,
     parse_args,
     persist_retry_summary,
@@ -658,6 +659,19 @@ class TodayTvReplayStressTest(unittest.TestCase):
         result = evaluate_stability(_stability_args(), health, "after")
 
         self.assertTrue(result["ok"])
+
+    def test_order_failure_metric_excludes_pending_confirmations(self):
+        queries = []
+
+        def fake_query(_prometheus_url, query, *, host=""):
+            queries.append(query)
+            return _metric(0)
+
+        with mock.patch("run_today_tv_replay_stress.prometheus_query", side_effect=fake_query):
+            metric_snapshot("http://prometheus.test", "paper")
+
+        order_failure_query = next(query for query in queries if "order_failures_window" not in query and "ibkr_order_events_total" in query)
+        self.assertIn('result!~"ok|synced|seen|pending"', order_failure_query)
 
 
 if __name__ == "__main__":

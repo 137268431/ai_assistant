@@ -449,6 +449,7 @@ class GatewayOrderProbeTest(unittest.TestCase):
         self.assertEqual("1", calls[0][1]["orders_fast"])
         self.assertEqual("orders_fast", calls[0][1]["snapshot_profile"])
         self.assertEqual("0", calls[0][1]["include_pnl"])
+        self.assertEqual("0", calls[0][1]["cache"])
 
     def test_build_stop_loss_modify_items_targets_submitted_stop_legs(self):
         plans = [
@@ -504,11 +505,38 @@ class GatewayOrderProbeTest(unittest.TestCase):
         ) as cleanup_symbol:
             results = probe.cleanup_symbols(args, plans, [])
 
-        get_snapshot.assert_called_once_with(args, timeout_sec=30.0)
+        get_snapshot.assert_called_once_with(args, timeout_sec=30.0, orders_fast=True)
         cleanup_symbol.assert_not_called()
         self.assertEqual(2, len(results))
         self.assertTrue(all(item["ok"] for item in results))
         self.assertTrue(all(item["skipped"] for item in results))
+
+    def test_wait_for_flat_rejects_failed_snapshot_without_false_flat(self):
+        args = Namespace(cleanup_timeout_sec=0.1, cleanup_http_timeout_sec=1.0, http_timeout_sec=1.0, poll_interval_sec=0.01)
+        bad_snapshot = {"ok": False, "environment": "paper", "error": "runtime timeout"}
+
+        with mock.patch.object(probe, "get_snapshot", return_value=bad_snapshot):
+            result = probe.wait_for_flat_symbols(args, ["TSLA"])
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("cleanup_timeout_snapshot_unusable", result["error"])
+
+    def test_cancel_visible_orders_requires_usable_orders_snapshot(self):
+        args = Namespace(
+            api_base_url="https://example.test",
+            account_base_url="",
+            account_snapshot_path="",
+            http_timeout_sec=30.0,
+            cleanup_http_timeout_sec=2.0,
+        )
+        bad_snapshot = {"ok": False, "environment": "paper", "error": "timeout"}
+
+        with mock.patch.object(probe, "get_snapshot", return_value=bad_snapshot):
+            results = probe.cancel_visible_orders_for_symbols(args, ["TSLA"])
+
+        self.assertEqual(1, len(results))
+        self.assertFalse(results[0]["ok"])
+        self.assertEqual("account_snapshot_visibility_unavailable", results[0]["error"])
 
     def test_cancel_all_orders_retries_timeout_before_success(self):
         args = Namespace(

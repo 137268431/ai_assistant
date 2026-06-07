@@ -289,7 +289,37 @@ def has_nonzero_position(snapshot: dict[str, Any], symbol: str) -> bool:
     return any(abs(to_float(position.get("quantity"), 0.0)) > 1e-9 for position in positions_for_symbol(snapshot, symbol))
 
 
+def _first_count(snapshot: dict[str, Any], *keys: str) -> float | None:
+    counts = snapshot.get("counts") if isinstance(snapshot.get("counts"), dict) else {}
+    for key in keys:
+        if key in counts and counts.get(key) not in (None, ""):
+            return to_float(counts.get(key), 0.0)
+    return None
+
+
+def supports_symbol_flat_check(snapshot: dict[str, Any]) -> bool:
+    """Avoid treating a failed/partial snapshot with missing orders as flat."""
+    if not isinstance(snapshot, dict) or snapshot.get("ok") is False:
+        return False
+
+    has_order_rows = isinstance(snapshot.get("live_open_orders"), list) or isinstance(snapshot.get("orders"), list)
+    if not has_order_rows:
+        open_order_count = _first_count(snapshot, "open_orders", "orders")
+        if open_order_count is None or open_order_count > 0:
+            return False
+
+    has_position_rows = isinstance(snapshot.get("positions"), list)
+    if not has_position_rows:
+        open_position_count = _first_count(snapshot, "open_positions", "positions")
+        if open_position_count is None or open_position_count > 0:
+            return False
+
+    return True
+
+
 def is_flat_for_symbol(snapshot: dict[str, Any], symbol: str) -> bool:
+    if not supports_symbol_flat_check(snapshot):
+        return False
     return not has_nonzero_position(snapshot, symbol) and not open_orders_for_symbol(snapshot, symbol)
 
 

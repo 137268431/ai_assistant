@@ -315,7 +315,7 @@ def account_snapshot_client(args: argparse.Namespace, *, timeout_sec: float | No
 def account_snapshot_params(*, orders_fast: bool = False) -> dict[str, Any]:
     params = dict(fee_probe.account_params())
     if orders_fast:
-        params.update({"include_pnl": "0", "orders_fast": "1", "snapshot_profile": "orders_fast"})
+        params.update({"include_pnl": "0", "orders_fast": "1", "snapshot_profile": "orders_fast", "cache": "0"})
     return params
 
 
@@ -330,6 +330,8 @@ def get_snapshot(
 
 
 def is_flat_for_symbols(snapshot: dict[str, Any], symbols: list[str]) -> bool:
+    if not fee_probe.supports_symbol_flat_check(snapshot):
+        return False
     return all(fee_probe.is_flat_for_symbol(snapshot, symbol) for symbol in symbols)
 
 
@@ -339,13 +341,16 @@ def wait_for_flat_symbols(args: argparse.Namespace, symbols: list[str]) -> dict[
     snapshot_timeout = cleanup_http_timeout(args)
     while time.time() <= deadline:
         try:
-            last_snapshot = get_snapshot(args, timeout_sec=snapshot_timeout)
+            last_snapshot = get_snapshot(args, timeout_sec=snapshot_timeout, orders_fast=True)
         except Exception as exc:
             last_snapshot = {"ok": False, "error": str(exc)}
         if is_flat_for_symbols(last_snapshot, symbols):
             return {"ok": True, "snapshot": last_snapshot}
         time.sleep(max(0.2, float(args.poll_interval_sec)))
-    return {"ok": False, "snapshot": last_snapshot, "error": "cleanup_timeout_not_flat"}
+    error = "cleanup_timeout_not_flat"
+    if not fee_probe.supports_symbol_flat_check(last_snapshot):
+        error = "cleanup_timeout_snapshot_unusable"
+    return {"ok": False, "snapshot": last_snapshot, "error": error}
 
 
 def summarize_account_snapshot(snapshot: dict[str, Any], symbols: list[str]) -> dict[str, Any]:
@@ -1023,7 +1028,16 @@ def exit_cancel_storm(args: argparse.Namespace, place_results: list[dict[str, An
 
 
 def cancel_visible_orders_for_symbols(args: argparse.Namespace, symbols: list[str]) -> list[dict[str, Any]]:
-    snapshot = get_snapshot(args)
+    snapshot = get_snapshot(args, timeout_sec=cleanup_http_timeout(args), orders_fast=True)
+    if not fee_probe.supports_symbol_flat_check(snapshot):
+        return [
+            {
+                "ok": False,
+                "error": "account_snapshot_visibility_unavailable",
+                "source": "visible_order_rescue",
+                "snapshot": summarize_account_snapshot(snapshot, symbols),
+            }
+        ]
     client = fee_probe.ApiClient(args.api_base_url, timeout=float(args.http_timeout_sec))
     normalized_symbols = {fee_probe.normalize_symbol(symbol) for symbol in symbols if fee_probe.normalize_symbol(symbol)}
     seen: set[str] = set()
@@ -1147,7 +1161,7 @@ def cleanup_symbols(args: argparse.Namespace, plans: list[OrderProbePlan], place
     symbols = [plan.symbol for plan in plans]
     snapshot_timeout = cleanup_http_timeout(args)
     try:
-        global_snapshot = get_snapshot(args, timeout_sec=snapshot_timeout)
+        global_snapshot = get_snapshot(args, timeout_sec=snapshot_timeout, orders_fast=True)
     except Exception:
         global_snapshot = {}
     if global_snapshot and is_flat_for_symbols(global_snapshot, symbols):
@@ -1163,7 +1177,6 @@ def cleanup_symbols(args: argparse.Namespace, plans: list[OrderProbePlan], place
         ]
 
     client = fee_probe.ApiClient(args.api_base_url, timeout=snapshot_timeout)
-    snapshot_client, snapshot_path = account_snapshot_client(args, timeout_sec=snapshot_timeout)
     latest_place_by_symbol = {str(item.get("symbol")): item.get("response") or item for item in place_results}
     cleanup_results: list[dict[str, Any]] = []
     per_symbol_timeout = symbol_cleanup_timeout(args)
@@ -1175,7 +1188,7 @@ def cleanup_symbols(args: argparse.Namespace, plans: list[OrderProbePlan], place
                 plan.direction,
                 plan.quantity,
                 latest_place_by_symbol.get(plan.symbol) or {},
-                snapshot_fn=lambda path=snapshot_path: fee_probe.get_account_snapshot(snapshot_client, path),
+                snapshot_fn=lambda: get_snapshot(args, timeout_sec=snapshot_timeout, orders_fast=True),
                 timeout_s=per_symbol_timeout,
                 interval_s=float(args.poll_interval_sec),
             )
