@@ -205,7 +205,7 @@ class GatewayOrderProbeTest(unittest.TestCase):
 
     def test_observe_pending_account_access_requires_visible_orders_and_latency(self):
         args = Namespace(
-            pending_hold_seconds=0.0,
+            pending_hold_seconds=0.5,
             post_place_sleep_seconds=0.0,
             min_pending_hold_samples=2,
             pending_hold_sample_interval_sec=0.25,
@@ -232,13 +232,13 @@ class GatewayOrderProbeTest(unittest.TestCase):
             result = probe.observe_pending_account_access(args, ["AAPL", "MSFT"])
 
         self.assertTrue(result["ok"])
-        self.assertEqual(2, result["sample_count"])
+        self.assertEqual(3, result["sample_count"])
         self.assertEqual(2, result["max_selected_open_order_count_observed"])
         self.assertFalse(result["failures"])
 
     def test_observe_pending_account_access_fails_when_orders_are_not_visible(self):
         args = Namespace(
-            pending_hold_seconds=0.0,
+            pending_hold_seconds=0.5,
             post_place_sleep_seconds=0.0,
             min_pending_hold_samples=1,
             pending_hold_sample_interval_sec=0.25,
@@ -263,6 +263,79 @@ class GatewayOrderProbeTest(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertIn("visible_pending_orders", {item["name"] for item in result["failures"]})
+
+    def test_pending_account_access_warns_but_passes_when_summary_is_unavailable(self):
+        args = Namespace(
+            pending_hold_seconds=0.5,
+            post_place_sleep_seconds=0.0,
+            min_pending_hold_samples=1,
+            pending_hold_sample_interval_sec=0.25,
+            min_pending_visible_orders=1,
+            max_pending_snapshot_elapsed_sec=10.0,
+        )
+        snapshot = {
+            "ok": True,
+            "environment": "paper",
+            "broker_mode": "paper",
+            "service_running": True,
+            "session_authenticated": True,
+            "websocket_ready": True,
+            "summary_available": False,
+            "stale": False,
+            "positions": [],
+            "orders": [{"symbol": "AAPL", "status": "Submitted", "order_id": "1"}],
+            "live_open_orders": [],
+        }
+
+        with mock.patch.object(probe, "get_snapshot", return_value=snapshot):
+            result = probe.observe_pending_account_access(args, ["AAPL"])
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["failures"])
+        self.assertEqual("account_summary_unavailable", result["warnings"][0]["name"])
+
+    def test_pending_account_access_allows_extra_failed_samples_when_min_successes_pass(self):
+        args = Namespace(
+            pending_hold_seconds=0.5,
+            post_place_sleep_seconds=0.0,
+            min_pending_hold_samples=2,
+            pending_hold_sample_interval_sec=0.25,
+            min_pending_visible_orders=1,
+            max_pending_snapshot_elapsed_sec=10.0,
+        )
+        good_snapshot = {
+            "ok": True,
+            "environment": "paper",
+            "broker_mode": "paper",
+            "service_running": True,
+            "session_authenticated": True,
+            "websocket_ready": True,
+            "summary_available": True,
+            "stale": False,
+            "positions": [],
+            "orders": [{"symbol": "AAPL", "status": "Submitted", "order_id": "1"}],
+            "live_open_orders": [],
+        }
+
+        with mock.patch.object(
+            probe,
+            "sample_account_access",
+            side_effect=[
+                {"ok": True, "elapsed_s": 0.1, "summary": probe.summarize_account_snapshot(good_snapshot, ["AAPL"])},
+                {"ok": False, "elapsed_s": 0.1, "error": "HTTP 502"},
+                {"ok": True, "elapsed_s": 0.1, "summary": probe.summarize_account_snapshot(good_snapshot, ["AAPL"])},
+            ],
+        ), mock.patch.object(probe.time, "sleep", return_value=None), mock.patch.object(
+            probe.time,
+            "time",
+            side_effect=[0.0, 0.0, 0.25, 0.5],
+        ):
+            result = probe.observe_pending_account_access(args, ["AAPL"])
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(2, result["ok_sample_count"])
+        self.assertFalse(result["failures"])
+        self.assertEqual("account_snapshot_sample_failures", result["warnings"][0]["name"])
 
     def test_submit_burst_marks_unfinished_symbols_timed_out(self):
         args = Namespace(

@@ -170,7 +170,7 @@ from ibkr_api.signals.api import build_signals_ack_response, build_signals_pendi
 REQUEST_TIMEOUT_SECONDS = max(1.0, float(os.environ.get("IBKR_API_PROXY_TIMEOUT_SEC", "60")))
 ORDER_WRITE_PROXY_TIMEOUT_SECONDS = max(
     REQUEST_TIMEOUT_SECONDS,
-    float(os.environ.get("IBKR_API_ORDER_WRITE_PROXY_TIMEOUT_SEC", "360") or "360"),
+    float(os.environ.get("IBKR_API_ORDER_WRITE_PROXY_TIMEOUT_SEC", "1800") or "1800"),
 )
 ORDER_WRITE_PROXY_PATHS = {
     "/ibkr/orders/cancel",

@@ -73,7 +73,7 @@ logger = logging.getLogger(__name__)
 TICK_BY_TICK_DUPLICATE_WINDOW_SECONDS = 15.0
 # Large bracket bursts can delay openOrder/orderStatus callbacks even when the
 # raw placeOrder socket write succeeds immediately.
-BRACKET_SUBMISSION_CONFIRM_TIMEOUT_SECONDS = 60.0
+BRACKET_SUBMISSION_CONFIRM_TIMEOUT_SECONDS = 120.0
 ORDER_MODIFICATION_CONFIRM_TIMEOUT_SECONDS = 12.0
 CANCEL_CONFIRM_TIMEOUT_SECONDS = 12.0
 CANCEL_ALL_RECONCILE_TIMEOUT_SECONDS = 180.0

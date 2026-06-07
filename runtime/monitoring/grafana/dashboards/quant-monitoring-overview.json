@@ -1061,9 +1061,9 @@
       }
     },
     {
-      "id": 77,
+      "id": 13,
       "type": "row",
-      "title": "00A - Gateway 下单耗时 / Gateway Order Latency",
+      "title": "00A - 交易运行开关 / Trading Runtime Switches",
       "collapsed": false,
       "datasource": {
         "type": "prometheus",
@@ -1074,184 +1074,6 @@
         "w": 24,
         "x": 0,
         "y": 18
-      },
-      "panels": []
-    },
-    {
-      "id": 78,
-      "type": "timeseries",
-      "title": "Gateway 下单耗时拆解 / Gateway Order Latency Breakdown",
-      "description": "把真实下单耗时放到大盘顶部：区分 IB API 原始 placeOrder、完整 bracket 提交、Gateway 串行排队、账户/挂单确认、订单追踪/PB 写库。用于判断是 Gateway 慢，还是安全链路、确认、同步或清理慢。",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 24,
-        "x": 0,
-        "y": 19
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=\"ibapi_place\"}[$__rate_interval])))",
-          "legendFormat": "p95 IB原始placeOrder {{result}}",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum by (result) (rate(ibkr_order_operation_duration_seconds_sum{service=~\"$service\", environment=~\"$environment\", operation=\"ibapi_place\"}[$__rate_interval])) / clamp_min(sum by (result) (rate(ibkr_order_operation_duration_seconds_count{service=~\"$service\", environment=~\"$environment\", operation=\"ibapi_place\"}[$__rate_interval])), 1e-9)",
-          "legendFormat": "平均 IB原始placeOrder {{result}}",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=\"place_bracket\"}[$__rate_interval])))",
-          "legendFormat": "p95 完整Bracket链路 {{result}}",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum by (result) (rate(ibkr_order_operation_duration_seconds_sum{service=~\"$service\", environment=~\"$environment\", operation=\"place_bracket\"}[$__rate_interval])) / clamp_min(sum by (result) (rate(ibkr_order_operation_duration_seconds_count{service=~\"$service\", environment=~\"$environment\", operation=\"place_bracket\"}[$__rate_interval])), 1e-9)",
-          "legendFormat": "平均 完整Bracket链路 {{result}}",
-          "range": true,
-          "refId": "D"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_gateway_order_serial_queue_wait_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=~\"place_bracket_order|modify_order|cancel_order|cancel_all_orders\"}[$__rate_interval])))",
-          "legendFormat": "p95 串行gate等待 {{operation}} {{result}}",
-          "range": true,
-          "refId": "E"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, request_kind, result) (rate(ibkr_broker_request_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", request_kind=~\"open_orders|open_orders_all|account_summary|positions\"}[$__rate_interval])))",
-          "legendFormat": "p95 账户/挂单确认 {{request_kind}} {{result}}",
-          "range": true,
-          "refId": "F"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_order_operation_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", operation=~\"tracker_live_orders_fetch|pb_order_sync\"}[$__rate_interval])))",
-          "legendFormat": "p95 追踪/写库 {{operation}} {{result}}",
-          "range": true,
-          "refId": "G"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "barAlignment": 0,
-            "lineWidth": 1,
-            "fillOpacity": 8,
-            "gradientMode": "none",
-            "spanNulls": false,
-            "insertNulls": false,
-            "showPoints": "never",
-            "pointSize": 5,
-            "stacking": {
-              "mode": "none",
-              "group": "A"
-            },
-            "axisPlacement": "auto",
-            "axisLabel": "",
-            "axisColorMode": "text",
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "mean",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "width": 520
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 13,
-      "type": "row",
-      "title": "00B - 交易运行开关 / Trading Runtime Switches",
-      "collapsed": false,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 26
       },
       "panels": []
     },
@@ -1268,7 +1090,7 @@
         "h": 5,
         "w": 6,
         "x": 0,
-        "y": 27
+        "y": 19
       },
       "targets": [
         {
@@ -1353,7 +1175,7 @@
         "h": 5,
         "w": 6,
         "x": 6,
-        "y": 27
+        "y": 19
       },
       "targets": [
         {
@@ -1449,7 +1271,7 @@
         "h": 5,
         "w": 6,
         "x": 12,
-        "y": 27
+        "y": 19
       },
       "targets": [
         {
@@ -1545,7 +1367,7 @@
         "h": 5,
         "w": 6,
         "x": 18,
-        "y": 27
+        "y": 19
       },
       "targets": [
         {
@@ -1659,7 +1481,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 32
+        "y": 24
       },
       "targets": [
         {
@@ -1726,7 +1548,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 32
+        "y": 24
       },
       "targets": [
         {
@@ -1789,7 +1611,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 39
+        "y": 31
       },
       "panels": []
     },
@@ -1806,7 +1628,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 40
+        "y": 32
       },
       "targets": [
         {
@@ -1939,7 +1761,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 40
+        "y": 32
       },
       "targets": [
         {
@@ -2098,7 +1920,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 40
+        "y": 32
       },
       "targets": [
         {
@@ -2217,7 +2039,7 @@
         "h": 7,
         "w": 16,
         "x": 0,
-        "y": 47
+        "y": 39
       },
       "targets": [
         {
@@ -2338,7 +2160,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 47
+        "y": 39
       },
       "targets": [
         {
@@ -2431,7 +2253,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 54
+        "y": 46
       },
       "panels": []
     },
@@ -2448,7 +2270,7 @@
         "h": 5,
         "w": 8,
         "x": 0,
-        "y": 55
+        "y": 47
       },
       "targets": [
         {
@@ -2555,7 +2377,7 @@
         "h": 5,
         "w": 8,
         "x": 8,
-        "y": 55
+        "y": 47
       },
       "targets": [
         {
@@ -2648,7 +2470,7 @@
         "h": 5,
         "w": 8,
         "x": 16,
-        "y": 55
+        "y": 47
       },
       "targets": [
         {
@@ -2756,7 +2578,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 60
+        "y": 52
       },
       "targets": [
         {
@@ -2849,7 +2671,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 60
+        "y": 52
       },
       "targets": [
         {
@@ -2942,7 +2764,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 60
+        "y": 52
       },
       "targets": [
         {
@@ -3035,7 +2857,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 67
+        "y": 59
       },
       "panels": []
     },
@@ -3052,7 +2874,7 @@
         "h": 5,
         "w": 8,
         "x": 0,
-        "y": 68
+        "y": 60
       },
       "targets": [
         {
@@ -3170,7 +2992,7 @@
         "h": 5,
         "w": 8,
         "x": 8,
-        "y": 68
+        "y": 60
       },
       "targets": [
         {
@@ -3263,7 +3085,7 @@
         "h": 5,
         "w": 8,
         "x": 16,
-        "y": 68
+        "y": 60
       },
       "targets": [
         {
@@ -3356,7 +3178,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 73
+        "y": 65
       },
       "targets": [
         {
@@ -3450,7 +3272,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 73
+        "y": 65
       },
       "targets": [
         {
@@ -3517,7 +3339,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 80
+        "y": 72
       },
       "targets": [
         {
@@ -3612,7 +3434,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 80
+        "y": 72
       },
       "targets": [
         {
@@ -3680,7 +3502,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 87
+        "y": 79
       },
       "panels": []
     },
@@ -3697,7 +3519,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 88
+        "y": 80
       },
       "targets": [
         {
@@ -3988,7 +3810,7 @@
         "h": 6,
         "w": 24,
         "x": 0,
-        "y": 96
+        "y": 88
       },
       "targets": [
         {
@@ -4253,7 +4075,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 102
+        "y": 94
       },
       "targets": [
         {
@@ -4753,7 +4575,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 112
+        "y": 104
       },
       "targets": [
         {
@@ -5018,7 +4840,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 112
+        "y": 104
       },
       "targets": [
         {
@@ -5129,7 +4951,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 120
+        "y": 112
       },
       "targets": [
         {
@@ -5321,7 +5143,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 130
+        "y": 122
       },
       "fieldConfig": {
         "defaults": {},
@@ -5345,7 +5167,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 140
+        "y": 132
       },
       "panels": []
     },
@@ -5362,7 +5184,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 141
+        "y": 133
       },
       "targets": [
         {
@@ -5466,7 +5288,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 141
+        "y": 133
       },
       "targets": [
         {
@@ -5559,7 +5381,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 141
+        "y": 133
       },
       "targets": [
         {
@@ -5663,7 +5485,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 148
+        "y": 140
       },
       "targets": [
         {
@@ -5757,7 +5579,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 148
+        "y": 140
       },
       "targets": [
         {
@@ -5851,7 +5673,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 155
+        "y": 147
       },
       "panels": []
     },
@@ -5868,7 +5690,7 @@
         "h": 6,
         "w": 8,
         "x": 0,
-        "y": 156
+        "y": 148
       },
       "targets": [
         {
@@ -5964,7 +5786,7 @@
         "h": 6,
         "w": 8,
         "x": 8,
-        "y": 156
+        "y": 148
       },
       "targets": [
         {
@@ -6090,7 +5912,7 @@
         "h": 6,
         "w": 8,
         "x": 16,
-        "y": 156
+        "y": 148
       },
       "targets": [
         {
@@ -6209,7 +6031,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 162
+        "y": 154
       },
       "targets": [
         {
@@ -6336,7 +6158,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 162
+        "y": 154
       },
       "targets": [
         {
@@ -6441,7 +6263,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 169
+        "y": 161
       },
       "panels": []
     },
@@ -6458,7 +6280,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 170
+        "y": 162
       },
       "targets": [
         {
@@ -6525,7 +6347,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 170
+        "y": 162
       },
       "targets": [
         {
@@ -6603,7 +6425,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 170
+        "y": 162
       },
       "targets": [
         {
@@ -6696,7 +6518,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 178
+        "y": 170
       },
       "targets": [
         {
@@ -6763,7 +6585,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 178
+        "y": 170
       },
       "targets": [
         {
@@ -6841,7 +6663,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 185
+        "y": 177
       },
       "panels": []
     },
@@ -6858,7 +6680,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 186
+        "y": 178
       },
       "targets": [
         {
@@ -6952,7 +6774,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 186
+        "y": 178
       },
       "targets": [
         {
@@ -7046,7 +6868,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 193
+        "y": 185
       },
       "panels": []
     },
@@ -7063,7 +6885,7 @@
         "h": 6,
         "w": 8,
         "x": 0,
-        "y": 194
+        "y": 186
       },
       "targets": [
         {
@@ -7189,7 +7011,7 @@
         "h": 6,
         "w": 16,
         "x": 8,
-        "y": 194
+        "y": 186
       },
       "targets": [
         {
@@ -7296,7 +7118,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 200
+        "y": 192
       },
       "targets": [
         {
@@ -7391,7 +7213,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 200
+        "y": 192
       },
       "targets": [
         {
@@ -7486,7 +7308,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 207
+        "y": 199
       },
       "targets": [
         {
@@ -7554,7 +7376,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 207
+        "y": 199
       },
       "targets": [
         {
@@ -7719,6 +7541,6 @@
   "timezone": "browser",
   "title": "量化监控 - 分阶段请求链路 / Quant Monitoring - Phased Request Flow",
   "uid": "quant-monitoring-overview",
-  "version": 6,
+  "version": 5,
   "weekStart": ""
 }

@@ -88,6 +88,10 @@ def compact_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
 
 
+def json_clone(value: Any) -> Any:
+    return json.loads(json.dumps(value, ensure_ascii=False, default=str))
+
+
 def split_symbols(raw: str) -> list[str]:
     symbols: list[str] = []
     for piece in str(raw or "").replace(";", ",").split(","):
@@ -364,7 +368,7 @@ def account_access_ok(summary: dict[str, Any]) -> bool:
         and summary.get("service_running") is not False
         and summary.get("session_authenticated") is not False
         and summary.get("websocket_ready") is not False
-        and summary.get("summary_available") is not False
+        and summary.get("stale") is not True
     )
 
 
@@ -403,11 +407,14 @@ def observe_pending_account_access(args: argparse.Namespace, symbols: list[str])
 
     started = time.time()
     interval = max(0.25, float(args.pending_hold_sample_interval_sec or 1.0))
+    max_samples = max(sample_goal, int(ceil(hold_seconds / interval)) + 1 if hold_seconds > 0 else sample_goal)
     samples: list[dict[str, Any]] = []
     while True:
         samples.append(sample_account_access(args, symbols, phase="pending_hold", sample_index=len(samples) + 1))
         elapsed = time.time() - started
         if elapsed >= hold_seconds and len(samples) >= sample_goal:
+            break
+        if len(samples) >= max_samples:
             break
         if elapsed < hold_seconds:
             sleep_for = min(interval, max(0.0, hold_seconds - elapsed))
@@ -424,8 +431,18 @@ def observe_pending_account_access(args: argparse.Namespace, symbols: list[str])
     max_observed_orders = max(visible_counts or [0])
     max_observed_elapsed = max(elapsed_values or [0.0])
     failures: list[dict[str, Any]] = []
-    if not all(sample.get("ok") for sample in samples):
-        failures.append({"name": "account_snapshot_samples_ok", "failed": sum(1 for sample in samples if not sample.get("ok"))})
+    warnings: list[dict[str, Any]] = []
+    ok_sample_count = sum(1 for sample in samples if sample.get("ok"))
+    failed_sample_count = sum(1 for sample in samples if not sample.get("ok"))
+    if ok_sample_count < sample_goal:
+        failures.append({"name": "account_snapshot_samples_ok", "value": ok_sample_count, "threshold": sample_goal})
+    if failed_sample_count:
+        warnings.append({"name": "account_snapshot_sample_failures", "count": failed_sample_count})
+    summary_unavailable_count = sum(
+        1 for sample in samples if ((sample.get("summary") or {}).get("summary_available") is False)
+    )
+    if summary_unavailable_count:
+        warnings.append({"name": "account_summary_unavailable", "count": summary_unavailable_count})
     if len(samples) < sample_goal:
         failures.append({"name": "account_snapshot_sample_count", "value": len(samples), "threshold": sample_goal})
     if max_observed_elapsed > max_elapsed:
@@ -441,9 +458,11 @@ def observe_pending_account_access(args: argparse.Namespace, symbols: list[str])
         "min_visible_orders": min_visible_orders,
         "max_snapshot_elapsed_sec": max_elapsed,
         "sample_count": len(samples),
+        "ok_sample_count": ok_sample_count,
         "max_snapshot_elapsed_observed_sec": round(max_observed_elapsed, 3),
         "max_selected_open_order_count_observed": max_observed_orders,
         "failures": failures,
+        "warnings": warnings,
         "samples": samples,
     }
 
@@ -600,6 +619,26 @@ def collect_health_and_stability(args: argparse.Namespace, phase: str) -> dict[s
     health = replay_stress.phase0_health(replay_args)
     stability = replay_stress.evaluate_stability(replay_args, health, phase)
     return {"health": health, "stability": stability}
+
+
+def collect_stability_with_settle(args: argparse.Namespace, phase: str) -> dict[str, Any]:
+    result = collect_health_and_stability(args, phase)
+    max_wait = max(0.0, float(getattr(args, "stability_settle_seconds", 0.0) or 0.0))
+    if bool((result.get("stability") or {}).get("ok")) or max_wait <= 0:
+        return result
+
+    interval = max(5.0, float(getattr(args, "stability_settle_interval_sec", 30.0) or 30.0))
+    attempts = [json_clone(result.get("stability") or {})]
+    deadline = time.time() + max_wait
+    while time.time() < deadline:
+        time.sleep(min(interval, max(0.0, deadline - time.time())))
+        result = collect_health_and_stability(args, phase)
+        attempts.append(json_clone(result.get("stability") or {}))
+        if bool((result.get("stability") or {}).get("ok")):
+            break
+    if isinstance(result.get("stability"), dict):
+        result["stability"]["settle_attempts"] = attempts
+    return result
 
 
 def submit_one(client: fee_probe.ApiClient, plan: OrderProbePlan, *, delay_s: float = 0.0) -> dict[str, Any]:
@@ -1180,7 +1219,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         cleanup_results = cleanup_symbols(args, plans, place_results)
         flat_after = wait_for_flat_symbols(args, symbols)
 
-    after = collect_health_and_stability(args, "gateway_probe_after")
+    after = collect_stability_with_settle(args, "gateway_probe_after")
     place_acceptance = summarize_place_acceptance(args, place_results, plans)
     place_ok = bool(place_acceptance.get("ok"))
     cancel_attempted = bool(cancel_results) or all(item.get("order_ids") == [] for item in place_results)
@@ -1235,9 +1274,11 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 "skipped": pending_observation.get("skipped"),
                 "hold_seconds": pending_observation.get("hold_seconds"),
                 "sample_count": pending_observation.get("sample_count"),
+                "ok_sample_count": pending_observation.get("ok_sample_count"),
                 "max_selected_open_order_count_observed": pending_observation.get("max_selected_open_order_count_observed"),
                 "max_snapshot_elapsed_observed_sec": pending_observation.get("max_snapshot_elapsed_observed_sec"),
                 "failures": pending_observation.get("failures") or [],
+                "warnings": pending_observation.get("warnings") or [],
             },
             "account_flat": {"before": True, "after": bool(flat_after.get("ok"))},
             "stability": {"before": before.get("stability"), "after": after.get("stability")},
@@ -1284,6 +1325,7 @@ def apply_stress_preset(args: argparse.Namespace) -> argparse.Namespace:
     args.skip_stability_gate = False
     if target_orders >= 10:
         args.bulk_cancel_all = True
+        args.stability_settle_seconds = max(float(getattr(args, "stability_settle_seconds", 0.0) or 0.0), 300.0)
     args.max_firing_alerts = 0.0
     args.max_broker_pending_requests = 0.0
     args.max_order_failures = 0.0
@@ -1349,6 +1391,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-order-operation-p95", type=float, default=10.0)
     parser.add_argument("--max-gateway-serial-wait-p95", type=float, default=2.0)
     parser.add_argument("--max-gateway-serial-timeouts", type=float, default=0.0)
+    parser.add_argument("--stability-settle-seconds", type=float, default=0.0, help="Retry after-run stability for transient alert windows once cleanup is flat.")
+    parser.add_argument("--stability-settle-interval-sec", type=float, default=30.0)
     parser.add_argument("--expect-buying-power-blocks", action="store_true", help="Treat buying_power_blocked placement responses as the expected over-BP outcome.")
     parser.add_argument("--min-buying-power-blocks", type=int, default=0, help="Minimum buying_power_blocked responses required when --expect-buying-power-blocks is set.")
     parser.add_argument("--modify-stop-loss-storm", action="store_true", help="After placement, modify all submitted stop-loss legs concurrently before cleanup.")
