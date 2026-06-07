@@ -11,24 +11,53 @@ from ibkr_compute.api.account.action_builders import common
 
 
 class AccountActionResponseTest(unittest.TestCase):
-    def test_action_response_forces_fresh_non_stale_snapshot_after_write(self):
-        calls = []
+    def test_action_response_uses_fast_snapshot_for_order_actions(self):
+        class _Tracker:
+            def get_cached_live_orders(self, *, include_all=False):
+                self.include_all = include_all
+                return [
+                    {"orderId": "101", "status": "Submitted"},
+                    {"orderId": "102", "status": "Cancelled"},
+                ]
 
-        def fake_snapshot(service, **kwargs):
-            calls.append((service, dict(kwargs)))
-            return {"ok": True, "cache_state": "fresh", "stale": False}
+        class _Service:
+            environment = "paper"
+            order_tracker = _Tracker()
 
-        service = object()
-        with mock.patch.object(common, "_build_ibkr_account_snapshot", side_effect=fake_snapshot):
+        with mock.patch.object(common, "_build_ibkr_account_snapshot", return_value={"ok": True}) as full_snapshot:
             payload, status = common._build_snapshot_action_response(
-                service,
+                _Service(),
                 "cancel_all_orders",
                 {"ok": True},
             )
 
         self.assertEqual(200, status)
         self.assertTrue(payload["ok"])
-        self.assertEqual({"force_refresh": True, "allow_stale": False}, calls[-1][1])
+        full_snapshot.assert_not_called()
+        self.assertEqual("account_action_orders_fast", payload["snapshot"]["source"])
+        self.assertEqual(2, payload["snapshot"]["counts"]["orders"])
+        self.assertEqual(1, payload["snapshot"]["counts"]["open_orders"])
+
+    def test_action_response_can_skip_snapshot_for_stress_cleanup(self):
+        service = object()
+        with mock.patch.object(common, "_build_ibkr_account_snapshot", return_value={"ok": True}) as full_snapshot, mock.patch.object(
+            common,
+            "_build_fast_action_snapshot",
+            return_value={"ok": True},
+        ) as fast_snapshot:
+            payload, status = common._build_snapshot_action_response(
+                service,
+                "cancel_order",
+                {"ok": True},
+                include_snapshot=False,
+            )
+
+        self.assertEqual(200, status)
+        self.assertTrue(payload["ok"])
+        full_snapshot.assert_not_called()
+        fast_snapshot.assert_not_called()
+        self.assertEqual("account_action_snapshot_skipped", payload["snapshot"]["source"])
+        self.assertTrue(payload["snapshot"]["snapshot_skipped"])
 
 
 if __name__ == "__main__":

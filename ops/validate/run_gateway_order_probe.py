@@ -675,13 +675,15 @@ def submit_one(client: fee_probe.ApiClient, plan: OrderProbePlan, *, delay_s: fl
     if delay_s > 0:
         time.sleep(delay_s)
     started = time.perf_counter()
-    response = client.post("/api/custom/ibkr/orders/place", plan.payload(), action_params())
+    request_payload = plan.payload()
+    request_payload["include_snapshot"] = False
+    response = client.post("/api/custom/ibkr/orders/place", request_payload, action_params())
     elapsed = time.perf_counter() - started
     result = nested_result(response)
     return {
         "ok": response_action_ok(response),
         "symbol": plan.symbol,
-        "payload": plan.payload(),
+        "payload": request_payload,
         "response": response,
         "error": response.get("error") or result.get("error") or result.get("reason") or "",
         "order_ids": fee_probe.extract_order_ids(response),
@@ -909,6 +911,7 @@ def modify_stop_loss_storm(
             "order_id": item["order_id"],
             "price": item["new_stop_loss_price"],
             "source": "gateway_probe_stop_loss_modify_storm",
+            "include_snapshot": False,
         }
         try:
             response = client.post("/api/custom/ibkr/orders/modify", payload, action_params())
@@ -978,7 +981,7 @@ def cancel_order_items_burst(
 
     def submit_cancel(item: dict[str, Any]) -> dict[str, Any]:
         started = time.perf_counter()
-        payload = {"order_id": item["order_id"], "source": source}
+        payload = {"order_id": item["order_id"], "source": source, "include_snapshot": False}
         try:
             response = client.post("/api/custom/ibkr/orders/cancel", payload, action_params())
             ok = response_action_ok(response)
@@ -1055,7 +1058,11 @@ def cancel_visible_orders_for_symbols(args: argparse.Namespace, symbols: list[st
             seen.add(identity)
             started = time.perf_counter()
             try:
-                response = client.post("/api/custom/ibkr/orders/cancel", {"order_id": oid}, action_params())
+                response = client.post(
+                    "/api/custom/ibkr/orders/cancel",
+                    {"order_id": oid, "include_snapshot": False},
+                    action_params(),
+                )
                 ok = response_action_ok(response)
                 error = action_error_code({"response": response})
             except Exception as exc:
@@ -1088,7 +1095,11 @@ def cancel_known_order_ids(args: argparse.Namespace, place_results: list[dict[st
                 continue
             seen.add(oid)
             started = time.perf_counter()
-            response = client.post("/api/custom/ibkr/orders/cancel", {"order_id": oid}, action_params())
+            response = client.post(
+                "/api/custom/ibkr/orders/cancel",
+                {"order_id": oid, "include_snapshot": False},
+                action_params(),
+            )
             cancel_results.append(
                 {
                     "ok": response_action_ok(response),
@@ -1116,7 +1127,11 @@ def cancel_all_orders(args: argparse.Namespace, *, source: str = "gateway_order_
         client = fee_probe.ApiClient(args.api_base_url, timeout=cancel_all_http_timeout(args))
         started = time.perf_counter()
         try:
-            response = client.post("/api/custom/ibkr/orders/cancel_all", {"source": source, "attempt": attempt}, action_params())
+            response = client.post(
+                "/api/custom/ibkr/orders/cancel_all",
+                {"source": source, "attempt": attempt, "include_snapshot": False},
+                action_params(),
+            )
             result = nested_result(response)
             ok = response_action_ok(response)
             error = action_error_code({"response": response})
@@ -1157,6 +1172,32 @@ def cancel_all_orders(args: argparse.Namespace, *, source: str = "gateway_order_
     ]
 
 
+def already_flat_cleanup_results(
+    plans: list[OrderProbePlan],
+    snapshot: dict[str, Any],
+    *,
+    reason: str,
+    rescue_results: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for index, plan in enumerate(plans):
+        result = {"final_snapshot": snapshot, "flat": True}
+        if index == 0 and rescue_results is not None:
+            result["visible_rescue_cancel_results"] = rescue_results
+            result["visible_rescue_cancel_count"] = len(rescue_results)
+            result["visible_rescue_cancel_ok"] = all(item.get("ok") for item in rescue_results)
+        results.append(
+            {
+                "ok": True,
+                "symbol": plan.symbol,
+                "skipped": True,
+                "reason": reason,
+                "result": result,
+            }
+        )
+    return results
+
+
 def cleanup_symbols(args: argparse.Namespace, plans: list[OrderProbePlan], place_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     symbols = [plan.symbol for plan in plans]
     snapshot_timeout = cleanup_http_timeout(args)
@@ -1165,16 +1206,23 @@ def cleanup_symbols(args: argparse.Namespace, plans: list[OrderProbePlan], place
     except Exception:
         global_snapshot = {}
     if global_snapshot and is_flat_for_symbols(global_snapshot, symbols):
-        return [
-            {
-                "ok": True,
-                "symbol": plan.symbol,
-                "skipped": True,
-                "reason": "already_flat_after_bulk_cancel",
-                "result": {"final_snapshot": global_snapshot, "flat": True},
-            }
-            for plan in plans
-        ]
+        return already_flat_cleanup_results(plans, global_snapshot, reason="already_flat_after_bulk_cancel")
+
+    visible_rescue_cancel_results = cancel_visible_orders_for_symbols(args, symbols)
+    if visible_rescue_cancel_results and all(item.get("ok") for item in visible_rescue_cancel_results):
+        try:
+            post_rescue_snapshot = wait_for_flat_symbols(args, symbols)
+            post_rescue_final_snapshot = post_rescue_snapshot.get("snapshot") or {}
+        except Exception:
+            post_rescue_snapshot = {"ok": False}
+            post_rescue_final_snapshot = {}
+        if post_rescue_snapshot.get("ok") and is_flat_for_symbols(post_rescue_final_snapshot, symbols):
+            return already_flat_cleanup_results(
+                plans,
+                post_rescue_final_snapshot,
+                reason="already_flat_after_visible_order_rescue",
+                rescue_results=visible_rescue_cancel_results,
+            )
 
     client = fee_probe.ApiClient(args.api_base_url, timeout=snapshot_timeout)
     latest_place_by_symbol = {str(item.get("symbol")): item.get("response") or item for item in place_results}

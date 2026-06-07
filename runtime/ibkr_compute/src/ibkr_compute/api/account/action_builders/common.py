@@ -61,6 +61,26 @@ def _build_fast_action_snapshot(service) -> dict:
     }
 
 
+def _build_minimal_action_snapshot(service) -> dict:
+    return {
+        "ok": True,
+        "environment": str(getattr(service, "environment", "") or ""),
+        "source": "account_action_snapshot_skipped",
+        "snapshot_profile": "minimal_action",
+        "snapshot_skipped": True,
+        "summary_available": None,
+        "orders": [],
+        "live_open_orders": [],
+        "positions": [],
+        "counts": {
+            "orders": 0,
+            "open_orders": 0,
+            "positions": 0,
+            "open_positions": 0,
+        },
+    }
+
+
 def _build_snapshot_action_response(
     service,
     action: str,
@@ -70,6 +90,7 @@ def _build_snapshot_action_response(
     extra: dict | None = None,
     snapshot_force_refresh: bool | None = None,
     snapshot_allow_stale: bool | None = None,
+    include_snapshot: bool = True,
     action_started_at: float | None = None,
     operation_elapsed_s: float | None = None,
 ) -> tuple[dict, int]:
@@ -90,7 +111,9 @@ def _build_snapshot_action_response(
         force_refresh = bool(snapshot_force_refresh) if snapshot_force_refresh is not None else action not in fast_snapshot_actions
         allow_stale = bool(snapshot_allow_stale) if snapshot_allow_stale is not None else action in fast_snapshot_actions
         use_orders_fast_snapshot = action in fast_snapshot_actions
-        if use_orders_fast_snapshot:
+        if not include_snapshot:
+            snapshot = _build_minimal_action_snapshot(service)
+        elif use_orders_fast_snapshot:
             snapshot = _build_fast_action_snapshot(service)
         else:
             snapshot = _build_ibkr_account_snapshot(

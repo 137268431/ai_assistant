@@ -143,6 +143,7 @@ def _build_ibkr_cancel_order_response(service, payload: dict) -> tuple[dict, int
     action_started_at = time.perf_counter()
     order_id = str((payload or {}).get("order_id") or (payload or {}).get("id") or "").strip()
     acct_id = str((payload or {}).get("account_id") or "").strip() or None
+    include_snapshot = _payload_bool((payload or {}).get("include_snapshot"), True)
     if not order_id:
         return {"ok": False, "error": "Missing order_id"}, 400
 
@@ -155,6 +156,7 @@ def _build_ibkr_cancel_order_response(service, payload: dict) -> tuple[dict, int
         result,
         delay_seconds=0.0,
         extra={"order_id": order_id},
+        include_snapshot=include_snapshot,
         action_started_at=action_started_at,
         operation_elapsed_s=operation_elapsed_s,
     )
@@ -163,6 +165,7 @@ def _build_ibkr_cancel_order_response(service, payload: dict) -> tuple[dict, int
 def _build_ibkr_cancel_all_orders_response(service, payload: dict) -> tuple[dict, int]:
     action_started_at = time.perf_counter()
     acct_id = str((payload or {}).get("account_id") or "").strip() or None
+    include_snapshot = _payload_bool((payload or {}).get("include_snapshot"), True)
     operation_started_at = time.perf_counter()
     result = service.order_modifier.cancel_all_orders(acct_id=acct_id)
     operation_elapsed_s = time.perf_counter() - operation_started_at
@@ -171,6 +174,7 @@ def _build_ibkr_cancel_all_orders_response(service, payload: dict) -> tuple[dict
         "cancel_all_orders",
         result,
         delay_seconds=0.0,
+        include_snapshot=include_snapshot,
         action_started_at=action_started_at,
         operation_elapsed_s=operation_elapsed_s,
     )
@@ -180,6 +184,7 @@ def _build_ibkr_modify_order_response(service, payload: dict) -> tuple[dict, int
     action_started_at = time.perf_counter()
     order_id = str((payload or {}).get("order_id") or (payload or {}).get("id") or "").strip()
     acct_id = str((payload or {}).get("account_id") or "").strip() or None
+    include_snapshot = _payload_bool((payload or {}).get("include_snapshot"), True)
     updates = {}
 
     if not order_id:
@@ -210,6 +215,7 @@ def _build_ibkr_modify_order_response(service, payload: dict) -> tuple[dict, int
             "order_id": order_id,
             "updates": updates,
         },
+        include_snapshot=include_snapshot,
         action_started_at=action_started_at,
         operation_elapsed_s=operation_elapsed_s,
     )
@@ -528,6 +534,7 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
             "confirmation_mode": confirmation_mode,
             "fast_ack": bool(fast_accept_enabled),
         },
+        include_snapshot=_payload_bool((payload or {}).get("include_snapshot"), True),
         action_started_at=action_started_at,
         operation_elapsed_s=operation_elapsed_s,
     )

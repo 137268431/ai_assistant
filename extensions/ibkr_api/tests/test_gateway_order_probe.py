@@ -511,6 +511,51 @@ class GatewayOrderProbeTest(unittest.TestCase):
         self.assertTrue(all(item["ok"] for item in results))
         self.assertTrue(all(item["skipped"] for item in results))
 
+    def test_cleanup_symbols_uses_visible_order_rescue_before_per_symbol_cleanup(self):
+        args = Namespace(
+            api_base_url="https://example.test",
+            account_base_url="",
+            account_snapshot_path="",
+            http_timeout_sec=1200.0,
+            cleanup_http_timeout_sec=30.0,
+            cleanup_timeout_sec=1200.0,
+            symbol_cleanup_timeout_sec=0.0,
+            poll_interval_sec=2.0,
+            cancel_spacing_seconds=0.0,
+        )
+        plans = [
+            probe.OrderProbePlan("AAPL", "long", 1, 100.0, 50.0, 57.5, 42.5),
+            probe.OrderProbePlan("MSFT", "long", 1, 200.0, 100.0, 115.0, 85.0),
+        ]
+        first_snapshot = {
+            "ok": True,
+            "positions": [],
+            "live_open_orders": [{"symbol": "AAPL", "order_id": "101", "status": "Submitted"}],
+        }
+        flat_snapshot = {"ok": True, "positions": [], "orders": [], "live_open_orders": []}
+        rescue_results = [{"ok": True, "order_id": "101", "symbol": "AAPL"}]
+
+        with mock.patch.object(probe, "get_snapshot", return_value=first_snapshot), mock.patch.object(
+            probe,
+            "cancel_visible_orders_for_symbols",
+            return_value=rescue_results,
+        ) as rescue, mock.patch.object(
+            probe,
+            "wait_for_flat_symbols",
+            return_value={"ok": True, "snapshot": flat_snapshot},
+        ), mock.patch.object(
+            probe.fee_probe,
+            "cleanup_symbol",
+        ) as cleanup_symbol:
+            results = probe.cleanup_symbols(args, plans, [])
+
+        rescue.assert_called_once_with(args, ["AAPL", "MSFT"])
+        cleanup_symbol.assert_not_called()
+        self.assertEqual(2, len(results))
+        self.assertTrue(all(item["ok"] for item in results))
+        self.assertEqual("already_flat_after_visible_order_rescue", results[0]["reason"])
+        self.assertEqual(1, results[0]["result"]["visible_rescue_cancel_count"])
+
     def test_wait_for_flat_rejects_failed_snapshot_without_false_flat(self):
         args = Namespace(cleanup_timeout_sec=0.1, cleanup_http_timeout_sec=1.0, http_timeout_sec=1.0, poll_interval_sec=0.01)
         bad_snapshot = {"ok": False, "environment": "paper", "error": "runtime timeout"}
