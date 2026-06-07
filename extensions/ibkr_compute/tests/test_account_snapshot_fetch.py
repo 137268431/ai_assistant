@@ -206,8 +206,18 @@ class _BuyingPowerService(_SnapshotService):
                 "broker": {"account_data_circuit": self._circuit},
             }
         )
+        self.broker = _StatusComponent(
+            {
+                "connected": True,
+                "ready": True,
+                "status_code": 200,
+                "account_data_circuit": self._circuit,
+            }
+        )
         self.session_keeper = _StatusComponent({"authenticated": True})
+        self.session_keeper.is_authenticated = True
         self.ws_client = _StatusComponent({"ready": True})
+        self.ws_client._ready = True
 
     def status(self):
         self.status_calls += 1
@@ -368,6 +378,12 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         app = _FakeApiApp()
         service = _SlowStatusService(_SnapshotLifecycle(delay=0.05))
         service.order_tracker = _FastOrderTracker([])
+        service.broker = _StatusComponent({"connected": True, "ready": True, "status_code": 200})
+        service.gateway_manager = _StatusComponent({"running": True})
+        service.session_keeper = _StatusComponent({"authenticated": True})
+        service.session_keeper.is_authenticated = True
+        service.ws_client = _StatusComponent({"ready": True})
+        service.ws_client._ready = True
 
         payload = _with_fake_api_app(
             app,
@@ -382,6 +398,11 @@ class AccountSnapshotFetchTest(unittest.TestCase):
 
         self.assertTrue(payload["ok"])
         self.assertEqual(0, service.status_calls)
+        self.assertEqual(1, service.broker.calls)
+        self.assertEqual(0, service.gateway_manager.calls)
+        self.assertEqual(0, service.session_keeper.calls)
+        self.assertEqual(0, service.ws_client.calls)
+        self.assertEqual("fast_runtime_state", payload["orders_fast_diagnostics"]["status_source"])
 
     def test_orders_fast_snapshot_reuses_cached_full_summary(self):
         app = _FakeApiApp()
@@ -447,6 +468,38 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertEqual(0, service.status_calls)
         self.assertTrue(all(payload["source"] == "account_snapshot" for payload in payloads))
         self.assertTrue(all(payload["buying_power_guard"]["state"] == "ok" for payload in payloads))
+
+    def test_buying_power_snapshot_uses_stale_guard_when_refresh_unavailable(self):
+        app = _FakeApiApp()
+        lifecycle = _BuyingPowerLifecycle()
+        service = _BuyingPowerService(lifecycle)
+
+        first = _with_fake_api_app(app, lambda: _build_ibkr_account_buying_power_snapshot(service))
+        self.assertTrue(first["ok"])
+
+        now = time.time()
+        with app.ibkr_account_snapshot_cache_lock:
+            for entry in app.ibkr_account_snapshot_cache.values():
+                entry["fresh_until"] = now - 1
+                entry["expires_at"] = now - 1
+                entry["stale_until"] = now + 120
+
+        def fail_snapshot(_account_id):
+            raise TimeoutError("account snapshot timeout")
+
+        def fail_summary(_account_id):
+            raise TimeoutError("account summary timeout")
+
+        lifecycle.get_account_snapshot = fail_snapshot
+        lifecycle.get_account_summary = fail_summary
+
+        stale = _with_fake_api_app(app, lambda: _build_ibkr_account_buying_power_snapshot(service))
+
+        self.assertTrue(stale["ok"])
+        self.assertTrue(stale["stale"])
+        self.assertEqual("stale_after_error", stale["cache_state"])
+        self.assertEqual("account summary timeout", stale["refresh_error"])
+        self.assertEqual("ok", stale["buying_power_guard"]["state"])
 
     def test_buying_power_snapshot_short_circuits_when_account_data_circuit_open(self):
         app = _FakeApiApp()

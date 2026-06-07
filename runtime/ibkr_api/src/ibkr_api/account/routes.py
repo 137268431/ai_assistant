@@ -69,7 +69,7 @@ def _prefers_stale_orders_fast(payload: dict[str, Any]) -> bool:
 
 def _account_snapshot_upstream_timeout(payload: dict[str, Any]) -> float:
     if _orders_fast_request(payload):
-        return cache_seconds("IBKR_ROUTE_CACHE_ACCOUNT_ORDERS_FAST_UPSTREAM_TIMEOUT_SEC", 8.0)
+        return cache_seconds("IBKR_ROUTE_CACHE_ACCOUNT_ORDERS_FAST_UPSTREAM_TIMEOUT_SEC", 2.5)
     return cache_seconds("IBKR_ROUTE_CACHE_ACCOUNT_SNAPSHOT_UPSTREAM_TIMEOUT_SEC", 20.0)
 
 

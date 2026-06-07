@@ -247,6 +247,61 @@ class AccountSnapshotRoutesTest(unittest.TestCase):
         self.assertTrue(payload["orders_fast_enrichment"]["skipped_pb_relation_queries"])
         self.assertEqual([], pb.calls)
 
+    def test_orders_fast_uses_pb_pending_fallback_when_runtime_times_out(self):
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            return {
+                "ok": False,
+                "status_code": 502,
+                "payload": {"ok": False, "error": "runtime_timeout"},
+                "target_url": "http://runtime/ibkr/account",
+                "elapsed_ms": timeout * 1000.0,
+                "timeout_s": timeout,
+                "error": "runtime_timeout",
+            }
+
+        pb = _FakePB(
+            rows={
+                "orders": [
+                    {
+                        "id": "ord-1",
+                        "environment": "paper",
+                        "symbol": "AAPL",
+                        "status": "Submitted",
+                        "relation_status": "active",
+                        "broker_order_id": "1001",
+                        "order_id": "1001",
+                        "unique_id": "entry-aapl",
+                        "role": "entry",
+                        "direction": "long",
+                        "quantity": 10,
+                        "limit_price": 123.45,
+                        "updated": "2026-06-07 08:55:00",
+                    }
+                ],
+                "ibkr_signals": [],
+            }
+        )
+        payload, status_code = build_account_snapshot_response(
+            pb,
+            payload={
+                "broker_mode": "paper",
+                "environment": "paper",
+                "orders_fast": "1",
+                "snapshot_profile": "orders_fast",
+            },
+            normalize_environment=lambda value, default="live": value or default,
+            request_json_request=request_json_request,
+            runtime_base_url="http://runtime",
+            upstream_timeout=1.0,
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertEqual("ibkr-api-orders-fast-pb-fallback", payload["source"])
+        self.assertEqual(1, payload["counts"]["open_orders"])
+        self.assertEqual("pb_pending_fallback", payload["live_open_orders"][0]["authority"])
+        self.assertTrue(payload["diagnostics"]["account_snapshot"]["orders_fast_pb_fallback"])
+
     def test_enrich_account_snapshot_builds_reconciliation_fields(self):
         pb = _FakePB()
         payload = {

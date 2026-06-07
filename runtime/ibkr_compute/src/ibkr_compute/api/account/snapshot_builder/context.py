@@ -32,11 +32,64 @@ def _component_status(service, attr_name: str) -> dict:
     return dict(payload) if isinstance(payload, dict) else {}
 
 
+def _to_int(value, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _fast_gateway_status(service) -> dict:
+    broker_status: dict = {}
+    broker = getattr(service, "broker", None)
+    status_fn = getattr(broker, "status", None)
+    if callable(status_fn):
+        try:
+            payload = status_fn()
+            broker_status = dict(payload) if isinstance(payload, dict) else {}
+        except Exception:
+            broker_status = {}
+    connected = bool(broker_status.get("connected"))
+    ready = bool(broker_status.get("ready"))
+    status_code = _to_int(broker_status.get("status_code"), 0)
+    return {
+        "running": bool(connected or ready or getattr(service, "is_running", False)),
+        "reachable": bool(connected or ready or status_code not in {0, 502, 503}),
+        "connected": connected,
+        "ready": ready,
+        "status_code": status_code,
+        "broker": broker_status,
+        "account_data_circuit": broker_status.get("account_data_circuit") if isinstance(broker_status.get("account_data_circuit"), dict) else {},
+        "source": "fast_runtime_state",
+    }
+
+
+def _fast_session_status(service) -> dict:
+    session = getattr(service, "session_keeper", None)
+    return {
+        "authenticated": bool(getattr(session, "is_authenticated", False)),
+        "running": bool(getattr(session, "_running", False)),
+        "status_code": _to_int(getattr(session, "_last_status_code", 0), 0),
+        "last_check": getattr(session, "_last_check", ""),
+        "source": "fast_runtime_state",
+    }
+
+
+def _fast_websocket_status(service) -> dict:
+    ws_client = getattr(service, "ws_client", None)
+    return {
+        "connected": bool(getattr(ws_client, "is_connected", False) or getattr(ws_client, "_connected", False)),
+        "ready": bool(getattr(ws_client, "is_ready", False) or getattr(ws_client, "_ready", False)),
+        "running": bool(getattr(ws_client, "_running", False)),
+        "source": "fast_runtime_state",
+    }
+
+
 def build_fast_snapshot_status(service) -> dict:
     return {
-        "gateway": _component_status(service, "gateway_manager"),
-        "session": _component_status(service, "session_keeper"),
-        "websocket": _component_status(service, "ws_client"),
+        "gateway": _fast_gateway_status(service),
+        "session": _fast_session_status(service),
+        "websocket": _fast_websocket_status(service),
     }
 
 

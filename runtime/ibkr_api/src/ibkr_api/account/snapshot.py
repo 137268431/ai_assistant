@@ -5,19 +5,32 @@ from typing import Any, Callable
 
 from ibkr_api.app_core.value_utils import parse_boolean
 from ibkr_api.modes import request_broker_mode
-from ibkr_api.orders.values import ensure_object, to_float, to_int, to_text
+from ibkr_api.orders.values import ensure_object, escape_filter_string, to_float, to_int, to_text
 from ibkr_api.account.snapshot_live_orders import build_managed_order_context, normalize_live_order
 from ibkr_api.account.snapshot_relations import build_relation_context
 from ibkr_api.account.snapshot_shared import (
+    OPEN_ORDER_FILTER_PER_PAGE,
     _clone_string_list,
     _is_closed_order_status,
     canonical_order_status,
+    _is_open_like_order,
     normalize_order_record,
 )
 
 
 NormalizeEnvironment = Callable[[Any, str], str]
 RequestJsonRequest = Callable[..., dict[str, Any]]
+
+_OPEN_ORDER_STATUS_FILTER_VALUES = (
+    "ApiPending",
+    "API_PENDING",
+    "Init",
+    "InProgress",
+    "Pending",
+    "PendingSubmit",
+    "PreSubmitted",
+    "Submitted",
+)
 
 
 def _include_pnl_param(payload: dict[str, Any]) -> str | None:
@@ -45,6 +58,197 @@ def _orders_fast_param(payload: dict[str, Any]) -> bool:
         or parse_boolean(payload.get("orders_fast"), False)
         or parse_boolean(payload.get("fast_orders"), False)
     )
+
+
+def _quote_filter_value(value: Any) -> str:
+    return escape_filter_string(to_text(value))
+
+
+def _or_filter(field: str, values: list[str]) -> str:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = to_text(value)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    if not normalized:
+        return ""
+    return "(" + " || ".join(f'{field} = "{_quote_filter_value(value)}"' for value in normalized) + ")"
+
+
+def _pb_open_order_filter(environment: str) -> str:
+    status_filter = _or_filter("status", list(_OPEN_ORDER_STATUS_FILTER_VALUES))
+    return (
+        f'environment = "{_quote_filter_value(environment)}" && '
+        f'(relation_status = "active" || relation_status = "planned"'
+        f'{f" || {status_filter}" if status_filter else ""})'
+    )
+
+
+def _pb_order_to_orders_fast_live_order(row: dict[str, Any]) -> dict[str, Any]:
+    normalized = normalize_order_record(dict(row or {}))
+    if not normalized.get("symbol") or not _is_open_like_order(normalized):
+        return {}
+    role = to_text(normalized.get("role")).lower()
+    direction = to_text(normalized.get("direction") or normalized.get("position_side")).lower()
+    entry_side = "SELL" if direction == "short" else "BUY"
+    exit_side = "BUY" if entry_side == "SELL" else "SELL"
+    side = exit_side if role in {"take_profit", "stop_loss"} else entry_side
+    order_type = to_text(row.get("order_type") or ("STP" if role == "stop_loss" else "LMT")).upper() or "LMT"
+    order_id = to_text(normalized.get("order_id") or normalized.get("broker_order_id"))
+    unique_id = to_text(normalized.get("unique_id") or normalized.get("entry_order_unique_id") or order_id)
+    quantity = abs(to_float(normalized.get("quantity")) or 0.0)
+    limit_price = to_float(normalized.get("limit_price")) or 0.0
+    status = to_text(normalized.get("status")) or "Submitted"
+    return {
+        "order_id": order_id,
+        "broker_order_id": to_text(normalized.get("broker_order_id") or order_id),
+        "id": order_id,
+        "symbol": to_text(normalized.get("symbol")).upper(),
+        "ticker": to_text(normalized.get("symbol")).upper(),
+        "status": status,
+        "status_key": canonical_order_status(status),
+        "side": side,
+        "order_type": order_type,
+        "orderType": order_type,
+        "quantity": quantity,
+        "total_quantity": quantity,
+        "totalSize": quantity,
+        "filled_quantity": abs(to_float(normalized.get("filled_qty")) or 0.0),
+        "remaining_quantity": max(0.0, quantity - abs(to_float(normalized.get("filled_qty")) or 0.0)),
+        "price": limit_price,
+        "limit_price": limit_price,
+        "client_order_id": unique_id,
+        "cOID": unique_id,
+        "order_ref": unique_id,
+        "role": role,
+        "leg_role": role,
+        "signal_id": to_text(normalized.get("signal_id")),
+        "trade_group_id": to_text(normalized.get("trade_group_id")),
+        "entry_order_unique_id": to_text(normalized.get("entry_order_unique_id")),
+        "parent_order_unique_id": to_text(normalized.get("parent_order_unique_id")),
+        "sibling_order_unique_id": to_text(normalized.get("sibling_order_unique_id")),
+        "relation_status": to_text(normalized.get("relation_status")),
+        "direction": direction,
+        "position_side": direction,
+        "can_cancel": True,
+        "can_modify": role in {"entry", "stop_loss"},
+        "is_open": True,
+        "source": "pb_pending_fallback",
+        "authority": "pb_pending_fallback",
+        "recovery_source": "pb_pending_fallback",
+        "updated": to_text(normalized.get("updated")),
+        "updated_ms": to_int(normalized.get("updated_ms"), 0),
+        "pb_context": {
+            "match_state": "pb_pending_fallback",
+            "signal_id": to_text(normalized.get("signal_id")),
+            "trade_group_id": to_text(normalized.get("trade_group_id")),
+            "entry_order_unique_id": to_text(normalized.get("entry_order_unique_id")),
+            "role": role,
+            "relation_status": to_text(normalized.get("relation_status")),
+        },
+    }
+
+
+def _orders_fast_pb_fallback_response(
+    pb: Any,
+    *,
+    environment: str,
+    diagnostics: dict[str, Any],
+    reason: str,
+    selected_upstream: str,
+) -> tuple[dict[str, Any], int] | None:
+    try:
+        rows = pb.get_records(
+            "orders",
+            filter=_pb_open_order_filter(environment),
+            sort="-updated",
+            per_page=OPEN_ORDER_FILTER_PER_PAGE,
+            page=1,
+        ) or []
+    except Exception:
+        return None
+    orders = [
+        order
+        for order in (_pb_order_to_orders_fast_live_order(row) for row in rows if isinstance(row, dict))
+        if order
+    ]
+    if not orders:
+        return None
+    cancelable = len([item for item in orders if item.get("can_cancel")])
+    editable = len([item for item in orders if item.get("can_modify")])
+    diagnostics = ensure_object(diagnostics)
+    account_diagnostics = ensure_object(diagnostics.get("account_snapshot"))
+    account_diagnostics.update(
+        {
+            "degraded": True,
+            "orders_fast_pb_fallback": True,
+            "fallback_reason": reason,
+        }
+    )
+    diagnostics["account_snapshot"] = account_diagnostics
+    payload = {
+        "ok": True,
+        "status": "degraded",
+        "environment": environment,
+        "broker_mode": environment,
+        "service_running": None,
+        "service_starting": None,
+        "session_authenticated": None,
+        "gateway_running": None,
+        "websocket_ready": None,
+        "summary_available": False,
+        "summary": {},
+        "buying_power_guard": {
+            "enabled": True,
+            "available": False,
+            "basis": "buying_power",
+            "environment": environment,
+            "state": "unavailable",
+            "reason": "runtime_unavailable_orders_fast_pb_fallback",
+        },
+        "summary_raw": {},
+        "positions": [],
+        "orders": orders,
+        "live_open_orders": orders,
+        "counts": {
+            "positions": 0,
+            "open_positions": 0,
+            "orders": len(orders),
+            "open_orders": len(orders),
+            "cancelable_orders": cancelable,
+            "editable_orders": editable,
+            "outside_rth_orders": 0,
+            "recovered_open_orders": 0,
+        },
+        "errors": {
+            "runtime": reason,
+            "summary": "runtime_unavailable_orders_fast_pb_fallback",
+        },
+        "order_reconciliation": {
+            "broker_total_orders": 0,
+            "broker_open_orders": 0,
+            "pb_pending_fallback_orders": len(orders),
+            "coverage_state": "pb_pending_fallback",
+            "orders_fast": True,
+        },
+        "orders_fast_enrichment": {
+            "skipped_pb_relation_queries": True,
+            "broker_total_orders": 0,
+            "broker_open_orders": 0,
+            "pb_pending_fallback_orders": len(orders),
+        },
+        "snapshot_profile": "orders_fast",
+        "orders_fast": True,
+        "proxy_source": "ibkr-api",
+        "proxy_route": "/api/custom/ibkr/account_snapshot",
+        "proxy_upstream": selected_upstream,
+        "source": "ibkr-api-orders-fast-pb-fallback",
+        "diagnostics": diagnostics,
+    }
+    return payload, 200
 
 
 def _build_account_monitor_probe_response(
@@ -444,6 +648,17 @@ def build_account_snapshot_response(
         }
     }
     if not upstream_payload or (status_code >= 400 and not upstream_payload.get("ok")):
+        if orders_fast:
+            reason = result.get("error") or upstream_payload.get("error") or f"upstream_status_{status_code}"
+            fallback = _orders_fast_pb_fallback_response(
+                pb,
+                environment=environment,
+                diagnostics=diagnostics,
+                reason=reason,
+                selected_upstream=selected_upstream,
+            )
+            if fallback is not None:
+                return fallback
         return {
             "ok": False,
             "status": "offline",

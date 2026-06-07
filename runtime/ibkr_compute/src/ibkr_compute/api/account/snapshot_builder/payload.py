@@ -377,6 +377,23 @@ def _build_account_data_circuit_buying_power_snapshot(service, context: dict, ci
     return _decorate_account_snapshot_health(payload, reason=reason)
 
 
+def _stale_buying_power_snapshot_after_error(api_app, cache_key: tuple, error: str) -> dict:
+    cached = load_cached_snapshot(api_app, cache_key, allow_stale=True)
+    if not isinstance(cached, dict) or not cached:
+        return {}
+    guard = cached.get("buying_power_guard") if isinstance(cached.get("buying_power_guard"), dict) else {}
+    if not bool(guard.get("available")):
+        return {}
+    payload = dict(cached)
+    payload["ok"] = True
+    payload["stale"] = True
+    payload["cache_state"] = "stale_after_error"
+    payload["refresh_error"] = str(error or "").strip() or "buying_power_refresh_unavailable"
+    errors = payload.get("errors") if isinstance(payload.get("errors"), dict) else {}
+    payload["errors"] = {**errors, "refresh": payload["refresh_error"]}
+    return _decorate_account_snapshot_health(payload, reason=payload["refresh_error"])
+
+
 def _build_ibkr_account_buying_power_snapshot(service) -> dict:
     context = build_snapshot_context(service, include_pnl=False, fast_status=True)
     api_app = context["api_app"]
@@ -445,6 +462,9 @@ def _build_ibkr_account_buying_power_snapshot(service) -> dict:
                 summary,
             )
             guard["snapshot_error"] = summary_error or guard["reason"]
+            stale_payload = _stale_buying_power_snapshot_after_error(api_app, cache_key, guard["snapshot_error"])
+            if stale_payload:
+                return stale_payload
 
         payload = {
             "ok": bool(guard.get("available")),
@@ -739,6 +759,7 @@ def _build_orders_fast_ibkr_account_snapshot_payload(service, context: dict) -> 
             "summary_source": "snapshot_cache" if cached_full else "unavailable",
             "summary_cache_state": str(cached_full.get("cache_state") or "") if cached_full else "",
             "summary_cache_age_s": cached_full.get("cache_age_s") if cached_full else None,
+            "status_source": "fast_runtime_state",
             "skipped_account_data_fetch": True,
         },
     }
