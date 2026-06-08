@@ -1767,18 +1767,25 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     flat_after: dict[str, Any] = {}
     try:
         place_results = submit_burst(args, plans)
-        pending_observation = observe_pending_account_access(args, symbols)
-        post_place_observation = wait_for_submission_quiescence(args, symbols)
-        if bool(getattr(args, "modify_stop_loss_storm", False)):
-            modify_observation = modify_stop_loss_storm(args, plans, place_results)
-        pre_cancel_observation = wait_for_submission_quiescence(args, symbols)
-        if bool(getattr(args, "exit_cancel_storm", False)):
-            exit_observation = exit_cancel_storm(args, place_results)
-            cancel_results = list(exit_observation.get("results") or [])
-        elif bool(getattr(args, "bulk_cancel_all", False)):
-            cancel_results = cancel_all_orders(args)
+        submitted_order_count = sum(len(item.get("order_ids") or []) for item in place_results)
+        if submitted_order_count <= 0:
+            pending_observation = {"ok": True, "skipped": True, "reason": "no_submitted_orders"}
+            post_place_observation = {"ok": True, "skipped": True, "reason": "no_submitted_orders"}
+            pre_cancel_observation = {"ok": True, "skipped": True, "reason": "no_submitted_orders"}
+            cancel_results = []
         else:
-            cancel_results = cancel_known_order_ids(args, place_results)
+            pending_observation = observe_pending_account_access(args, symbols)
+            post_place_observation = wait_for_submission_quiescence(args, symbols)
+            if bool(getattr(args, "modify_stop_loss_storm", False)):
+                modify_observation = modify_stop_loss_storm(args, plans, place_results)
+            pre_cancel_observation = wait_for_submission_quiescence(args, symbols)
+            if bool(getattr(args, "exit_cancel_storm", False)):
+                exit_observation = exit_cancel_storm(args, place_results)
+                cancel_results = list(exit_observation.get("results") or [])
+            elif bool(getattr(args, "bulk_cancel_all", False)):
+                cancel_results = cancel_all_orders(args)
+            else:
+                cancel_results = cancel_known_order_ids(args, place_results)
     finally:
         if any(item.get("timed_out") for item in place_results):
             rescue_cancel_results = cancel_visible_orders_for_symbols(args, symbols)

@@ -835,6 +835,54 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertEqual(status_calls_after_full, service.status_calls)
         self.assertEqual("ok", buying_power["account_snapshot_health"]["state"])
 
+    def test_buying_power_uses_full_snapshot_cache_when_account_data_circuit_open(self):
+        app = _FakeApiApp()
+        warm_lifecycle = _BuyingPowerLifecycle()
+        warm_service = _BuyingPowerService(warm_lifecycle)
+
+        full_snapshot = _with_fake_api_app(app, lambda: _build_ibkr_account_snapshot(warm_service, include_pnl=False))
+        active_lifecycle = _BuyingPowerLifecycle()
+        active_service = _BuyingPowerService(
+            active_lifecycle,
+            circuit={"active": True, "reason": "executions_timeout", "remaining_s": 35.0},
+        )
+        buying_power = _with_fake_api_app(app, lambda: _build_ibkr_account_buying_power_snapshot(active_service))
+
+        self.assertTrue(full_snapshot["summary_available"])
+        self.assertTrue(buying_power["ok"])
+        self.assertEqual("account_snapshot", buying_power["source"])
+        self.assertEqual(50000.0, buying_power["summary"]["buying_power"])
+        self.assertEqual(0, active_lifecycle.summary_calls)
+        self.assertEqual(0, active_lifecycle.snapshot_calls)
+
+    def test_buying_power_uses_stale_full_snapshot_cache_when_account_data_circuit_open(self):
+        app = _FakeApiApp()
+        warm_lifecycle = _BuyingPowerLifecycle()
+        warm_service = _BuyingPowerService(warm_lifecycle)
+
+        full_snapshot = _with_fake_api_app(app, lambda: _build_ibkr_account_snapshot(warm_service, include_pnl=False))
+        now = time.time()
+        with app.ibkr_account_snapshot_cache_lock:
+            entry = app.ibkr_account_snapshot_cache[(full_snapshot["environment"], full_snapshot["account_id"], False)]
+            entry["fresh_until"] = now - 1
+            entry["expires_at"] = now - 1
+            entry["stale_until"] = now + 120
+        active_lifecycle = _BuyingPowerLifecycle()
+        active_service = _BuyingPowerService(
+            active_lifecycle,
+            circuit={"active": True, "reason": "executions_timeout", "remaining_s": 35.0},
+        )
+
+        buying_power = _with_fake_api_app(app, lambda: _build_ibkr_account_buying_power_snapshot(active_service))
+
+        self.assertTrue(buying_power["ok"])
+        self.assertEqual("account_snapshot", buying_power["source"])
+        self.assertEqual("stale_after_account_data_circuit", buying_power["cache_state"])
+        self.assertTrue(buying_power["stale"])
+        self.assertEqual(50000.0, buying_power["summary"]["buying_power"])
+        self.assertEqual(0, active_lifecycle.summary_calls)
+        self.assertEqual(0, active_lifecycle.snapshot_calls)
+
     def test_buying_power_reuses_fresh_include_pnl_full_snapshot_cache(self):
         app = _FakeApiApp()
         lifecycle = _BuyingPowerLifecycle()
@@ -910,6 +958,8 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertEqual(42.0, payload["retry_after_s"])
         self.assertEqual(0, lifecycle.summary_calls)
         self.assertEqual(0, service.status_calls)
+        with app.ibkr_account_snapshot_cache_lock:
+            self.assertNotIn(("paper", "DU123::buying_power", False), app.ibkr_account_snapshot_cache)
 
 
 if __name__ == "__main__":

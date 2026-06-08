@@ -371,21 +371,35 @@ def _decorate_account_snapshot_health(payload: dict, *, reason: str = "") -> dic
     return result
 
 
-def _fresh_full_snapshot_for_buying_power(api_app, context: dict) -> dict:
+def _buying_power_full_snapshot_usable(payload: dict, *, allow_stale: bool = False) -> bool:
+    health = payload.get("account_snapshot_health") if isinstance(payload.get("account_snapshot_health"), dict) else {}
+    state = str(health.get("state") or "").strip().lower()
+    if state == "ok":
+        return True
+    guard = payload.get("buying_power_guard") if isinstance(payload.get("buying_power_guard"), dict) else {}
+    guard_state = str(guard.get("state") or "").strip().lower()
+    return bool(
+        allow_stale
+        and state == "stale"
+        and guard.get("available") is True
+        and guard_state in {"ok", "warning", "blocked"}
+    )
+
+
+def _fresh_full_snapshot_for_buying_power(api_app, context: dict, *, allow_stale: bool = False) -> dict:
     candidate_keys = [
         context["cache_key"],
         (context["runtime_environment"], context["account_id"], True),
     ]
     cached = {}
     for cache_key in candidate_keys:
-        cached = load_cached_snapshot(api_app, cache_key, allow_stale=False)
+        cached = load_cached_snapshot(api_app, cache_key, allow_stale=allow_stale)
         if isinstance(cached, dict):
             break
     if not isinstance(cached, dict) or not cached:
         return {}
     payload = _decorate_account_snapshot_health(dict(cached))
-    health = payload.get("account_snapshot_health") if isinstance(payload.get("account_snapshot_health"), dict) else {}
-    if str(health.get("state") or "").strip().lower() != "ok":
+    if not _buying_power_full_snapshot_usable(payload, allow_stale=allow_stale):
         return {}
     guard = payload.get("buying_power_guard") if isinstance(payload.get("buying_power_guard"), dict) else {}
     guard = dict(guard)
@@ -395,12 +409,11 @@ def _fresh_full_snapshot_for_buying_power(api_app, context: dict) -> dict:
     return payload
 
 
-def _build_buying_power_payload_from_full_snapshot(full_snapshot: dict, context: dict) -> dict:
+def _build_buying_power_payload_from_full_snapshot(full_snapshot: dict, context: dict, *, allow_stale: bool = False) -> dict:
     if not isinstance(full_snapshot, dict) or not full_snapshot:
         return {}
     payload = _decorate_account_snapshot_health(dict(full_snapshot))
-    health = payload.get("account_snapshot_health") if isinstance(payload.get("account_snapshot_health"), dict) else {}
-    if str(health.get("state") or "").strip().lower() != "ok":
+    if not _buying_power_full_snapshot_usable(payload, allow_stale=allow_stale):
         return {}
     guard = payload.get("buying_power_guard") if isinstance(payload.get("buying_power_guard"), dict) else {}
     guard = dict(guard)
@@ -512,6 +525,15 @@ def _build_account_data_circuit_buying_power_snapshot(service, context: dict, ci
     return _decorate_account_snapshot_health(payload, reason=reason)
 
 
+def _is_account_data_circuit_buying_power_snapshot(payload: dict) -> bool:
+    if not isinstance(payload, dict) or not payload:
+        return False
+    guard = payload.get("buying_power_guard") if isinstance(payload.get("buying_power_guard"), dict) else {}
+    reason = str(guard.get("reason") or payload.get("source") or payload.get("refresh_error") or "").strip().lower()
+    source = str(guard.get("source") or payload.get("source") or "").strip().lower()
+    return "account_data_circuit" in reason or source == "account_data_circuit"
+
+
 def _stale_buying_power_snapshot_after_error(api_app, cache_key: tuple, error: str) -> dict:
     cached = load_cached_snapshot(api_app, cache_key, allow_stale=True)
     if not isinstance(cached, dict) or not cached:
@@ -535,26 +557,39 @@ def _build_ibkr_account_buying_power_snapshot(service) -> dict:
     cache_key = (context["runtime_environment"], f"{context['account_id']}::buying_power", False)
 
     cached = load_cached_snapshot(api_app, cache_key)
-    if cached:
+    if cached and not _is_account_data_circuit_buying_power_snapshot(cached):
         return _decorate_account_snapshot_health(cached)
 
     refresh_lock = get_snapshot_refresh_lock(api_app, cache_key)
     with refresh_lock:
         cached = load_cached_snapshot(api_app, cache_key)
-        if cached:
+        if cached and not _is_account_data_circuit_buying_power_snapshot(cached):
             return _decorate_account_snapshot_health(cached)
-
-        circuit = _account_data_circuit_status(context.get("service_status") or {})
-        if bool(circuit.get("active")):
-            payload = _build_account_data_circuit_buying_power_snapshot(service, context, circuit)
-            store_cached_snapshot(api_app, cache_key, payload)
-            return load_cached_snapshot(api_app, cache_key, allow_stale=False) or payload
 
         full_cached = _fresh_full_snapshot_for_buying_power(api_app, context)
         payload = _build_buying_power_payload_from_full_snapshot(full_cached, context)
         if payload:
             store_cached_snapshot(api_app, cache_key, payload)
             return load_cached_snapshot(api_app, cache_key, allow_stale=False) or payload
+
+        circuit = _account_data_circuit_status(context.get("service_status") or {})
+        if bool(circuit.get("active")):
+            stale_full_cached = _fresh_full_snapshot_for_buying_power(api_app, context, allow_stale=True)
+            stale_full_payload = _build_buying_power_payload_from_full_snapshot(
+                stale_full_cached,
+                context,
+                allow_stale=True,
+            )
+            if stale_full_payload:
+                stale_full_payload["cache_state"] = "stale_after_account_data_circuit"
+                stale_full_payload["stale"] = True
+                stale_full_payload["refresh_error"] = "account_data_circuit_open"
+                stale_full_payload["account_data_circuit"] = dict(circuit or {})
+                return stale_full_payload
+            stale_payload = _stale_buying_power_snapshot_after_error(api_app, cache_key, "account_data_circuit_open")
+            if stale_payload:
+                return stale_payload
+            return _build_account_data_circuit_buying_power_snapshot(service, context, circuit)
 
         summary_raw, summary_error = _fetch_account_summary_raw_for_buying_power(service, context)
         payload = _build_buying_power_payload_from_summary_raw(service, context, summary_raw, summary_error)

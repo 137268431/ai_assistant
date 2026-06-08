@@ -162,7 +162,7 @@ class PaperAccountBuyingPowerSnapshotTest(unittest.TestCase):
     def setUp(self):
         self.old_context = snapshot_payload.build_snapshot_context
         self.api_app = FakePaperSnapshotApiApp()
-        snapshot_payload.build_snapshot_context = lambda service, include_pnl=False: {
+        snapshot_payload.build_snapshot_context = lambda service, include_pnl=False, **_kwargs: {
             "api_app": self.api_app,
             "runtime_environment": "paper",
             "service_status": {
@@ -294,6 +294,10 @@ class FakePB:
         return {"ok": True}
 
 
+class FakeSessionKeeper:
+    is_authenticated = True
+
+
 class FakeOrderService:
     is_running = True
     is_starting = False
@@ -304,6 +308,7 @@ class FakeOrderService:
         self.order_tracker = FakeOrderTracker()
         self.order_placer = FakeOrderPlacer()
         self.pb = FakePB()
+        self.session_keeper = FakeSessionKeeper()
 
     def status(self):
         return {"session": {"authenticated": True}}
