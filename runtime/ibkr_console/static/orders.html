@@ -100,6 +100,7 @@
         let brokerLiveError = '';
         let brokerLiveFetchedAt = '';
         const groupCollapseOverrides = new Map();
+        const brokerLiveCollapseOverrides = new Map();
         const CONFIG_CACHE_TTL_MS = 5 * 60 * 1000;
         const ORDERS_FETCH_PAGE_SIZE = 200;
         const ORDERS_FETCH_MAX_PAGES = 40;
@@ -598,6 +599,47 @@
             return 'relation-planned';
         }
 
+        function brokerLiveGroupCollapseKey(group) {
+            const orders = Array.isArray(group?.orders) ? group.orders : [];
+            const firstOrder = orders[0] || {};
+            return String(firstDefined(
+                group?.trade_group_id,
+                group?.group_key,
+                group?.entry_order_unique_id,
+                group?.signal_id,
+                firstOrder.trade_group_id,
+                firstOrder.entry_order_unique_id,
+                firstOrder.client_order_id,
+                firstOrder.order_ref,
+                firstOrder.order_id,
+                group?.symbol ? `symbol:${group.symbol}` : ''
+            )).trim();
+        }
+
+        function isBrokerLiveGroupCollapsed(group) {
+            const key = brokerLiveGroupCollapseKey(group);
+            if (key && brokerLiveCollapseOverrides.has(key)) {
+                return Boolean(brokerLiveCollapseOverrides.get(key));
+            }
+            return true;
+        }
+
+        function toggleBrokerLiveGroupCollapse(encodedKey) {
+            const key = decodeGroupCollapseKey(encodedKey);
+            if (!key) return;
+            const group = getBrokerLiveGroups().find((item) => brokerLiveGroupCollapseKey(item) === key);
+            const currentlyCollapsed = group ? isBrokerLiveGroupCollapsed(group) : Boolean(brokerLiveCollapseOverrides.get(key));
+            brokerLiveCollapseOverrides.set(key, !currentlyCollapsed);
+            renderBrokerLivePanel();
+        }
+
+        function pruneBrokerLiveCollapseOverrides(groups) {
+            const activeKeys = new Set((groups || []).map(brokerLiveGroupCollapseKey).filter(Boolean));
+            Array.from(brokerLiveCollapseOverrides.keys()).forEach((key) => {
+                if (!activeKeys.has(key)) brokerLiveCollapseOverrides.delete(key);
+            });
+        }
+
         function renderBrokerLiveOrder(order) {
             const pbContext = order.pb_context || {};
             const matchState = order.match_state || pbContext.match_state || 'broker_only';
@@ -642,9 +684,22 @@
             const groupKey = group.trade_group_id || group.group_key || group.entry_order_unique_id || orders[0]?.order_id || '-';
             const latestStatus = group.latest_order_status || orders[0]?.status || '-';
             const canOpenDetails = String(matchState).toLowerCase() === 'matched' && (group.trade_group_id || groupKey);
+            const collapseKey = brokerLiveGroupCollapseKey(group);
+            const collapsed = isBrokerLiveGroupCollapsed(group);
+            const collapseButtonText = collapsed ? '展开明细' : '收起明细';
+            const liveCount = group.live_order_count || orders.length || 0;
+            const actionButtons = [
+                canOpenDetails ? `<button class="action-btn btn-secondary broker-live-detail-btn" onclick="viewTradeGroup('${encodeURIComponent(group.trade_group_id || groupKey)}', '${encodeURIComponent(group.signal_id || '')}')">明细</button>` : '',
+                collapseKey ? `
+                    <button class="collapse-toggle broker-live-toggle" type="button" aria-expanded="${collapsed ? 'false' : 'true'}" onclick="toggleBrokerLiveGroupCollapse('${encodeURIComponent(collapseKey)}')">
+                        <span class="collapse-toggle-icon" aria-hidden="true">${collapsed ? '+' : '-'}</span>
+                        ${collapseButtonText}
+                    </button>
+                ` : ''
+            ].filter(Boolean).join('');
 
             return `
-                <div class="broker-live-card ${String(matchState).toLowerCase() === 'matched' ? 'matched' : 'broker-only'}">
+                <div class="broker-live-card ${String(matchState).toLowerCase() === 'matched' ? 'matched' : 'broker-only'} ${collapsed ? 'is-collapsed' : ''}">
                     <div class="broker-live-card-head">
                         <div>
                             <div class="group-symbol-row">
@@ -652,17 +707,17 @@
                                 <span class="order-match-badge ${brokerMatchClass(matchState)}">${escapeHtml(brokerMatchLabel(matchState))}</span>
                                 <span class="status-badge ${brokerStatusClass(latestStatus)}">${escapeHtml(latestStatus)}</span>
                             </div>
-                            <div class="group-subtitle">group=${escapeHtml(groupKey)} · live=${escapeHtml(String(group.live_order_count || orders.length || 0))}</div>
+                            <div class="group-subtitle">group=${escapeHtml(groupKey)} · live=${escapeHtml(String(liveCount))}</div>
                         </div>
-                        ${canOpenDetails ? `<button class="action-btn btn-secondary broker-live-detail-btn" onclick="viewTradeGroup('${encodeURIComponent(group.trade_group_id || groupKey)}', '${encodeURIComponent(group.signal_id || '')}')">明细</button>` : ''}
+                        ${actionButtons ? `<div class="broker-live-card-actions">${actionButtons}</div>` : ''}
                     </div>
-                    <div class="chip-row">
+                    <div class="chip-row broker-live-summary-row">
                         <span class="chip">matched=${escapeHtml(String(group.matched_live_orders || 0))}</span>
                         <span class="chip">broker_only=${escapeHtml(String(group.broker_only_live_orders || 0))}</span>
                         <span class="chip">qty=${escapeHtml(formatQty(group.total_quantity))}</span>
                         <span class="chip">rem=${escapeHtml(formatQty(group.remaining_quantity))}</span>
                     </div>
-                    <div class="broker-live-orders">
+                    <div class="broker-live-orders" ${collapsed ? 'hidden' : ''}>
                         ${orders.map(renderBrokerLiveOrder).join('')}
                     </div>
                 </div>
@@ -690,7 +745,6 @@
                 return;
             }
 
-            const liveOrders = getBrokerLiveOrders();
             const liveGroups = getBrokerLiveGroups();
             const reconciliation = getBrokerReconciliation();
             const coverageState = getBrokerCoverageState();
@@ -698,6 +752,7 @@
             const matchedOrders = Number(reconciliation.broker_matched_orders || 0);
             const pbShadowGroups = Number(reconciliation.pb_shadow_groups || reconciliation.pb_only_active_order_groups || 0);
             const fetchedText = brokerLiveFetchedAt ? ` · fetched ${brokerLiveFetchedAt}` : '';
+            pruneBrokerLiveCollapseOverrides(liveGroups);
 
             if (!brokerLiveSnapshot && !brokerLiveLoading) {
                 panel.innerHTML = '<div class="broker-live-loading">等待实时挂单快照...</div>';
@@ -719,7 +774,7 @@
                     </div>
                 </div>
                 ${pbShadowGroups ? `<div class="broker-live-alert">stale groups=${escapeHtml(String(pbShadowGroups))}：系统记录仍活跃但 broker 未确认，需要单独核对。</div>` : ''}
-                ${liveOrders.length
+                ${liveGroups.length
                     ? `<div class="broker-live-grid">${liveGroups.map(renderBrokerLiveGroup).join('')}</div>`
                     : '<div class="broker-live-empty">当前没有 broker 已确认仍在挂着的实时订单。</div>'}
             `;

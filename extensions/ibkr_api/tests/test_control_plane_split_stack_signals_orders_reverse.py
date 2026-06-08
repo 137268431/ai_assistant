@@ -1,6 +1,7 @@
 from control_plane_split_stack_helpers import *
 from ibkr_api.orders.notifications import (
     build_order_callback_ledger_card,
+    build_order_status_card,
     sync_order_callback_ledger_notification,
     sync_order_status_notification,
 )
@@ -1420,10 +1421,66 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
 
         card = build_order_callback_ledger_card(order, {"event_type": "fill", "status": "Filled", "filled_qty": 12, "fill_delta": 12})
         content = card["elements"][0]["content"]
+        title = card["header"]["title"]["content"]
 
-        self.assertIn("Runner 止损", card["header"]["title"]["content"])
-        self.assertIn("**角色 / 类型 / 方向**: Runner 止损 / MKT / short", content)
+        self.assertIn("Runner 止损", title)
+        self.assertIn("做空 / SHORT", title)
+        self.assertIn("**交易方向**: 做空 / SHORT", content)
+        self.assertIn("**角色 / 类型**: Runner 止损 / MKT", content)
+        self.assertNotIn("**角色 / 类型 / 方向**", content)
         self.assertIn("**平仓原因**: Runner 止损（runner_stop）", content)
+
+    def test_order_callback_ledger_card_surfaces_long_direction(self):
+        order = {
+            "id": "order-entry",
+            "unique_id": "sig-long-entry",
+            "order_type": "LMT",
+            "symbol": "AAPL",
+            "environment": "paper",
+            "status": "Filled",
+            "role": "entry",
+            "broker_order_id": "401",
+            "trade_group_id": "sig-long-entry",
+            "signal_id": "sig-long",
+            "direction": "long",
+            "quantity": 5,
+            "filled_qty": 5,
+            "fill_price": 190.0,
+            "extra": {"environment": "paper", "ib_callback_type": "execDetails"},
+        }
+
+        card = build_order_callback_ledger_card(order, {"event_type": "fill", "status": "Filled", "filled_qty": 5, "fill_delta": 5})
+        content = card["elements"][0]["content"]
+        title = card["header"]["title"]["content"]
+
+        self.assertIn("做多 / LONG", title)
+        self.assertIn("**交易方向**: 做多 / LONG", content)
+        self.assertIn("**角色 / 类型**: 入场 / LMT", content)
+
+    def test_order_status_card_surfaces_unknown_direction(self):
+        order = {
+            "id": "order-status",
+            "unique_id": "sig-unknown-entry",
+            "order_type": "LMT",
+            "symbol": "MSFT",
+            "environment": "paper",
+            "status": "Submitted",
+            "role": "entry",
+            "broker_order_id": "402",
+            "trade_group_id": "sig-unknown-entry",
+            "signal_id": "sig-unknown",
+            "quantity": 2,
+            "filled_qty": 0,
+            "extra": {"environment": "paper"},
+        }
+
+        card = build_order_status_card(order, status="Submitted")
+        content = card["elements"][0]["content"]
+        title = card["header"]["title"]["content"]
+
+        self.assertIn("方向未知", title)
+        self.assertIn("**交易方向**: 方向未知", content)
+        self.assertIn("**角色 / 类型**: entry / LMT", content)
 
     def test_order_callback_ledger_labels_eod_close_from_source(self):
         order = {

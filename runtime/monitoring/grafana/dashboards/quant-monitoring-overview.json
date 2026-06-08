@@ -5681,7 +5681,7 @@
       "id": 56,
       "type": "stat",
       "title": "账户资金 / Account Capital",
-      "description": "",
+      "description": "当前账户资金来自 IBKR account_snapshot；金额大小不代表红绿告警。",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -5699,8 +5699,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_net_liquidation_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
-          "legendFormat": "net liq {{environment}} {{source}}",
+          "expr": "max by (environment) (ibkr_account_net_liquidation_usd{service=~\"$service\", environment=~\"$environment\", source=\"account_snapshot\"})",
+          "legendFormat": "净清算值 {{environment}}",
           "range": true,
           "refId": "A"
         },
@@ -5710,8 +5710,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_buying_power_remaining_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
-          "legendFormat": "buying power {{environment}} {{source}}",
+          "expr": "max by (environment) (ibkr_account_buying_power_remaining_usd{service=~\"$service\", environment=~\"$environment\", source=\"account_snapshot\"})",
+          "legendFormat": "购买力 {{environment}}",
           "range": true,
           "refId": "B"
         },
@@ -5721,8 +5721,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_available_funds_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
-          "legendFormat": "available funds {{environment}} {{source}}",
+          "expr": "max by (environment) (ibkr_account_available_funds_usd{service=~\"$service\", environment=~\"$environment\", source=\"account_snapshot\"})",
+          "legendFormat": "可用资金 {{environment}}",
           "range": true,
           "refId": "C"
         },
@@ -5732,8 +5732,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_total_cash_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
-          "legendFormat": "cash {{environment}} {{source}}",
+          "expr": "max by (environment) (ibkr_account_total_cash_usd{service=~\"$service\", environment=~\"$environment\", source=\"account_snapshot\"})",
+          "legendFormat": "现金 {{environment}}",
           "range": true,
           "refId": "D"
         }
@@ -5748,10 +5748,6 @@
               {
                 "color": "green",
                 "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
               }
             ]
           }
@@ -5768,8 +5764,8 @@
         },
         "orientation": "auto",
         "textMode": "auto",
-        "colorMode": "value",
-        "graphMode": "area",
+        "colorMode": "none",
+        "graphMode": "none",
         "justifyMode": "auto"
       }
     },
@@ -6022,7 +6018,7 @@
       "id": 59,
       "type": "timeseries",
       "title": "账户资金趋势 / Account Capital Trend",
-      "description": "",
+      "description": "趋势保留 account_snapshot/summary 对照；主资金卡片只显示快照当前值。",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -6040,8 +6036,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_net_liquidation_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
-          "legendFormat": "net liq {{environment}} {{source}}",
+          "expr": "max by (environment) (ibkr_account_net_liquidation_usd{service=~\"$service\", environment=~\"$environment\", source=\"account_snapshot\"})",
+          "legendFormat": "净清算值-快照 {{environment}}",
           "range": true,
           "refId": "A"
         },
@@ -6051,8 +6047,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_buying_power_remaining_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
-          "legendFormat": "buying power {{environment}} {{source}}",
+          "expr": "max by (environment) (ibkr_account_net_liquidation_usd{service=~\"$service\", environment=~\"$environment\", source=\"account_summary\"})",
+          "legendFormat": "净清算值-汇总 {{environment}}",
           "range": true,
           "refId": "B"
         },
@@ -6062,8 +6058,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_available_funds_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
-          "legendFormat": "available funds {{environment}} {{source}}",
+          "expr": "max by (environment) (ibkr_account_buying_power_remaining_usd{service=~\"$service\", environment=~\"$environment\", source=\"account_snapshot\"})",
+          "legendFormat": "购买力-快照 {{environment}}",
           "range": true,
           "refId": "C"
         },
@@ -6073,10 +6069,54 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (environment, source) (ibkr_account_total_cash_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
-          "legendFormat": "cash {{environment}} {{source}}",
+          "expr": "max by (environment) (ibkr_account_buying_power_remaining_usd{service=~\"$service\", environment=~\"$environment\", source=\"account_summary\"})",
+          "legendFormat": "购买力-汇总 {{environment}}",
           "range": true,
           "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment) (ibkr_account_available_funds_usd{service=~\"$service\", environment=~\"$environment\", source=\"account_snapshot\"})",
+          "legendFormat": "可用资金-快照 {{environment}}",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment) (ibkr_account_available_funds_usd{service=~\"$service\", environment=~\"$environment\", source=\"account_summary\"})",
+          "legendFormat": "可用资金-汇总 {{environment}}",
+          "range": true,
+          "refId": "F"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment) (ibkr_account_total_cash_usd{service=~\"$service\", environment=~\"$environment\", source=\"account_snapshot\"})",
+          "legendFormat": "现金-快照 {{environment}}",
+          "range": true,
+          "refId": "G"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (environment) (ibkr_account_total_cash_usd{service=~\"$service\", environment=~\"$environment\", source=\"account_summary\"})",
+          "legendFormat": "现金-汇总 {{environment}}",
+          "range": true,
+          "refId": "H"
         }
       ],
       "fieldConfig": {
@@ -6118,10 +6158,6 @@
               {
                 "color": "green",
                 "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
               }
             ]
           }

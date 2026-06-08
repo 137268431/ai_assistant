@@ -20,6 +20,7 @@ from ibkr_compute.core.broker_mode import (
     resolve_market_data_mode,
 )
 from ibkr_compute.order.order_placer import OrderPlacer
+from ibkr_compute.order.buying_power_reservations import BuyingPowerReservationStore
 from ibkr_compute.orchestration.signals import TradingServiceSignalsMixin
 from ibkr_compute.signal.signal_router import SignalRouter
 
@@ -154,6 +155,30 @@ class FakeSignalPBClient:
     def notify_system_event(self, title, detail=None, **kwargs):
         self.events.append({"title": title, "detail": dict(detail or {}), **kwargs})
         return {"ok": True}
+
+
+class FakeSignalStatePBClient(FakeSignalPBClient):
+    def __init__(self, record):
+        super().__init__(record)
+        self.states = {}
+        self.upserts = []
+
+    def get_state(self, state_key, environment, date="global"):
+        return self.states.get((state_key, environment, date))
+
+    def upsert_state(self, state_key, environment, data, date="global"):
+        record = {"id": f"{state_key}:{environment}:{date}", "data": dict(data or {})}
+        self.states[(state_key, environment, date)] = record
+        return record
+
+    def upsert_order(self, data):
+        self.upserts.append(dict(data or {}))
+        return {"success": True, **dict(data or {})}
+
+    def get_records(self, collection, filter=None, sort=None, per_page=100, page=1):
+        if collection == "orders":
+            return list(self.upserts[: int(per_page or 100)])
+        return []
 
 
 class FakeFailingAckSignalPBClient(FakeSignalPBClient):
@@ -367,6 +392,30 @@ class FakeOrderPlacer:
                 "reentry_allowed": True,
             },
             "protection_complete": True,
+        }
+
+
+class FakePendingAsyncOrderPlacer(FakeOrderPlacer):
+    def place_bracket_order(self, **kwargs):
+        self.calls.append(dict(kwargs))
+        return {
+            "ok": True,
+            "order_ids": ["101", "102", "103"],
+            "bracket_group": "AAPL_long",
+            "trade_group_id": "AAPL_long",
+            "entry_coid": "entry_AAPL_long",
+            "tp_coid": "tp_AAPL_long",
+            "sl_coid": "sl_AAPL_long",
+            "order_family_type": "bracket_oco",
+            "quantity": kwargs.get("quantity"),
+            "take_profit_quantity": kwargs.get("quantity"),
+            "stop_loss_quantity": kwargs.get("quantity"),
+            "confirmation_mode": "background",
+            "pending_confirmation": True,
+            "protection_confirmation_pending": True,
+            "protection_complete": False,
+            "protection_incomplete": False,
+            "submission": {"ok": True, "pending_confirmation": True, "confirmation_mode": "background"},
         }
 
 
@@ -2553,6 +2602,7 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         self.assertEqual("tv_direct", order_payload["order_ref_suffix"])
         self.assertEqual("Adaptive", order_payload["entry_algo_strategy"])
         self.assertEqual("Normal", order_payload["entry_adaptive_priority"])
+        self.assertEqual("background", order_payload["confirmation_mode"])
         self.assertEqual("submitted_waiting_fill", pb.acks[-1]["status"])
         ack_extra = pb.acks[-1]["order"]["extra"]
         self.assertTrue(ack_extra["tv_direct_entry"])
@@ -2560,6 +2610,29 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         self.assertEqual(100.0, ack_extra["reference_entry"])
         self.assertEqual(100.15, ack_extra["submitted_entry_limit_price"])
         self.assertTrue(ack_extra["final_protection_from_fill"])
+
+    def test_tv_direct_background_confirmation_is_submitted_not_protection_incomplete(self):
+        signal = self._tv_signal("AAPL")
+        pb = FakeSignalPBClient({"id": "row-aapl", "extra": dict(signal["extra"])})
+        service = FakeSignalService(
+            signal,
+            lifecycle=FakeLifecycle(),
+            pb=pb,
+            config=FakeConfig({"entry_pre_submit_guard_enabled": "true"}),
+        )
+        service.order_placer = FakePendingAsyncOrderPlacer()
+
+        service._process_signals()
+
+        self.assertEqual(["sig-aapl"], service.signal_router.processed)
+        self.assertEqual(1, len(service.order_placer.calls))
+        self.assertEqual("background", service.order_placer.calls[0]["confirmation_mode"])
+        self.assertEqual("submitted_waiting_fill", pb.acks[-1]["status"])
+        ack_extra = pb.acks[-1]["order"]["extra"]
+        self.assertTrue(ack_extra["protection_pending_async"])
+        self.assertTrue(ack_extra["protection_confirmation_pending"])
+        self.assertFalse(ack_extra["protection_incomplete"])
+        self.assertEqual("submitted_waiting_fill", ack_extra["status_reason"])
 
     def test_tv_direct_signal_skips_runtime_readiness_validation(self):
         signal = self._tv_signal("AAPL")
@@ -3055,6 +3128,121 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         self.assertEqual("waiting_for_account_snapshot", patch["extra"]["execution_state"])
         self.assertEqual("unavailable", patch["extra"]["buying_power_guard"]["state"])
         self.assertEqual("自动开仓暂停：购买力风控不可用", pb.events[-1]["title"])
+
+    def test_buying_power_guard_uses_local_baseline_when_snapshot_unavailable(self):
+        signal = self._signal("AAPL")
+        signal["shares"] = 50
+        pb = FakeSignalStatePBClient({"id": "row-aapl", "extra": {"source": "ibkr_compute"}})
+        store = BuyingPowerReservationStore(pb, environment="paper")
+        store.update_baseline_from_snapshot(
+            {
+                "ok": True,
+                "environment": "paper",
+                "summary": {"buying_power": 20000.0, "net_liquidation": 100000.0},
+                "buying_power_guard": {"available": True, "state": "ok", "source": "account_summary"},
+                "fetched_at": "2026-06-08T14:00:00+00:00",
+                "source": "account_summary",
+            }
+        )
+        service = FakeSignalService(
+            signal,
+            lifecycle=FakeLifecycle(),
+            pb=pb,
+            config=FakeConfig({"entry_pre_submit_guard_enabled": "false"}),
+        )
+        service.buying_power_reservations = store
+        service.account_snapshot_provider = mock.Mock(side_effect=AssertionError("baseline should avoid snapshot fetch"))
+
+        service._process_signals()
+
+        service.account_snapshot_provider.assert_not_called()
+        self.assertEqual(["sig-aapl"], service.signal_router.processed)
+        self.assertEqual(1, len(service.order_placer.calls))
+        ack_extra = pb.acks[-1]["order"]["extra"]
+        self.assertEqual("local_baseline", ack_extra["buying_power_guard"]["source"])
+        self.assertEqual(20000.0, ack_extra["buying_power_remaining"])
+        self.assertEqual(15000.0, ack_extra["buying_power_remaining_after"])
+        self.assertEqual("2026-06-08T14:00:00+00:00", ack_extra["buying_power_baseline_fetched_at"])
+
+    def test_buying_power_guard_blocks_without_initial_baseline_when_snapshot_unavailable(self):
+        signal = self._signal("AAPL")
+        signal["shares"] = 50
+        pb = FakeSignalStatePBClient({"id": "row-aapl", "extra": {"source": "ibkr_compute"}})
+        service = FakeSignalService(
+            signal,
+            lifecycle=FakeLifecycle(),
+            pb=pb,
+            config=FakeConfig({"entry_pre_submit_guard_enabled": "false"}),
+            account_snapshot={
+                "ok": False,
+                "summary": {},
+                "buying_power_guard": {
+                    "state": "unavailable",
+                    "reason": "account_data_circuit_open",
+                    "available": False,
+                    "source": "account_data_circuit",
+                },
+            },
+        )
+        service.buying_power_reservations = BuyingPowerReservationStore(pb, environment="paper")
+
+        service._process_signals()
+
+        self.assertEqual([], service.signal_router.processed)
+        self.assertEqual(["sig-aapl"], service.signal_router.released)
+        self.assertEqual([], service.order_placer.calls)
+        patch = pb.updates[-1][2]
+        self.assertEqual("waiting_for_account_snapshot", patch["extra"]["execution_state"])
+        self.assertEqual("account_data_circuit_open", patch["extra"]["buying_power_guard"]["reason"])
+
+    def test_buying_power_guard_rolls_local_reservations_across_consecutive_signals(self):
+        first = self._tv_signal("AAPL")
+        second = self._tv_signal("MSFT")
+        first["shares"] = second["shares"] = 50
+        pb = FakeSignalStatePBClient({"id": "row-aapl", "extra": dict(first["extra"])})
+        store = BuyingPowerReservationStore(pb, environment="paper")
+        config = FakeConfig({"entry_pre_submit_guard_enabled": "true"})
+        service = FakeSignalService(
+            first,
+            lifecycle=FakeLifecycle(),
+            pb=pb,
+            config=config,
+        )
+        service.signal_router = FakeSignalRouter([first, second])
+        service.buying_power_reservations = store
+        broker = FakeBracketBroker()
+        service.order_placer = OrderPlacer(
+            pb_client=pb,
+            broker=broker,
+            account_id="DU123",
+            environment="paper",
+            config=config,
+            reservation_store=store,
+        )
+        service.account_snapshot_provider = mock.Mock(
+            return_value={
+                "ok": True,
+                "environment": "paper",
+                "summary": {"buying_power": 30000.0, "net_liquidation": 100000.0},
+                "buying_power_guard": {"available": True, "state": "ok", "source": "account_summary"},
+                "fetched_at": "2026-06-08T14:00:00+00:00",
+                "source": "account_summary",
+            }
+        )
+
+        service._process_signals()
+
+        self.assertEqual(["sig-aapl", "sig-msft"], service.signal_router.processed)
+        self.assertEqual(2, len(broker.calls))
+        self.assertEqual(1, service.account_snapshot_provider.call_count)
+        first_ack = pb.acks[0]["order"]["extra"]
+        second_ack = pb.acks[1]["order"]["extra"]
+        self.assertEqual(30000.0, first_ack["buying_power_remaining"])
+        self.assertEqual(24992.5, first_ack["buying_power_remaining_after"])
+        self.assertEqual(24992.5, second_ack["buying_power_remaining"])
+        self.assertEqual(19985.0, second_ack["buying_power_remaining_after"])
+        self.assertEqual(5007.5, second_ack["buying_power_local_reserved_exposure"])
+        self.assertEqual(2, store.snapshot()["count"])
 
     def test_buying_power_warning_continues_and_ack_includes_guard(self):
         signal = self._signal("AAPL")

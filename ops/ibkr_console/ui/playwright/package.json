@@ -5,6 +5,7 @@
   "type": "commonjs",
   "scripts": {
     "smoke": "node pb_smoke.js",
+    "local:orders-broker-live": "node local_orders_broker_live_render_check.js",
     "smoke:indicator-trace": "node indicator_trace_surface_check.js",
     "static:system-ops": "node system_ops_static_check.js",
     "static:visual-cohesion": "node console_visual_cohesion_check.js",

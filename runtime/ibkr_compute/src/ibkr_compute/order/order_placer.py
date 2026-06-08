@@ -442,6 +442,27 @@ class OrderPlacer:
         recheck_guard["account_remaining_buying_power"] = account_remaining
         recheck_guard["pre_submit_remaining"] = guard.get("remaining")
         recheck_guard["pre_submit_remaining_after"] = guard.get("remaining_after")
+        for key in (
+            "source",
+            "snapshot_fetched_at",
+            "baseline_available",
+            "baseline_source",
+            "baseline_fetched_at",
+            "baseline_stored_at",
+            "baseline_cache_state",
+            "configured_buying_power",
+            "risk_model",
+            "risk_model_default_entry_exposure",
+            "risk_model_position_exposure",
+            "risk_model_open_order_exposure",
+            "risk_model_used_exposure",
+            "risk_model_strategy_position_count",
+            "risk_model_strategy_entry_order_count",
+            "risk_model_strategy_position_symbols",
+            "risk_model_strategy_entry_order_symbols",
+        ):
+            if guard.get(key) not in (None, ""):
+                recheck_guard[key] = guard.get(key)
         merge_reservation_snapshot_into_guard(recheck_guard, reservation_snapshot)
         state = str(recheck_guard.get("state") or "").strip().lower()
         if state in {"blocked", "unavailable"}:

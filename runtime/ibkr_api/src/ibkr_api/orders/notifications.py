@@ -639,6 +639,16 @@ def _normalize_trade_side(value: Any, *, exit_order_direction: bool = False) -> 
     return ""
 
 
+def _direction_display(value: Any) -> str:
+    text = to_text(value).strip()
+    normalized = text.lower()
+    if normalized in {"long", "buy", "buy_to_open"}:
+        return "做多 / LONG"
+    if normalized in {"short", "sell", "sell_to_open"}:
+        return "做空 / SHORT"
+    return text or "方向未知"
+
+
 def _trade_side(entry_order: dict[str, Any], exit_order: dict[str, Any]) -> str:
     for row, fields in (
         (entry_order, ("position_side", "direction", "side")),
@@ -1637,6 +1647,7 @@ def build_order_callback_ledger_card(
     signal_id = to_text(_record_or_extra_value(order_record, "signal_id"))
     trade_group_id = to_text(_record_or_extra_value(order_record, "trade_group_id", "entry_order_unique_id"))
     direction = to_text(_record_or_extra_value(order_record, "position_side", "direction", "side"))
+    direction_display = _direction_display(direction)
     order_type = to_text(_record_or_extra_value(order_record, "order_type", "orderType"))
     callback_time = to_text(_record_or_extra_value(order_record, "broker_callback_received_at", "us_time", "order_time", "fill_time"))
     fill_delta = to_float(event_model.get("fill_delta")) or 0.0
@@ -1662,9 +1673,10 @@ def build_order_callback_ledger_card(
         f"**回调类型**: {callback_type}",
         f"**状态**: {status_text}",
         f"**Symbol / Broker**: {symbol} / {broker_badge}",
+        f"**交易方向**: {direction_display}",
         f"**Broker订单ID**: {broker_order_id or '-'}",
         f"**信号ID / 交易组**: {signal_id or '-'} / {trade_group_id or '-'}",
-        f"**角色 / 类型 / 方向**: {display_role_label} / {order_type or '-'} / {direction or '-'}",
+        f"**角色 / 类型**: {display_role_label} / {order_type or '-'}",
         f"**数量 / 已成交**: {_format_quantity(_record_or_extra_value(order_record, 'quantity'))} / {_format_quantity(filled_qty)}",
         f"**均价 / 最新成交价**: {_format_price(_trade_ledger_fill_price(order_record))} / {_format_price(_record_or_extra_value(order_record, 'last_fill_price', 'lastFillPrice', 'execution_price'))}",
         fill_line,
@@ -1692,7 +1704,7 @@ def build_order_callback_ledger_card(
         "header": {
             "title": {
                 "tag": "plain_text",
-                "content": f"🧾 订单真实回调 · {broker_badge} · {display_role_label} · {event_label}{title_pnl} · {symbol}",
+                "content": f"🧾 订单真实回调 · {broker_badge} · {direction_display} · {display_role_label} · {event_label}{title_pnl} · {symbol}",
             },
             "template": _trade_ledger_template(event_model, status, pnl_model.get("value") if pnl_model else None),
         },
@@ -1938,6 +1950,7 @@ def build_order_status_card(order_record: Any, *, status: str = "", message: str
     role = to_text(_record_or_extra_value(order_record, "role"))
     order_type = to_text(_record_or_extra_value(order_record, "order_type"))
     direction = to_text(_record_or_extra_value(order_record, "position_side", "direction", "side", "action"))
+    direction_display = _direction_display(direction)
     quantity = to_float(_record_or_extra_value(order_record, "quantity"))
     filled_qty = to_float(_record_or_extra_value(order_record, "filled_qty"))
     remaining_qty = to_float(_record_or_extra_value(order_record, "remaining_qty", "remaining"))
@@ -1951,9 +1964,10 @@ def build_order_status_card(order_record: Any, *, status: str = "", message: str
         f"**状态**: {status_text}",
         f"**Symbol**: {symbol}",
         f"**Broker**: {broker_badge}",
+        f"**交易方向**: {direction_display}",
         f"**Broker订单ID**: {order_id or '-'}",
         f"**信号ID / 交易组**: {signal_id or '-'} / {trade_group_id or '-'}",
-        f"**角色 / 类型 / 方向**: {role or '-'} / {order_type or '-'} / {direction or '-'}",
+        f"**角色 / 类型**: {role or '-'} / {order_type or '-'}",
         f"**数量 / 已成交 / 剩余**: {_format_quantity(quantity)} / {_format_quantity(filled_qty)} / {_format_quantity(remaining_qty)}",
         f"**均价 / 成交价**: {_format_price(_record_or_extra_value(order_record, 'avg_price', 'avg_fill_price'))} / {_format_price(_record_or_extra_value(order_record, 'fill_price', 'last_fill_price', 'execution_price', 'price', 'limit_price'))}",
     ]
@@ -1978,7 +1992,7 @@ def build_order_status_card(order_record: Any, *, status: str = "", message: str
         "header": {
             "title": {
                 "tag": "plain_text",
-                "content": f"📦 订单状态 · {broker_badge} · {status_text} · {symbol}",
+                "content": f"📦 订单状态 · {broker_badge} · {direction_display} · {status_text} · {symbol}",
             },
             "template": template,
         },

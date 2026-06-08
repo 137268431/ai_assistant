@@ -33,6 +33,16 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
     return float(number)
 
 
+def _optional_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number:
+        return None
+    return float(number)
+
+
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
         return int(float(value))
@@ -99,6 +109,52 @@ def _state_lock(environment: str) -> threading.RLock:
         return lock
 
 
+def _summary_remaining(summary: dict[str, Any]) -> float | None:
+    if not isinstance(summary, dict):
+        return None
+    for key in ("remaining_buying_power", "buying_power"):
+        value = _optional_float(summary.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _summary_has_substantive_value(summary: dict[str, Any]) -> bool:
+    if not isinstance(summary, dict):
+        return False
+    for key in (
+        "net_liquidation",
+        "available_funds",
+        "excess_liquidity",
+        "equity_with_loan",
+        "gross_position_value",
+        "total_cash_value",
+        "initial_margin",
+        "maintenance_margin",
+    ):
+        value = summary.get(key)
+        if value in (None, ""):
+            continue
+        number = _optional_float(value)
+        if number is None or number != 0.0:
+            return True
+    return bool(str(summary.get("account_type") or "").strip())
+
+
+def base_buying_power_summary(summary: dict[str, Any] | None) -> dict[str, Any]:
+    """Return account buying power before this store's local reservation overlay."""
+    base = dict(summary or {})
+    existing_reserved = max(0.0, _safe_float(base.get("local_reserved_exposure"), 0.0))
+    if existing_reserved > 0:
+        for key in ("remaining_buying_power", "buying_power"):
+            value = base.get(key)
+            if value not in (None, ""):
+                base[key] = _safe_float(value, 0.0) + existing_reserved
+    for key in ("local_reserved_exposure", "local_reserved_count", "local_reserved_order_ids"):
+        base.pop(key, None)
+    return base
+
+
 class BuyingPowerReservationStore:
     def __init__(self, pb_client: Any = None, *, environment: str = "live", ttl_seconds: float | None = None):
         self.pb_client = pb_client
@@ -117,8 +173,10 @@ class BuyingPowerReservationStore:
         reservations = data.get("reservations")
         if not isinstance(reservations, list):
             reservations = []
+        baseline = data.get("baseline")
         data["version"] = int(data.get("version") or 1)
         data["reservations"] = [dict(item) for item in reservations if isinstance(item, dict)]
+        data["baseline"] = dict(baseline) if isinstance(baseline, dict) else {}
         return data, record if isinstance(record, dict) else None
 
     def _save_state(self, data: dict[str, Any]) -> dict[str, Any] | None:
@@ -130,8 +188,82 @@ class BuyingPowerReservationStore:
             "updated_at": _iso(),
             "reservations": list(data.get("reservations") or []),
             "last_release": data.get("last_release") if isinstance(data.get("last_release"), dict) else {},
+            "baseline": data.get("baseline") if isinstance(data.get("baseline"), dict) else {},
         }
         return upsert(STATE_KEY, self.environment, payload, date=_active_date())
+
+    @staticmethod
+    def _snapshot_baseline_payload(snapshot: dict[str, Any] | None) -> dict[str, Any]:
+        snapshot = snapshot if isinstance(snapshot, dict) else {}
+        guard = snapshot.get("buying_power_guard") if isinstance(snapshot.get("buying_power_guard"), dict) else {}
+        guard_state = str(guard.get("state") or "").strip().lower()
+        if guard_state == "unavailable" or guard.get("available") is False:
+            return {}
+        summary = base_buying_power_summary(snapshot.get("summary") if isinstance(snapshot.get("summary"), dict) else {})
+        remaining = _summary_remaining(summary)
+        if remaining is None:
+            return {}
+        if remaining == 0.0 and not _summary_has_substantive_value(summary):
+            return {}
+        fetched_at = str(snapshot.get("fetched_at") or guard.get("snapshot_fetched_at") or _iso()).strip()
+        source = str(guard.get("source") or snapshot.get("source") or "account_summary").strip() or "account_summary"
+        baseline = {
+            "available": True,
+            "environment": str(snapshot.get("environment") or "").strip().lower(),
+            "summary": summary,
+            "remaining_buying_power": remaining,
+            "net_liquidation": _safe_float(summary.get("net_liquidation"), 0.0),
+            "source": source,
+            "snapshot_source": str(snapshot.get("snapshot_source") or snapshot.get("source") or source).strip(),
+            "fetched_at": fetched_at,
+            "stored_at": _iso(),
+            "cache_state": str(snapshot.get("cache_state") or "").strip(),
+            "stale": bool(snapshot.get("stale")),
+        }
+        for key in (
+            "configured_buying_power",
+            "risk_model",
+            "risk_model_default_entry_exposure",
+            "risk_model_position_exposure",
+            "risk_model_open_order_exposure",
+            "risk_model_used_exposure",
+            "risk_model_strategy_position_count",
+            "risk_model_strategy_entry_order_count",
+            "risk_model_strategy_position_symbols",
+            "risk_model_strategy_entry_order_symbols",
+        ):
+            if guard.get(key) not in (None, ""):
+                baseline[key] = guard.get(key)
+        return baseline
+
+    def update_baseline_from_snapshot(self, snapshot: dict[str, Any] | None) -> dict[str, Any]:
+        baseline = self._snapshot_baseline_payload(snapshot)
+        if not baseline:
+            return {"ok": False, "reason": "snapshot_unavailable"}
+        if not baseline.get("environment"):
+            baseline["environment"] = self.environment
+        with _state_lock(self.environment):
+            data, _record = self._load_state()
+            data["baseline"] = baseline
+            self._save_state(data)
+        return {"ok": True, "baseline": dict(baseline)}
+
+    def baseline_snapshot(self) -> dict[str, Any]:
+        with _state_lock(self.environment):
+            data, _record = self._load_state()
+            baseline = data.get("baseline") if isinstance(data.get("baseline"), dict) else {}
+            if not baseline or not baseline.get("available"):
+                return {"available": False, "environment": self.environment, "date": _active_date()}
+            summary = dict(baseline.get("summary") or {})
+            if _summary_remaining(summary) is None:
+                return {"available": False, "environment": self.environment, "date": _active_date()}
+            return {
+                **dict(baseline),
+                "available": True,
+                "environment": str(baseline.get("environment") or self.environment).strip().lower() or self.environment,
+                "date": _active_date(),
+                "summary": summary,
+            }
 
     @staticmethod
     def _is_active(item: dict[str, Any], now_epoch: float | None = None) -> bool:
@@ -255,6 +387,7 @@ class BuyingPowerReservationStore:
     def snapshot(self) -> dict[str, Any]:
         active = self.active_reservations()
         exposure = sum(max(0.0, _safe_float(item.get("exposure"), 0.0)) for item in active)
+        baseline = self.baseline_snapshot()
         return {
             "state_key": STATE_KEY,
             "environment": self.environment,
@@ -267,6 +400,8 @@ class BuyingPowerReservationStore:
                 for item in active
                 if str(item.get("entry_order_id") or "").strip()
             ],
+            "baseline": baseline if baseline.get("available") else {},
+            "baseline_available": bool(baseline.get("available")),
         }
 
     def reserve_entry(
@@ -406,6 +541,27 @@ class BuyingPowerReservationStore:
             recheck_guard["account_remaining_buying_power"] = account_remaining
             recheck_guard["pre_submit_remaining"] = guard.get("remaining")
             recheck_guard["pre_submit_remaining_after"] = guard.get("remaining_after")
+            for key in (
+                "source",
+                "snapshot_fetched_at",
+                "baseline_available",
+                "baseline_source",
+                "baseline_fetched_at",
+                "baseline_stored_at",
+                "baseline_cache_state",
+                "configured_buying_power",
+                "risk_model",
+                "risk_model_default_entry_exposure",
+                "risk_model_position_exposure",
+                "risk_model_open_order_exposure",
+                "risk_model_used_exposure",
+                "risk_model_strategy_position_count",
+                "risk_model_strategy_entry_order_count",
+                "risk_model_strategy_position_symbols",
+                "risk_model_strategy_entry_order_symbols",
+            ):
+                if guard.get(key) not in (None, ""):
+                    recheck_guard[key] = guard.get(key)
             recheck_guard["local_reserved_exposure"] = current_reserved
             recheck_guard["local_reserved_count"] = len(active)
             recheck_guard["local_reserved_order_ids"] = [
@@ -543,7 +699,7 @@ def apply_reservations_to_buying_power_summary(
     summary: dict[str, Any] | None,
     reservation_snapshot: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    adjusted = dict(summary or {})
+    adjusted = base_buying_power_summary(summary)
     snapshot = reservation_snapshot if isinstance(reservation_snapshot, dict) else {}
     reserved = max(0.0, _safe_float(snapshot.get("exposure"), 0.0))
     if reserved <= 0:
@@ -574,5 +730,6 @@ __all__ = [
     "BuyingPowerReservationStore",
     "STATE_KEY",
     "apply_reservations_to_buying_power_summary",
+    "base_buying_power_summary",
     "merge_reservation_snapshot_into_guard",
 ]

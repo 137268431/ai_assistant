@@ -304,6 +304,19 @@ def _reservation_snapshot(service) -> dict:
     return dict(snapshot) if isinstance(snapshot, dict) else {}
 
 
+def _update_buying_power_baseline_from_payload(service, payload: dict) -> None:
+    if not isinstance(payload, dict) or not payload:
+        return
+    reservations = getattr(service, "buying_power_reservations", None)
+    updater = getattr(reservations, "update_baseline_from_snapshot", None)
+    if not callable(updater):
+        return
+    try:
+        updater(payload)
+    except Exception:
+        return
+
+
 def _reservation_overlay_base_summary(summary: dict) -> dict:
     base = dict(summary or {})
     existing_reserved = max(0.0, _safe_float(base.get("local_reserved_exposure"), 0.0))
@@ -556,21 +569,25 @@ def _build_ibkr_account_buying_power_snapshot(service) -> dict:
     api_app = context["api_app"]
     cache_key = (context["runtime_environment"], f"{context['account_id']}::buying_power", False)
 
+    def with_baseline(payload: dict) -> dict:
+        _update_buying_power_baseline_from_payload(service, payload)
+        return payload
+
     cached = load_cached_snapshot(api_app, cache_key)
     if cached and not _is_account_data_circuit_buying_power_snapshot(cached):
-        return _decorate_account_snapshot_health(cached)
+        return with_baseline(_decorate_account_snapshot_health(cached))
 
     refresh_lock = get_snapshot_refresh_lock(api_app, cache_key)
     with refresh_lock:
         cached = load_cached_snapshot(api_app, cache_key)
         if cached and not _is_account_data_circuit_buying_power_snapshot(cached):
-            return _decorate_account_snapshot_health(cached)
+            return with_baseline(_decorate_account_snapshot_health(cached))
 
         full_cached = _fresh_full_snapshot_for_buying_power(api_app, context)
         payload = _build_buying_power_payload_from_full_snapshot(full_cached, context)
         if payload:
             store_cached_snapshot(api_app, cache_key, payload)
-            return load_cached_snapshot(api_app, cache_key, allow_stale=False) or payload
+            return with_baseline(load_cached_snapshot(api_app, cache_key, allow_stale=False) or payload)
 
         circuit = _account_data_circuit_status(context.get("service_status") or {})
         if bool(circuit.get("active")):
@@ -585,11 +602,11 @@ def _build_ibkr_account_buying_power_snapshot(service) -> dict:
                 stale_full_payload["stale"] = True
                 stale_full_payload["refresh_error"] = "account_data_circuit_open"
                 stale_full_payload["account_data_circuit"] = dict(circuit or {})
-                return stale_full_payload
+                return with_baseline(stale_full_payload)
             stale_payload = _stale_buying_power_snapshot_after_error(api_app, cache_key, "account_data_circuit_open")
             if stale_payload:
-                return stale_payload
-            return _build_account_data_circuit_buying_power_snapshot(service, context, circuit)
+                return with_baseline(stale_payload)
+            return with_baseline(_build_account_data_circuit_buying_power_snapshot(service, context, circuit))
 
         summary_raw, summary_error = _fetch_account_summary_raw_for_buying_power(service, context)
         payload = _build_buying_power_payload_from_summary_raw(service, context, summary_raw, summary_error)
@@ -600,7 +617,7 @@ def _build_ibkr_account_buying_power_snapshot(service) -> dict:
                 (payload.get("buying_power_guard") or {}).get("snapshot_error") or summary_error,
             )
             if stale_payload:
-                return stale_payload
+                return with_baseline(stale_payload)
             full_refreshed = _build_ibkr_account_snapshot(
                 service,
                 include_pnl=False,
@@ -612,9 +629,9 @@ def _build_ibkr_account_buying_power_snapshot(service) -> dict:
             full_payload = _build_buying_power_payload_from_full_snapshot(full_refreshed, context)
             if full_payload:
                 store_cached_snapshot(api_app, cache_key, full_payload)
-                return load_cached_snapshot(api_app, cache_key, allow_stale=False) or full_payload
+                return with_baseline(load_cached_snapshot(api_app, cache_key, allow_stale=False) or full_payload)
         store_cached_snapshot(api_app, cache_key, payload)
-        return load_cached_snapshot(api_app, cache_key, allow_stale=False) or payload
+        return with_baseline(load_cached_snapshot(api_app, cache_key, allow_stale=False) or payload)
 
 
 def _stale_snapshot_after_error(payload: dict, error: str) -> dict:

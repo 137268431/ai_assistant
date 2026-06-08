@@ -628,6 +628,7 @@ class TradingServiceSignalsMixin:
                             entry_algo_strategy="Adaptive" if bool(extra.get("tv_entry_adaptive_enabled")) else "",
                             entry_adaptive_priority=str(extra.get("tv_entry_adaptive_priority") or ""),
                             buying_power_guard=buying_power_guard,
+                            confirmation_mode="background",
                             outside_rth=bool(extra.get("outside_rth")),
                         )
                 else:
@@ -2543,6 +2544,9 @@ class TradingServiceSignalsMixin:
             "buying_power_guard_reason": guard.get("reason"),
             "buying_power_local_reserved_exposure": guard.get("local_reserved_exposure"),
             "buying_power_local_reserved_count": guard.get("local_reserved_count"),
+            "buying_power_baseline_available": guard.get("baseline_available"),
+            "buying_power_baseline_source": guard.get("baseline_source"),
+            "buying_power_baseline_fetched_at": guard.get("baseline_fetched_at"),
         }
 
     def _merge_buying_power_snapshot_guard(self, guard: dict, snapshot_guard: dict | None) -> dict:
@@ -2651,6 +2655,12 @@ class TradingServiceSignalsMixin:
             detail["策略已占用"] = guard_number("risk_model_used_exposure")
         if (guard or {}).get("risk_model_remaining_slots") not in (None, ""):
             detail["估算剩余可开仓数"] = guard.get("risk_model_remaining_slots")
+        if (guard or {}).get("local_reserved_exposure") not in (None, ""):
+            detail["本地已预占购买力"] = guard_number("local_reserved_exposure")
+        if (guard or {}).get("local_reserved_count") not in (None, ""):
+            detail["本地预占订单数"] = guard.get("local_reserved_count")
+        if (guard or {}).get("baseline_fetched_at"):
+            detail["购买力基线时间"] = str(guard.get("baseline_fetched_at") or "")
         if isinstance(previous, dict) and previous:
             detail["上一状态"] = str(previous.get("state") or "")
             detail["上一原因"] = str(previous.get("reason") or "")
@@ -2695,7 +2705,6 @@ class TradingServiceSignalsMixin:
 
     def _evaluate_signal_buying_power_guard(self, sig: dict) -> dict:
         service_mod = _service_mod()
-        snapshot = self._account_buying_power_snapshot()
         reservation_store = getattr(self, "buying_power_reservations", None)
         reservation_snapshot = {}
         snapshotter = getattr(reservation_store, "snapshot", None)
@@ -2705,8 +2714,40 @@ class TradingServiceSignalsMixin:
             except Exception as exc:
                 service_mod.logger.warning("Buying-power reservation snapshot failed: %s", exc)
                 reservation_snapshot = {}
+
+        baseline = {}
+        baseline_getter = getattr(reservation_store, "baseline_snapshot", None)
+        if callable(baseline_getter):
+            try:
+                baseline_candidate = baseline_getter()
+                baseline = baseline_candidate if isinstance(baseline_candidate, dict) else {}
+            except Exception as exc:
+                service_mod.logger.warning("Buying-power baseline load failed: %s", exc)
+                baseline = {}
+
+        baseline_available = bool(baseline.get("available"))
+        snapshot = {}
+        snapshot_guard = {}
+        if baseline_available:
+            account_summary = dict(baseline.get("summary") or {})
+            guard_source = "local_baseline"
+        else:
+            snapshot = self._account_buying_power_snapshot()
+            snapshot_guard = (snapshot or {}).get("buying_power_guard")
+            baseline_updater = getattr(reservation_store, "update_baseline_from_snapshot", None)
+            if callable(baseline_updater):
+                try:
+                    baseline_result = baseline_updater(snapshot)
+                    if baseline_result.get("ok") and isinstance(baseline_result.get("baseline"), dict):
+                        baseline = dict(baseline_result.get("baseline") or {})
+                        baseline_available = True
+                except Exception as exc:
+                    service_mod.logger.warning("Buying-power baseline update failed: %s", exc)
+            account_summary = dict((snapshot or {}).get("summary") or {})
+            guard_source = ""
+
         summary = apply_reservations_to_buying_power_summary(
-            (snapshot or {}).get("summary") or {},
+            account_summary,
             reservation_snapshot,
         )
         exposure = estimate_entry_exposure(
@@ -2723,16 +2764,32 @@ class TradingServiceSignalsMixin:
             environment=service_mod.ENVIRONMENT,
             requested_exposure=exposure,
         )
-        guard["account_remaining_buying_power"] = self._safe_float(
-            ((snapshot or {}).get("summary") or {}).get("remaining_buying_power"),
-            self._safe_float(((snapshot or {}).get("summary") or {}).get("buying_power"), 0.0),
-        )
+        account_remaining_raw = account_summary.get("remaining_buying_power")
+        if account_remaining_raw in (None, ""):
+            account_remaining_raw = account_summary.get("buying_power")
+        if account_remaining_raw not in (None, ""):
+            guard["account_remaining_buying_power"] = self._safe_float(account_remaining_raw, 0.0)
         merge_reservation_snapshot_into_guard(guard, reservation_snapshot)
-        snapshot_guard = (snapshot or {}).get("buying_power_guard")
-        self._merge_buying_power_snapshot_guard(guard, snapshot_guard if isinstance(snapshot_guard, dict) else None)
+        if guard_source:
+            guard["source"] = guard_source
+        else:
+            self._merge_buying_power_snapshot_guard(guard, snapshot_guard if isinstance(snapshot_guard, dict) else None)
+        if baseline_available:
+            guard["baseline_available"] = True
+            guard["baseline_source"] = str(baseline.get("source") or "")
+            guard["baseline_fetched_at"] = str(baseline.get("fetched_at") or "")
+            guard["baseline_stored_at"] = str(baseline.get("stored_at") or "")
+            guard["baseline_cache_state"] = str(baseline.get("cache_state") or "")
+            for key in self.BUYING_POWER_SNAPSHOT_META_KEYS:
+                if key.startswith("risk_model") and baseline.get(key) not in (None, ""):
+                    guard[key] = baseline.get(key)
         if isinstance((snapshot or {}).get("errors"), dict):
             guard["snapshot_errors"] = dict((snapshot or {}).get("errors") or {})
-        guard["snapshot_fetched_at"] = (snapshot or {}).get("fetched_at") or ""
+        guard["snapshot_fetched_at"] = (
+            (snapshot or {}).get("fetched_at")
+            or baseline.get("fetched_at")
+            or ""
+        )
         if exposure <= 0 and guard.get("enabled"):
             guard["state"] = "blocked"
             guard["reason"] = "buying_power_price_unavailable"
@@ -3606,13 +3663,29 @@ class TradingServiceSignalsMixin:
             if signal_extra.get(key) not in (None, "")
         }
         buying_power_guard = (
-            dict(signal_extra.get("buying_power_guard"))
+            dict(result.get("buying_power_guard"))
+            if isinstance(result.get("buying_power_guard"), dict)
+            else dict(signal_extra.get("buying_power_guard"))
             if isinstance(signal_extra.get("buying_power_guard"), dict)
             else {}
         )
         buying_power_fields = self._buying_power_extra_fields(buying_power_guard) if buying_power_guard else {}
         protection_complete = bool(result.get("protection_complete"))
-        protection_incomplete = not protection_complete
+        protection_confirmation_pending = bool(
+            result.get("protection_confirmation_pending")
+            or result.get("pending_confirmation")
+            or (
+                isinstance(result.get("submission"), dict)
+                and result.get("submission", {}).get("pending_confirmation")
+            )
+        )
+        protection_pending_async = bool(protection_confirmation_pending and not protection_complete)
+        protection_incomplete = bool(result.get("protection_incomplete")) or self._is_protection_incomplete_result(result)
+        if protection_confirmation_pending:
+            protection_incomplete = False
+        elif not protection_complete and not protection_incomplete and "protection_complete" in result:
+            protection_incomplete = True
+        protection_ready = bool(protection_complete or protection_pending_async)
         diagnostic = (
             self._build_protection_incomplete_diagnostic(
                 sig,
@@ -3626,16 +3699,16 @@ class TradingServiceSignalsMixin:
         tv_direct_ack = bool(signal_extra.get("tv_direct_entry"))
         signal_status = (
             "submitted_waiting_fill"
-            if protection_complete and tv_direct_ack
+            if protection_ready and tv_direct_ack
             else "submitted"
-            if protection_complete
+            if protection_ready
             else "protection_incomplete"
         )
         signal_note = (
             "submitted_waiting_fill"
-            if protection_complete and tv_direct_ack
+            if protection_ready and tv_direct_ack
             else "order_submitted_by_ibkr_compute"
-            if protection_complete
+            if protection_ready
             else "protection_incomplete"
         )
 
@@ -3656,7 +3729,7 @@ class TradingServiceSignalsMixin:
                     "sibling_order_unique_id": sl_unique_id,
                     "quantity": tp_quantity,
                     "limit_price": sig["take_profit"],
-                    "status": "Submitted" if protection_complete else "Init",
+                    "status": "Submitted" if protection_ready else "Init",
                     "extra": {
                         "bracket_group": trade_group_id,
                         "oca_group": oca_group,
@@ -3682,7 +3755,7 @@ class TradingServiceSignalsMixin:
                     "sibling_order_unique_id": tp_unique_id,
                     "quantity": sl_quantity,
                     "limit_price": sig["stop_loss"],
-                    "status": "Submitted" if protection_complete else "Init",
+                    "status": "Submitted" if protection_ready else "Init",
                     "extra": {
                         "bracket_group": trade_group_id,
                         "oca_group": oca_group,
@@ -3699,7 +3772,7 @@ class TradingServiceSignalsMixin:
             "broker_order_id": entry_order_id,
             "order_type": "Entry",
             "role": "entry",
-            "relation_status": "active" if protection_complete else "protection_incomplete",
+            "relation_status": "active" if protection_ready else "protection_incomplete",
             "direction": sig["direction"],
             "position_side": sig["direction"],
             "quantity": ack_quantity,
@@ -3726,10 +3799,13 @@ class TradingServiceSignalsMixin:
                 "signal_lifecycle_status": signal_status,
                 "protection_complete": protection_complete,
                 "protection_incomplete": protection_incomplete,
+                "protection_pending_async": protection_pending_async,
+                "protection_confirmation_pending": protection_confirmation_pending,
+                "pending_confirmation": bool(result.get("pending_confirmation") or protection_confirmation_pending),
+                "confirmation_mode": str(result.get("confirmation_mode") or ""),
                 "missing_order_ids": list(result.get("missing_order_ids") or []),
                 **protection_fields,
                 "submitted_order_ids": list(result.get("order_ids") or []),
-                "status_reason": signal_note if protection_complete else "bracket_protection_incomplete",
                 "protection_incomplete_diagnostic": diagnostic,
                 "safety_cancel_recommended": bool(diagnostic.get("cancel_recommended")) if diagnostic else False,
                 **order_extra,
@@ -3739,6 +3815,7 @@ class TradingServiceSignalsMixin:
                 **buying_power_fields,
                 "order_flow": signal_extra.get("order_flow", {}),
                 "order_flow_shadow": signal_extra.get("order_flow_shadow", {}),
+                "status_reason": signal_note if protection_ready else "bracket_protection_incomplete",
             },
         }
 

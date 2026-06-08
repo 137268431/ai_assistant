@@ -13,6 +13,7 @@ from ibkr_compute.api.account.buying_power_guard import (  # noqa: E402
 )
 import ibkr_compute.api.account.action_builders.orders as order_actions  # noqa: E402
 import ibkr_compute.api.account.snapshot_builder.payload as snapshot_payload  # noqa: E402
+from ibkr_compute.order.buying_power_reservations import BuyingPowerReservationStore  # noqa: E402
 
 
 class FakeConfig:
@@ -35,6 +36,19 @@ class FakeConfig:
 
 class FakePaperSnapshotApiApp:
     pass
+
+
+class FakeStatePB:
+    def __init__(self):
+        self.states = {}
+
+    def get_state(self, state_key, environment, date="global"):
+        return self.states.get((state_key, environment, date))
+
+    def upsert_state(self, state_key, environment, data, date="global"):
+        record = {"id": f"{state_key}:{environment}:{date}", "data": dict(data or {})}
+        self.states[(state_key, environment, date)] = record
+        return record
 
 
 class FakePaperLifecycle:
@@ -206,6 +220,25 @@ class PaperAccountBuyingPowerSnapshotTest(unittest.TestCase):
         self.assertAlmostEqual(61398.0, snapshot["buying_power_guard"]["net_liquidation"])
         self.assertNotIn("configured_buying_power", snapshot["buying_power_guard"])
         self.assertNotIn("risk_model_used_exposure", snapshot["buying_power_guard"])
+
+    def test_buying_power_snapshot_updates_local_baseline(self):
+        service = FakePaperSnapshotService(
+            account_summary={
+                "AccountCode": {"value": "DU-PAPER", "currency": "USD"},
+                "NetLiquidation": {"value": "100000", "currency": "USD"},
+                "BuyingPower": {"value": "30000", "currency": "USD"},
+            },
+        )
+        store = BuyingPowerReservationStore(FakeStatePB(), environment="paper")
+        service.buying_power_reservations = store
+
+        snapshot = snapshot_payload._build_ibkr_account_buying_power_snapshot(service)
+
+        self.assertTrue(snapshot["ok"])
+        baseline = store.baseline_snapshot()
+        self.assertTrue(baseline["available"])
+        self.assertEqual(30000.0, baseline["remaining_buying_power"])
+        self.assertEqual(30000.0, baseline["summary"]["buying_power"])
 
     def test_paper_mode_fails_closed_when_account_summary_is_missing(self):
         service = FakePaperSnapshotService(config=FakeConfig({"ibkr_buying_power_guard_paper_source": "config"}))

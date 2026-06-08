@@ -221,6 +221,10 @@
             border-color: rgba(72,187,120,0.20);
         }
 
+        .broker-live-card.is-collapsed {
+            padding: 10px 12px;
+        }
+
         .broker-live-card-head,
         .broker-live-order-head {
             display: flex;
@@ -228,6 +232,33 @@
             justify-content: space-between;
             gap: 10px;
             margin-bottom: 10px;
+        }
+
+        .broker-live-card.is-collapsed .broker-live-card-head {
+            margin-bottom: 8px;
+        }
+
+        .broker-live-card-actions {
+            display: flex;
+            align-items: flex-start;
+            justify-content: flex-end;
+            gap: 8px;
+            flex-wrap: wrap;
+            flex: 0 0 auto;
+        }
+
+        .broker-live-card-actions .action-btn,
+        .broker-live-card-actions .collapse-toggle {
+            flex: 0 0 auto;
+            min-width: 74px;
+        }
+
+        .broker-live-card.is-collapsed .broker-live-summary-row {
+            margin-bottom: 0;
+        }
+
+        .broker-live-orders[hidden] {
+            display: none;
         }
 
         .broker-live-order-id {
@@ -837,9 +868,14 @@
             }
 
             .broker-live-metrics,
+            .broker-live-card-actions,
             .mini-chip-row,
             .collapsed-summary-actions {
                 justify-content: flex-start;
+            }
+
+            .broker-live-card-actions {
+                width: 100%;
             }
 
             .collapsed-summary-actions .action-btn {
