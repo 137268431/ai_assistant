@@ -1505,6 +1505,7 @@ def cancel_all_orders(args: argparse.Namespace, *, source: str = "gateway_order_
     final_result: dict[str, Any] = {}
     final_ok = False
     final_error = ""
+    submitted_ok = False
     total_started = time.perf_counter()
     for attempt in range(1, max_attempts + 1):
         client = fee_probe.ApiClient(args.api_base_url, timeout=cancel_all_http_timeout(args))
@@ -1538,17 +1539,22 @@ def cancel_all_orders(args: argparse.Namespace, *, source: str = "gateway_order_
         final_result = result
         final_ok = ok
         final_error = error
+        if ok and bool(result.get("global_cancel_submitted")):
+            submitted_ok = True
+            break
         if ok and not bool(result.get("pending_confirmation")):
             break
         if attempt < max_attempts:
             time.sleep(retry_delay * attempt)
     return [
         {
-            "ok": final_ok,
+            "ok": bool(final_ok or submitted_ok),
             "source": "cancel_all",
             "response": final_response,
             "cancelled": final_result.get("cancelled"),
             "errors": final_result.get("errors") if isinstance(final_result.get("errors"), list) else [],
+            "global_cancel_submitted": bool(final_result.get("global_cancel_submitted")) or submitted_ok,
+            "pending_confirmation": bool(final_result.get("pending_confirmation")),
             "attempts": attempts,
             "elapsed_s": round(time.perf_counter() - total_started, 3),
             "error": final_error,

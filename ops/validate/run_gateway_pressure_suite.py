@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
@@ -30,12 +32,26 @@ def compact_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
 
 
-def request_json(base_url: str, path: str, params: dict[str, Any] | None = None, *, timeout: float = 20.0) -> dict:
+def request_json(
+    base_url: str,
+    path: str,
+    params: dict[str, Any] | None = None,
+    *,
+    timeout: float = 20.0,
+    attempts: int = 3,
+) -> dict:
     url = str(base_url or "").rstrip("/") + path
     if params:
         url += "?" + urllib.parse.urlencode(params)
-    with urllib.request.urlopen(url, timeout=timeout) as response:
-        return json.load(response)
+    for attempt in range(1, max(1, int(attempts or 1)) + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as response:
+                return json.load(response)
+        except (urllib.error.URLError, ConnectionResetError, ConnectionRefusedError, TimeoutError, socket.timeout):
+            if attempt >= max(1, int(attempts or 1)):
+                raise
+            time.sleep(min(2.0, 0.25 * attempt))
+    raise RuntimeError("request_json_unreachable")
 
 
 def now_run_id() -> str:
@@ -196,6 +212,12 @@ def base_probe_command(args: argparse.Namespace, suite_dir: Path, stage_name: st
         "--max-gateway-serial-wait-p95",
         str(args.max_gateway_serial_wait_p95),
     ]
+    if bool(getattr(args, "skip_health", False)):
+        cmd.append("--skip-health")
+    if float(getattr(args, "reference_price", 0.0) or 0.0) > 0:
+        cmd.extend(["--reference-price", str(args.reference_price)])
+    if str(getattr(args, "plan_path", "") or "").strip():
+        cmd.extend(["--plan-path", str(args.plan_path)])
     if args.execute:
         cmd.extend(["--execute", "--confirm", order_probe.CONFIRM_TEXT])
     return cmd
@@ -467,6 +489,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-broker-pending-requests", type=float, default=1.0)
     parser.add_argument("--max-order-operation-p95", type=float, default=300.0)
     parser.add_argument("--max-gateway-serial-wait-p95", type=float, default=240.0)
+    parser.add_argument("--skip-health", action="store_true", help="Skip child stack/stability health gates; use external monitoring instead.")
+    parser.add_argument("--reference-price", type=float, default=0.0, help="Override DB-derived reference prices for all probe symbols.")
+    parser.add_argument("--plan-path", default="", help="Use a fixed probe plan JSON for all stages; each stage still applies its own order count and target notional.")
 
     parser.add_argument("--open20-orders", type=int, default=20)
     parser.add_argument("--open20-notional", type=float, default=5000.0)

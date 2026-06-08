@@ -30,7 +30,7 @@ groups:
       description: Gateway source={{ $labels.source }} host={{ $labels.host }} port={{
         $labels.port }} environment={{ $labels.environment }}.
   - alert: BrokerNotReadyOrDisconnected
-    expr: (max_over_time(ibkr_broker_connected[2m]) == 0) or (max_over_time(ibkr_broker_ready[2m]) == 0)
+    expr: (max_over_time(ibkr_broker_connected{client_id!~"9[0-9]{3,}"}[2m]) == 0) or (max_over_time(ibkr_broker_ready{client_id!~"9[0-9]{3,}"}[2m]) == 0)
     for: 2m
     labels:
       severity: critical

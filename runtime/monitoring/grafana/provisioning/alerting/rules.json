@@ -198,7 +198,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "(max_over_time(ibkr_broker_connected[2m]) == 0) or (max_over_time(ibkr_broker_ready[2m]) == 0)",
+                "expr": "(max_over_time(ibkr_broker_connected{client_id!~\"9[0-9]{3,}\"}[2m]) == 0) or (max_over_time(ibkr_broker_ready{client_id!~\"9[0-9]{3,}\"}[2m]) == 0)",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,

@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -59,6 +60,15 @@ class ProbeError(RuntimeError):
 
 class HardRequestTimeout(TimeoutError):
     pass
+
+
+def _is_transient_http_error(exc: BaseException) -> bool:
+    if isinstance(exc, (ConnectionResetError, ConnectionRefusedError, TimeoutError, socket.timeout)):
+        return True
+    if isinstance(exc, urllib.error.URLError):
+        reason = getattr(exc, "reason", None)
+        return isinstance(reason, (ConnectionResetError, ConnectionRefusedError, TimeoutError, socket.timeout, OSError))
+    return False
 
 
 def _run_with_hard_timeout(fn, timeout_s: float):
@@ -396,19 +406,31 @@ class ApiClient:
         request = urllib.request.Request(url, data=body, method=method.upper(), headers=headers)
         status_code = 0
         raw = b""
-        try:
-            def _open_and_read():
-                with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                    return int(getattr(response, "status", 200) or 200), response.read()
+        attempts = 3 if method.upper() == "GET" else 1
+        for attempt in range(1, attempts + 1):
+            try:
+                def _open_and_read():
+                    with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                        return int(getattr(response, "status", 200) or 200), response.read()
 
-            status_code, raw = _run_with_hard_timeout(_open_and_read, self.timeout + 2.0)
-        except urllib.error.HTTPError as exc:
-            status_code = int(exc.code or 0)
-            raw = exc.read()
-        except HardRequestTimeout as exc:
-            raise ProbeError(f"http_request_hard_timeout:{url}:{exc}") from exc
-        except urllib.error.URLError as exc:
-            raise ProbeError(f"http_request_failed:{url}:{exc}") from exc
+                status_code, raw = _run_with_hard_timeout(_open_and_read, self.timeout + 2.0)
+                break
+            except urllib.error.HTTPError as exc:
+                status_code = int(exc.code or 0)
+                raw = exc.read()
+                break
+            except HardRequestTimeout as exc:
+                raise ProbeError(f"http_request_hard_timeout:{url}:{exc}") from exc
+            except urllib.error.URLError as exc:
+                if attempt < attempts and _is_transient_http_error(exc):
+                    time.sleep(min(2.0, 0.25 * attempt))
+                    continue
+                raise ProbeError(f"http_request_failed:{url}:{exc}") from exc
+            except (ConnectionResetError, ConnectionRefusedError, TimeoutError, socket.timeout) as exc:
+                if attempt < attempts:
+                    time.sleep(min(2.0, 0.25 * attempt))
+                    continue
+                raise ProbeError(f"http_request_failed:{url}:{exc}") from exc
         text = raw.decode("utf-8", errors="replace")
         try:
             data = json.loads(text) if text else {}
