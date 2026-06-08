@@ -66,7 +66,8 @@ async function auth() {
   // parse broker open count from ordersSummary cards
   const brokerOpenMatch = ordersSummaryText.match(/LIVE OPEN[\s\S]*?(\d+)/i)
     || ordersSummaryText.match(/BROKER OPEN[\s\S]*?(\d+)/i)
-    || ordersSummaryText.match(/Open Orders[\s\S]*?(\d+)/i);
+    || ordersSummaryText.match(/Open Orders[\s\S]*?(\d+)/i)
+    || ordersSummaryText.match(/订单腿[\s\S]*?(\d+)/i);
   const brokerOpenCount = brokerOpenMatch ? parseInt(brokerOpenMatch[1], 10) : null;
 
   const hasBrokerOrders = !ordersAreaText.includes('当前没有 broker 已确认仍在挂着的实时订单')
