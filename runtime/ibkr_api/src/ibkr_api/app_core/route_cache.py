@@ -301,13 +301,19 @@ class RouteSWRCache:
         stale_seconds: float,
     ) -> dict[str, Any]:
         now = time.monotonic()
+        entry_ttl = float(ttl_seconds or 0.0)
+        entry_stale = float(stale_seconds or 0.0)
+        snapshot_meta = payload.get("_snapshot_cache") if isinstance(payload, dict) else None
+        if isinstance(snapshot_meta, dict) and bool(snapshot_meta.get("stale")):
+            entry_ttl = min(entry_ttl, cache_seconds("IBKR_ROUTE_CACHE_STALE_SNAPSHOT_TTL_SEC", 1.0))
+            entry_stale = min(entry_stale, cache_seconds("IBKR_ROUTE_CACHE_STALE_SNAPSHOT_STALE_SEC", 5.0))
         return {
             "payload": copy.deepcopy(payload if isinstance(payload, dict) else {}),
             "status_code": int(status_code or 200),
             "created_at": now,
-            "expires_at": now + ttl_seconds,
-            "stale_until": now + ttl_seconds + stale_seconds,
-            "ttl_seconds": ttl_seconds,
+            "expires_at": now + entry_ttl,
+            "stale_until": now + entry_ttl + entry_stale,
+            "ttl_seconds": entry_ttl,
         }
 
     def _with_meta(

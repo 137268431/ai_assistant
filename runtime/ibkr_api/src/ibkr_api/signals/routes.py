@@ -4,18 +4,24 @@ from typing import Any
 
 from flask import Response, jsonify, request
 
-from ibkr_api.app_core.route_cache import RouteSWRCache, cache_seconds, canonical_cache_key, request_cache_bypass
+from ibkr_api.app_core.cache_snapshots import build_snapshot_cache_key, cached_snapshot_response, clear_cached_snapshots, request_force_refresh
+from ibkr_api.app_core.route_cache import RouteSWRCache, cache_seconds, canonical_cache_key
 from ibkr_api.modes import request_broker_mode, request_market_data_mode
 from ibkr_api.runtime.strategy_capacity import normalize_strategy_capacity_snapshot, unavailable_strategy_capacity
 
 
 _SIGNAL_ROUTE_CACHE = RouteSWRCache("signals")
+_SIGNAL_PB: Any | None = None
+_SIGNAL_SNAPSHOT_SCOPES = ("signals-pending",)
 
 
 def _clear_signal_sensitive_read_caches(*, preserve_orders_fast: bool = False) -> None:
     _SIGNAL_ROUTE_CACHE.clear()
+    clear_cached_snapshots(_SIGNAL_PB, scopes=_SIGNAL_SNAPSHOT_SCOPES)
     for import_path, function_name in (
         ("ibkr_api.account.routes", "_clear_account_route_cache"),
+        ("ibkr_api.analytics.routes", "_clear_analytics_route_cache"),
+        ("ibkr_api.home.routes", "_clear_home_route_cache"),
         ("ibkr_api.reverse.routes", "_clear_reverse_route_cache"),
         ("ibkr_api.universe.routes", "_clear_universe_route_cache"),
     ):
@@ -31,8 +37,14 @@ def _clear_signal_sensitive_read_caches(*, preserve_orders_fast: bool = False) -
             pass
 
 
+def _snapshot_market_date(query_payload: dict[str, Any]) -> str:
+    return str(query_payload.get("date") or query_payload.get("market_date") or "global").strip() or "global"
+
+
 def register_signal_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
+    global _SIGNAL_PB
     pb = deps["pb"]
+    _SIGNAL_PB = pb
     normalize_environment = deps["normalize_environment"]
     escape_filter_string = deps["escape_filter_string"]
     as_dict = deps["as_dict"]
@@ -111,20 +123,34 @@ def register_signal_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             "market_data_mode": query_payload.get("market_data_mode"),
             "data_environment": query_payload.get("data_environment"),
         }
+        ttl_seconds = cache_seconds("IBKR_ROUTE_CACHE_SIGNALS_PENDING_TTL_SEC", 30.0)
+        stale_seconds = cache_seconds("IBKR_ROUTE_CACHE_SIGNALS_PENDING_STALE_SEC", 120.0)
+        builder = lambda: build_signals_pending_response(
+            pb,
+            environment=request_broker_mode(mode_payload),
+            data_environment=request_market_data_mode(mode_payload),
+            date_str=query_payload.get("date") or "",
+            normalize_environment=normalize_environment,
+            escape_filter_string=escape_filter_string,
+            as_dict=as_dict,
+        )
         payload, status_code = _SIGNAL_ROUTE_CACHE.get(
             canonical_cache_key("signals_pending", query_payload),
-            builder=lambda: build_signals_pending_response(
+            builder=lambda: cached_snapshot_response(
                 pb,
+                scope="signals-pending",
+                cache_key=build_snapshot_cache_key("signals-pending", query_payload),
+                builder=builder,
+                ttl_seconds=ttl_seconds,
+                stale_seconds=stale_seconds,
                 environment=request_broker_mode(mode_payload),
-                data_environment=request_market_data_mode(mode_payload),
-                date_str=query_payload.get("date") or "",
-                normalize_environment=normalize_environment,
-                escape_filter_string=escape_filter_string,
-                as_dict=as_dict,
+                market_date=_snapshot_market_date(query_payload),
+                force=request_force_refresh(query_payload),
+                background_refresh=True,
             ),
-            ttl_seconds=cache_seconds("IBKR_ROUTE_CACHE_SIGNALS_PENDING_TTL_SEC", 30.0),
-            stale_seconds=cache_seconds("IBKR_ROUTE_CACHE_SIGNALS_PENDING_STALE_SEC", 120.0),
-            force=request_cache_bypass(query_payload),
+            ttl_seconds=ttl_seconds,
+            stale_seconds=stale_seconds,
+            force=request_force_refresh(query_payload),
         )
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)

@@ -5,6 +5,7 @@ from ibkr_api.system.jobs.auth import (
     build_weekly_reauth_followup_response,
     build_weekly_reauth_reminder_response,
 )
+from ibkr_api.system.jobs.cache_prewarm import build_cache_prewarm_response
 from ibkr_api.system.jobs.data_gap import build_data_gap_guard_response
 from ibkr_api.system.jobs.daily_event_ledger import (
     build_daily_event_ledger_response,

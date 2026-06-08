@@ -15,6 +15,8 @@ from ibkr_api.signals.values import load_signal_record
 def _clear_order_sensitive_read_caches() -> None:
     for import_path, function_name in (
         ("ibkr_api.account.routes", "_clear_account_route_cache"),
+        ("ibkr_api.analytics.routes", "_clear_analytics_route_cache"),
+        ("ibkr_api.home.routes", "_clear_home_route_cache"),
         ("ibkr_api.reverse.routes", "_clear_reverse_route_cache"),
         ("ibkr_api.signals.routes", "_clear_signal_sensitive_read_caches"),
         ("ibkr_api.universe.routes", "_clear_universe_route_cache"),

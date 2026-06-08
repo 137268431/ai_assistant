@@ -7,6 +7,7 @@ from typing import Any
 
 from flask import Response, jsonify, request
 
+from ibkr_api.app_core.cache_snapshots import build_snapshot_cache_key, cached_snapshot_response, clear_cached_snapshots, request_force_refresh
 from ibkr_api.modes import request_broker_mode, request_market_data_mode
 from ibkr_api.system.jobs import build_daily_event_ledger_response
 from ibkr_api.system.jobs.market_calendar import build_market_calendar_response
@@ -18,6 +19,8 @@ SystemDeps = dict[str, Any]
 _CONTROL_PLANE_CACHE_LOCK = threading.RLock()
 _CONTROL_PLANE_CACHE: dict[tuple[str, str, bool], dict[str, Any]] = {}
 _CONTROL_PLANE_IN_FLIGHT: dict[tuple[str, str, bool], threading.Event] = {}
+_SYSTEM_READ_PB: Any | None = None
+_SYSTEM_READ_SNAPSHOT_SCOPES = ("system-summaryz", "system-monitorz")
 
 
 def _cache_seconds(env_name: str, fallback: float) -> float:
@@ -146,10 +149,14 @@ def _clear_control_plane_cache() -> None:
     with _CONTROL_PLANE_CACHE_LOCK:
         _CONTROL_PLANE_CACHE.clear()
         _CONTROL_PLANE_IN_FLIGHT.clear()
+    clear_cached_snapshots(_SYSTEM_READ_PB, scopes=_SYSTEM_READ_SNAPSHOT_SCOPES)
 
 
 
 def register_system_read_routes(app, *, deps: SystemDeps, exports: dict[str, Any]) -> dict[str, Any]:
+    global _SYSTEM_READ_PB
+    pb = deps["pb"]
+    _SYSTEM_READ_PB = pb
     config = deps["config"]
     normalize_environment = deps["normalize_environment"]
     parse_boolean = deps["parse_boolean"]
@@ -169,23 +176,72 @@ def register_system_read_routes(app, *, deps: SystemDeps, exports: dict[str, Any
     get_state_payload = deps["get_state_payload"]
     config_value = deps["config_value"]
 
-    def _cached_summary_payload(environment: str, *, lite_mode: bool) -> dict[str, Any]:
-        ttl_seconds = _control_plane_ttl("summaryz", lite_mode=lite_mode)
-        return _cached_control_plane_payload(
-            ("summaryz", environment, lite_mode),
-            builder=lambda: build_system_summary_payload(environment, lite_mode=lite_mode),
-            ttl_seconds=ttl_seconds,
-            stale_seconds=_control_plane_stale_seconds("summaryz", lite_mode=lite_mode),
-        )
+    def _snapshot_market_date() -> str:
+        try:
+            value = time_strings()
+        except Exception:
+            value = {}
+        return str((value if isinstance(value, dict) else {}).get("date") or "global")
 
-    def _cached_monitor_payload(environment: str) -> dict[str, Any]:
-        ttl_seconds = _control_plane_ttl("monitorz", lite_mode=False)
-        return _cached_control_plane_payload(
-            ("monitorz", environment, False),
-            builder=lambda: build_system_monitor_payload(environment),
+    def _cached_summary_payload(environment: str, *, lite_mode: bool, query_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        ttl_seconds = _control_plane_ttl("summaryz", lite_mode=lite_mode)
+        stale_seconds = _control_plane_stale_seconds("summaryz", lite_mode=lite_mode)
+        request_payload = query_payload if isinstance(query_payload, dict) else {}
+        snapshot_payload = {"broker_mode": environment, "environment": environment, "lite": lite_mode}
+        force_refresh = request_force_refresh(request_payload)
+        payload, _status_code = cached_snapshot_response(
+            pb,
+            scope="system-summaryz",
+            cache_key=build_snapshot_cache_key("system-summaryz", snapshot_payload),
+            builder=lambda: (
+                build_system_summary_payload(environment, lite_mode=lite_mode)
+                if force_refresh
+                else _cached_control_plane_payload(
+                    ("summaryz", environment, lite_mode),
+                    builder=lambda: build_system_summary_payload(environment, lite_mode=lite_mode),
+                    ttl_seconds=ttl_seconds,
+                    stale_seconds=stale_seconds,
+                ),
+                200,
+            ),
             ttl_seconds=ttl_seconds,
-            stale_seconds=_control_plane_stale_seconds("monitorz", lite_mode=False),
+            stale_seconds=stale_seconds,
+            environment=environment,
+            market_date=_snapshot_market_date(),
+            force=force_refresh,
+            background_refresh=True,
         )
+        return payload
+
+    def _cached_monitor_payload(environment: str, *, query_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        ttl_seconds = _control_plane_ttl("monitorz", lite_mode=False)
+        stale_seconds = _control_plane_stale_seconds("monitorz", lite_mode=False)
+        request_payload = query_payload if isinstance(query_payload, dict) else {}
+        snapshot_payload = {"broker_mode": environment, "environment": environment, "lite": False}
+        force_refresh = request_force_refresh(request_payload)
+        payload, _status_code = cached_snapshot_response(
+            pb,
+            scope="system-monitorz",
+            cache_key=build_snapshot_cache_key("system-monitorz", snapshot_payload),
+            builder=lambda: (
+                build_system_monitor_payload(environment)
+                if force_refresh
+                else _cached_control_plane_payload(
+                    ("monitorz", environment, False),
+                    builder=lambda: build_system_monitor_payload(environment),
+                    ttl_seconds=ttl_seconds,
+                    stale_seconds=stale_seconds,
+                ),
+                200,
+            ),
+            ttl_seconds=ttl_seconds,
+            stale_seconds=stale_seconds,
+            environment=environment,
+            market_date=_snapshot_market_date(),
+            force=force_refresh,
+            background_refresh=True,
+        )
+        return payload
 
     def _request_modes_from_args() -> tuple[str, str]:
         payload = {
@@ -374,7 +430,7 @@ def register_system_read_routes(app, *, deps: SystemDeps, exports: dict[str, Any
     def custom_system_summaryz() -> Response:
         environment, _market_data_mode = _request_modes_from_args()
         lite_mode = parse_boolean(request.args.get("lite"), False)
-        return jsonify(_cached_summary_payload(environment, lite_mode=lite_mode))
+        return jsonify(_cached_summary_payload(environment, lite_mode=lite_mode, query_payload=request.args.to_dict(flat=True)))
 
     exports["custom_system_summaryz"] = custom_system_summaryz
 
@@ -426,7 +482,7 @@ def register_system_read_routes(app, *, deps: SystemDeps, exports: dict[str, Any
     def custom_system_monitorz() -> Response:
         environment, _market_data_mode = _request_modes_from_args()
         if parse_boolean(request.args.get("lite"), False):
-            summary = _cached_summary_payload(environment, lite_mode=True)
+            summary = _cached_summary_payload(environment, lite_mode=True, query_payload=request.args.to_dict(flat=True))
             payload = {
                 "ok": bool(summary.get("ok", False)),
                 "status": str(summary.get("status") or "offline"),
@@ -442,7 +498,7 @@ def register_system_read_routes(app, *, deps: SystemDeps, exports: dict[str, Any
             if isinstance(summary.get("_cache"), dict):
                 payload["_cache"] = summary["_cache"]
             return jsonify(payload)
-        return jsonify(_cached_monitor_payload(environment))
+        return jsonify(_cached_monitor_payload(environment, query_payload=request.args.to_dict(flat=True)))
 
     exports["custom_system_monitorz"] = custom_system_monitorz
     exports["_clear_control_plane_cache"] = _clear_control_plane_cache

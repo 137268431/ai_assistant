@@ -4,7 +4,8 @@ from typing import Any
 
 from flask import Response, jsonify, request
 
-from ibkr_api.app_core.route_cache import RouteSWRCache, cache_seconds, canonical_cache_key, request_cache_bypass
+from ibkr_api.app_core.cache_snapshots import build_snapshot_cache_key, cached_snapshot_response, clear_cached_snapshots, request_force_refresh
+from ibkr_api.app_core.route_cache import RouteSWRCache, cache_seconds, canonical_cache_key
 from ibkr_api.data_quality.queries import (
     build_daily_coverage_summary,
     build_summary,
@@ -25,31 +26,72 @@ def _request_data_environment(args: Any) -> str:
 
 
 _DATA_QUALITY_ROUTE_CACHE = RouteSWRCache("data_quality")
+_DATA_QUALITY_PB: Any | None = None
+_DATA_QUALITY_SNAPSHOT_SCOPES = (
+    "data-quality-summary",
+    "data-quality-truth-summary",
+    "data-quality-list",
+    "data-quality-daily-summary",
+    "data-quality-daily-list",
+    "data-quality-truth-list",
+)
 
 
 def _clear_data_quality_route_cache() -> None:
     _DATA_QUALITY_ROUTE_CACHE.clear()
+    clear_cached_snapshots(_DATA_QUALITY_PB, scopes=_DATA_QUALITY_SNAPSHOT_SCOPES)
 
 
 def _cached_data_quality_response(
+    pb: Any,
     namespace: str,
     query_payload: dict[str, Any],
     builder: Any,
     *,
     ttl_seconds: float = 120.0,
     stale_seconds: float = 300.0,
+    environment: str,
+    market_date: str,
 ) -> tuple[dict[str, Any], int]:
+    snapshot_key = build_snapshot_cache_key(namespace, query_payload)
+
+    def build_with_snapshot() -> tuple[dict[str, Any], int]:
+        return cached_snapshot_response(
+            pb,
+            scope=namespace,
+            cache_key=snapshot_key,
+            builder=builder,
+            ttl_seconds=ttl_seconds,
+            stale_seconds=stale_seconds,
+            environment=environment,
+            market_date=market_date,
+            force=request_force_refresh(query_payload),
+            background_refresh=True,
+        )
+
     return _DATA_QUALITY_ROUTE_CACHE.get(
         canonical_cache_key(namespace, query_payload),
-        builder=builder,
+        builder=build_with_snapshot,
         ttl_seconds=ttl_seconds,
         stale_seconds=stale_seconds,
-        force=request_cache_bypass(query_payload),
+        force=request_force_refresh(query_payload),
     )
 
 
+def _snapshot_market_date(query_payload: dict[str, Any]) -> str:
+    return str(
+        query_payload.get("market_date")
+        or query_payload.get("date")
+        or query_payload.get("date_to")
+        or query_payload.get("date_from")
+        or "global"
+    ).strip() or "global"
+
+
 def register_data_quality_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
+    global _DATA_QUALITY_PB
     pb = deps["pb"]
+    _DATA_QUALITY_PB = pb
     exports: dict[str, Any] = {}
 
     @app.route("/api/custom/ibkr/data_quality/summary", methods=["GET"])
@@ -73,11 +115,14 @@ def register_data_quality_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]
 
         try:
             payload, status_code = _cached_data_quality_response(
-                "summary",
+                pb,
+                "data-quality-summary",
                 query_payload,
                 build_payload,
                 ttl_seconds=cache_seconds("IBKR_ROUTE_CACHE_DATA_QUALITY_SUMMARY_TTL_SEC", 120.0),
                 stale_seconds=cache_seconds("IBKR_ROUTE_CACHE_DATA_QUALITY_STALE_SEC", 300.0),
+                environment=_request_data_environment(query_payload),
+                market_date=_snapshot_market_date(query_payload),
             )
             response = jsonify(payload)
             return response if status_code == 200 else (response, status_code)
@@ -100,11 +145,14 @@ def register_data_quality_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]
 
         try:
             payload, status_code = _cached_data_quality_response(
-                "truth_summary",
+                pb,
+                "data-quality-truth-summary",
                 query_payload,
                 build_payload,
                 ttl_seconds=cache_seconds("IBKR_ROUTE_CACHE_DATA_QUALITY_SUMMARY_TTL_SEC", 120.0),
                 stale_seconds=cache_seconds("IBKR_ROUTE_CACHE_DATA_QUALITY_STALE_SEC", 300.0),
+                environment=_request_data_environment(query_payload),
+                market_date=_snapshot_market_date(query_payload),
             )
             response = jsonify(payload)
             return response if status_code == 200 else (response, status_code)
@@ -149,11 +197,14 @@ def register_data_quality_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]
 
         try:
             payload, status_code = _cached_data_quality_response(
-                "list",
+                pb,
+                "data-quality-list",
                 query_payload,
                 build_payload,
                 ttl_seconds=cache_seconds("IBKR_ROUTE_CACHE_DATA_QUALITY_LIST_TTL_SEC", 120.0),
                 stale_seconds=cache_seconds("IBKR_ROUTE_CACHE_DATA_QUALITY_STALE_SEC", 300.0),
+                environment=_request_data_environment(query_payload),
+                market_date=_snapshot_market_date(query_payload),
             )
             response = jsonify(payload)
             return response if status_code == 200 else (response, status_code)
@@ -193,11 +244,14 @@ def register_data_quality_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]
 
         try:
             payload, status_code = _cached_data_quality_response(
-                "daily_summary",
+                pb,
+                "data-quality-daily-summary",
                 query_payload,
                 build_payload,
                 ttl_seconds=cache_seconds("IBKR_ROUTE_CACHE_DATA_QUALITY_DAILY_TTL_SEC", 300.0),
                 stale_seconds=cache_seconds("IBKR_ROUTE_CACHE_DATA_QUALITY_STALE_SEC", 600.0),
+                environment=_request_data_environment(query_payload),
+                market_date=_snapshot_market_date(query_payload),
             )
             response = jsonify(payload)
             return response if status_code == 200 else (response, status_code)
@@ -250,11 +304,14 @@ def register_data_quality_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]
 
         try:
             payload, status_code = _cached_data_quality_response(
-                "daily_list",
+                pb,
+                "data-quality-daily-list",
                 query_payload,
                 build_payload,
                 ttl_seconds=cache_seconds("IBKR_ROUTE_CACHE_DATA_QUALITY_DAILY_TTL_SEC", 300.0),
                 stale_seconds=cache_seconds("IBKR_ROUTE_CACHE_DATA_QUALITY_STALE_SEC", 600.0),
+                environment=_request_data_environment(query_payload),
+                market_date=_snapshot_market_date(query_payload),
             )
             response = jsonify(payload)
             return response if status_code == 200 else (response, status_code)
@@ -291,11 +348,14 @@ def register_data_quality_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]
 
         try:
             payload, status_code = _cached_data_quality_response(
-                "truth_list",
+                pb,
+                "data-quality-truth-list",
                 query_payload,
                 build_payload,
                 ttl_seconds=cache_seconds("IBKR_ROUTE_CACHE_DATA_QUALITY_LIST_TTL_SEC", 120.0),
                 stale_seconds=cache_seconds("IBKR_ROUTE_CACHE_DATA_QUALITY_STALE_SEC", 300.0),
+                environment=_request_data_environment(query_payload),
+                market_date=_snapshot_market_date(query_payload),
             )
             response = jsonify(payload)
             return response if status_code == 200 else (response, status_code)

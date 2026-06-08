@@ -8,6 +8,7 @@ from ibkr_api.system.jobs import (
     build_auth_edge_guard_response,
     build_auth_pending_guard_response,
     build_active_window_progress_status_response,
+    build_cache_prewarm_response,
     build_data_gap_guard_response,
     build_daily_event_reconcile_response,
     build_early_expansion_topup_response,
@@ -342,6 +343,25 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
         return response if status_code == 200 else (response, status_code)
 
     exports["custom_system_job_active_window_progress_status"] = custom_system_job_active_window_progress_status
+
+    @app.route("/api/custom/system/jobs/cache_prewarm", methods=["POST"])
+    def custom_system_job_cache_prewarm() -> Response:
+        payload, status_code = build_cache_prewarm_response(
+            pb,
+            payload=request.get_json(silent=True) or {},
+            normalize_environment=normalize_environment,
+            time_strings=time_strings,
+            config_value=config_value,
+            request_json_request=request_json_request,
+            runtime_base_url=runtime_base_url,
+            build_system_summary_payload=lambda environment, lite_mode=False: build_system_summary_payload(environment, lite_mode=lite_mode),
+            build_today_targets_response=lambda payload: build_today_targets_response(payload=payload),
+            build_active_window_progress_response=lambda payload: build_active_window_progress_response(payload=payload),
+        )
+        response = jsonify(payload)
+        return response if status_code == 200 else (response, status_code)
+
+    exports["custom_system_job_cache_prewarm"] = custom_system_job_cache_prewarm
 
     @app.route("/api/custom/system/jobs/scan_summary", methods=["POST"])
     def custom_system_job_scan_summary() -> Response:
