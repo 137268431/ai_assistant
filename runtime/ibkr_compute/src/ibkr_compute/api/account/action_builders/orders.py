@@ -60,6 +60,19 @@ def _payload_bool(value, default: bool = False) -> bool:
     return bool(value)
 
 
+def _payload_modify_family(payload: dict) -> str:
+    for key in ("order_family_type", "family", "role", "order_role"):
+        text = str((payload or {}).get(key) or "").strip().lower()
+        if text:
+            return text
+    source = str((payload or {}).get("source") or "").strip().lower()
+    if any(token in source for token in ("stop_loss", "stop-loss", "adjust_stop", "move_sl")):
+        return "stop_loss"
+    if any(token in source for token in ("take_profit", "take-profit", "adjust_tp", "move_tp")):
+        return "take_profit"
+    return ""
+
+
 def _payload_order_ids(payload: dict) -> list[str]:
     raw: list[object] = []
     for key in ("order_ids", "cancel_order_ids", "ids"):
@@ -223,6 +236,8 @@ def _build_ibkr_modify_order_response(service, payload: dict) -> tuple[dict, int
     order_id = str((payload or {}).get("order_id") or (payload or {}).get("id") or "").strip()
     acct_id = str((payload or {}).get("account_id") or "").strip() or None
     include_snapshot = _payload_bool((payload or {}).get("include_snapshot"), True)
+    family = _payload_modify_family(payload)
+    symbol = str((payload or {}).get("symbol") or "").strip().upper()
     updates = {}
 
     if not order_id:
@@ -233,7 +248,10 @@ def _build_ibkr_modify_order_response(service, payload: dict) -> tuple[dict, int
     tif = str((payload or {}).get("tif") or "").strip().upper()
 
     if price is not None:
-        updates["price"] = price
+        if family in {"stop_loss", "stop", "sl"}:
+            updates["auxPrice"] = price
+        else:
+            updates["price"] = price
     if quantity is not None:
         updates["quantity"] = quantity
     if tif:
@@ -242,7 +260,14 @@ def _build_ibkr_modify_order_response(service, payload: dict) -> tuple[dict, int
         return {"ok": False, "error": "No valid modify fields supplied"}, 400
 
     operation_started_at = time.perf_counter()
-    result = service.order_modifier.modify_order(order_id, updates, acct_id=acct_id)
+    result = service.order_modifier.modify_order(
+        order_id,
+        updates,
+        acct_id=acct_id,
+        operation="adjust_stop_loss" if family in {"stop_loss", "stop", "sl"} else "modify_manual",
+        order_family_type=family,
+        symbol=symbol,
+    )
     operation_elapsed_s = time.perf_counter() - operation_started_at
     return _build_snapshot_action_response(
         service,

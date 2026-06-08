@@ -733,7 +733,7 @@ def wait_for_submission_quiescence(args: argparse.Namespace, symbols: list[str])
             selected_open_count = int(summary.get("selected_open_order_count") or 0)
             active_commands = _active_order_command_count(snapshot)
             broker_open_count = _broker_open_count(snapshot)
-            signature = (selected_open_count, broker_open_count, tuple(selected_ids))
+            signature = (selected_open_count, active_commands, tuple(selected_ids))
             if signature != last_signature:
                 stable_since = now
                 last_signature = signature
@@ -741,7 +741,6 @@ def wait_for_submission_quiescence(args: argparse.Namespace, symbols: list[str])
             ready = (
                 account_access_ok(summary)
                 and selected_open_count >= min_visible_orders
-                and (min_visible_orders <= 0 or broker_open_count >= min_visible_orders)
                 and active_commands == 0
                 and stable_for >= quiet_seconds
             )
@@ -1208,6 +1207,8 @@ def modify_stop_loss_storm(
         payload = {
             "order_id": item["order_id"],
             "price": item["new_stop_loss_price"],
+            "symbol": item.get("symbol"),
+            "order_family_type": "stop_loss",
             "source": "gateway_probe_stop_loss_modify_storm",
             "include_snapshot": False,
         }

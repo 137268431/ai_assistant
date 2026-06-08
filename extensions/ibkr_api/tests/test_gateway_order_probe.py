@@ -845,7 +845,7 @@ class GatewayOrderProbeTest(unittest.TestCase):
         self.assertEqual(2, result["sample_count"])
         self.assertEqual(0, result["last_sample"]["active_order_command_count"])
 
-    def test_wait_for_submission_quiescence_requires_broker_visible_count(self):
+    def test_wait_for_submission_quiescence_keeps_broker_count_diagnostic_only(self):
         args = Namespace(
             pre_cancel_quiesce_sec=0.03,
             pre_cancel_quiet_sec=0.0,
@@ -875,9 +875,9 @@ class GatewayOrderProbeTest(unittest.TestCase):
         with mock.patch.object(probe, "get_snapshot", return_value=snapshot):
             result = probe.wait_for_submission_quiescence(args, ["AAPL"])
 
-        self.assertFalse(result["ok"])
-        self.assertEqual("pre_cancel_quiesce_timeout", result["error"])
+        self.assertTrue(result["ok"])
         self.assertEqual(5, result["last_sample"]["broker_open_count"])
+        self.assertEqual(6, result["last_sample"]["selected_open_order_count"])
 
     def test_exit_cancel_storm_batches_all_legs_by_symbol(self):
         args = Namespace(

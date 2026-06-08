@@ -58,6 +58,16 @@ class OrderModifier:
             return "mixed"
         return fallback or "unknown"
 
+    @staticmethod
+    def _is_transient_duplicate_order_id(result: Dict[str, Any] | None) -> bool:
+        if not isinstance(result, dict):
+            return False
+        texts = [
+            str(result.get("error") or ""),
+            str((result.get("entry_error") or {}).get("error") or "") if isinstance(result.get("entry_error"), dict) else "",
+        ]
+        return any("duplicate order id" in text.lower() for text in texts)
+
     def modify_order(
         self,
         order_id: str,
@@ -95,41 +105,50 @@ class OrderModifier:
     ) -> Dict[str, Any]:
         started = time.perf_counter()
         family = str(order_family_type or "").strip() or self._infer_modify_family(updates)
-        try:
-            if getattr(self.broker, "uses_internal_gateway_write_lock", False):
-                result = self.broker.modify_order(
-                    str(order_id or "").strip(),
-                    dict(updates or {}),
-                    account_id=str(acct_id or self.account_id or "").strip(),
-                    metric_environment=self.environment,
-                )
-            else:
-                with self.gateway_gate.hold("modify_order", order_id=str(order_id or "").strip(), family=family) as gate_info:
+        attempts: list[Dict[str, Any]] = []
+        max_attempts = max(1, int(os.environ.get("IBKR_MODIFY_DUPLICATE_RETRY_ATTEMPTS", "2") or "2"))
+        for attempt in range(1, max_attempts + 1):
+            try:
+                if getattr(self.broker, "uses_internal_gateway_write_lock", False):
                     result = self.broker.modify_order(
                         str(order_id or "").strip(),
                         dict(updates or {}),
                         account_id=str(acct_id or self.account_id or "").strip(),
+                        metric_environment=self.environment,
                     )
+                else:
+                    with self.gateway_gate.hold("modify_order", order_id=str(order_id or "").strip(), family=family) as gate_info:
+                        result = self.broker.modify_order(
+                            str(order_id or "").strip(),
+                            dict(updates or {}),
+                            account_id=str(acct_id or self.account_id or "").strip(),
+                        )
+                    record_gateway_order_serial_event(
+                        environment=self.environment,
+                        operation="modify_order",
+                        result="ok" if result.get("ok") else "error",
+                        queue_wait_s=gate_info.get("queue_wait_s"),
+                    )
+            except GatewayOrderMutationTimeout as exc:
+                result = {
+                    "ok": False,
+                    "error": "gateway_order_queue_timeout",
+                    "queue_timeout_s": exc.timeout_s,
+                    "gateway_operation": exc.operation,
+                    "order_id": str(order_id or "").strip(),
+                }
                 record_gateway_order_serial_event(
                     environment=self.environment,
-                    operation="modify_order",
-                    result="ok" if result.get("ok") else "error",
-                    queue_wait_s=gate_info.get("queue_wait_s"),
+                    operation=exc.operation,
+                    result="timeout",
+                    queue_wait_s=exc.timeout_s,
                 )
-        except GatewayOrderMutationTimeout as exc:
-            result = {
-                "ok": False,
-                "error": "gateway_order_queue_timeout",
-                "queue_timeout_s": exc.timeout_s,
-                "gateway_operation": exc.operation,
-                "order_id": str(order_id or "").strip(),
-            }
-            record_gateway_order_serial_event(
-                environment=self.environment,
-                operation=exc.operation,
-                result="timeout",
-                queue_wait_s=exc.timeout_s,
-            )
+            attempts.append(dict(result or {}))
+            if result.get("ok") or not self._is_transient_duplicate_order_id(result) or attempt >= max_attempts:
+                break
+            time.sleep(min(1.0, 0.25 * attempt))
+        if len(attempts) > 1 and isinstance(result, dict):
+            result["modify_retry_attempts"] = attempts
         record_order_event(
             operation=str(operation or "modify_manual"),
             order_family_type=family,
