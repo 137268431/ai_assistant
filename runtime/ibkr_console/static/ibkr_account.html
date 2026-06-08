@@ -499,14 +499,14 @@
                     <span class="status-chip"><span class="dot" style="color:#68D391"></span>BP ${escapeHtml(getAccountBuyingPowerLabel(snapshot))}</span>
                     <a class="status-chip" href="${escapeHtml(targetsUrl)}" title="${escapeHtml(targetTitle)}"><span class="dot" style="color:${targetDotColor}"></span>盘中标 ${escapeHtml(getAccountTargetStatusLabel())}</a>
                     <span class="status-chip"><span class="dot" style="color:#63B3ED"></span>持仓 ${escapeHtml(String(counts.open_positions || 0))}</span>
-                    <span class="status-chip"><span class="dot" style="color:#F6AD55"></span>IBKR 挂单 ${escapeHtml(String(metrics.liveOrdersCount || counts.open_orders || 0))}</span>
+                    <span class="status-chip" title="IBKR broker 返回的 live open order legs，不是信号组数量"><span class="dot" style="color:#F6AD55"></span>IBKR 订单腿 ${escapeHtml(String(metrics.liveOrdersCount || counts.open_orders || 0))}</span>
                     <span class="status-chip"><span class="dot" style="color:#FC8181"></span>信号组 ${escapeHtml(String(metrics.visibleGroupCount || 0))}</span>
                 </div>
             `;
             document.getElementById('pageTopSection').innerHTML = renderPageTopSection({
                 kicker: 'Execution Account',
                 title: '账户总览与交易入口',
-                copy: '把账户净值、真实持仓、实时挂单和直接下单入口集中在一页里，遇到 2FA 或 runtime 异常再切回控制台处理。',
+                copy: '把账户净值、真实持仓、IBKR 实时订单腿、信号组和直接下单入口集中在一页里，遇到 2FA 或 runtime 异常再切回控制台处理。',
                 statusHtml,
             });
         }
@@ -1583,8 +1583,8 @@
             const symbolLine = formatCompactCountMap(symbolCounts, (key, count) => `${key}×${count}`) || '--';
             const rawGroupCount = Number(rawLiveGroupCount ?? liveGroups.length ?? 0);
             const cards = [
-                ['IBKR Live Open', String(snapshot?.counts?.open_orders || liveOrders.length || 0), 'IBKR broker 已确认仍在挂着的订单'],
-                ['Signals / Brackets', `${liveGroups.length || 0} / ${rawGroupCount}`, '按 signal_id 聚合显示 / 原始 bracket 数'],
+                ['IBKR 订单腿', String(snapshot?.counts?.open_orders || liveOrders.length || 0), 'IBKR broker 已确认仍 open 的真实订单腿，不是 signal / bracket 组数'],
+                ['Signals / Brackets', `${liveGroups.length || 0} / ${rawGroupCount}`, '按 signal_id 聚合后的展示组 / 原始 bracket 数'],
                 ['Matched Brackets', String(reconciliation.broker_matched_groups || 0), '已关联到系统记录的 bracket 数'],
                 ['Broker Only', String(reconciliation.broker_only_groups || 0), 'broker 有，系统记录未匹配'],
                 ['Stale / Needs Repair', String(reconciliation.stale_pb_order_groups || reconciliation.pb_shadow_groups || pbOnlyGroups.length || 0), '系统记录仍活跃但 IBKR 未确认，需修复'],
@@ -2705,7 +2705,7 @@
             if (filteredPbOnlyGroups.length) {
                 sections.push(renderOrdersSection(
                     'Stale / Needs Repair Chains',
-                    '系统记录仍认为这些订单组处于活跃状态，但 IBKR 当前没有确认对应的实时挂单。它们只作为修复警告，不计入 IBKR Live Open / remaining。',
+                    '系统记录仍认为这些订单组处于活跃状态，但 IBKR 当前没有确认对应的实时订单腿。它们只作为修复警告，不计入 IBKR 订单腿 / remaining。',
                     filteredPbOnlyGroups,
                     renderPbShadowGroupTableRows,
                 ));

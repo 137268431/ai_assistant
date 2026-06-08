@@ -55,6 +55,7 @@ class _FakePB:
         self.snapshot = dict(snapshot or {})
         self.upserts = []
         self.events = []
+        self.states = {}
 
     def get_records(self, collection, filter=None, sort=None, per_page=100, page=1):
         if collection == "orders":
@@ -79,6 +80,23 @@ class _FakePB:
     def notify_system_event(self, title, detail=None, **kwargs):
         self.events.append({"title": title, "detail": dict(detail or {}), **dict(kwargs or {})})
         return {"ok": True}
+
+    def get_state(self, state_key, environment, date="global"):
+        key = (str(state_key), str(environment), str(date))
+        row = self.states.get(key)
+        return dict(row) if row else None
+
+    def upsert_state(self, state_key, environment, data, date="global"):
+        key = (str(state_key), str(environment), str(date))
+        row = {
+            "id": "|".join(key),
+            "state_key": str(state_key),
+            "environment": str(environment),
+            "date": str(date),
+            "data": dict(data or {}),
+        }
+        self.states[key] = row
+        return dict(row)
 
 
 class _FakeOrderModifier:
@@ -145,6 +163,98 @@ class _FakeOrderFlowManager:
 
 
 class OrderLifecycleRiskLimitTests(unittest.TestCase):
+    def _today_exit_rows_for_risk_rebuild(self, date, *, include_breaker_stop=False):
+        rows = [
+            {
+                "id": "sl-amat",
+                "symbol": "AMAT",
+                "role": "stop_loss",
+                "status": "Filled",
+                "environment": "paper",
+                "broker_order_id": "11277",
+                "signal_id": "SIG_AMAT",
+                "fill_time": f"{date} 10:36:32",
+                "filled_qty": 10,
+                "fill_price": 489.45,
+            },
+            {
+                "id": "sl-crwv",
+                "symbol": "CRWV",
+                "role": "stop_loss",
+                "status": "Filled",
+                "environment": "paper",
+                "broker_order_id": "11262",
+                "signal_id": "SIG_CRWV",
+                "fill_time": f"{date} 10:48:03",
+                "filled_qty": 50,
+                "fill_price": 102.2,
+            },
+            {
+                "id": "close-rklb",
+                "symbol": "RKLB",
+                "role": "close",
+                "status": "Filled",
+                "environment": "paper",
+                "broker_order_id": "11281",
+                "signal_id": "SIG_RKLB",
+                "trade_group_id": "group_RKLB",
+                "fill_time": f"{date} 10:54:28",
+                "filled_qty": 44,
+                "fill_price": 115.01,
+            },
+            {
+                "id": "sl-asx",
+                "symbol": "ASX",
+                "role": "stop_loss",
+                "status": "Filled",
+                "environment": "paper",
+                "broker_order_id": "11271",
+                "signal_id": "SIG_ASX",
+                "fill_time": f"{date} 10:58:20",
+                "filled_qty": 142,
+                "fill_price": 35.77,
+            },
+            {
+                "id": "close-rklb-replay",
+                "symbol": "RKLB",
+                "role": "close",
+                "status": "Filled",
+                "environment": "paper",
+                "broker_order_id": "11281_REPLAY",
+                "fill_time": f"{date} 11:00:00",
+                "filled_qty": 44,
+                "fill_price": 115.01,
+            },
+            {
+                "id": "sl-lrcx",
+                "symbol": "LRCX",
+                "role": "stop_loss",
+                "status": "Filled",
+                "environment": "paper",
+                "broker_order_id": "11280",
+                "signal_id": "SIG_LRCX",
+                "fill_time": f"{date} 11:01:19",
+                "filled_qty": 15,
+                "fill_price": 324.78,
+            },
+        ]
+        if include_breaker_stop:
+            rows.append(
+                {
+                    "id": "sl-ccj",
+                    "symbol": "CCJ",
+                    "role": "stop_loss",
+                    "status": "Filled",
+                    "environment": "paper",
+                    "broker_order_id": "11253",
+                    "signal_id": "SIG_CCJ",
+                    "fill_time": f"{date} 11:24:35",
+                    "filled_qty": 47,
+                    "fill_price": 107.0,
+                }
+            )
+        return rows
+
     def _partial_harvest_rows(self, *, tp_status="Filled", sl_status="Submitted", handled=False):
         base_extra = {
             "harvest_managed": True,
@@ -332,6 +442,140 @@ class OrderLifecycleRiskLimitTests(unittest.TestCase):
         lifecycle.increment_sl_count()
 
         self.assertTrue(lifecycle.is_sl_circuit_breaker)
+
+    def test_exit_fill_risk_state_dedupes_and_persists_consecutive_stop_losses(self):
+        pb = _FakePB()
+        lifecycle = OrderLifecycle(
+            pb_client=pb,
+            config=_FakeConfig({"consecutive_stop_loss_limit": 3}),
+            environment="paper",
+        )
+
+        first = lifecycle.record_exit_fill_once(
+            role="stop_loss",
+            symbol="ASX",
+            order={
+                "orderId": "11271",
+                "signal_id": "SIG_ASX",
+                "avgPrice": 35.77,
+                "filledQuantity": 142,
+                "lastExecutionTime": "20260608 10:58:20",
+            },
+        )
+        duplicate = lifecycle.record_exit_fill_once(
+            role="stop_loss",
+            symbol="ASX",
+            order={
+                "orderId": "11271",
+                "signal_id": "SIG_ASX",
+                "avgPrice": 35.77,
+                "filledQuantity": 142,
+                "lastExecutionTime": "20260608 10:58:20",
+            },
+        )
+        unlinked_close = lifecycle.record_exit_fill_once(
+            role="close",
+            symbol="RKLB",
+            linked_signal=False,
+            order={"orderId": "11281", "avgPrice": 115.01, "filledQuantity": 44},
+        )
+        second = lifecycle.record_exit_fill_once(
+            role="stop_loss",
+            symbol="LRCX",
+            order={
+                "orderId": "11280",
+                "signal_id": "SIG_LRCX",
+                "avgPrice": 324.78,
+                "filledQuantity": 15,
+                "lastExecutionTime": "20260608 11:01:19",
+            },
+        )
+
+        self.assertEqual(1, first["count"])
+        self.assertTrue(duplicate["duplicate"])
+        self.assertEqual(1, duplicate["count"])
+        self.assertEqual("ignored_unlinked_exit", unlinked_close["action"])
+        self.assertEqual(1, unlinked_close["count"])
+        self.assertEqual(2, second["count"])
+        self.assertEqual(2, lifecycle.status()["consecutive_stop_loss_count"])
+        persisted = list(pb.states.values())[-1]["data"]
+        self.assertEqual(2, persisted["consecutive_stop_loss_count"])
+
+        restored = OrderLifecycle(
+            pb_client=pb,
+            config=_FakeConfig({"consecutive_stop_loss_limit": 3}),
+            environment="paper",
+        )
+        self.assertEqual(2, restored.status()["consecutive_stop_loss_count"])
+
+    def test_risk_state_rebuilds_from_today_filled_exit_orders_when_state_missing(self):
+        date = OrderLifecycle(environment="paper")._risk_state_market_date()
+        pb = _FakePB(orders=self._today_exit_rows_for_risk_rebuild(date))
+        lifecycle = OrderLifecycle(
+            pb_client=pb,
+            config=_FakeConfig({"consecutive_stop_loss_limit": 3}),
+            environment="paper",
+        )
+
+        status = lifecycle.status()
+
+        self.assertEqual(6, status["processed_exit_fill_count"])
+        self.assertEqual(2, status["consecutive_stop_loss_count"])
+        persisted = list(pb.states.values())[-1]["data"]
+        self.assertTrue(persisted["processed_exit_fill_keys"])
+        self.assertEqual(2, persisted["consecutive_stop_loss_count"])
+
+    def test_stale_daily_reset_state_reconciles_from_today_filled_exit_orders(self):
+        date = OrderLifecycle(environment="paper")._risk_state_market_date()
+        pb = _FakePB(orders=self._today_exit_rows_for_risk_rebuild(date, include_breaker_stop=True))
+        pb.upsert_state(
+            "order_lifecycle_risk:v1",
+            "paper",
+            {
+                "date": date,
+                "environment": "paper",
+                "consecutive_stop_loss_count": 0,
+                "consecutive_stop_loss_limit": 3,
+                "sl_circuit_breaker": False,
+                "processed_exit_fill_keys": [],
+                "last_event": {"action": "daily_reset"},
+            },
+            date=date,
+        )
+        lifecycle = OrderLifecycle(
+            pb_client=pb,
+            config=_FakeConfig({"consecutive_stop_loss_limit": 3}),
+            environment="paper",
+        )
+
+        status = lifecycle.status()
+
+        self.assertEqual(7, status["processed_exit_fill_count"])
+        self.assertEqual(3, status["consecutive_stop_loss_count"])
+        self.assertEqual("orders_rebuild_reconciled", status["risk_state_source"])
+        self.assertTrue(lifecycle.is_sl_circuit_breaker)
+        persisted = list(pb.states.values())[-1]["data"]
+        self.assertEqual(3, persisted["consecutive_stop_loss_count"])
+        self.assertTrue(persisted["sl_circuit_breaker"])
+
+    def test_daily_reset_preserves_rebuilt_risk_state_during_midday_startup(self):
+        date = OrderLifecycle(environment="paper")._risk_state_market_date()
+        pb = _FakePB(orders=self._today_exit_rows_for_risk_rebuild(date, include_breaker_stop=True))
+        lifecycle = OrderLifecycle(
+            pb_client=pb,
+            config=_FakeConfig({"consecutive_stop_loss_limit": 3}),
+            environment="paper",
+        )
+
+        lifecycle.daily_reset()
+        status = lifecycle.status()
+
+        self.assertEqual(7, status["processed_exit_fill_count"])
+        self.assertEqual(3, status["consecutive_stop_loss_count"])
+        self.assertTrue(lifecycle.is_sl_circuit_breaker)
+        persisted = list(pb.states.values())[-1]["data"]
+        self.assertEqual("daily_reset_preserved_risk_state", persisted["last_event"]["action"])
+        self.assertEqual(3, persisted["consecutive_stop_loss_count"])
 
     def test_fixed_position_symbols_default_to_boxx_ibkr(self):
         lifecycle = OrderLifecycle(config=_FakeConfig({}))

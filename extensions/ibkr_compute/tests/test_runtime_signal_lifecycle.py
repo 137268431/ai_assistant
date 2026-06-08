@@ -206,6 +206,7 @@ class _FakeOrderLifecycle:
         self.sl_count = 0
         self.sl_limit = 3
         self.reset_count = 0
+        self.processed_exit_keys = set()
 
     def handle_protection_incomplete(self, **kwargs):
         diagnostic = {
@@ -229,6 +230,35 @@ class _FakeOrderLifecycle:
 
     def reset_sl_count(self):
         self.reset_count += 1
+        self.sl_count = 0
+
+    def record_exit_fill_once(self, *, role, order=None, symbol="", linked_signal=True):
+        order = order if isinstance(order, dict) else {}
+        order_id = str(order.get("orderId") or order.get("order_id") or order.get("broker_order_id") or "")
+        key = "|".join(
+            [
+                order_id,
+                str(role or ""),
+                str(order.get("signal_id") or order.get("cOID") or order.get("coid") or ""),
+                str(symbol or order.get("ticker") or order.get("symbol") or ""),
+            ]
+        )
+        duplicate = key in self.processed_exit_keys
+        if not duplicate:
+            self.processed_exit_keys.add(key)
+            if role == "stop_loss":
+                self.sl_count += 1
+            elif linked_signal:
+                self.reset_count += 1
+                self.sl_count = 0
+        return {
+            "duplicate": duplicate,
+            "count": self.sl_count,
+            "limit": self.sl_limit,
+            "breaker": self.is_sl_circuit_breaker,
+            "should_cooldown": role == "stop_loss" and not duplicate,
+            "should_notify": role == "stop_loss" and not duplicate,
+        }
 
     @property
     def is_sl_circuit_breaker(self):
@@ -1296,6 +1326,117 @@ class RuntimeSignalLifecycleTest(unittest.TestCase):
         self.assertEqual([("AAPL", 3, "cooldown_after_stop_loss")], service.signal_processor.cooldowns)
         self.assertEqual(["AAPL"], service.signal_processor.removed)
         self.assertEqual(1, len(service.pb.events))
+
+    def test_unlinked_replayed_close_does_not_reset_stop_loss_streak(self):
+        service = _FakeService()
+        service.order_lifecycle.sl_count = 2
+
+        service._on_order_fill(
+            {
+                "orderId": "9001",
+                "ticker": "RKLB",
+                "side": "BUY",
+                "orderType": "MKT",
+                "status": "FILLED",
+                "cOID": "close_unlinked_history",
+                "avgPrice": 115.01,
+                "filledQuantity": 44,
+            }
+        )
+
+        self.assertEqual(2, service.order_lifecycle.sl_count)
+        self.assertEqual(0, service.order_lifecycle.reset_count)
+        self.assertEqual([], service.signal_processor.removed)
+
+    def test_consecutive_stop_loss_alert_ignores_unlinked_replayed_close(self):
+        service = _FakeService()
+        service.pb.signals["sig-row-1"]["status"] = "protected_active"
+        service.pb.signals["sig-row-2"].update(
+            {
+                "signal_id": "SIG_2",
+                "symbol": "MSFT",
+                "date": "2026-05-06",
+                "environment": "live",
+                "status": "protected_active",
+                "entry": 200.0,
+                "stop_loss": 198.0,
+                "take_profit": 204.0,
+                "extra": {"source": "ibkr_compute", "bracket_group": "group_SIG_2"},
+            }
+        )
+        service.pb.orders.extend(
+            [
+                {
+                    "id": "order-sl-1",
+                    "unique_id": "sl_SIG_1",
+                    "entry_order_unique_id": "entry_SIG_1",
+                    "order_id": "1003",
+                    "broker_order_id": "1003",
+                    "signal_id": "SIG_1",
+                    "trade_group_id": "group_SIG_1",
+                    "role": "stop_loss",
+                    "status": "Filled",
+                    "environment": "live",
+                },
+                {
+                    "id": "order-sl-2",
+                    "unique_id": "sl_SIG_2",
+                    "entry_order_unique_id": "entry_SIG_2",
+                    "order_id": "2003",
+                    "broker_order_id": "2003",
+                    "signal_id": "SIG_2",
+                    "trade_group_id": "group_SIG_2",
+                    "role": "stop_loss",
+                    "status": "Filled",
+                    "environment": "live",
+                },
+            ]
+        )
+
+        service._on_order_fill(
+            {
+                "orderId": "1003",
+                "ticker": "AAPL",
+                "side": "SELL",
+                "orderType": "STP",
+                "status": "FILLED",
+                "parentId": "1001",
+                "cOID": "sl_SIG_1",
+                "avgPrice": 99.25,
+                "filledQuantity": 10,
+            }
+        )
+        service._on_order_fill(
+            {
+                "orderId": "9001",
+                "ticker": "RKLB",
+                "side": "BUY",
+                "orderType": "MKT",
+                "status": "FILLED",
+                "cOID": "close_unlinked_history",
+                "avgPrice": 115.01,
+                "filledQuantity": 44,
+            }
+        )
+        service._on_order_fill(
+            {
+                "orderId": "2003",
+                "ticker": "MSFT",
+                "side": "SELL",
+                "orderType": "STP",
+                "status": "FILLED",
+                "parentId": "2001",
+                "cOID": "sl_SIG_2",
+                "avgPrice": 198.0,
+                "filledQuantity": 5,
+            }
+        )
+
+        self.assertEqual(2, service.order_lifecycle.sl_count)
+        self.assertEqual(0, service.order_lifecycle.reset_count)
+        self.assertEqual(2, len(service.pb.events))
+        self.assertEqual(1, service.pb.events[0]["detail"]["连续止损次数"])
+        self.assertEqual(2, service.pb.events[1]["detail"]["连续止损次数"])
 
     def test_entry_fill_reconciles_existing_filled_take_profit(self):
         service = _FakeService()

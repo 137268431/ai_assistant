@@ -5,6 +5,7 @@ Order lifecycle helpers built on top of IB Gateway socket API.
 from __future__ import annotations
 
 import logging
+import json
 import os
 import re
 import threading
@@ -51,6 +52,8 @@ PROTECTION_SL_ROLES = {"stop_loss", "sl", "repair_sl"}
 PROTECTION_ROLES = PROTECTION_TP_ROLES | PROTECTION_SL_ROLES
 ACTIVE_CLOSE_ROLES = {"close", "manual_close", "market_close", "close_order", "reverse_close"}
 ACCOUNT_DATA_BACKOFF_SECONDS = max(5.0, float(os.environ.get("IBKR_ACCOUNT_DATA_CIRCUIT_POLL_BACKOFF_SEC", "30") or 30))
+RISK_STATE_KEY = "order_lifecycle_risk:v1"
+MAX_PROCESSED_EXIT_FILL_KEYS = 500
 
 
 class OrderLifecycle:
@@ -96,6 +99,11 @@ class OrderLifecycle:
         self._account_data_backoff_until = 0.0
         self._account_data_backoff_reason = ""
         self._account_data_backoff_last_warn_at = 0.0
+        self._risk_state_lock = threading.RLock()
+        self._risk_state_date = ""
+        self._risk_state_source = "memory"
+        self._processed_exit_fill_keys: list[str] = []
+        self._processed_exit_fill_key_set: set[str] = set()
 
     def _get_config_value(self, key: str, default: str) -> str:
         if not self.config:
@@ -303,6 +311,421 @@ class OrderLifecycle:
 
     def _consecutive_stop_loss_limit(self) -> int:
         return max(1, self._get_config_int("consecutive_stop_loss_limit", DEFAULT_CONSECUTIVE_STOP_LOSS_LIMIT))
+
+    @staticmethod
+    def _ensure_dict(value: Any) -> dict:
+        if isinstance(value, dict):
+            return dict(value)
+        if isinstance(value, str) and value.strip():
+            try:
+                parsed = json.loads(value)
+                return dict(parsed) if isinstance(parsed, dict) else {}
+            except Exception:
+                return {}
+        return {}
+
+    @staticmethod
+    def _normalize_exit_fill_role(role: Any) -> str:
+        normalized = str(role or "").strip().lower()
+        if normalized in {"tp", "takeprofit", "take_profit", "profit_target", "target", "repair_tp"}:
+            return "take_profit"
+        if normalized in {"sl", "stop", "stoploss", "stop_loss", "repair_sl"}:
+            return "stop_loss"
+        if normalized in {"close", "manual_close", "market_close", "close_order", "reverse_close"}:
+            return "close"
+        return normalized
+
+    @staticmethod
+    def _first_nonempty_value(payload: dict, *keys: str) -> Any:
+        for key in keys:
+            value = (payload or {}).get(key)
+            if value not in (None, ""):
+                return value
+        return ""
+
+    @classmethod
+    def _exit_fill_key(cls, *, role: str, symbol: str = "", order: Optional[dict] = None) -> str:
+        payload = order if isinstance(order, dict) else {}
+        order_id = str(
+            cls._first_nonempty_value(
+                payload,
+                "broker_order_id",
+                "order_id",
+                "orderId",
+                "id",
+            )
+            or ""
+        ).strip()
+        exec_id = str(
+            cls._first_nonempty_value(payload, "ib_exec_id", "exec_id", "execution_id")
+            or ""
+        ).strip()
+        identity = str(
+            cls._first_nonempty_value(
+                payload,
+                "signal_id",
+                "trade_group_id",
+                "entry_order_unique_id",
+                "cOID",
+                "coid",
+                "orderRef",
+                "order_ref",
+                "unique_id",
+            )
+            or ""
+        ).strip()
+        fill_time = str(
+            cls._first_nonempty_value(
+                payload,
+                "lastExecutionTime",
+                "lastFillTime",
+                "last_execution_time",
+                "fill_time",
+                "us_time",
+                "bar_time_ms",
+            )
+            or ""
+        ).strip()
+        quantity = str(
+            cls._first_nonempty_value(
+                payload,
+                "filledQuantity",
+                "filled_qty",
+                "filled",
+                "totalSize",
+                "quantity",
+            )
+            or ""
+        ).strip()
+        price = str(
+            cls._first_nonempty_value(
+                payload,
+                "avgPrice",
+                "avgFillPrice",
+                "fill_price",
+                "filled_price",
+                "lastFillPrice",
+                "price",
+            )
+            or ""
+        ).strip()
+        normalized_symbol = str(symbol or payload.get("ticker") or payload.get("symbol") or "").strip().upper()
+        if exec_id:
+            return f"exec:{exec_id}"
+        if order_id:
+            return "|".join(
+                [
+                    "order",
+                    order_id,
+                    cls._normalize_exit_fill_role(role),
+                    normalized_symbol,
+                    identity,
+                    fill_time,
+                    quantity,
+                    price,
+                ]
+            )
+        return "|".join(
+            [
+                "fill",
+                cls._normalize_exit_fill_role(role),
+                normalized_symbol,
+                identity,
+                fill_time,
+                quantity,
+                price,
+            ]
+        )
+
+    def _risk_state_market_date(self) -> str:
+        return datetime.now(ET).strftime("%Y-%m-%d")
+
+    def _read_persisted_risk_state(self, date: str) -> dict:
+        persisted_state: dict[str, Any] = {}
+        getter = getattr(self.pb_client, "get_state", None)
+        if callable(getter):
+            try:
+                record = getter(RISK_STATE_KEY, self.environment, date)
+            except Exception as exc:
+                logger.debug("Order lifecycle risk state load failed: %s", exc)
+                record = None
+            data = (record or {}).get("data") if isinstance(record, dict) else {}
+            state = self._ensure_dict(data)
+            if state:
+                persisted_state = state
+        rebuilt_state = self._rebuild_risk_state_from_order_rows(date)
+        return self._select_risk_state_for_load(persisted_state, rebuilt_state)
+
+    @staticmethod
+    def _risk_state_exit_keys(state: dict) -> list[str]:
+        keys = state.get("processed_exit_fill_keys") if isinstance(state, dict) else []
+        if not isinstance(keys, list):
+            return []
+        return [str(item or "").strip() for item in keys if str(item or "").strip()]
+
+    @staticmethod
+    def _risk_state_sl_count(state: dict) -> int:
+        if not isinstance(state, dict):
+            return 0
+        try:
+            return max(0, int(state.get("consecutive_stop_loss_count", 0) or 0))
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _risk_state_breaker(state: dict) -> bool:
+        if not isinstance(state, dict):
+            return False
+        return bool(state.get("sl_circuit_breaker") or state.get("breaker") or state.get("breaker_tripped"))
+
+    @staticmethod
+    def _risk_state_last_action(state: dict) -> str:
+        if not isinstance(state, dict):
+            return ""
+        last_event = state.get("last_event")
+        if isinstance(last_event, dict):
+            return str(last_event.get("action") or "").strip().lower()
+        return ""
+
+    def _merge_risk_state_exit_keys(self, *states: dict) -> list[str]:
+        merged: list[str] = []
+        seen: set[str] = set()
+        for state in states:
+            for key in self._risk_state_exit_keys(state):
+                if key in seen:
+                    continue
+                merged.append(key)
+                seen.add(key)
+        return merged[-MAX_PROCESSED_EXIT_FILL_KEYS:]
+
+    def _select_risk_state_for_load(self, persisted_state: dict, rebuilt_state: dict) -> dict:
+        persisted = dict(persisted_state or {})
+        rebuilt = dict(rebuilt_state or {})
+        if not persisted:
+            if rebuilt:
+                rebuilt["risk_state_source"] = "orders_rebuild"
+            return rebuilt
+        if not rebuilt or not self._risk_state_exit_keys(rebuilt):
+            persisted["risk_state_source"] = "ibkr_state"
+            return persisted
+
+        persisted_count = self._risk_state_sl_count(persisted)
+        rebuilt_count = self._risk_state_sl_count(rebuilt)
+        persisted_key_count = len(self._risk_state_exit_keys(persisted))
+        rebuilt_key_count = len(self._risk_state_exit_keys(rebuilt))
+        persisted_reset = self._risk_state_last_action(persisted) in {
+            "daily_reset",
+            "daily_reset_preserved_risk_state",
+        }
+        should_use_rebuilt = (
+            (persisted_reset and (rebuilt_count > 0 or rebuilt_key_count > 0))
+            or (rebuilt_count > persisted_count and rebuilt_key_count >= persisted_key_count)
+            or (self._risk_state_breaker(rebuilt) and not self._risk_state_breaker(persisted))
+            or (persisted_key_count == 0 and rebuilt_key_count > 0 and rebuilt_count >= persisted_count)
+        )
+        if should_use_rebuilt:
+            rebuilt["risk_state_source"] = "orders_rebuild_reconciled"
+            rebuilt["risk_state_reconciled"] = True
+            rebuilt["previous_consecutive_stop_loss_count"] = persisted_count
+            return rebuilt
+
+        if rebuilt_key_count > persisted_key_count:
+            persisted["processed_exit_fill_keys"] = self._merge_risk_state_exit_keys(rebuilt, persisted)
+            persisted["risk_state_source"] = "ibkr_state_with_order_keys"
+            persisted["risk_state_reconciled"] = True
+            return persisted
+
+        persisted["risk_state_source"] = "ibkr_state"
+        return persisted
+
+    def _row_belongs_to_market_date(self, row: dict, date: str) -> bool:
+        for key in ("fill_time", "us_time", "order_time"):
+            value = str(row.get(key) or "").strip()
+            if value:
+                return value.startswith(date)
+        return False
+
+    def _order_row_sort_key(self, row: dict) -> tuple:
+        return (
+            str(row.get("fill_time") or row.get("us_time") or row.get("order_time") or ""),
+            str(row.get("updated") or ""),
+            str(row.get("created") or ""),
+            str(row.get("broker_order_id") or row.get("order_id") or row.get("id") or ""),
+        )
+
+    def _rebuild_risk_state_from_order_rows(self, date: str) -> dict:
+        getter = getattr(self.pb_client, "get_records", None)
+        if not callable(getter):
+            return {}
+        env = str(self.environment or "live").replace('"', '\\"')
+        try:
+            rows = getter(
+                "orders",
+                filter=f'environment = "{env}" && status = "Filled"',
+                sort="fill_time,updated,created",
+                per_page=500,
+            ) or []
+        except Exception as exc:
+            logger.debug("Order lifecycle risk state rebuild failed: %s", exc)
+            return {}
+        count = 0
+        keys: list[str] = []
+        last_event: dict[str, Any] = {"action": "rebuilt_from_orders", "date": date}
+        for row in sorted([dict(item) for item in rows if isinstance(item, dict)], key=self._order_row_sort_key):
+            if not self._row_belongs_to_market_date(row, date):
+                continue
+            status = str(row.get("status") or "").strip().lower()
+            if status not in {"filled", "executed"}:
+                continue
+            role = self._normalize_exit_fill_role(row.get("role") or row.get("order_type"))
+            if role not in {"stop_loss", "take_profit", "close"}:
+                continue
+            key = self._exit_fill_key(role=role, symbol=str(row.get("symbol") or ""), order=row)
+            if key in keys:
+                continue
+            keys.append(key)
+            linked_signal = bool(
+                str(row.get("signal_id") or row.get("trade_group_id") or row.get("entry_order_unique_id") or "").strip()
+            )
+            if role == "stop_loss":
+                count += 1
+                last_event = {
+                    "action": "rebuilt_increment_stop_loss",
+                    "role": role,
+                    "symbol": str(row.get("symbol") or "").strip().upper(),
+                    "exit_fill_key": key,
+                }
+            elif linked_signal:
+                count = 0
+                last_event = {
+                    "action": "rebuilt_reset_after_non_stop_exit",
+                    "role": role,
+                    "symbol": str(row.get("symbol") or "").strip().upper(),
+                    "exit_fill_key": key,
+                }
+        limit = self._consecutive_stop_loss_limit()
+        return {
+            "date": date,
+            "environment": self.environment,
+            "consecutive_stop_loss_count": max(0, int(count or 0)),
+            "consecutive_stop_loss_limit": limit,
+            "sl_circuit_breaker": bool(count >= limit),
+            "processed_exit_fill_keys": keys[-MAX_PROCESSED_EXIT_FILL_KEYS:],
+            "last_event": last_event,
+            "rebuilt_from_orders": True,
+            "risk_state_source": "orders_rebuild",
+        }
+
+    def _ensure_risk_state_loaded_locked(self, date: str) -> None:
+        normalized_date = str(date or self._risk_state_market_date() or "").strip()
+        if self._risk_state_date == normalized_date:
+            return
+        state = self._read_persisted_risk_state(normalized_date)
+        keys = state.get("processed_exit_fill_keys")
+        if not isinstance(keys, list):
+            keys = []
+        normalized_keys = [str(item or "").strip() for item in keys if str(item or "").strip()]
+        self._risk_state_date = normalized_date
+        self._risk_state_source = str(state.get("risk_state_source") or "ibkr_state")
+        self._daily_sl_count = max(0, int(state.get("consecutive_stop_loss_count", 0) or 0))
+        self._processed_exit_fill_keys = normalized_keys[-MAX_PROCESSED_EXIT_FILL_KEYS:]
+        self._processed_exit_fill_key_set = set(self._processed_exit_fill_keys)
+        if state.get("rebuilt_from_orders") or state.get("risk_state_reconciled"):
+            self._persist_risk_state_locked(
+                date=normalized_date,
+                last_event=self._ensure_dict(state.get("last_event")),
+            )
+
+    def _risk_state_payload_locked(self, *, date: str, last_event: Optional[dict] = None) -> dict:
+        limit = self._consecutive_stop_loss_limit()
+        count = max(0, int(self._daily_sl_count or 0))
+        return {
+            "date": str(date or self._risk_state_market_date()),
+            "environment": self.environment,
+            "consecutive_stop_loss_count": count,
+            "consecutive_stop_loss_limit": limit,
+            "sl_circuit_breaker": bool(count >= limit),
+            "processed_exit_fill_keys": list(self._processed_exit_fill_keys[-MAX_PROCESSED_EXIT_FILL_KEYS:]),
+            "last_event": dict(last_event or {}),
+            "updated_at_ms": int(time.time() * 1000),
+            "risk_state_source": self._risk_state_source,
+        }
+
+    def _persist_risk_state_locked(self, *, date: str, last_event: Optional[dict] = None) -> None:
+        upserter = getattr(self.pb_client, "upsert_state", None)
+        if not callable(upserter):
+            return
+        payload = self._risk_state_payload_locked(date=date, last_event=last_event)
+        try:
+            upserter(RISK_STATE_KEY, self.environment, payload, date=date)
+        except Exception as exc:
+            logger.debug("Order lifecycle risk state persist failed: %s", exc)
+
+    def _remember_exit_fill_key_locked(self, key: str) -> None:
+        normalized = str(key or "").strip()
+        if not normalized or normalized in self._processed_exit_fill_key_set:
+            return
+        self._processed_exit_fill_keys.append(normalized)
+        self._processed_exit_fill_key_set.add(normalized)
+        while len(self._processed_exit_fill_keys) > MAX_PROCESSED_EXIT_FILL_KEYS:
+            old_key = self._processed_exit_fill_keys.pop(0)
+            self._processed_exit_fill_key_set.discard(old_key)
+
+    def risk_state_snapshot(self) -> dict:
+        date = self._risk_state_market_date()
+        with self._risk_state_lock:
+            self._ensure_risk_state_loaded_locked(date)
+            return self._risk_state_payload_locked(date=date)
+
+    def record_exit_fill_once(
+        self,
+        *,
+        role: str,
+        order: Optional[dict] = None,
+        symbol: str = "",
+        linked_signal: bool = True,
+    ) -> dict:
+        normalized_role = self._normalize_exit_fill_role(role)
+        date = self._risk_state_market_date()
+        fill_key = self._exit_fill_key(role=normalized_role, symbol=symbol, order=order)
+        with self._risk_state_lock:
+            self._ensure_risk_state_loaded_locked(date)
+            limit = self._consecutive_stop_loss_limit()
+            duplicate = bool(fill_key and fill_key in self._processed_exit_fill_key_set)
+            action = "duplicate_exit_fill"
+            if not duplicate:
+                if normalized_role == "stop_loss":
+                    self._daily_sl_count = max(0, int(self._daily_sl_count or 0)) + 1
+                    action = "increment_stop_loss"
+                elif normalized_role in {"take_profit", "close"} and bool(linked_signal):
+                    self._daily_sl_count = 0
+                    action = "reset_after_non_stop_exit"
+                else:
+                    action = "ignored_unlinked_exit"
+                self._remember_exit_fill_key_locked(fill_key)
+            count = max(0, int(self._daily_sl_count or 0))
+            event = {
+                "action": action,
+                "duplicate": duplicate,
+                "role": normalized_role,
+                "symbol": str(symbol or (order or {}).get("ticker") or (order or {}).get("symbol") or "").strip().upper(),
+                "exit_fill_key": fill_key,
+                "linked_signal": bool(linked_signal),
+                "consecutive_stop_loss_count": count,
+                "consecutive_stop_loss_limit": limit,
+                "sl_circuit_breaker": bool(count >= limit),
+            }
+            if not duplicate:
+                self._persist_risk_state_locked(date=date, last_event=event)
+            return {
+                **event,
+                "count": count,
+                "limit": limit,
+                "breaker": bool(count >= limit),
+                "should_cooldown": normalized_role == "stop_loss" and not duplicate,
+                "should_notify": normalized_role == "stop_loss" and not duplicate,
+                "should_reset": action == "reset_after_non_stop_exit",
+            }
 
     def _live_exit_policy_updates_enabled(self) -> bool:
         return bool(
@@ -605,17 +1028,46 @@ class OrderLifecycle:
             "signal_id": str(entry.get("signal_id") or extra.get("signal_id") or ""),
         }
 
-    def daily_reset(self):
+    def daily_reset(self, *, force_clear: bool = False):
         self._eod_closed_today = False
-        self._daily_sl_count = 0
+        current_date = self._risk_state_market_date()
+        with self._risk_state_lock:
+            if force_clear:
+                self._daily_sl_count = 0
+                self._risk_state_date = current_date
+                self._risk_state_source = "manual_reset"
+                self._processed_exit_fill_keys = []
+                self._processed_exit_fill_key_set = set()
+                self._persist_risk_state_locked(
+                    date=self._risk_state_date,
+                    last_event={"action": "daily_reset"},
+                )
+            else:
+                self._ensure_risk_state_loaded_locked(current_date)
+                self._persist_risk_state_locked(
+                    date=current_date,
+                    last_event={
+                        "action": "daily_reset_preserved_risk_state",
+                        "consecutive_stop_loss_count": max(0, int(self._daily_sl_count or 0)),
+                        "processed_exit_fill_count": len(self._processed_exit_fill_keys),
+                    },
+                )
         self._daily_position_count = 0
         logger.info("Daily lifecycle reset")
 
     def increment_sl_count(self):
-        self._daily_sl_count += 1
+        with self._risk_state_lock:
+            date = self._risk_state_market_date()
+            self._ensure_risk_state_loaded_locked(date)
+            self._daily_sl_count += 1
+            self._persist_risk_state_locked(date=date, last_event={"action": "legacy_increment_stop_loss"})
 
     def reset_sl_count(self):
-        self._daily_sl_count = 0
+        with self._risk_state_lock:
+            date = self._risk_state_market_date()
+            self._ensure_risk_state_loaded_locked(date)
+            self._daily_sl_count = 0
+            self._persist_risk_state_locked(date=date, last_event={"action": "legacy_reset_stop_loss"})
 
     def increment_position_count(self):
         self._daily_position_count += 1
@@ -2773,6 +3225,11 @@ class OrderLifecycle:
 
     @property
     def is_sl_circuit_breaker(self) -> bool:
+        try:
+            with self._risk_state_lock:
+                self._ensure_risk_state_loaded_locked(self._risk_state_market_date())
+        except Exception:
+            pass
         return self._daily_sl_count >= self._consecutive_stop_loss_limit()
 
     @property
@@ -2856,6 +3313,12 @@ class OrderLifecycle:
 
     def status(self) -> dict:
         eod_close_hour, eod_close_minute = self._eod_close_time()
+        try:
+            risk_state = self.risk_state_snapshot()
+        except Exception:
+            risk_state = {}
+        sl_count = int(risk_state.get("consecutive_stop_loss_count", self._daily_sl_count) or 0)
+        sl_limit = int(risk_state.get("consecutive_stop_loss_limit", self._consecutive_stop_loss_limit()) or 0)
         return {
             "running": self._running,
             "environment": self.environment,
@@ -2863,9 +3326,11 @@ class OrderLifecycle:
             "eod_close_time": f"{eod_close_hour:02d}:{eod_close_minute:02d}",
             "eod_keep_symbols": sorted(self._keep_symbols()),
             "fixed_position_symbols": sorted(self._fixed_position_symbols()),
-            "daily_sl_count": self._daily_sl_count,
-            "consecutive_stop_loss_count": self._daily_sl_count,
-            "consecutive_stop_loss_limit": self._consecutive_stop_loss_limit(),
+            "daily_sl_count": sl_count,
+            "consecutive_stop_loss_count": sl_count,
+            "consecutive_stop_loss_limit": sl_limit,
+            "processed_exit_fill_count": len(risk_state.get("processed_exit_fill_keys") or []),
+            "risk_state_source": risk_state.get("risk_state_source") or ("ibkr_state" if risk_state else "memory"),
             "daily_position_count": self._daily_position_count,
             "position_limit_max": self._position_limit_max(),
             "max_strategy_open_positions": self._max_strategy_open_positions(),
@@ -2881,6 +3346,6 @@ class OrderLifecycle:
             "order_flow_risk_action_count": self._order_flow_risk_action_count,
             "order_flow_risk_error_count": self._order_flow_risk_error_count,
             "last_order_flow_risk_action_ms": self._last_order_flow_risk_action_ms,
-            "sl_circuit_breaker": self.is_sl_circuit_breaker,
+            "sl_circuit_breaker": bool(risk_state.get("sl_circuit_breaker")) if risk_state else self.is_sl_circuit_breaker,
             "position_limit_reached": self.is_position_limit_reached,
         }

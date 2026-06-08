@@ -195,6 +195,48 @@ class OrderTrackerIdentityTest(unittest.TestCase):
         self.assertEqual("paper", fill["environment"])
         self.assertTrue(fill["commission_known"])
 
+    def test_replayed_recent_fill_does_not_emit_duplicate_terminal_callback(self):
+        class _FillReplayBroker(FakeBroker):
+            def list_recent_fills(self):
+                return [
+                    {
+                        "orderId": "77",
+                        "ticker": "AMAT",
+                        "side": "BOT",
+                        "orderType": "STP",
+                        "shares": 10,
+                        "price": 489.45,
+                        "time": "20260608 10:36:32",
+                    }
+                ]
+
+        broker = _FillReplayBroker()
+        filled = []
+        tracker = OrderTracker(
+            pb_client=FakePBClient(),
+            broker=broker,
+            environment="paper",
+            on_fill=lambda order: filled.append(dict(order)),
+        )
+        seed = {
+            "orderId": "77",
+            "ticker": "AMAT",
+            "side": "BUY",
+            "orderType": "STP",
+            "status": "SUBMITTED",
+            "parentId": "75",
+            "filledQuantity": 0,
+            "avgPrice": 0,
+        }
+
+        tracker._known_orders["77"] = dict(seed)
+        tracker._finalize_disappeared_orders(set())
+        tracker._known_orders["77"] = dict(seed)
+        tracker._finalize_disappeared_orders(set())
+
+        self.assertEqual(1, len(filled))
+        self.assertEqual("77", filled[0]["orderId"])
+
     def test_sync_prefers_coid_match_over_duplicate_broker_order_id(self):
         pb_client = FakePBClient()
         tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="live")

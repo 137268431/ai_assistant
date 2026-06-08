@@ -1698,7 +1698,13 @@ class TradingServiceRuntimeOpsMixin:
         try:
             signal_id = self._resolve_signal_id_for_order(order, broker_environment)
             if not signal_id:
-                return True
+                service_mod.logger.debug(
+                    "Ignoring unlinked exit fill side effects: symbol=%s role=%s order_id=%s",
+                    symbol,
+                    normalized_role,
+                    order_id or "-",
+                )
+                return False
 
             if not signal_record:
                 signal_record = self.pb.get_first_record(
@@ -1709,7 +1715,14 @@ class TradingServiceRuntimeOpsMixin:
                     ),
                 )
             if not signal_record or not signal_record.get("id"):
-                return True
+                service_mod.logger.debug(
+                    "Ignoring exit fill side effects without signal record: symbol=%s role=%s signal_id=%s order_id=%s",
+                    symbol,
+                    normalized_role,
+                    signal_id or "-",
+                    order_id or "-",
+                )
+                return False
             current_status = str(signal_record.get("status") or "").strip().lower()
             existing_extra = self._safe_extra(signal_record.get("extra"))
             pb_exit_order = self._load_pb_order_for_event(order, broker_environment)
@@ -1878,7 +1891,14 @@ class TradingServiceRuntimeOpsMixin:
             breaker = True
         return max(0, count), max(0, limit), breaker
 
-    def _notify_stop_loss_fill(self, symbol: str, order: dict | None = None, *, cooldown_bars: int = 0) -> None:
+    def _notify_stop_loss_fill(
+        self,
+        symbol: str,
+        order: dict | None = None,
+        *,
+        cooldown_bars: int = 0,
+        risk_state: dict[str, Any] | None = None,
+    ) -> None:
         pb = getattr(self, "pb", None)
         notifier = getattr(pb, "notify_system_event", None)
         if not callable(notifier):
@@ -1887,7 +1907,13 @@ class TradingServiceRuntimeOpsMixin:
         service_mod = _service_mod()
         order = order if isinstance(order, dict) else {}
         broker_environment = str(service_mod.ENVIRONMENT or "paper").strip().lower() or "paper"
-        count, limit, breaker = self._stop_loss_count_snapshot()
+        risk_state = risk_state if isinstance(risk_state, dict) else {}
+        if risk_state:
+            count = int(risk_state.get("count", risk_state.get("consecutive_stop_loss_count", 0)) or 0)
+            limit = int(risk_state.get("limit", risk_state.get("consecutive_stop_loss_limit", 0)) or 0)
+            breaker = bool(risk_state.get("breaker", risk_state.get("sl_circuit_breaker", False)))
+        else:
+            count, limit, breaker = self._stop_loss_count_snapshot()
         level = "error" if breaker else "warning"
         title = "连续止损熔断已触发" if breaker else "止损成交报警"
         signal_id = str(order.get("signal_id") or "").strip()
@@ -1953,8 +1979,35 @@ class TradingServiceRuntimeOpsMixin:
 
     def _apply_exit_fill_side_effects(self, symbol: str, role: str, order: dict | None = None) -> None:
         self.signal_processor.remove_position(symbol)
-        if role == "stop_loss":
-            self.order_lifecycle.increment_sl_count()
+        order = order if isinstance(order, dict) else {}
+        normalized_role = self._normalize_order_role(role)
+        lifecycle = getattr(self, "order_lifecycle", None)
+        recorder = getattr(lifecycle, "record_exit_fill_once", None)
+        risk_state: dict[str, Any] = {}
+        linked_signal = True
+        if getattr(self, "pb", None):
+            try:
+                broker_environment = str(_service_mod().ENVIRONMENT or "paper").strip().lower() or "paper"
+                linked_signal = bool(self._resolve_signal_id_for_order(order, broker_environment))
+            except Exception:
+                linked_signal = True
+        if callable(recorder):
+            try:
+                raw_state = recorder(
+                    role=normalized_role,
+                    order=order,
+                    symbol=symbol,
+                    linked_signal=linked_signal,
+                )
+                risk_state = raw_state if isinstance(raw_state, dict) else {}
+            except Exception as exc:
+                _service_mod().logger.warning("Exit-fill risk state update failed: %s", exc)
+                risk_state = {}
+        if normalized_role == "stop_loss":
+            if not risk_state and lifecycle:
+                lifecycle.increment_sl_count()
+            elif risk_state and not bool(risk_state.get("should_cooldown", True)):
+                return
             cooldown_bars = self.signal_processor.cooldown_bars_after_sl()
             self.signal_processor.start_cooldown(
                 symbol,
@@ -1962,11 +2015,14 @@ class TradingServiceRuntimeOpsMixin:
                 "cooldown_after_stop_loss",
             )
             try:
-                self._notify_stop_loss_fill(symbol, order, cooldown_bars=cooldown_bars)
+                self._notify_stop_loss_fill(symbol, order, cooldown_bars=cooldown_bars, risk_state=risk_state)
             except Exception as exc:
                 _service_mod().logger.warning("Stop-loss notification failed: %s", exc)
         else:
-            self.order_lifecycle.reset_sl_count()
+            if risk_state:
+                return
+            if lifecycle:
+                lifecycle.reset_sl_count()
 
     def _release_buying_power_reservation_for_order(self, order: dict, *, reason: str) -> None:
         store = getattr(self, "buying_power_reservations", None)

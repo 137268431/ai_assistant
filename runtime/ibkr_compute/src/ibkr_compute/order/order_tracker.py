@@ -63,6 +63,8 @@ class OrderTracker:
         self._account_data_backoff_reason = ""
         self._account_data_backoff_last_warn_at = 0.0
         self._last_live_orders_fetch_unavailable = False
+        self._emitted_terminal_order_keys: set[str] = set()
+        self._emitted_terminal_order_key_order: list[str] = []
 
         add_fill_listener = getattr(self.broker, "add_execution_fill_listener", None)
         if callable(add_fill_listener):
@@ -1234,6 +1236,46 @@ class OrderTracker:
             return True
         return self._order_sync_signature(previous) != self._order_sync_signature(current)
 
+    def _terminal_order_event_key(self, order: Dict, status: str) -> str:
+        order_id = self._normalize_text(
+            order.get("orderId")
+            or order.get("order_id")
+            or order.get("broker_order_id")
+            or order.get("id")
+        )
+        exec_id = self._normalize_text(order.get("ib_exec_id") or order.get("exec_id"))
+        role_hint = self._normalize_text(
+            order.get("role")
+            or order.get("order_role")
+            or order.get("cOID")
+            or order.get("coid")
+            or order.get("orderRef")
+            or order.get("order_ref")
+        )
+        return "|".join(
+            [
+                order_id,
+                str(status or "").strip().upper(),
+                exec_id,
+                role_hint,
+                str(round(self._to_float(order.get("filledQuantity"), 0.0), 8)),
+                str(round(self._to_float(order.get("avgPrice"), 0.0), 8)),
+            ]
+        )
+
+    def _terminal_order_event_seen(self, order: Dict, status: str) -> bool:
+        key = self._terminal_order_event_key(order, status)
+        if not key.strip("|"):
+            return False
+        if key in self._emitted_terminal_order_keys:
+            return True
+        self._emitted_terminal_order_keys.add(key)
+        self._emitted_terminal_order_key_order.append(key)
+        while len(self._emitted_terminal_order_key_order) > 2000:
+            old_key = self._emitted_terminal_order_key_order.pop(0)
+            self._emitted_terminal_order_keys.discard(old_key)
+        return False
+
     def _stabilize_live_order_merge(self, previous: Dict, current: Dict) -> Dict:
         if not previous:
             return current
@@ -1261,6 +1303,13 @@ class OrderTracker:
     def _emit_order_transition_callbacks(self, previous_status: str, merged: Dict):
         status = self._extract_order_status(merged)
         if status in ("FILLED", "EXECUTED") and previous_status not in ("FILLED", "EXECUTED"):
+            if self._terminal_order_event_seen(merged, status):
+                logger.debug(
+                    "Skipping duplicate terminal fill callback: order_id=%s status=%s",
+                    merged.get("orderId") or merged.get("order_id"),
+                    status,
+                )
+                return
             logger.info(
                 "Order FILLED: %s %s %s@%s",
                 merged.get("ticker"),
@@ -1274,6 +1323,13 @@ class OrderTracker:
                 except Exception as exc:
                     logger.error("on_fill callback error: %s", exc)
         elif status in ("CANCELLED", "CANCELED", "INACTIVE", "REJECTED") and previous_status not in ("CANCELLED", "CANCELED", "INACTIVE", "REJECTED"):
+            if self._terminal_order_event_seen(merged, status):
+                logger.debug(
+                    "Skipping duplicate terminal close callback: order_id=%s status=%s",
+                    merged.get("orderId") or merged.get("order_id"),
+                    status,
+                )
+                return
             logger.info("Order CLOSED: %s %s status=%s", merged.get("ticker"), merged.get("orderId"), status)
             if self.on_cancel:
                 try:
