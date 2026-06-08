@@ -250,6 +250,10 @@ class GatewayOrderProbeTest(unittest.TestCase):
         self.assertGreaterEqual(args.min_pending_hold_samples, 3)
         self.assertGreaterEqual(args.min_pending_visible_orders, 45)
         self.assertGreaterEqual(args.submit_timeout_sec, 90.0)
+        self.assertTrue(args.exit_cancel_storm)
+        self.assertEqual("all", args.exit_cancel_scope)
+        self.assertTrue(args.exit_cancel_batch_by_symbol)
+        self.assertGreaterEqual(args.exit_burst_workers, 45)
         self.assertGreaterEqual(len(probe.split_symbols(args.symbols)), 45)
 
     def test_account_lock_stress_can_scale_to_forty_five_orders(self):
@@ -350,6 +354,40 @@ class GatewayOrderProbeTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertFalse(result["failures"])
         self.assertEqual("account_summary_unavailable", result["warnings"][0]["name"])
+
+    def test_pending_account_access_retries_and_fails_required_summary_unavailable(self):
+        args = Namespace(
+            pending_hold_seconds=0.5,
+            post_place_sleep_seconds=0.0,
+            min_pending_hold_samples=1,
+            pending_hold_sample_interval_sec=0.25,
+            min_pending_visible_orders=1,
+            max_pending_snapshot_elapsed_sec=10.0,
+            pending_snapshot_orders_fast=True,
+            require_orders_fast_summary=True,
+            orders_fast_summary_retries=2,
+            orders_fast_summary_retry_delay_sec=0.0,
+        )
+        snapshot = {
+            "ok": True,
+            "environment": "paper",
+            "broker_mode": "paper",
+            "service_running": True,
+            "session_authenticated": True,
+            "websocket_ready": True,
+            "summary_available": False,
+            "stale": False,
+            "positions": [],
+            "orders": [{"symbol": "AAPL", "status": "Submitted", "order_id": "1"}],
+            "live_open_orders": [],
+        }
+
+        with mock.patch.object(probe, "get_snapshot", return_value=snapshot) as get_snapshot:
+            result = probe.observe_pending_account_access(args, ["AAPL"])
+
+        self.assertFalse(result["ok"])
+        self.assertIn("account_summary_unavailable", {item["name"] for item in result["failures"]})
+        self.assertGreaterEqual(get_snapshot.call_count, 2)
 
     def test_account_access_flags_stale_route_cache(self):
         snapshot = {
@@ -889,7 +927,64 @@ class GatewayOrderProbeTest(unittest.TestCase):
         self.assertTrue(all(item["ok"] for item in results))
         self.assertEqual("already_flat_after_bulk_cancel_wait", results[0]["reason"])
 
-    def test_cleanup_symbols_retries_cancel_all_after_bulk_wait_before_visible_rescue(self):
+    def test_cleanup_symbols_uses_visible_rescue_after_bulk_wait_before_cancel_all_retry(self):
+        args = Namespace(
+            api_base_url="https://example.test",
+            account_base_url="",
+            account_snapshot_path="",
+            http_timeout_sec=1200.0,
+            cleanup_http_timeout_sec=30.0,
+            cleanup_timeout_sec=1200.0,
+            bulk_cancel_settle_before_rescue_sec=5.0,
+            symbol_cleanup_timeout_sec=0.0,
+            poll_interval_sec=2.0,
+            cancel_spacing_seconds=0.0,
+            bulk_cancel_all=True,
+            cancel_all_attempts=3,
+            cancel_all_retry_delay_sec=0.0,
+        )
+        plans = [
+            probe.OrderProbePlan("AAPL", "long", 1, 100.0, 50.0, 57.5, 42.5),
+            probe.OrderProbePlan("MSFT", "long", 1, 200.0, 100.0, 115.0, 85.0),
+        ]
+        first_snapshot = {
+            "ok": True,
+            "positions": [],
+            "live_open_orders": [{"symbol": "AAPL", "order_id": "101", "status": "Submitted"}],
+        }
+        flat_snapshot = {"ok": True, "positions": [], "orders": [], "live_open_orders": []}
+        cancel_results = [{"source": "cancel_all", "ok": True, "cancelled": 2}]
+        rescue_results = [{"ok": True, "symbol": "AAPL", "order_ids": ["101"], "submitted": 1}]
+
+        with mock.patch.object(probe, "get_snapshot", return_value=first_snapshot), mock.patch.object(
+            probe,
+            "wait_for_flat_symbols",
+            side_effect=[
+                {"ok": False, "snapshot": first_snapshot},
+                {"ok": True, "snapshot": flat_snapshot},
+            ],
+        ) as wait_for_flat, mock.patch.object(
+            probe,
+            "cancel_all_orders",
+            return_value=[{"ok": True, "source": "cancel_all", "cancelled": 1}],
+        ) as cancel_all, mock.patch.object(
+            probe,
+            "cancel_visible_orders_for_symbols",
+            return_value=rescue_results,
+        ) as rescue, mock.patch.object(
+            probe.fee_probe,
+            "cleanup_symbol",
+        ) as cleanup_symbol:
+            results = probe.cleanup_symbols(args, plans, [], cancel_results)
+
+        self.assertEqual(2, wait_for_flat.call_count)
+        cancel_all.assert_not_called()
+        rescue.assert_called_once_with(args, ["AAPL", "MSFT"])
+        cleanup_symbol.assert_not_called()
+        self.assertEqual("already_flat_after_bulk_visible_order_rescue", results[0]["reason"])
+        self.assertEqual(1, results[0]["result"]["visible_rescue_cancel_count"])
+
+    def test_cleanup_symbols_retries_cancel_all_when_visible_rescue_has_no_orders(self):
         args = Namespace(
             api_base_url="https://example.test",
             account_base_url="",
@@ -931,6 +1026,7 @@ class GatewayOrderProbeTest(unittest.TestCase):
         ) as cancel_all, mock.patch.object(
             probe,
             "cancel_visible_orders_for_symbols",
+            return_value=[],
         ) as rescue, mock.patch.object(
             probe.fee_probe,
             "cleanup_symbol",
@@ -940,10 +1036,9 @@ class GatewayOrderProbeTest(unittest.TestCase):
         self.assertEqual(2, wait_for_flat.call_count)
         cancel_all.assert_called_once()
         self.assertEqual("gateway_order_probe_post_visibility_cancel_all", cancel_all.call_args.kwargs["source"])
-        rescue.assert_not_called()
+        rescue.assert_called_once_with(args, ["AAPL", "MSFT"])
         cleanup_symbol.assert_not_called()
         self.assertEqual("already_flat_after_post_visibility_cancel_all", results[0]["reason"])
-        self.assertEqual(1, results[0]["result"]["visible_rescue_cancel_count"])
 
     def test_wait_for_submission_quiescence_waits_for_active_commands_to_drain(self):
         args = Namespace(
@@ -1078,6 +1173,46 @@ class GatewayOrderProbeTest(unittest.TestCase):
         self.assertEqual(300.0, result.pre_cancel_quiesce_sec)
         self.assertEqual(30.0, result.pre_cancel_quiet_sec)
         self.assertEqual(135, result.min_pre_cancel_visible_orders)
+        self.assertTrue(result.require_orders_fast_summary)
+        self.assertEqual(3, result.orders_fast_summary_retries)
+        self.assertEqual(30.0, result.orders_fast_summary_degraded_max_wait_sec)
+        self.assertEqual(4, result.visible_rescue_rounds)
+        self.assertEqual(45.0, result.visible_rescue_wait_sec)
+
+    def test_bulk_cancel_default_settle_before_rescue_is_short(self):
+        args = Namespace(cleanup_timeout_sec=1200.0, bulk_cancel_settle_before_rescue_sec=0.0)
+
+        self.assertEqual(30.0, probe._bulk_cancel_settle_timeout(args))
+
+    def test_wait_for_submission_quiescence_fails_fast_when_required_summary_stays_degraded(self):
+        args = Namespace(
+            pre_cancel_quiesce_sec=5.0,
+            pre_cancel_quiet_sec=0.0,
+            min_pre_cancel_visible_orders=1,
+            min_pending_visible_orders=0,
+            cleanup_http_timeout_sec=1.0,
+            http_timeout_sec=1.0,
+            poll_interval_sec=0.01,
+            require_orders_fast_summary=True,
+            orders_fast_summary_retries=1,
+            orders_fast_summary_retry_delay_sec=0.0,
+            orders_fast_summary_degraded_max_wait_sec=0.01,
+        )
+        degraded_snapshot = {
+            "ok": True,
+            "environment": "paper",
+            "broker_mode": "paper",
+            "summary_available": False,
+            "positions": [],
+            "live_open_orders": [{"symbol": "AAPL", "order_id": "101", "status": "Submitted"}],
+        }
+
+        with mock.patch.object(probe, "get_snapshot", return_value=degraded_snapshot):
+            result = probe.wait_for_submission_quiescence(args, ["AAPL"])
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("orders_fast_summary_unavailable_after_retry", result["error"])
+        self.assertTrue(result["last_sample"]["summary_degraded"])
 
     def test_wait_for_flat_rejects_failed_snapshot_without_false_flat(self):
         args = Namespace(cleanup_timeout_sec=0.1, cleanup_http_timeout_sec=1.0, http_timeout_sec=1.0, poll_interval_sec=0.01)
@@ -1105,6 +1240,92 @@ class GatewayOrderProbeTest(unittest.TestCase):
         self.assertEqual(1, len(results))
         self.assertFalse(results[0]["ok"])
         self.assertEqual("account_snapshot_visibility_unavailable", results[0]["error"])
+
+    def test_cancel_visible_orders_batches_rescue_by_symbol(self):
+        args = Namespace(
+            api_base_url="https://example.test",
+            account_base_url="",
+            account_snapshot_path="",
+            http_timeout_sec=30.0,
+            cleanup_http_timeout_sec=2.0,
+            orders_fast_summary_retries=1,
+            orders_fast_summary_retry_delay_sec=0.0,
+            visible_rescue_batch_by_symbol=True,
+            visible_rescue_workers=1,
+        )
+        snapshot = {
+            "ok": True,
+            "positions": [],
+            "live_open_orders": [
+                {"symbol": "AAPL", "order_id": "101", "status": "Submitted"},
+                {"symbol": "AAPL", "order_id": "102", "status": "Submitted"},
+                {"symbol": "MSFT", "order_id": "201", "status": "Submitted"},
+            ],
+        }
+        posts = []
+
+        class _Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def post(self, path, payload, params):
+                posts.append((path, payload, params))
+                return {
+                    "ok": True,
+                    "result": {
+                        "ok": True,
+                        "submitted_order_ids": list(payload.get("order_ids") or []),
+                    },
+                }
+
+        with mock.patch.object(probe, "get_snapshot", return_value=snapshot), mock.patch.object(
+            probe.fee_probe,
+            "ApiClient",
+            _Client,
+        ):
+            results = probe.cancel_visible_orders_for_symbols(args, ["AAPL", "MSFT"])
+
+        self.assertEqual(2, len(results))
+        self.assertTrue(all(item["ok"] for item in results))
+        self.assertEqual(["101", "102"], posts[0][1]["order_ids"])
+        self.assertEqual(["201"], posts[1][1]["order_ids"])
+        self.assertEqual("visible_order_rescue", posts[0][1]["source"])
+
+    def test_visible_order_rescue_can_repeat_until_flat(self):
+        args = Namespace(
+            cleanup_timeout_sec=120.0,
+            visible_rescue_rounds=2,
+            visible_rescue_wait_sec=1.0,
+        )
+        first_snapshot = {
+            "ok": True,
+            "positions": [],
+            "live_open_orders": [{"symbol": "AAPL", "order_id": "101", "status": "Submitted"}],
+        }
+        flat_snapshot = {"ok": True, "positions": [], "orders": [], "live_open_orders": []}
+
+        with mock.patch.object(
+            probe,
+            "cancel_visible_orders_for_symbols",
+            side_effect=[
+                [{"ok": True, "symbol": "AAPL", "order_ids": ["101"]}],
+                [{"ok": True, "symbol": "AAPL", "order_ids": ["101"]}],
+            ],
+        ) as rescue, mock.patch.object(
+            probe,
+            "wait_for_flat_symbols",
+            side_effect=[
+                {"ok": False, "snapshot": first_snapshot},
+                {"ok": True, "snapshot": flat_snapshot},
+            ],
+        ) as wait_for_flat:
+            result = probe.cancel_visible_orders_until_flat(args, ["AAPL"])
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(2, result["rounds"])
+        self.assertEqual(2, rescue.call_count)
+        self.assertEqual(2, wait_for_flat.call_count)
+        self.assertEqual([1, 2], [item["visible_rescue_round"] for item in result["results"]])
 
     def test_cancel_all_orders_retries_timeout_before_success(self):
         args = Namespace(

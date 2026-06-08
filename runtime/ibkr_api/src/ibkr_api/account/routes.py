@@ -83,8 +83,14 @@ def register_account_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     @app.route("/api/custom/ibkr/account_snapshot", methods=["GET"])
     def custom_ibkr_account_snapshot() -> Response:
         query_payload = request.args.to_dict(flat=True)
+        cache_key = canonical_cache_key("account_snapshot", query_payload)
+        cached_orders_fast_payload = None
+        if _orders_fast_request(query_payload):
+            cached_entry = _ACCOUNT_ROUTE_CACHE.peek(cache_key, allow_stale=True)
+            if cached_entry is not None:
+                cached_orders_fast_payload = cached_entry[0]
         payload, status_code = _ACCOUNT_ROUTE_CACHE.get(
-            canonical_cache_key("account_snapshot", query_payload),
+            cache_key,
             builder=lambda: build_account_snapshot_response(
                 pb,
                 payload=query_payload,
@@ -92,6 +98,7 @@ def register_account_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
                 request_json_request=request_json_request,
                 runtime_base_url=runtime_base_url,
                 upstream_timeout=_account_snapshot_upstream_timeout(query_payload),
+                orders_fast_fallback_payload=cached_orders_fast_payload,
             ),
             ttl_seconds=cache_seconds("IBKR_ROUTE_CACHE_ACCOUNT_SNAPSHOT_TTL_SEC", 5.0),
             stale_seconds=cache_seconds("IBKR_ROUTE_CACHE_ACCOUNT_SNAPSHOT_STALE_SEC", 120.0),

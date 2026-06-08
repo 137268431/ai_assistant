@@ -400,6 +400,44 @@ def get_snapshot(
     return client.get(path or fee_probe.DEFAULT_ACCOUNT_SNAPSHOT_PATH, account_snapshot_params(orders_fast=orders_fast))
 
 
+def orders_fast_summary_degraded(snapshot: dict[str, Any]) -> bool:
+    if not isinstance(snapshot, dict) or snapshot.get("ok") is False:
+        return True
+    if snapshot.get("summary_available") is False:
+        return True
+    return snapshot.get("orders_fast_diagnostics") is not None and not isinstance(snapshot.get("orders_fast_diagnostics"), dict)
+
+
+def require_orders_fast_summary(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "require_orders_fast_summary", False))
+
+
+def orders_fast_summary_degraded_max_wait_sec(args: argparse.Namespace) -> float:
+    return max(0.0, float(getattr(args, "orders_fast_summary_degraded_max_wait_sec", 0.0) or 0.0))
+
+
+def get_orders_fast_snapshot_with_retry(
+    args: argparse.Namespace,
+    *,
+    timeout_sec: float | None = None,
+    require_summary: bool = False,
+) -> dict[str, Any]:
+    attempts = max(1, int(getattr(args, "orders_fast_summary_retries", 1) or 1))
+    delay_sec = max(0.0, float(getattr(args, "orders_fast_summary_retry_delay_sec", 0.0) or 0.0))
+    last_snapshot: dict[str, Any] = {}
+    for attempt in range(1, attempts + 1):
+        snapshot = get_snapshot(args, timeout_sec=timeout_sec, orders_fast=True)
+        if isinstance(snapshot, dict):
+            snapshot.setdefault("_probe_orders_fast_attempt", attempt)
+            snapshot.setdefault("_probe_orders_fast_attempts", attempts)
+        last_snapshot = snapshot
+        if not require_summary or not orders_fast_summary_degraded(snapshot):
+            return snapshot
+        if attempt < attempts and delay_sec > 0:
+            time.sleep(delay_sec)
+    return last_snapshot
+
+
 def get_gateway_status_lite(args: argparse.Namespace, *, timeout_sec: float | None = None) -> dict[str, Any]:
     client, _path = account_snapshot_client(args, timeout_sec=timeout_sec)
     params = {
@@ -719,16 +757,25 @@ def account_access_ok(summary: dict[str, Any]) -> bool:
 def sample_account_access(args: argparse.Namespace, symbols: list[str], *, phase: str, sample_index: int) -> dict[str, Any]:
     started = time.perf_counter()
     try:
-        snapshot = get_snapshot(args, orders_fast=bool(getattr(args, "pending_snapshot_orders_fast", True)))
+        orders_fast = bool(getattr(args, "pending_snapshot_orders_fast", True))
+        if orders_fast:
+            snapshot = get_orders_fast_snapshot_with_retry(
+                args,
+                require_summary=require_orders_fast_summary(args),
+            )
+        else:
+            snapshot = get_snapshot(args, orders_fast=False)
         fee_probe.assert_paper_snapshot(snapshot)
         summary = summarize_account_snapshot(snapshot, symbols)
-        ok = account_access_ok(summary)
+        summary_degraded = orders_fast and require_orders_fast_summary(args) and orders_fast_summary_degraded(snapshot)
+        ok = account_access_ok(summary) and not summary_degraded
         return {
             "ok": ok,
             "phase": phase,
             "sample_index": int(sample_index),
             "elapsed_s": round(time.perf_counter() - started, 3),
             "summary": summary,
+            "error": "orders_fast_summary_unavailable" if summary_degraded else "",
         }
     except Exception as exc:
         return {
@@ -786,7 +833,11 @@ def observe_pending_account_access(args: argparse.Namespace, symbols: list[str])
         1 for sample in samples if ((sample.get("summary") or {}).get("summary_available") is False)
     )
     if summary_unavailable_count:
-        warnings.append({"name": "account_summary_unavailable", "count": summary_unavailable_count})
+        item = {"name": "account_summary_unavailable", "count": summary_unavailable_count}
+        if require_orders_fast_summary(args):
+            failures.append(item)
+        else:
+            warnings.append(item)
     if len(samples) < sample_goal:
         failures.append({"name": "account_snapshot_sample_count", "value": len(samples), "threshold": sample_goal})
     if max_observed_elapsed > max_elapsed:
@@ -825,11 +876,17 @@ def wait_for_submission_quiescence(args: argparse.Namespace, symbols: list[str])
     last_signature: tuple[int, int, tuple[str, ...]] | None = None
     last_snapshot: dict[str, Any] = {}
     samples: list[dict[str, Any]] = []
+    summary_degraded_since = 0.0
+    summary_degraded_max_wait = orders_fast_summary_degraded_max_wait_sec(args)
 
     while True:
         now = time.time()
         try:
-            snapshot = get_snapshot(args, timeout_sec=cleanup_http_timeout(args), orders_fast=True)
+            snapshot = get_orders_fast_snapshot_with_retry(
+                args,
+                timeout_sec=cleanup_http_timeout(args),
+                require_summary=require_orders_fast_summary(args),
+            )
             summary = summarize_account_snapshot(snapshot, symbols)
             selected_ids = sorted(
                 str(order_id)
@@ -841,12 +898,20 @@ def wait_for_submission_quiescence(args: argparse.Namespace, symbols: list[str])
             active_commands = _active_order_command_count(snapshot)
             broker_open_count = _broker_open_count(snapshot)
             signature = (selected_open_count, active_commands, tuple(selected_ids))
+            summary_degraded = require_orders_fast_summary(args) and orders_fast_summary_degraded(snapshot)
+            if summary_degraded:
+                if summary_degraded_since <= 0:
+                    summary_degraded_since = now
+            else:
+                summary_degraded_since = 0.0
+            summary_degraded_for = max(0.0, now - summary_degraded_since) if summary_degraded_since > 0 else 0.0
             if signature != last_signature:
                 stable_since = now
                 last_signature = signature
             stable_for = max(0.0, now - stable_since)
             ready = (
                 account_access_ok(summary)
+                and not summary_degraded
                 and selected_open_count >= min_visible_orders
                 and active_commands == 0
                 and stable_for >= quiet_seconds
@@ -858,6 +923,9 @@ def wait_for_submission_quiescence(args: argparse.Namespace, symbols: list[str])
                     "selected_open_order_count": selected_open_count,
                     "broker_open_count": broker_open_count,
                     "active_order_command_count": active_commands,
+                    "summary_available": summary.get("summary_available"),
+                    "summary_degraded": summary_degraded,
+                    "summary_degraded_for_sec": round(summary_degraded_for, 3),
                     "stable_for_sec": round(stable_for, 3),
                     "ready": ready,
                 }
@@ -873,6 +941,24 @@ def wait_for_submission_quiescence(args: argparse.Namespace, symbols: list[str])
                     "last_sample": samples[-1],
                     "samples": samples,
                     "snapshot": snapshot,
+                }
+            if (
+                summary_degraded
+                and summary_degraded_max_wait > 0
+                and summary_degraded_for >= summary_degraded_max_wait
+                and selected_open_count >= min_visible_orders
+            ):
+                return {
+                    "ok": False,
+                    "skipped": False,
+                    "error": "orders_fast_summary_unavailable_after_retry",
+                    "timeout_sec": timeout,
+                    "quiet_sec": quiet_seconds,
+                    "min_visible_orders": min_visible_orders,
+                    "sample_count": len(samples),
+                    "last_sample": samples[-1],
+                    "samples": samples,
+                    "snapshot": last_snapshot,
                 }
         except Exception as exc:
             samples.append({"ok": False, "error": str(exc), "ready": False})
@@ -1544,7 +1630,7 @@ def exit_cancel_storm(args: argparse.Namespace, place_results: list[dict[str, An
 
 
 def cancel_visible_orders_for_symbols(args: argparse.Namespace, symbols: list[str]) -> list[dict[str, Any]]:
-    snapshot = get_snapshot(args, timeout_sec=cleanup_http_timeout(args), orders_fast=True)
+    snapshot = get_orders_fast_snapshot_with_retry(args, timeout_sec=cleanup_http_timeout(args), require_summary=False)
     if not fee_probe.supports_symbol_flat_check(snapshot):
         return [
             {
@@ -1554,10 +1640,9 @@ def cancel_visible_orders_for_symbols(args: argparse.Namespace, symbols: list[st
                 "snapshot": summarize_account_snapshot(snapshot, symbols),
             }
         ]
-    client = fee_probe.ApiClient(args.api_base_url, timeout=cleanup_http_timeout(args))
     normalized_symbols = {fee_probe.normalize_symbol(symbol) for symbol in symbols if fee_probe.normalize_symbol(symbol)}
     seen: set[str] = set()
-    cancel_results: list[dict[str, Any]] = []
+    cancel_items: list[dict[str, Any]] = []
     for key in ("live_open_orders", "orders"):
         for order in snapshot.get(key) or []:
             if not isinstance(order, dict) or not fee_probe.is_open_order(order):
@@ -1569,31 +1654,61 @@ def cancel_visible_orders_for_symbols(args: argparse.Namespace, symbols: list[st
             if not oid or identity in seen:
                 continue
             seen.add(identity)
-            started = time.perf_counter()
-            try:
-                response = client.post(
-                    "/api/custom/ibkr/orders/cancel",
-                    {"order_id": oid, "include_snapshot": False},
-                    action_params(),
-                )
-                ok = response_action_ok(response)
-                error = action_error_code({"response": response})
-            except Exception as exc:
-                response = {}
-                ok = False
-                error = str(exc)
-            cancel_results.append(
+            cancel_items.append(
                 {
-                    "ok": ok,
                     "order_id": oid,
                     "symbol": fee_probe.order_symbol(order),
-                    "response": response,
-                    "elapsed_s": round(time.perf_counter() - started, 3),
-                    "error": error,
-                    "source": "visible_order_rescue",
+                    "role": order.get("role") or order.get("order_family_type") or "",
                 }
             )
-            time.sleep(max(0.0, float(args.cancel_spacing_seconds or 0.0)))
+    if not cancel_items:
+        return []
+    if bool(getattr(args, "visible_rescue_batch_by_symbol", True)):
+        rescue_args = argparse.Namespace(**vars(args))
+        rescue_args.http_timeout_sec = cleanup_http_timeout(args)
+        result = cancel_order_items_by_symbol_burst(
+            rescue_args,
+            cancel_items,
+            source="visible_order_rescue",
+            workers=max(
+                1,
+                int(
+                    getattr(args, "visible_rescue_workers", 0)
+                    or len({item.get("symbol") for item in cancel_items})
+                    or 1
+                ),
+            ),
+        )
+        return list(result.get("results") or [])
+
+    client = fee_probe.ApiClient(args.api_base_url, timeout=cleanup_http_timeout(args))
+    cancel_results: list[dict[str, Any]] = []
+    for item in cancel_items:
+        started = time.perf_counter()
+        try:
+            response = client.post(
+                "/api/custom/ibkr/orders/cancel",
+                {"order_id": item["order_id"], "source": "visible_order_rescue", "include_snapshot": False},
+                action_params(),
+            )
+            ok = response_action_ok(response)
+            error = action_error_code({"response": response})
+        except Exception as exc:
+            response = {}
+            ok = False
+            error = str(exc)
+        cancel_results.append(
+            {
+                "ok": ok,
+                "order_id": item["order_id"],
+                "symbol": item["symbol"],
+                "response": response,
+                "elapsed_s": round(time.perf_counter() - started, 3),
+                "error": error,
+                "source": "visible_order_rescue",
+            }
+        )
+        time.sleep(max(0.0, float(args.cancel_spacing_seconds or 0.0)))
     return cancel_results
 
 
@@ -1737,7 +1852,9 @@ def _bulk_cancel_settle_timeout(args: argparse.Namespace) -> float:
     if explicit > 0:
         return explicit
     cleanup_timeout = float(getattr(args, "cleanup_timeout_sec", 0.0) or 0.0)
-    return max(0.0, min(cleanup_timeout, 240.0))
+    # Under 135-leg stress, global cancel can acknowledge quickly but broker
+    # callbacks may drain slowly. Do a short settle, then use per-symbol rescue.
+    return max(0.0, min(cleanup_timeout, 30.0))
 
 
 def _wait_after_bulk_cancel(args: argparse.Namespace, symbols: list[str]) -> dict[str, Any]:
@@ -1747,6 +1864,77 @@ def _wait_after_bulk_cancel(args: argparse.Namespace, symbols: list[str]) -> dic
     wait_args = argparse.Namespace(**vars(args))
     wait_args.cleanup_timeout_sec = timeout
     return wait_for_flat_symbols(wait_args, symbols)
+
+
+def _visible_rescue_wait_timeout(args: argparse.Namespace) -> float:
+    explicit = float(getattr(args, "visible_rescue_wait_sec", 0.0) or 0.0)
+    if explicit > 0:
+        return explicit
+    cleanup_timeout = float(getattr(args, "cleanup_timeout_sec", 0.0) or 0.0)
+    return max(0.0, min(cleanup_timeout, 45.0))
+
+
+def _wait_after_visible_rescue(args: argparse.Namespace, symbols: list[str]) -> dict[str, Any]:
+    timeout = _visible_rescue_wait_timeout(args)
+    if timeout <= 0:
+        return {"ok": False, "skipped": True, "reason": "visible_rescue_wait_disabled"}
+    wait_args = argparse.Namespace(**vars(args))
+    wait_args.cleanup_timeout_sec = timeout
+    return wait_for_flat_symbols(wait_args, symbols)
+
+
+def cancel_visible_orders_until_flat(args: argparse.Namespace, symbols: list[str]) -> dict[str, Any]:
+    max_rounds = max(1, int(getattr(args, "visible_rescue_rounds", 1) or 1))
+    all_results: list[dict[str, Any]] = []
+    last_wait: dict[str, Any] = {}
+    last_snapshot: dict[str, Any] = {}
+    for rescue_round in range(1, max_rounds + 1):
+        round_results = cancel_visible_orders_for_symbols(args, symbols)
+        for item in round_results:
+            if isinstance(item, dict):
+                item.setdefault("visible_rescue_round", rescue_round)
+        all_results.extend(round_results)
+        if not round_results:
+            return {
+                "ok": False,
+                "results": all_results,
+                "wait": last_wait,
+                "snapshot": last_snapshot,
+                "rounds": rescue_round,
+                "reason": "no_visible_orders_to_rescue",
+            }
+        if not all(item.get("ok") for item in round_results):
+            return {
+                "ok": False,
+                "results": all_results,
+                "wait": last_wait,
+                "snapshot": last_snapshot,
+                "rounds": rescue_round,
+                "reason": "visible_rescue_submit_failed",
+            }
+        try:
+            last_wait = _wait_after_visible_rescue(args, symbols)
+            last_snapshot = last_wait.get("snapshot") or {}
+        except Exception:
+            last_wait = {"ok": False}
+            last_snapshot = {}
+        if last_wait.get("ok") and is_flat_for_symbols(last_snapshot, symbols):
+            return {
+                "ok": True,
+                "results": all_results,
+                "wait": last_wait,
+                "snapshot": last_snapshot,
+                "rounds": rescue_round,
+                "reason": "flat_after_visible_order_rescue",
+            }
+    return {
+        "ok": False,
+        "results": all_results,
+        "wait": last_wait,
+        "snapshot": last_snapshot,
+        "rounds": max_rounds,
+        "reason": "visible_rescue_rounds_exhausted",
+    }
 
 
 def cleanup_symbols(
@@ -1764,6 +1952,7 @@ def cleanup_symbols(
     if global_snapshot and is_flat_for_symbols(global_snapshot, symbols):
         return already_flat_cleanup_results(plans, global_snapshot, reason="already_flat_after_bulk_cancel")
 
+    visible_rescue_result: dict[str, Any] | None = None
     if bool(getattr(args, "bulk_cancel_all", False)) and _bulk_cancel_was_submitted(cancel_results):
         try:
             post_bulk_cancel = _wait_after_bulk_cancel(args, symbols)
@@ -1773,6 +1962,15 @@ def cleanup_symbols(
             post_bulk_snapshot = {}
         if post_bulk_cancel.get("ok") and is_flat_for_symbols(post_bulk_snapshot, symbols):
             return already_flat_cleanup_results(plans, post_bulk_snapshot, reason="already_flat_after_bulk_cancel_wait")
+
+        visible_rescue_result = cancel_visible_orders_until_flat(args, symbols)
+        if visible_rescue_result.get("ok") and is_flat_for_symbols(visible_rescue_result.get("snapshot") or {}, symbols):
+            return already_flat_cleanup_results(
+                plans,
+                visible_rescue_result.get("snapshot") or {},
+                reason="already_flat_after_bulk_visible_order_rescue",
+                rescue_results=list(visible_rescue_result.get("results") or []),
+            )
 
         post_visibility_cancel_results = cancel_all_orders(
             args,
@@ -1792,21 +1990,15 @@ def cleanup_symbols(
                 rescue_results=post_visibility_cancel_results,
             )
 
-    visible_rescue_cancel_results = cancel_visible_orders_for_symbols(args, symbols)
-    if visible_rescue_cancel_results and all(item.get("ok") for item in visible_rescue_cancel_results):
-        try:
-            post_rescue_snapshot = wait_for_flat_symbols(args, symbols)
-            post_rescue_final_snapshot = post_rescue_snapshot.get("snapshot") or {}
-        except Exception:
-            post_rescue_snapshot = {"ok": False}
-            post_rescue_final_snapshot = {}
-        if post_rescue_snapshot.get("ok") and is_flat_for_symbols(post_rescue_final_snapshot, symbols):
-            return already_flat_cleanup_results(
-                plans,
-                post_rescue_final_snapshot,
-                reason="already_flat_after_visible_order_rescue",
-                rescue_results=visible_rescue_cancel_results,
-            )
+    if visible_rescue_result is None:
+        visible_rescue_result = cancel_visible_orders_until_flat(args, symbols)
+    if visible_rescue_result.get("ok") and is_flat_for_symbols(visible_rescue_result.get("snapshot") or {}, symbols):
+        return already_flat_cleanup_results(
+            plans,
+            visible_rescue_result.get("snapshot") or {},
+            reason="already_flat_after_visible_order_rescue",
+            rescue_results=list(visible_rescue_result.get("results") or []),
+        )
 
     client = fee_probe.ApiClient(args.api_base_url, timeout=snapshot_timeout)
     latest_place_by_symbol = {str(item.get("symbol")): item.get("response") or item for item in place_results}
@@ -1909,9 +2101,28 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         else:
             pending_observation = observe_pending_account_access(args, symbols)
             post_place_observation = wait_for_submission_quiescence(args, symbols)
-            if bool(getattr(args, "modify_stop_loss_storm", False)):
+            if bool(getattr(args, "modify_stop_loss_storm", False)) and post_place_observation.get("ok"):
                 modify_observation = modify_stop_loss_storm(args, plans, place_results)
-            pre_cancel_observation = wait_for_submission_quiescence(args, symbols)
+            elif bool(getattr(args, "modify_stop_loss_storm", False)):
+                modify_observation = {
+                    "ok": False,
+                    "skipped": True,
+                    "requested": 0,
+                    "ok_count": 0,
+                    "failed": 0,
+                    "results": [],
+                    "reason": "post_place_quiesce_failed_cleanup_immediately",
+                    "error": post_place_observation.get("error"),
+                }
+            if post_place_observation.get("ok"):
+                pre_cancel_observation = wait_for_submission_quiescence(args, symbols)
+            else:
+                pre_cancel_observation = {
+                    "ok": False,
+                    "skipped": True,
+                    "reason": "post_place_quiesce_failed_cleanup_immediately",
+                    "error": post_place_observation.get("error"),
+                }
             if bool(getattr(args, "exit_cancel_storm", False)):
                 exit_observation = exit_cancel_storm(args, place_results)
                 cancel_results = list(exit_observation.get("results") or [])
@@ -2066,6 +2277,10 @@ def apply_stress_preset(args: argparse.Namespace) -> argparse.Namespace:
     args.skip_stability_gate = False
     if target_orders >= 10:
         args.bulk_cancel_all = True
+        args.exit_cancel_storm = True
+        args.exit_cancel_scope = "all"
+        args.exit_cancel_batch_by_symbol = True
+        args.exit_burst_workers = max(int(getattr(args, "exit_burst_workers", 0) or 0), target_orders)
         args.stability_settle_seconds = max(float(getattr(args, "stability_settle_seconds", 0.0) or 0.0), 300.0)
     args.max_firing_alerts = 0.0
     args.max_broker_pending_requests = 0.0
@@ -2086,6 +2301,15 @@ def apply_probe_safety_defaults(args: argparse.Namespace) -> argparse.Namespace:
     if bool(getattr(args, "bulk_cancel_all", False)) and int(getattr(args, "orders", 0) or 0) >= 10:
         args.pre_cancel_quiesce_sec = max(float(getattr(args, "pre_cancel_quiesce_sec", 0.0) or 0.0), 300.0)
         args.pre_cancel_quiet_sec = max(float(getattr(args, "pre_cancel_quiet_sec", 0.0) or 0.0), 30.0)
+        if getattr(args, "require_orders_fast_summary", None) is None:
+            args.require_orders_fast_summary = True
+        args.orders_fast_summary_retries = max(int(getattr(args, "orders_fast_summary_retries", 0) or 0), 3)
+        args.orders_fast_summary_degraded_max_wait_sec = max(
+            float(getattr(args, "orders_fast_summary_degraded_max_wait_sec", 0.0) or 0.0),
+            30.0,
+        )
+        args.visible_rescue_rounds = max(int(getattr(args, "visible_rescue_rounds", 0) or 0), 4)
+        args.visible_rescue_wait_sec = max(float(getattr(args, "visible_rescue_wait_sec", 0.0) or 0.0), 45.0)
         if int(getattr(args, "min_pre_cancel_visible_orders", 0) or 0) <= 0:
             args.min_pre_cancel_visible_orders = max(
                 int(getattr(args, "min_pending_visible_orders", 0) or 0),
@@ -2142,12 +2366,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--cancel-all-http-timeout-sec", type=float, default=0.0, help="Bulk cancel_all HTTP timeout; defaults to up to 240s so 135-leg bracket bursts can reconcile.")
     parser.add_argument("--cancel-all-attempts", type=int, default=3, help="Retry bulk paper cancel_all before falling back to per-symbol cleanup.")
     parser.add_argument("--cancel-all-retry-delay-sec", type=float, default=10.0)
-    parser.add_argument("--bulk-cancel-settle-before-rescue-sec", type=float, default=0.0, help="After a successful bulk cancel_all request, wait this long for broker callbacks before issuing rescue cancels; defaults to min(cleanup timeout, 240s).")
+    parser.add_argument("--bulk-cancel-settle-before-rescue-sec", type=float, default=0.0, help="After a successful bulk cancel_all request, wait this long for broker callbacks before issuing rescue cancels; defaults to min(cleanup timeout, 30s).")
     parser.add_argument("--poll-interval-sec", type=float, default=2.0)
     parser.add_argument("--http-timeout-sec", type=float, default=30.0)
     parser.add_argument("--submit-timeout-sec", type=float, default=0.0, help="Hard wall-clock limit for the concurrent place burst before timed-out symbols are failed and cleanup starts.")
     parser.add_argument("--buying-power-unavailable-retries", type=int, default=2, help="Retry transient buying_power_unavailable placement responses before failing a symbol.")
     parser.add_argument("--buying-power-unavailable-retry-delay-sec", type=float, default=1.5)
+    parser.add_argument("--require-orders-fast-summary", action="store_true", default=None, help="Fail stress samples when orders_fast cannot provide account summary/reservation diagnostics after retries.")
+    parser.add_argument("--allow-orders-fast-summary-unavailable", action="store_false", dest="require_orders_fast_summary")
+    parser.add_argument("--orders-fast-summary-retries", type=int, default=2)
+    parser.add_argument("--orders-fast-summary-retry-delay-sec", type=float, default=0.75)
+    parser.add_argument("--orders-fast-summary-degraded-max-wait-sec", type=float, default=0.0, help="When required orders_fast summary stays degraded but open orders are visible, fail quiesce after this many seconds so cleanup can start.")
+    parser.add_argument("--visible-rescue-workers", type=int, default=0, help="Parallel per-symbol workers for visible-order rescue cancellation; defaults to one worker per symbol.")
+    parser.add_argument("--visible-rescue-rounds", type=int, default=1, help="How many visible-order rescue cancel rounds to run before falling back to per-symbol cleanup.")
+    parser.add_argument("--visible-rescue-wait-sec", type=float, default=0.0, help="Wait this long after each visible rescue round for broker cancel callbacks; defaults to min(cleanup timeout, 45s).")
+    parser.set_defaults(visible_rescue_batch_by_symbol=True)
+    parser.add_argument("--no-visible-rescue-batch-by-symbol", action="store_false", dest="visible_rescue_batch_by_symbol")
     parser.add_argument("--sqlite-timeout-sec", type=float, default=45.0)
     parser.add_argument("--stability-lookback-minutes", type=float, default=5.0)
     parser.add_argument("--max-firing-alerts", type=float, default=0.0)

@@ -91,6 +91,27 @@ class RouteSWRCache:
                 if predicate(key):
                     self._in_flight.pop(key, None)
 
+    def peek(self, key: tuple[Any, ...], *, allow_stale: bool = True) -> tuple[dict[str, Any], int] | None:
+        now = time.monotonic()
+        with self._lock:
+            entry = self._entries.get(key)
+        if not entry:
+            return None
+        if allow_stale:
+            if now > float(entry.get("stale_until") or 0.0):
+                return None
+            state = "peek_stale" if now > float(entry.get("expires_at") or 0.0) else "peek_hit"
+            return self._with_meta(
+                entry["payload"],
+                int(entry["status_code"]),
+                entry=entry,
+                state=state,
+                stale=state == "peek_stale",
+            )
+        if now > float(entry.get("expires_at") or 0.0):
+            return None
+        return self._with_meta(entry["payload"], int(entry["status_code"]), entry=entry, state="peek_hit")
+
     def get(
         self,
         key: tuple[Any, ...],

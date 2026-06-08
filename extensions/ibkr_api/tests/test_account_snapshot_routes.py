@@ -341,6 +341,75 @@ class AccountSnapshotRoutesTest(unittest.TestCase):
         self.assertEqual(1, payload["counts"]["open_orders"])
         self.assertEqual("pb_pending_fallback", payload["live_open_orders"][0]["authority"])
         self.assertTrue(payload["diagnostics"]["account_snapshot"]["orders_fast_pb_fallback"])
+        self.assertIn("orders_fast_diagnostics", payload)
+
+    def test_orders_fast_pb_fallback_preserves_cached_summary_when_runtime_times_out(self):
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            return {
+                "ok": False,
+                "status_code": 502,
+                "payload": {"ok": False, "error": "runtime_timeout"},
+                "target_url": "http://runtime/ibkr/account",
+                "elapsed_ms": timeout * 1000.0,
+                "timeout_s": timeout,
+                "error": "runtime_timeout",
+            }
+
+        pb = _FakePB(
+            rows={
+                "orders": [
+                    {
+                        "id": "ord-1",
+                        "environment": "paper",
+                        "symbol": "AAPL",
+                        "status": "Submitted",
+                        "relation_status": "active",
+                        "broker_order_id": "1001",
+                        "order_id": "1001",
+                        "unique_id": "entry-aapl",
+                        "role": "entry",
+                        "direction": "long",
+                        "quantity": 10,
+                        "limit_price": 123.45,
+                    }
+                ],
+                "ibkr_signals": [],
+            }
+        )
+        cached_summary = {
+            "remaining_buying_power": 239770.64,
+            "buying_power": 239770.64,
+            "net_liquidation": 60285.54,
+            "local_reserved_count": 0,
+            "local_reserved_exposure": 0.0,
+        }
+        payload, status_code = build_account_snapshot_response(
+            pb,
+            payload={
+                "broker_mode": "paper",
+                "environment": "paper",
+                "orders_fast": "1",
+                "snapshot_profile": "orders_fast",
+            },
+            normalize_environment=lambda value, default="live": value or default,
+            request_json_request=request_json_request,
+            runtime_base_url="http://runtime",
+            upstream_timeout=1.0,
+            orders_fast_fallback_payload={
+                "summary": cached_summary,
+                "buying_power_guard": {"state": "ok", "reason": "ok", "remaining": 239770.64},
+                "_cache": {"state": "peek_stale", "age_s": 12.3},
+            },
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["summary_available"])
+        self.assertAlmostEqual(238536.14, payload["summary"]["remaining_buying_power"])
+        self.assertEqual(1, payload["summary"]["local_reserved_count"])
+        self.assertAlmostEqual(1234.5, payload["summary"]["local_reserved_exposure"])
+        self.assertEqual("route_cache_fallback", payload["orders_fast_diagnostics"]["summary_source"])
+        self.assertEqual("peek_stale", payload["orders_fast_diagnostics"]["summary_cache_state"])
+        self.assertEqual("pb_fallback_open_entries", payload["orders_fast_diagnostics"]["summary_reserved_overlay_source"])
 
     def test_enrich_account_snapshot_builds_reconciliation_fields(self):
         pb = _FakePB()

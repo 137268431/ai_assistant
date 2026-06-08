@@ -159,6 +159,7 @@ def _orders_fast_pb_fallback_response(
     diagnostics: dict[str, Any],
     reason: str,
     selected_upstream: str,
+    fallback_summary_payload: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], int] | None:
     try:
         rows = pb.get_records(
@@ -189,6 +190,61 @@ def _orders_fast_pb_fallback_response(
         }
     )
     diagnostics["account_snapshot"] = account_diagnostics
+    cached_payload = ensure_object(fallback_summary_payload)
+    cached_summary = ensure_object(cached_payload.get("summary"))
+    cached_guard = ensure_object(cached_payload.get("buying_power_guard"))
+    cache_meta = ensure_object(cached_payload.get("_cache"))
+    summary_available = any(
+        cached_summary.get(key) not in (None, "")
+        for key in (
+            "remaining_buying_power",
+            "buying_power",
+            "net_liquidation",
+            "available_funds",
+            "excess_liquidity",
+            "equity_with_loan",
+        )
+    )
+    fallback_summary_source = "route_cache_fallback" if summary_available else "unavailable"
+    reserved_order_ids: list[str] = []
+    reserved_exposure = 0.0
+    for order in orders:
+        role = to_text(order.get("role") or order.get("leg_role")).lower()
+        if role and role != "entry":
+            continue
+        order_id = to_text(order.get("order_id") or order.get("id"))
+        if order_id and order_id in reserved_order_ids:
+            continue
+        quantity = abs(to_float(order.get("quantity") or order.get("total_quantity")) or 0.0)
+        price = to_float(order.get("limit_price") or order.get("price")) or 0.0
+        exposure = quantity * price
+        if exposure <= 0:
+            continue
+        if order_id:
+            reserved_order_ids.append(order_id)
+        reserved_exposure += exposure
+    if summary_available and reserved_exposure > 0:
+        existing_reserved = to_float(cached_summary.get("local_reserved_exposure")) or 0.0
+        account_remaining = to_float(cached_summary.get("remaining_buying_power"))
+        if account_remaining is None:
+            account_remaining = to_float(cached_summary.get("buying_power"))
+        if account_remaining is not None:
+            account_remaining += existing_reserved
+            adjusted_remaining = max(0.0, account_remaining - reserved_exposure)
+            for key in ("remaining_buying_power", "buying_power"):
+                if cached_summary.get(key) not in (None, ""):
+                    cached_summary[key] = adjusted_remaining
+        cached_summary["local_reserved_exposure"] = round(reserved_exposure, 4)
+        cached_summary["local_reserved_count"] = len(reserved_order_ids)
+        cached_summary["local_reserved_order_ids"] = list(reserved_order_ids)
+        cached_guard["local_reserved_exposure"] = round(reserved_exposure, 4)
+        cached_guard["local_reserved_count"] = len(reserved_order_ids)
+        cached_guard["local_reserved_order_ids"] = list(reserved_order_ids)
+        if cached_summary.get("remaining_buying_power") not in (None, ""):
+            remaining = to_float(cached_summary.get("remaining_buying_power"))
+            cached_guard["remaining"] = remaining
+            cached_guard["remaining_after"] = remaining
+            cached_guard["account_remaining_buying_power"] = account_remaining
     payload = {
         "ok": True,
         "status": "degraded",
@@ -199,17 +255,18 @@ def _orders_fast_pb_fallback_response(
         "session_authenticated": None,
         "gateway_running": None,
         "websocket_ready": None,
-        "summary_available": False,
-        "summary": {},
+        "summary_available": bool(summary_available),
+        "summary": dict(cached_summary) if summary_available else {},
         "buying_power_guard": {
             "enabled": True,
-            "available": False,
+            "available": bool(summary_available),
             "basis": "buying_power",
             "environment": environment,
-            "state": "unavailable",
-            "reason": "runtime_unavailable_orders_fast_pb_fallback",
+            **dict(cached_guard),
+            "state": (to_text(cached_guard.get("state")) or "ok") if summary_available else "unavailable",
+            "reason": (to_text(cached_guard.get("reason")) or "cached_summary") if summary_available else "runtime_unavailable_orders_fast_pb_fallback",
         },
-        "summary_raw": {},
+        "summary_raw": ensure_object(cached_payload.get("summary_raw")) if summary_available else {},
         "positions": [],
         "orders": orders,
         "live_open_orders": orders,
@@ -225,7 +282,7 @@ def _orders_fast_pb_fallback_response(
         },
         "errors": {
             "runtime": reason,
-            "summary": "runtime_unavailable_orders_fast_pb_fallback",
+            **({} if summary_available else {"summary": "runtime_unavailable_orders_fast_pb_fallback"}),
         },
         "order_reconciliation": {
             "broker_total_orders": 0,
@@ -242,12 +299,42 @@ def _orders_fast_pb_fallback_response(
         },
         "snapshot_profile": "orders_fast",
         "orders_fast": True,
+        "orders_fast_diagnostics": {
+            "order_source": "pb_fallback",
+            "cached_order_count": 0,
+            "pb_fallback_order_count": len(orders),
+            "pb_fallback_raw_order_count": len(rows),
+            "pb_fallback_skipped": False,
+            "pb_fallback_trust": {
+                "trusted": True,
+                "raw_count": len(rows),
+                "filtered_count": len(orders),
+                "broker_open_count": None,
+                "active_order_command_count": None,
+                "filter_reason": "api_orders_fast_runtime_fallback",
+            },
+            "open_orders_only": True,
+            "historical_orders_omitted": True,
+            "positions_source": "omitted_open_orders_only",
+            "positions_omitted": True,
+            "summary_source": fallback_summary_source,
+            "summary_cache_state": to_text(cache_meta.get("state")),
+            "summary_cache_age_s": cache_meta.get("age_s"),
+            "summary_reserved_overlay_source": "pb_fallback_open_entries" if reserved_exposure > 0 else "",
+            "summary_reserved_overlay_count": len(reserved_order_ids),
+            "summary_reserved_overlay_exposure": round(reserved_exposure, 4),
+            "status_source": "api_runtime_unavailable",
+            "skipped_account_data_fetch": True,
+            "elapsed_ms": account_diagnostics.get("total_elapsed_ms"),
+        },
         "proxy_source": "ibkr-api",
         "proxy_route": "/api/custom/ibkr/account_snapshot",
         "proxy_upstream": selected_upstream,
         "source": "ibkr-api-orders-fast-pb-fallback",
         "diagnostics": diagnostics,
     }
+    if summary_available:
+        _enrich_buying_power_summary(payload)
     return payload, 200
 
 
@@ -607,6 +694,7 @@ def build_account_snapshot_response(
     request_json_request: RequestJsonRequest,
     runtime_base_url: str,
     upstream_timeout: float = 20.0,
+    orders_fast_fallback_payload: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], int]:
     started = time.monotonic()
     environment = request_broker_mode(payload)
@@ -668,6 +756,7 @@ def build_account_snapshot_response(
                 diagnostics=diagnostics,
                 reason=reason,
                 selected_upstream=selected_upstream,
+                fallback_summary_payload=orders_fast_fallback_payload,
             )
             if fallback is not None:
                 return fallback
