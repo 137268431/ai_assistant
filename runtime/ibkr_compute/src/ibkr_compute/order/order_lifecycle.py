@@ -119,12 +119,14 @@ class OrderLifecycle:
             return float(default)
 
     def _get_config_bool(self, key: str, default: bool) -> bool:
-        if not self.config:
+        config = getattr(self, "config", None)
+        if not config:
             return bool(default)
-        getter = getattr(self.config, "get_bool_for_environment", None)
+        getter = getattr(config, "get_bool_for_environment", None)
+        environment = getattr(self, "environment", "live")
         if callable(getter):
-            return bool(getter(key, self.environment, default))
-        raw = str(self.config.get_for_environment(key, self.environment, str(default)) or "").strip().lower()
+            return bool(getter(key, environment, default))
+        raw = str(config.get_for_environment(key, environment, str(default)) or "").strip().lower()
         if raw in {"1", "true", "yes", "on"}:
             return True
         if raw in {"0", "false", "no", "off"}:
@@ -146,6 +148,8 @@ class OrderLifecycle:
             or "open_orders_all_timeout" in lowered
             or "executions_timeout" in lowered
             or "account_summary_timeout" in lowered
+            or "account_summary_request_limit" in lowered
+            or "maximum number of account summary requests exceeded" in lowered
             or "account_updates_timeout" in lowered
         )
 
@@ -161,6 +165,42 @@ class OrderLifecycle:
 
     def _account_data_backoff_remaining(self) -> float:
         return max(0.0, float(self._account_data_backoff_until or 0.0) - time.time())
+
+    def _order_pressure_reservation_count(self) -> int:
+        store = getattr(getattr(self, "order_placer", None), "reservation_store", None)
+        snapshotter = getattr(store, "snapshot", None)
+        if callable(snapshotter):
+            try:
+                snapshot = snapshotter()
+                return int((snapshot or {}).get("count") or 0)
+            except Exception:
+                return 0
+        return 0
+
+    def _order_pressure_command_count(self) -> int:
+        scheduler = getattr(getattr(self, "order_modifier", None), "symbol_scheduler", None)
+        status_getter = getattr(scheduler, "status", None)
+        if not callable(status_getter):
+            return 0
+        try:
+            status = status_getter() or {}
+        except Exception:
+            return 0
+        active = status.get("active_symbols") or []
+        queued = status.get("queued_symbols") or {}
+        active_count = len(active) if isinstance(active, (list, tuple, set)) else 0
+        queued_total = int(status.get("queued_total") or 0)
+        if isinstance(queued, dict) and queued_total <= 0:
+            queued_total = sum(int(value or 0) for value in queued.values())
+        return max(0, active_count + queued_total)
+
+    def _should_skip_account_data_during_order_pressure(self, operation: str) -> bool:
+        if not self._get_config_bool("ibkr_account_data_skip_during_order_pressure", True):
+            return False
+        normalized = str(operation or "").strip().lower()
+        if normalized not in {"positions", "account_snapshot", "account_summary", "account_pnl"}:
+            return False
+        return self._order_pressure_reservation_count() > 0 or self._order_pressure_command_count() > 0
 
     def _account_data_backoff_applies(self, operation: str) -> bool:
         reason = str(self._account_data_backoff_reason or "").strip().lower()
@@ -207,6 +247,17 @@ class OrderLifecycle:
             self._account_data_backoff_last_warn_at = now
 
     def _should_skip_account_data_fetch(self, *, operation: str) -> bool:
+        if self._should_skip_account_data_during_order_pressure(operation):
+            now = time.time()
+            if now - float(self._account_data_backoff_last_warn_at or 0.0) >= 15.0:
+                logger.info(
+                    "Deferring lifecycle account-data fetch during order pressure: operation=%s active_reservations=%d active_order_commands=%d",
+                    operation,
+                    self._order_pressure_reservation_count(),
+                    self._order_pressure_command_count(),
+                )
+                self._account_data_backoff_last_warn_at = now
+            return True
         remaining = self._account_data_backoff_remaining()
         if remaining <= 0:
             return False

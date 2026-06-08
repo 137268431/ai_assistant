@@ -121,20 +121,57 @@ def get_pocketbase_base_url(default: str | None = None) -> str:
 
 
 def _derive_runtime_service_status(runtime_mode: str, service_profile: str, service_status: dict) -> str:
+    readiness_degraded = _runtime_readiness_degraded(service_status)
     if service_profile == "runtime":
+        if readiness_degraded:
+            return "degraded"
         return "running" if service_status.get("ok", True) else "degraded"
     if runtime_mode == "remote":
         if is_runtime_status_payload(service_status):
-            if bool(service_status.get("ok", True)):
-                return "running"
-            return "degraded"
+            if not bool(service_status.get("ok", True)):
+                return "degraded"
+            return "degraded" if readiness_degraded else "running"
         return "expected_remote"
     return "embedded"
 
 
+def _runtime_readiness_degraded(service_status: dict) -> bool:
+    gateway = (service_status or {}).get("gateway") or {}
+    session = (service_status or {}).get("session") or {}
+    websocket = (service_status or {}).get("websocket") or {}
+    broker = (gateway.get("broker") or {}) if isinstance(gateway, dict) else {}
+    if isinstance(gateway, dict):
+        if "reachable" in gateway and not bool(gateway.get("reachable")):
+            return True
+        try:
+            if int(gateway.get("status_code") or 0) >= 400:
+                return True
+        except Exception:
+            pass
+    if isinstance(broker, dict):
+        if "ready" in broker and not bool(broker.get("ready")):
+            return True
+        if "connected" in broker and not bool(broker.get("connected")):
+            return True
+        try:
+            if int(broker.get("status_code") or 0) >= 400:
+                return True
+        except Exception:
+            pass
+    if isinstance(session, dict) and "authenticated" in session and not bool(session.get("authenticated")):
+        return True
+    if isinstance(websocket, dict) and ("ready" in websocket or "connected" in websocket):
+        return not bool(websocket.get("ready") or websocket.get("connected"))
+    return False
+
+
 def _derive_gateway_status(runtime_mode: str, service_profile: str, service_status: dict) -> str:
     gateway = (service_status or {}).get("gateway") or {}
-    if bool(gateway.get("running")) or bool(gateway.get("reachable")):
+    if bool(gateway.get("reachable")):
+        return "running"
+    if bool(gateway.get("running")) and gateway.get("reachable") is False:
+        return "degraded"
+    if bool(gateway.get("running")):
         return "running"
     if service_profile == "runtime":
         return "offline"

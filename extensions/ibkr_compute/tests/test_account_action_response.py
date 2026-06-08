@@ -59,6 +59,27 @@ class AccountActionResponseTest(unittest.TestCase):
         self.assertEqual("account_action_snapshot_skipped", payload["snapshot"]["source"])
         self.assertTrue(payload["snapshot"]["snapshot_skipped"])
 
+    def test_batch_cancel_uses_fast_snapshot(self):
+        class _Tracker:
+            def get_cached_live_orders(self, *, include_all=False):
+                return [{"orderId": "201", "status": "PreSubmitted"}]
+
+        class _Service:
+            environment = "paper"
+            order_tracker = _Tracker()
+
+        with mock.patch.object(common, "_build_ibkr_account_snapshot", return_value={"ok": True}) as full_snapshot:
+            payload, status = common._build_snapshot_action_response(
+                _Service(),
+                "cancel_order_ids",
+                {"ok": True, "submitted": 3},
+            )
+
+        self.assertEqual(200, status)
+        self.assertTrue(payload["ok"])
+        full_snapshot.assert_not_called()
+        self.assertEqual("account_action_orders_fast", payload["snapshot"]["source"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -508,6 +508,8 @@ def proxy_runtime_request(path: str):
     params = list(request.args.items(multi=True))
     if is_runtime_status_request and not any(str(key) == "skip_compute_status" for key, _ in params):
         params.append(("skip_compute_status", "1"))
+    if is_runtime_status_request and not any(str(key) in {"lite", "fast", "fast_status", "lightweight", "full"} for key, _ in params):
+        params.append(("lite", "1"))
     runtime_status_cache_key = _runtime_status_proxy_cache_key(normalized_path, params) if is_runtime_status_request else ""
     headers = {}
     for header_name in ("Accept", "Content-Type"):

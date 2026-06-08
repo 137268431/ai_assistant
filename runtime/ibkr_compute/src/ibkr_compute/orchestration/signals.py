@@ -1670,7 +1670,7 @@ class TradingServiceSignalsMixin:
             "order_ids": order_ids,
             "bracket_group": group,
             "trade_group_id": group,
-            "oca_group": group,
+            "oca_group": "",
             "order_family_type": "bracket_oco",
             "quantity": int(sig.get("shares") or 0),
             "take_profit_quantity": int(sig.get("shares") or 0),
@@ -3524,7 +3524,7 @@ class TradingServiceSignalsMixin:
         trade_group_id = result.get("trade_group_id") or result.get("bracket_group") or entry_unique_id
         order_family_type = str(result.get("order_family_type") or ("bracket_oco" if trade_group_id else "")).strip()
         raw_oca_group = str(result.get("oca_group") or "").strip()
-        oca_group = raw_oca_group or (trade_group_id if order_family_type == "bracket_oco" else "")
+        oca_group = raw_oca_group
         ack_quantity = int(result.get("quantity") or sig["shares"] or 0)
         tp_quantity = int(result.get("take_profit_quantity") or ack_quantity)
         sl_quantity = int(result.get("stop_loss_quantity") or ack_quantity)

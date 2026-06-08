@@ -182,7 +182,7 @@ class FakeBracketBroker:
             "sl_coid": f"sl_{group}",
             "bracket_group": group,
             "trade_group_id": group,
-            "oca_group": group if family == "bracket_oco" else "",
+            "oca_group": "",
             "order_family_type": family,
             "quantity": kwargs.get("quantity"),
             "take_profit_quantity": kwargs.get("take_profit_quantity", kwargs.get("quantity")),
@@ -686,6 +686,133 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
         self.assertEqual([], adapter.client.await_order_submissions_calls)
         background_confirm.assert_called_once()
 
+    def test_background_bracket_confirmation_downgrades_cleanup_cancel_notice(self):
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeClient(
+            submission_result={
+                "ok": False,
+                "error": "Order Canceled - reason:",
+                "orders": {},
+                "failures": {
+                    "206": {
+                        "ok": False,
+                        "order_id": "206",
+                        "error": "Order Canceled - reason:",
+                        "details": {"order_id": "206", "code": 202, "message": "Order Canceled - reason:"},
+                    }
+                },
+                "missing_order_ids": ["207"],
+            }
+        )
+
+        with mock.patch.object(ib_gateway.logger, "warning") as warning_log, mock.patch.object(
+            ib_gateway.logger, "info"
+        ) as info_log, mock.patch.object(ib_gateway, "record_order_event") as record_order_event:
+            ib_gateway.BrokerAdapter._confirm_bracket_submission_background(
+                adapter,
+                order_ids=[206, 207, 208],
+                group="AAPL_long_test",
+                order_family_type="bracket_oco",
+                metric_environment="paper",
+            )
+
+        warning_log.assert_not_called()
+        self.assertIn("ended after cancellation", info_log.call_args.args[0])
+        self.assertEqual("canceled", record_order_event.call_args.kwargs["result"])
+        self.assertEqual("order_canceled_before_background_confirm", record_order_event.call_args.kwargs["reason_code"])
+
+    def test_background_bracket_confirmation_downgrades_recent_cancel_missing_orders(self):
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeClient(
+            submission_result={
+                "ok": False,
+                "error": "order_submission_unconfirmed",
+                "orders": {},
+                "failures": {},
+                "missing_order_ids": ["206", "207", "208"],
+            }
+        )
+        adapter._remember_recent_cancel_order_ids(["206", "207", "208"], ttl=60.0)
+
+        with mock.patch.object(ib_gateway.logger, "warning") as warning_log, mock.patch.object(
+            ib_gateway.logger, "info"
+        ) as info_log, mock.patch.object(ib_gateway, "record_order_event") as record_order_event:
+            ib_gateway.BrokerAdapter._confirm_bracket_submission_background(
+                adapter,
+                order_ids=[206, 207, 208],
+                group="AAPL_long_test",
+                order_family_type="bracket_oco",
+                metric_environment="paper",
+            )
+
+        warning_log.assert_not_called()
+        self.assertIn("ended after cancellation", info_log.call_args.args[0])
+        self.assertEqual("canceled", record_order_event.call_args.kwargs["result"])
+        self.assertEqual("order_canceled_before_background_confirm", record_order_event.call_args.kwargs["reason_code"])
+
+    def test_background_bracket_confirmation_downgrades_recent_cancel_all_missing_orders(self):
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeClient(
+            submission_result={
+                "ok": False,
+                "error": "order_submission_unconfirmed",
+                "orders": {"206": {"ok": True, "order_id": "206"}},
+                "failures": {},
+                "missing_order_ids": ["207", "208"],
+            }
+        )
+        adapter._remember_recent_cancel_all(ttl=60.0)
+
+        with mock.patch.object(ib_gateway.logger, "warning") as warning_log, mock.patch.object(
+            ib_gateway.logger, "info"
+        ) as info_log, mock.patch.object(ib_gateway, "record_order_event") as record_order_event:
+            ib_gateway.BrokerAdapter._confirm_bracket_submission_background(
+                adapter,
+                order_ids=[206, 207, 208],
+                group="AAPL_long_test",
+                order_family_type="bracket_oco",
+                metric_environment="paper",
+            )
+
+        warning_log.assert_not_called()
+        self.assertIn("ended after cancellation", info_log.call_args.args[0])
+        self.assertEqual("canceled", record_order_event.call_args.kwargs["result"])
+        self.assertEqual("order_canceled_before_background_confirm", record_order_event.call_args.kwargs["reason_code"])
+
+    def test_background_bracket_confirmation_still_warns_true_rejection(self):
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeClient(
+            submission_result={
+                "ok": False,
+                "error": "Order rejected - reason:Invalid Price",
+                "orders": {},
+                "failures": {
+                    "206": {
+                        "ok": False,
+                        "order_id": "206",
+                        "error": "Order rejected - reason:Invalid Price",
+                        "details": {"order_id": "206", "code": 201, "message": "Order rejected - reason:Invalid Price"},
+                    }
+                },
+                "missing_order_ids": [],
+            }
+        )
+
+        with mock.patch.object(ib_gateway.logger, "warning") as warning_log, mock.patch.object(
+            ib_gateway, "record_order_event"
+        ) as record_order_event:
+            ib_gateway.BrokerAdapter._confirm_bracket_submission_background(
+                adapter,
+                order_ids=[206, 207, 208],
+                group="AAPL_long_test",
+                order_family_type="bracket_oco",
+                metric_environment="paper",
+            )
+
+        warning_log.assert_called_once()
+        self.assertEqual("error", record_order_event.call_args.kwargs["result"])
+        self.assertIn("Invalid Price", record_order_event.call_args.kwargs["reason_code"])
+
     def test_place_bracket_order_sets_child_oca_metadata(self):
         adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
         adapter.client = FakeClient(
@@ -724,7 +851,7 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
             ib_gateway.Contract = original_contract
 
         self.assertTrue(result["ok"])
-        self.assertEqual(result["bracket_group"], result["oca_group"])
+        self.assertEqual("", result["oca_group"])
         self.assertEqual("bracket_oco", result["order_family_type"])
         entry_order = adapter.client.placed_orders[0][1]
         tp_order = adapter.client.placed_orders[1][1]
@@ -738,10 +865,8 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
         self.assertEqual("U123456", entry_order.account)
         self.assertEqual("U123456", tp_order.account)
         self.assertEqual("U123456", sl_order.account)
-        self.assertEqual(result["oca_group"], tp_order.ocaGroup)
-        self.assertEqual(result["oca_group"], sl_order.ocaGroup)
-        self.assertEqual(1, tp_order.ocaType)
-        self.assertEqual(1, sl_order.ocaType)
+        self.assertFalse(hasattr(tp_order, "ocaGroup"))
+        self.assertFalse(hasattr(sl_order, "ocaGroup"))
     def test_place_bracket_order_smart_routes_us_stock_with_primary_exchange(self):
         adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
         adapter.client = FakeClient(
@@ -871,7 +996,7 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual("tv_sig_1_ABC", result["bracket_group"])
         self.assertEqual("tv_sig_1_ABC", result["trade_group_id"])
-        self.assertEqual("tv_sig_1_ABC", result["oca_group"])
+        self.assertEqual("", result["oca_group"])
         entry_order = adapter.client.placed_orders[0][1]
         tp_order = adapter.client.placed_orders[1][1]
         sl_order = adapter.client.placed_orders[2][1]
@@ -1353,6 +1478,7 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
                 self.cancelled = []
                 self.cleared = []
                 self.request_calls = []
+                self.marked_terminal = []
 
             def request_open_orders(self, timeout=1, include_all=False, force=False):
                 self.request_calls.append({"timeout": timeout, "include_all": include_all, "force": force})
@@ -1375,6 +1501,10 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
                 # trust the fresh open-order reconciliation.
                 return {"orderId": str(order_id), "status": "Submitted"}
 
+            def mark_order_terminal(self, order_id, *, status="CANCELLED", reason=""):
+                self.marked_terminal.append({"order_id": str(order_id), "status": status, "reason": reason})
+                return {"orderId": str(order_id), "status": status}
+
         adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
         adapter.client = FakeBatchCancelClient()
 
@@ -1387,7 +1517,140 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
         self.assertEqual(3, result["cancelled"])
         self.assertEqual([], result["errors"])
         self.assertEqual(["101", "102", "103"], adapter.client.cancelled)
+        self.assertCountEqual(["101", "102", "103"], [item["order_id"] for item in adapter.client.marked_terminal])
+        self.assertTrue(all(item["reason"] == "cancel_all_open_orders_reconciled_missing" for item in adapter.client.marked_terminal))
         self.assertTrue(all(call["include_all"] and call["force"] for call in adapter.client.request_calls))
+
+    def test_cancel_all_orders_sends_paper_global_cancel_before_id_batch(self):
+        class FakeGlobalCancelClient:
+            def __init__(self):
+                self.open_orders = [
+                    {"orderId": "101", "status": "Submitted"},
+                    {"orderId": "102", "status": "PreSubmitted"},
+                ]
+                self.events = []
+                self.marked_terminal = []
+
+            def request_open_orders(self, timeout=1, include_all=False, force=False):
+                if self.events.count("cancel:101") and self.events.count("cancel:102"):
+                    return []
+                return list(self.open_orders)
+
+            def request_global_cancel(self):
+                self.events.append("global")
+
+            def clear_order_error(self, order_id):
+                self.events.append(f"clear:{order_id}")
+
+            def cancel_open_order(self, order_id):
+                self.events.append(f"cancel:{order_id}")
+
+            def get_order_error(self, order_id):
+                return {}
+
+            def get_order_snapshot(self, order_id):
+                return {"orderId": str(order_id), "status": "Submitted"}
+
+            def mark_order_terminal(self, order_id, *, status="CANCELLED", reason=""):
+                self.marked_terminal.append({"order_id": str(order_id), "status": status, "reason": reason})
+                return {"orderId": str(order_id), "status": status}
+
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeGlobalCancelClient()
+
+        with mock.patch("ibkr_compute.broker.ib_gateway.record_order_event"), mock.patch(
+            "ibkr_compute.broker.ib_gateway.CANCEL_ALL_GLOBAL_CANCEL_GRACE_SECONDS",
+            0.0,
+        ):
+            result = ib_gateway.BrokerAdapter.cancel_all_orders(adapter, metric_environment="paper")
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["global_cancel_submitted"])
+        self.assertEqual("global", adapter.client.events[0])
+        self.assertIn("cancel:101", adapter.client.events)
+        self.assertIn("cancel:102", adapter.client.events)
+
+    def test_cancel_all_orders_does_not_global_cancel_live(self):
+        class FakeLiveCancelClient:
+            def __init__(self):
+                self.global_cancelled = False
+                self.cancelled = []
+
+            def request_open_orders(self, timeout=1, include_all=False, force=False):
+                return [] if self.cancelled else [{"orderId": "301", "status": "Submitted"}]
+
+            def request_global_cancel(self):
+                self.global_cancelled = True
+
+            def clear_order_error(self, order_id):
+                pass
+
+            def cancel_open_order(self, order_id):
+                self.cancelled.append(str(order_id))
+
+            def get_order_error(self, order_id):
+                return {}
+
+            def get_order_snapshot(self, order_id):
+                return {"orderId": str(order_id), "status": "Submitted"}
+
+            def mark_order_terminal(self, order_id, *, status="CANCELLED", reason=""):
+                return {"orderId": str(order_id), "status": status}
+
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeLiveCancelClient()
+
+        with mock.patch("ibkr_compute.broker.ib_gateway.record_order_event"):
+            result = ib_gateway.BrokerAdapter.cancel_all_orders(adapter, metric_environment="live")
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(adapter.client.global_cancelled)
+        self.assertEqual(["301"], adapter.client.cancelled)
+
+    def test_cancel_all_orders_uses_callback_cache_when_fresh_open_orders_empty(self):
+        class FakeEmptyFreshOpenOrdersClient:
+            def __init__(self):
+                self.cancelled = []
+                self.cleared = []
+                self.marked_terminal = []
+
+            def request_open_orders(self, timeout=1, include_all=False, force=False):
+                return []
+
+            def get_order_snapshots(self, include_all=False):
+                return [
+                    {"orderId": "201", "status": "Submitted"},
+                    {"orderId": "202", "status": "PreSubmitted"},
+                ]
+
+            def clear_order_error(self, order_id):
+                self.cleared.append(str(order_id))
+
+            def cancel_open_order(self, order_id):
+                self.cancelled.append(str(order_id))
+
+            def get_order_error(self, order_id):
+                return {}
+
+            def get_order_snapshot(self, order_id):
+                return {"orderId": str(order_id), "status": "Submitted"}
+
+            def mark_order_terminal(self, order_id, *, status="CANCELLED", reason=""):
+                self.marked_terminal.append({"order_id": str(order_id), "status": status, "reason": reason})
+                return {"orderId": str(order_id), "status": status}
+
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeEmptyFreshOpenOrdersClient()
+
+        with mock.patch("ibkr_compute.broker.ib_gateway.record_order_event"):
+            result = ib_gateway.BrokerAdapter.cancel_all_orders(adapter)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("callback_cache_empty_open_orders", result["order_list_source"])
+        self.assertEqual(2, result["requested"])
+        self.assertEqual(2, result["submitted"])
+        self.assertEqual(["201", "202"], adapter.client.cancelled)
+        self.assertCountEqual(["201", "202"], [item["order_id"] for item in adapter.client.marked_terminal])
 
     def test_cancel_all_orders_treats_cancel_notice_as_confirmed_even_with_stale_open_row(self):
         class FakeStaleCancelClient:
@@ -1477,6 +1740,32 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
 
         self.assertEqual(["102"], [item["orderId"] for item in app._pending_requests[1].items])
 
+    def test_place_order_seeds_local_order_object_for_immediate_modify(self):
+        app = ib_gateway._IBGatewayApp.__new__(ib_gateway._IBGatewayApp)
+        app._state_lock = threading.RLock()
+        app._open_order_objects = {}
+        app.connect_and_start = lambda timeout=1: True
+        app.status = lambda: {"ready": True, "connected": True}
+        placed = []
+
+        def place_order(order_id, contract, order):
+            placed.append((order_id, contract, order))
+
+        app.placeOrder = place_order
+
+        contract = FakeContract()
+        order = FakeOrder()
+        order.orderId = 456
+        order.orderType = "STP"
+
+        ib_gateway._IBGatewayApp.place_order(app, contract, order, timeout=1)
+
+        self.assertEqual([456], [item[0] for item in placed])
+        seeded_contract, seeded_order = app.get_order_objects("456")
+        self.assertIsNot(seeded_contract, contract)
+        self.assertIsNot(seeded_order, order)
+        self.assertEqual("STP", seeded_order.orderType)
+
     def test_modify_order_normalizes_price_updates_before_confirmation(self):
         class FakeModifyClient:
             def __init__(self):
@@ -1520,6 +1809,167 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(88.91, adapter.client.order.auxPrice)
         self.assertEqual(88.91, result["price_normalization"]["auxPrice"]["normalized"])
+
+    def test_modify_order_refreshes_open_orders_when_object_missing(self):
+        class FakeRefreshClient:
+            def __init__(self):
+                self.contract = None
+                self.order = None
+                self.refresh_calls = 0
+                self.placed_orders = []
+
+            def get_order_objects(self, order_id):
+                return self.contract, self.order
+
+            def request_open_orders_for_order_confirmation(self, **kwargs):
+                self.refresh_calls += 1
+                self.contract = FakeContract()
+                self.order = FakeOrder()
+                self.order.orderId = 777
+                self.order.orderType = "STP"
+                return [self.get_order_snapshot("777")]
+
+            def clear_order_error(self, order_id):
+                return None
+
+            def place_order(self, contract, order):
+                self.placed_orders.append((contract, order))
+
+            def await_order_submission(self, order_id, timeout=3.0, poll_interval=0.2):
+                return {"ok": True, "order": self.get_order_snapshot(order_id)}
+
+            def get_order_error(self, order_id):
+                return {}
+
+            def get_order_snapshot(self, order_id):
+                return {
+                    "orderId": str(order_id),
+                    "status": "Submitted",
+                    "auxPrice": getattr(self.order, "auxPrice", 0.0) if self.order else 0.0,
+                }
+
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeRefreshClient()
+
+        result = ib_gateway.BrokerAdapter.modify_order(adapter, "777", {"auxPrice": 91.234})
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(1, adapter.client.refresh_calls)
+        self.assertEqual(91.23, adapter.client.order.auxPrice)
+        self.assertEqual(1, len(adapter.client.placed_orders))
+
+    def test_modify_order_returns_pending_when_price_confirmation_lags(self):
+        class FakePendingClient:
+            def __init__(self):
+                self.contract = FakeContract()
+                self.order = FakeOrder()
+                self.order.orderId = 888
+                self.order.orderType = "STP"
+
+            def get_order_objects(self, order_id):
+                return self.contract, self.order
+
+            def clear_order_error(self, order_id):
+                return None
+
+            def place_order(self, contract, order):
+                return None
+
+            def await_order_submission(self, order_id, timeout=3.0, poll_interval=0.2):
+                return {"ok": True, "order": {"orderId": str(order_id), "status": "Submitted"}}
+
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakePendingClient()
+
+        with mock.patch.object(
+            adapter,
+            "await_order_price_update",
+            return_value={"ok": False, "error": "order_modify_price_unconfirmed", "order_id": "888"},
+        ):
+            result = ib_gateway.BrokerAdapter.modify_order(adapter, "888", {"auxPrice": 90.12})
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["pending_confirmation"])
+        self.assertEqual("order_modify_price_unconfirmed", result["warning"])
+
+    def test_modify_order_returns_pending_when_submit_confirmation_lags(self):
+        class FakeSubmitLagClient:
+            def __init__(self):
+                self.contract = FakeContract()
+                self.order = FakeOrder()
+                self.order.orderId = 889
+                self.order.orderType = "STP"
+                self.placed_orders = []
+
+            def get_order_objects(self, order_id):
+                return self.contract, self.order
+
+            def clear_order_error(self, order_id):
+                return None
+
+            def place_order(self, contract, order):
+                self.placed_orders.append((contract, order))
+
+            def await_order_submission(self, order_id, timeout=3.0, poll_interval=0.2):
+                return {"ok": False, "error": "order_submission_unconfirmed", "order_id": str(order_id)}
+
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeSubmitLagClient()
+
+        with mock.patch.object(
+            adapter,
+            "await_order_price_update",
+            return_value={"ok": False, "error": "order_modify_price_unconfirmed", "order_id": "889"},
+        ):
+            result = ib_gateway.BrokerAdapter.modify_order(adapter, "889", {"auxPrice": 90.12})
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["pending_confirmation"])
+        self.assertTrue(result["entry_submission_unconfirmed"])
+        self.assertEqual("order_modify_price_unconfirmed", result["warning"])
+        self.assertEqual(1, len(adapter.client.placed_orders))
+
+    def test_modify_order_confirms_price_after_submit_confirmation_lags(self):
+        class FakeSubmitLagClient:
+            def __init__(self):
+                self.contract = FakeContract()
+                self.order = FakeOrder()
+                self.order.orderId = 890
+                self.order.orderType = "STP"
+
+            def get_order_objects(self, order_id):
+                return self.contract, self.order
+
+            def clear_order_error(self, order_id):
+                return None
+
+            def place_order(self, contract, order):
+                return None
+
+            def await_order_submission(self, order_id, timeout=3.0, poll_interval=0.2):
+                return {"ok": False, "error": "order_submission_unconfirmed", "order_id": str(order_id)}
+
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeSubmitLagClient()
+
+        with mock.patch.object(
+            adapter,
+            "await_order_price_update",
+            return_value={"ok": True, "order": {"orderId": "890", "auxPrice": 90.12}},
+        ):
+            result = ib_gateway.BrokerAdapter.modify_order(adapter, "890", {"auxPrice": 90.12})
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["entry_submission_unconfirmed"])
+        self.assertEqual(90.12, result["order"]["auxPrice"])
+
+    def test_account_summary_request_limit_message_is_detected(self):
+        self.assertTrue(
+            ib_gateway._account_summary_request_limit_message(
+                "Error processing request.-'Q' : cause - Maximum number of account summary requests exceeded; "
+                "desubscribe to previous request first"
+            )
+        )
 
     def test_ib_unset_double_price_is_treated_as_missing(self):
         self.assertEqual(0.0, ib_gateway._safe_float("1.7976931348623157e+308", 0.0))
@@ -1772,16 +2222,16 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual("DU123", broker.calls[0]["account_id"])
         self.assertEqual("NFLX_short_20260506_101500", result["bracket_group"])
-        self.assertEqual("NFLX_short_20260506_101500", result["oca_group"])
+        self.assertEqual("", result["oca_group"])
         self.assertEqual("bracket_oco", result["order_family_type"])
         self.assertEqual(3, len(pb_client.upserts))
         for upsert in pb_client.upserts:
             self.assertEqual("NFLX_short_20260506_101500", upsert["trade_group_id"])
             self.assertEqual("NFLX_short_20260506_101500", upsert["bracket_group"])
-            self.assertEqual("NFLX_short_20260506_101500", upsert["oca_group"])
+            self.assertEqual("", upsert["oca_group"])
             self.assertEqual("bracket_oco", upsert["order_family_type"])
             self.assertEqual("NFLX_short_20260506_101500", upsert["extra"]["bracket_group"])
-            self.assertEqual("NFLX_short_20260506_101500", upsert["extra"]["oca_group"])
+            self.assertEqual("", upsert["extra"]["oca_group"])
             self.assertEqual("bracket_oco", upsert["extra"]["order_family_type"])
             self.assertEqual("entry_NFLX_short_20260506_101500", upsert["entry_order_unique_id"])
         self.assertEqual("entry_NFLX_short_20260506_101500", pb_client.upserts[0]["unique_id"])

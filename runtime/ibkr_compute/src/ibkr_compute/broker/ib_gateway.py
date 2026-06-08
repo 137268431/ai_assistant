@@ -77,9 +77,9 @@ TICK_BY_TICK_DUPLICATE_WINDOW_SECONDS = 15.0
 # raw placeOrder socket write succeeds immediately.
 BRACKET_SUBMISSION_CONFIRM_TIMEOUT_SECONDS = 120.0
 try:
-    _BRACKET_BACKGROUND_CONFIRM_TIMEOUT = float(os.environ.get("IBKR_BRACKET_BACKGROUND_CONFIRM_TIMEOUT_SEC", "180") or 180.0)
+    _BRACKET_BACKGROUND_CONFIRM_TIMEOUT = float(os.environ.get("IBKR_BRACKET_BACKGROUND_CONFIRM_TIMEOUT_SEC", "360") or 360.0)
 except (TypeError, ValueError):
-    _BRACKET_BACKGROUND_CONFIRM_TIMEOUT = 180.0
+    _BRACKET_BACKGROUND_CONFIRM_TIMEOUT = 360.0
 BRACKET_BACKGROUND_CONFIRM_TIMEOUT_SECONDS = max(30.0, _BRACKET_BACKGROUND_CONFIRM_TIMEOUT)
 try:
     _ORDER_MOD_CONFIRM_TIMEOUT = float(os.environ.get("IBKR_ORDER_MODIFICATION_CONFIRM_TIMEOUT_SEC", "30") or 30.0)
@@ -145,6 +145,34 @@ def _order_error_is_cancel_notice(order_error: dict | None) -> bool:
     return False
 
 
+def _submission_confirmation_is_cancel_cleanup_notice(confirmation: dict | None) -> bool:
+    """Background submit checks can finish after an explicit cancel_all cleanup."""
+    if not isinstance(confirmation, dict):
+        return False
+    failures = confirmation.get("failures") if isinstance(confirmation.get("failures"), dict) else {}
+    if not failures:
+        return False
+    for failure in failures.values():
+        if not isinstance(failure, dict):
+            return False
+        details = failure.get("details") if isinstance(failure.get("details"), dict) else failure
+        if not _order_error_is_cancel_notice(details):
+            return False
+    return True
+
+
+def _submission_confirmation_has_missing_orders(confirmation: dict | None) -> bool:
+    if not isinstance(confirmation, dict):
+        return False
+    if str(confirmation.get("error") or "").strip() != "order_submission_unconfirmed":
+        return False
+    return bool(confirmation.get("missing_order_ids") or [])
+
+
+def _account_summary_request_limit_message(message: str | None) -> bool:
+    return "maximum number of account summary requests exceeded" in str(message or "").strip().lower()
+
+
 def _remember_submission_warning(warnings: dict[str, list[dict]], order_id: str, order_error: dict | None) -> None:
     warning = dict(order_error or {})
     if not warning:
@@ -175,6 +203,8 @@ def _env_bool(name: str, default: bool) -> bool:
     return bool(default)
 
 
+CANCEL_ALL_GLOBAL_CANCEL_ENABLED = _env_bool("IBKR_CANCEL_ALL_GLOBAL_CANCEL_ENABLED", True)
+CANCEL_ALL_GLOBAL_CANCEL_GRACE_SECONDS = _env_float("IBKR_CANCEL_ALL_GLOBAL_CANCEL_GRACE_SEC", 0.25, minimum=0.0)
 ACCOUNT_SUMMARY_CACHE_TTL_SECONDS = _env_float("IBKR_ACCOUNT_SUMMARY_CACHE_TTL_SEC", 15.0, minimum=0.0)
 POSITIONS_CACHE_TTL_SECONDS = _env_float("IBKR_POSITIONS_CACHE_TTL_SEC", 10.0, minimum=0.0)
 OPEN_ORDERS_CACHE_TTL_SECONDS = _env_float("IBKR_OPEN_ORDERS_CACHE_TTL_SEC", 3.0, minimum=0.0)
@@ -198,6 +228,12 @@ ORDER_CONFIRM_OPEN_ORDERS_SHARED_CACHE_TTL_SECONDS = _env_float(
     1.0,
     minimum=0.0,
 )
+MODIFY_ORDER_OBJECT_LOOKUP_TIMEOUT_SECONDS = _env_float(
+    "IBKR_MODIFY_ORDER_OBJECT_LOOKUP_TIMEOUT_SEC",
+    12.0,
+    minimum=0.0,
+)
+ATTACHED_BRACKET_EXPLICIT_OCA_ENABLED = _env_bool("IBKR_ATTACHED_BRACKET_EXPLICIT_OCA_ENABLED", False)
 
 
 from ibkr_compute.broker.ib_gateway_service import (
@@ -612,9 +648,21 @@ class _IBGatewayApp(EWrapper, EClient):
         cancel_notice = _order_error_is_cancel_notice(order_error_payload)
         expected_account_unsubscribe = self._is_expected_account_updates_unsubscribe_error(normalized_error_code)
         pending_ctx = self._pending_requests.get(int(reqId or 0))
+        account_summary_request_limit = bool(
+            normalized_error_code == 322
+            and pending_ctx
+            and pending_ctx.kind == "account_summary"
+            and _account_summary_request_limit_message(str(errorString or ""))
+        )
         severity = (
             "benign"
-            if normalized_error_code in BENIGN_ERROR_CODES or expected_account_unsubscribe or order_warning or cancel_notice
+            if (
+                normalized_error_code in BENIGN_ERROR_CODES
+                or expected_account_unsubscribe
+                or order_warning
+                or cancel_notice
+                or account_summary_request_limit
+            )
             else "warning"
         )
         record_broker_error(
@@ -647,10 +695,13 @@ class _IBGatewayApp(EWrapper, EClient):
                 and not expected_account_unsubscribe
                 and not order_warning
                 and not cancel_notice
+                and not account_summary_request_limit
             ):
                 logger.warning("IB Gateway error reqId=%s code=%s message=%s", reqId, errorCode, errorString)
                 if normalized_error_code in ACCOUNT_DATA_UNSUBSCRIBED_CODES:
                     self._record_account_data_issue("account_updates", str(errorString or "account_data_unsubscribed"))
+            elif account_summary_request_limit:
+                logger.info("IB account summary request limit hit; using cache/backoff reqId=%s code=%s", reqId, errorCode)
             elif order_warning:
                 logger.info("Ignoring non-fatal IB order submission warning reqId=%s code=%s", reqId, errorCode)
             elif cancel_notice:
@@ -663,6 +714,7 @@ class _IBGatewayApp(EWrapper, EClient):
                 and normalized_error_code not in BENIGN_ERROR_CODES
                 and not expected_account_unsubscribe
                 and not order_warning
+                and not account_summary_request_limit
             ):
                 self._order_errors[str(numeric_req_id)] = {
                     "order_id": str(numeric_req_id),
@@ -1852,7 +1904,19 @@ class _IBGatewayApp(EWrapper, EClient):
                 req_id, ctx = self._next_request("account_summary")
                 try:
                     self.reqAccountSummary(req_id, "All", "NetLiquidation,BuyingPower,AvailableFunds,ExcessLiquidity")
-                    items = self._await(req_id, ctx, timeout)
+                    try:
+                        items = self._await(req_id, ctx, timeout)
+                    except Exception as exc:
+                        if _account_summary_request_limit_message(str(exc)):
+                            stale = self._account_cache_get(
+                                cache_key,
+                                allow_stale=True,
+                                stale_ttl_seconds=ACCOUNT_DATA_STALE_CACHE_TTL_SECONDS,
+                            )
+                            if stale is not None:
+                                self._account_cache_store(cache_key, stale, ACCOUNT_SUMMARY_CACHE_TTL_SECONDS)
+                                return dict(stale or {})
+                        raise
                     if not items:
                         return {}
                     account = self._managed_accounts.split(",", 1)[0].strip() if self._managed_accounts else ""
@@ -2004,6 +2068,14 @@ class _IBGatewayApp(EWrapper, EClient):
                 duration_s=time.perf_counter() - started,
             )
             raise
+        try:
+            order_id = str(int(order.orderId))
+            with self._state_lock:
+                if not hasattr(self, "_open_order_objects"):
+                    self._open_order_objects = {}
+                self._open_order_objects[order_id] = (copy.deepcopy(contract), copy.deepcopy(order))
+        except Exception:
+            logger.debug("Failed to seed local order object after placeOrder", exc_info=True)
         record_order_event(
             operation="ibapi_place",
             order_family_type=order_type,
@@ -2033,8 +2105,69 @@ class _IBGatewayApp(EWrapper, EClient):
             raise
         record_order_event(operation="ibapi_cancel", result="ok", duration_s=time.perf_counter() - started)
 
+    def request_global_cancel(self, timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS):
+        started = time.perf_counter()
+        self._ensure_ready(timeout, "request_global_cancel")
+        try:
+            if OrderCancel is not None:
+                try:
+                    self.reqGlobalCancel(OrderCancel())
+                except TypeError:
+                    # Older ibapi releases only accept no arguments.
+                    self.reqGlobalCancel()
+            else:
+                self.reqGlobalCancel()
+        except Exception as exc:
+            record_order_event(
+                operation="ibapi_global_cancel",
+                result="error",
+                reason_code=exc.__class__.__name__,
+                duration_s=time.perf_counter() - started,
+            )
+            raise
+        record_order_event(operation="ibapi_global_cancel", result="ok", duration_s=time.perf_counter() - started)
+
     def get_order_snapshot(self, order_id: str) -> dict:
         return dict(self._open_orders.get(str(order_id)) or {})
+
+    def mark_order_terminal(self, order_id: str, *, status: str = "CANCELLED", reason: str = "") -> dict:
+        normalized_order_id = str(order_id or "").strip()
+        if not normalized_order_id:
+            return {}
+        terminal_status = str(status or "CANCELLED").strip().upper()
+        if terminal_status in {"", "NOT_OPEN", "CANCELED"}:
+            terminal_status = "CANCELLED"
+        payload: dict[str, Any]
+        changed = False
+        with self._state_lock:
+            current = dict(self._open_orders.get(normalized_order_id) or {})
+            previous_status = str(current.get("status") or "").strip().upper()
+            current.update(
+                {
+                    "orderId": normalized_order_id,
+                    "id": normalized_order_id,
+                    "status": terminal_status,
+                    "remainingQuantity": 0.0,
+                    "updated_at": _iso_now(),
+                    "_status_inferred": True,
+                    "_status_inferred_reason": str(reason or "open_orders_reconcile_not_open"),
+                    **self._order_callback_metadata("terminalReconcile", requested_snapshot=True),
+                }
+            )
+            current.setdefault("filledQuantity", 0.0)
+            current.setdefault("avgFillPrice", current.get("avgPrice") or 0.0)
+            current.setdefault("avgPrice", current.get("avgFillPrice") or 0.0)
+            self._open_orders[normalized_order_id] = current
+            self._open_order_objects.pop(normalized_order_id, None)
+            self._order_confirmation_open_orders_cache = {}
+            for cache_key in list(self._account_request_cache.keys()):
+                if cache_key and str(cache_key[0]) in {"open_orders", "open_orders_all"}:
+                    self._account_request_cache.pop(cache_key, None)
+            payload = dict(current)
+            changed = previous_status != terminal_status
+        if changed:
+            self._emit_order_update(payload)
+        return payload
 
     def get_order_snapshots(self, *, include_all: bool = False) -> List[dict]:
         closed_statuses = {"FILLED", "EXECUTED", "CANCELLED", "CANCELED", "INACTIVE", "REJECTED", "EXPIRED", "API_CANCELLED"}
@@ -2414,6 +2547,79 @@ class BrokerAdapter:
         self.client_id = int(client_id or DEFAULT_CLIENT_ID)
         self.connect_timeout = max(3, int(connect_timeout or DEFAULT_CONNECT_TIMEOUT_SECONDS))
         self.client = _IBGatewayApp(self.host, self.port, self.client_id)
+        self._recent_cancel_order_ids: set[str] = set()
+        self._recent_cancel_until = 0.0
+        self._recent_cancel_all_until = 0.0
+        self._recent_cancel_lock = threading.RLock()
+
+    def _recent_cancel_lock_ref(self) -> threading.RLock:
+        lock = getattr(self, "_recent_cancel_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._recent_cancel_lock = lock
+        return lock
+
+    def _remember_recent_cancel_order_ids(self, order_ids: Iterable[Any], *, ttl: float | None = None) -> None:
+        normalized = {str(item or "").strip() for item in (order_ids or []) if str(item or "").strip()}
+        if not normalized:
+            return
+        ttl_s = float(ttl if ttl is not None else BRACKET_BACKGROUND_CONFIRM_TIMEOUT_SECONDS + 30.0)
+        with self._recent_cancel_lock_ref():
+            current = {
+                str(item or "").strip()
+                for item in getattr(self, "_recent_cancel_order_ids", set())
+                if str(item or "").strip()
+            }
+            current.update(normalized)
+            self._recent_cancel_order_ids = current
+            self._recent_cancel_until = max(float(getattr(self, "_recent_cancel_until", 0.0) or 0.0), time.time() + max(1.0, ttl_s))
+
+    def _remember_recent_cancel_all(self, *, ttl: float | None = None) -> None:
+        ttl_s = float(ttl if ttl is not None else BRACKET_BACKGROUND_CONFIRM_TIMEOUT_SECONDS + 30.0)
+        with self._recent_cancel_lock_ref():
+            self._recent_cancel_all_until = max(
+                float(getattr(self, "_recent_cancel_all_until", 0.0) or 0.0),
+                time.time() + max(1.0, ttl_s),
+            )
+
+    def _recent_cancel_all_active(self) -> bool:
+        with self._recent_cancel_lock_ref():
+            until = float(getattr(self, "_recent_cancel_all_until", 0.0) or 0.0)
+            if time.time() <= until:
+                return True
+            self._recent_cancel_all_until = 0.0
+        return False
+
+    def _recent_cancel_overlaps_order_ids(self, order_ids: Iterable[Any]) -> bool:
+        normalized = {str(item or "").strip() for item in (order_ids or []) if str(item or "").strip()}
+        if not normalized:
+            return False
+        with self._recent_cancel_lock_ref():
+            until = float(getattr(self, "_recent_cancel_until", 0.0) or 0.0)
+            if time.time() > until:
+                self._recent_cancel_order_ids = set()
+                self._recent_cancel_until = 0.0
+                return False
+            recent_ids = {
+                str(item or "").strip()
+                for item in getattr(self, "_recent_cancel_order_ids", set())
+                if str(item or "").strip()
+            }
+        if normalized & recent_ids:
+            return True
+        terminal_statuses = {"CANCELED", "CANCELLED", "API_CANCELLED", "INACTIVE", "REJECTED", "EXPIRED"}
+        getter = getattr(self.client, "get_order_snapshot", None)
+        if not callable(getter):
+            return False
+        for order_id in normalized:
+            try:
+                snapshot = dict(getter(order_id) or {})
+            except Exception:
+                snapshot = {}
+            status = self._order_snapshot_status(snapshot)
+            if status in terminal_statuses:
+                return True
+        return False
 
     @contextmanager
     def _gateway_write_lock(self, operation: str, *, environment: str = ""):
@@ -2461,12 +2667,26 @@ class BrokerAdapter:
             result = "ok" if confirmation.get("ok") else "error"
             reason = str(confirmation.get("error") or "ok")
             if not confirmation.get("ok"):
-                logger.warning(
-                    "Background bracket confirmation failed: group=%s order_ids=%s result=%s",
-                    group,
-                    ",".join(expected_ids),
-                    confirmation,
-                )
+                if (
+                    _submission_confirmation_is_cancel_cleanup_notice(confirmation)
+                    or self._recent_cancel_overlaps_order_ids(expected_ids)
+                    or (self._recent_cancel_all_active() and _submission_confirmation_has_missing_orders(confirmation))
+                ):
+                    result = "canceled"
+                    reason = "order_canceled_before_background_confirm"
+                    logger.info(
+                        "Background bracket confirmation ended after cancellation: group=%s order_ids=%s result=%s",
+                        group,
+                        ",".join(expected_ids),
+                        confirmation,
+                    )
+                else:
+                    logger.warning(
+                        "Background bracket confirmation failed: group=%s order_ids=%s result=%s",
+                        group,
+                        ",".join(expected_ids),
+                        confirmation,
+                    )
             else:
                 logger.info("Background bracket confirmation complete: group=%s order_ids=%s", group, ",".join(expected_ids))
         except Exception as exc:  # pragma: no cover - defensive runtime guard
@@ -3376,6 +3596,20 @@ class BrokerAdapter:
                 pass
         return snapshot, False, refreshed
 
+    def _mark_client_order_terminal(self, order_id: str, *, status: str = "CANCELLED", reason: str = "") -> dict:
+        marker = getattr(self.client, "mark_order_terminal", None)
+        if not callable(marker):
+            return {}
+        try:
+            return dict(marker(str(order_id or "").strip(), status=status, reason=reason) or {})
+        except TypeError:
+            try:
+                return dict(marker(str(order_id or "").strip(), status=status) or {})
+            except Exception:
+                return {}
+        except Exception:
+            return {}
+
     def await_order_cancelled(
         self,
         order_id: str,
@@ -3393,6 +3627,7 @@ class BrokerAdapter:
         ignored_errors: list[dict] = []
 
         def open_orders_missing_result(snapshot: dict, *, source: str) -> dict:
+            self._mark_client_order_terminal(normalized_order_id, status="CANCELLED", reason=source)
             return {
                 "ok": True,
                 "order_id": normalized_order_id,
@@ -3438,6 +3673,11 @@ class BrokerAdapter:
                             clearer(normalized_order_id)
                         except Exception:
                             pass
+                    self._mark_client_order_terminal(
+                        normalized_order_id,
+                        status="CANCELLED",
+                        reason="cancel_terminal_notice",
+                    )
                     return {
                         "ok": True,
                         "order_id": normalized_order_id,
@@ -3461,10 +3701,16 @@ class BrokerAdapter:
                             clearer(normalized_order_id)
                         except Exception:
                             pass
+                    terminal_status = "NOT_OPEN" if _order_error_code(order_error) == 10147 else "CANCELLED"
+                    self._mark_client_order_terminal(
+                        normalized_order_id,
+                        status=terminal_status,
+                        reason="cancel_terminal_notice",
+                    )
                     return {
                         "ok": True,
                         "order_id": normalized_order_id,
-                        "status": "NOT_OPEN" if _order_error_code(order_error) == 10147 else "CANCELLED",
+                        "status": terminal_status,
                         "order": snapshot,
                         "details": order_error,
                         "source": "cancel_terminal_notice",
@@ -3487,6 +3733,7 @@ class BrokerAdapter:
                     "ignored_errors": ignored_errors,
                 }
             if status in {"CANCELED", "CANCELLED", "API_CANCELLED", "INACTIVE", "REJECTED", "EXPIRED"}:
+                self._mark_client_order_terminal(normalized_order_id, status=status, reason="cancel_status_callback")
                 return {
                     "ok": True,
                     "order_id": normalized_order_id,
@@ -3514,6 +3761,7 @@ class BrokerAdapter:
                         "order": snapshot,
                     }
                 if status in {"CANCELED", "CANCELLED", "API_CANCELLED", "INACTIVE", "REJECTED", "EXPIRED"}:
+                    self._mark_client_order_terminal(normalized_order_id, status=status, reason="cancel_status_callback")
                     return {
                         "ok": True,
                         "order_id": normalized_order_id,
@@ -3556,6 +3804,7 @@ class BrokerAdapter:
                     "ignored_errors": ignored_errors,
                 }
             if status in {"CANCELED", "CANCELLED", "API_CANCELLED", "INACTIVE", "REJECTED", "EXPIRED"}:
+                self._mark_client_order_terminal(normalized_order_id, status=status, reason="cancel_status_callback")
                 return {
                     "ok": True,
                     "order_id": normalized_order_id,
@@ -3579,6 +3828,7 @@ class BrokerAdapter:
             }
         status = self._order_snapshot_status(last_snapshot)
         if status in {"CANCELED", "CANCELLED", "API_CANCELLED", "INACTIVE", "REJECTED", "EXPIRED"}:
+            self._mark_client_order_terminal(normalized_order_id, status=status, reason="cancel_status_callback")
             return {
                 "ok": True,
                 "order_id": normalized_order_id,
@@ -3673,6 +3923,59 @@ class BrokerAdapter:
             "order": last_snapshot,
             "expected_price": float(expected_price or 0.0),
             "fields": list(fields or []),
+        }
+
+    def _get_order_objects_for_modify(self, order_id: str) -> tuple[Any, Any, dict]:
+        normalized_order_id = str(order_id or "").strip()
+        getter = getattr(self.client, "get_order_objects", None)
+        if not normalized_order_id or not callable(getter):
+            return None, None, {"source": "unavailable", "attempts": 0}
+        try:
+            contract, order = getter(normalized_order_id)
+        except Exception:
+            contract, order = None, None
+        if contract and order:
+            return contract, order, {"source": "callback_cache", "attempts": 0}
+
+        deadline = time.time() + max(0.0, float(MODIFY_ORDER_OBJECT_LOOKUP_TIMEOUT_SECONDS or 0.0))
+        attempts = 0
+        last_error = ""
+        while time.time() <= deadline:
+            attempts += 1
+            remaining = max(0.2, deadline - time.time())
+            request_timeout = max(1, min(5, int(max(1.0, remaining))))
+            try:
+                requester = getattr(self.client, "request_open_orders_for_order_confirmation", None)
+                if callable(requester):
+                    try:
+                        requester(timeout=request_timeout, include_all=True, force=attempts > 1)
+                    except TypeError:
+                        try:
+                            requester(timeout=request_timeout, include_all=True)
+                        except TypeError:
+                            requester(timeout=request_timeout)
+                else:
+                    self.list_open_orders(include_all=True, force=True, timeout=request_timeout)
+            except Exception as exc:
+                last_error = str(exc)
+            try:
+                contract, order = getter(normalized_order_id)
+            except Exception as exc:
+                last_error = str(exc)
+                contract, order = None, None
+            if contract and order:
+                return contract, order, {
+                    "source": "open_orders_refresh",
+                    "attempts": attempts,
+                    "last_error": last_error,
+                }
+            if time.time() >= deadline:
+                break
+            time.sleep(min(0.25, max(0.05, deadline - time.time())))
+        return None, None, {
+            "source": "not_found_after_refresh",
+            "attempts": attempts,
+            "last_error": last_error,
         }
 
     def await_order_fill(
@@ -3835,7 +4138,10 @@ class BrokerAdapter:
         order_family_type = requested_family_type or (
             "bracket_oco" if tp_quantity == entry_quantity and sl_quantity == entry_quantity else "partial_harvest_bracket"
         )
-        oca_group = group if order_family_type == "bracket_oco" else ""
+        # Native IB attached brackets use parentId/transmit sequencing. Adding
+        # an explicit OCA group to those child legs makes later price modifies
+        # fail on Gateway with code 10326 ("OCA group revision is not allowed").
+        oca_group = group if order_family_type == "bracket_oco" and ATTACHED_BRACKET_EXPLICIT_OCA_ENABLED else ""
         entry_ref = f"entry_{group}"
         tp_ref = f"tp_{group}"
         sl_ref = f"sl_{group}"
@@ -4185,13 +4491,7 @@ class BrokerAdapter:
 
     def modify_order(self, order_id: str, updates: dict, account_id: str = "", metric_environment: str = "") -> dict:
         started = time.perf_counter()
-        contract, order = self.client.get_order_objects(order_id)
-        if not contract or not order:
-            try:
-                self.list_open_orders()
-            except Exception:
-                pass
-            contract, order = self.client.get_order_objects(order_id)
+        contract, order, lookup_diagnostics = self._get_order_objects_for_modify(str(order_id or "").strip())
         if not contract or not order:
             record_order_event(
                 operation="modify",
@@ -4199,7 +4499,7 @@ class BrokerAdapter:
                 reason_code="order_not_found",
                 duration_s=time.perf_counter() - started,
             )
-            return {"ok": False, "error": "order_not_found"}
+            return {"ok": False, "error": "order_not_found", "order_lookup": lookup_diagnostics}
         price_normalization: dict = {}
         if "price" in updates and updates["price"] is not None:
             normalized_price = self._normalize_order_price(updates["price"])
@@ -4248,8 +4548,16 @@ class BrokerAdapter:
                 duration_s=time.perf_counter() - started,
             )
             return {"ok": False, "error": str(exc)}
-        entry_result = self.client.await_order_submission(str(order_id), timeout=3.0, poll_interval=0.2)
-        if not entry_result.get("ok"):
+        entry_result = self.client.await_order_submission(
+            str(order_id),
+            timeout=max(3.0, min(float(ORDER_MODIFICATION_CONFIRM_TIMEOUT_SECONDS or 0.0), 15.0)),
+            poll_interval=0.2,
+        )
+        entry_unconfirmed = (
+            not entry_result.get("ok")
+            and str(entry_result.get("error") or "").strip() == "order_submission_unconfirmed"
+        )
+        if not entry_result.get("ok") and not entry_unconfirmed:
             order_error = entry_result.get("details") or {}
             error_message = str(entry_result.get("error") or "order_submission_failed")
             if order_error.get("code"):
@@ -4284,6 +4592,24 @@ class BrokerAdapter:
                 poll_interval=0.2,
             )
             if not confirm_result.get("ok"):
+                if str(confirm_result.get("error") or "") == "order_modify_price_unconfirmed":
+                    record_order_event(
+                        operation="modify",
+                        result="pending",
+                        reason_code="order_modify_price_unconfirmed",
+                        duration_s=time.perf_counter() - started,
+                    )
+                    return {
+                        "ok": True,
+                        "pending_confirmation": True,
+                        "modify_confirmation_pending": True,
+                        "warning": "order_modify_price_unconfirmed",
+                        "entry": entry_result,
+                        "entry_submission_unconfirmed": entry_unconfirmed,
+                        "confirm": confirm_result,
+                        "order_id": str(order_id),
+                        "price_normalization": price_normalization,
+                    }
                 record_order_event(
                     operation="modify",
                     result="unconfirmed",
@@ -4299,19 +4625,30 @@ class BrokerAdapter:
                     "price_normalization": price_normalization,
                 }
             record_order_event(operation="modify", result="ok", duration_s=time.perf_counter() - started)
-            return {
+            result = {
                 "ok": True,
                 "order_id": str(order_id),
                 "order": confirm_result.get("order") or {},
                 "price_normalization": price_normalization,
             }
+            if entry_unconfirmed:
+                result["entry_submission_unconfirmed"] = True
+                result["entry"] = entry_result
+            return result
         record_order_event(operation="modify", result="ok", duration_s=time.perf_counter() - started)
-        return {
+        result = {
             "ok": True,
             "order_id": str(order_id),
             "order": entry_result.get("order") or {},
             "price_normalization": price_normalization,
         }
+        if entry_unconfirmed:
+            result["pending_confirmation"] = True
+            result["modify_confirmation_pending"] = True
+            result["warning"] = "order_modify_submission_unconfirmed"
+            result["entry_submission_unconfirmed"] = True
+            result["entry"] = entry_result
+        return result
 
     def get_order_snapshot(self, order_id: str) -> dict:
         return self.client.get_order_snapshot(order_id)
@@ -4347,7 +4684,7 @@ class BrokerAdapter:
             except Exception:
                 return []
 
-        def reconcile_from_open_orders(open_orders: list[dict]) -> set[str]:
+        def reconcile_from_open_orders(open_orders: list[dict], *, authoritative: bool = False) -> set[str]:
             open_by_id = {
                 self._order_snapshot_id(item): dict(item)
                 for item in (open_orders or [])
@@ -4377,6 +4714,12 @@ class BrokerAdapter:
                             except Exception:
                                 pass
                     if cancel_confirmed:
+                        terminal_status = "NOT_OPEN" if _order_error_code(order_error) == 10147 else "CANCELLED"
+                        self._mark_client_order_terminal(
+                            order_id,
+                            status=terminal_status,
+                            reason="cancel_all_terminal_notice",
+                        )
                         continue
 
                 snapshot = open_by_id.get(order_id) or {}
@@ -4393,6 +4736,15 @@ class BrokerAdapter:
                     continue
                 if order_id in open_by_id and status not in {"CANCELED", "CANCELLED", "API_CANCELLED", "INACTIVE", "REJECTED", "EXPIRED"}:
                     still_open.add(order_id)
+                else:
+                    if status in {"CANCELED", "CANCELLED", "API_CANCELLED", "INACTIVE", "REJECTED", "EXPIRED"}:
+                        self._mark_client_order_terminal(order_id, status=status, reason="cancel_all_status_callback")
+                    elif authoritative:
+                        self._mark_client_order_terminal(
+                            order_id,
+                            status="CANCELLED",
+                            reason="cancel_all_open_orders_reconciled_missing",
+                        )
             return still_open
 
         while time.time() < deadline:
@@ -4405,7 +4757,7 @@ class BrokerAdapter:
                 cached_orders = cached_open_orders()
                 if cached_orders:
                     last_open_orders = cached_orders
-                    remaining = reconcile_from_open_orders(cached_orders)
+                    remaining = reconcile_from_open_orders(cached_orders, authoritative=False)
                     if filled_order_ids:
                         return {
                             "ok": False,
@@ -4428,7 +4780,7 @@ class BrokerAdapter:
                 time.sleep(max(0.1, float(poll_interval or 1.0)))
                 continue
 
-            remaining = reconcile_from_open_orders(last_open_orders)
+            remaining = reconcile_from_open_orders(last_open_orders, authoritative=True)
             if filled_order_ids:
                 return {
                     "ok": False,
@@ -4459,6 +4811,7 @@ class BrokerAdapter:
 
     def cancel_order(self, order_id: str, metric_environment: str = "") -> dict:
         started = time.perf_counter()
+        self._remember_recent_cancel_order_ids([order_id])
         try:
             with self._gateway_write_lock("cancel_order", environment=metric_environment):
                 clearer = getattr(self.client, "clear_order_error", None)
@@ -4499,24 +4852,107 @@ class BrokerAdapter:
             "confirm": confirm_result,
         }
 
+    def cancel_order_ids(self, order_ids: Iterable[Any], metric_environment: str = "", source: str = "explicit_order_ids") -> dict:
+        started = time.perf_counter()
+        normalized_ids: list[str] = []
+        seen: set[str] = set()
+        for item in order_ids or []:
+            order_id = str(item or "").strip()
+            if not order_id or order_id in seen:
+                continue
+            seen.add(order_id)
+            normalized_ids.append(order_id)
+        if not normalized_ids:
+            return {
+                "ok": True,
+                "status": "NO_ORDERS",
+                "pending_confirmation": False,
+                "requested": 0,
+                "submitted": 0,
+                "active_order_ids": [],
+                "submitted_order_ids": [],
+                "order_ids": [],
+                "errors": [],
+                "error_details": [],
+                "source": source,
+            }
+
+        self._remember_recent_cancel_order_ids(normalized_ids)
+        submitted_order_ids: list[str] = []
+        errors: list[str] = []
+        error_details: list[dict] = []
+        clearer = getattr(self.client, "clear_order_error", None)
+        with self._gateway_write_lock("cancel_order_ids", environment=metric_environment):
+            for order_id in normalized_ids:
+                order_started = time.perf_counter()
+                try:
+                    if callable(clearer):
+                        clearer(order_id)
+                    self.client.cancel_open_order(order_id)
+                    submitted_order_ids.append(order_id)
+                    record_order_event(operation="cancel", result="pending", reason_code=source, duration_s=time.perf_counter() - order_started)
+                except Exception as exc:
+                    error = str(exc)
+                    errors.append(error or "cancel_failed")
+                    error_details.append({"order_id": order_id, "error": error or "cancel_failed"})
+                    record_order_event(
+                        operation="cancel",
+                        result="error",
+                        reason_code=exc.__class__.__name__,
+                        duration_s=time.perf_counter() - order_started,
+                    )
+        result_ok = not errors or bool(submitted_order_ids)
+        record_order_event(
+            operation="cancel_order_ids",
+            result="pending" if result_ok else "error",
+            reason_code=source if result_ok else (errors[0] if errors else "cancel_failed"),
+            duration_s=time.perf_counter() - started,
+        )
+        return {
+            "ok": result_ok,
+            "status": "CANCEL_REQUESTED" if submitted_order_ids else "",
+            "pending_confirmation": bool(submitted_order_ids),
+            "requested": len(normalized_ids),
+            "submitted": len(submitted_order_ids),
+            "active_order_ids": list(normalized_ids),
+            "submitted_order_ids": list(submitted_order_ids),
+            "order_ids": list(submitted_order_ids),
+            "errors": errors,
+            "error_details": error_details,
+            "source": source,
+        }
+
     def cancel_all_orders(self, metric_environment: str = "") -> dict:
         started = time.perf_counter()
+        self._remember_recent_cancel_all()
         order_list_source = "open_orders"
         order_list_error = ""
-        try:
-            orders = self.list_open_orders(include_all=True, force=True, timeout=5.0)
-        except Exception as exc:
-            order_list_error = str(exc)
+        def cached_order_snapshots() -> list[dict]:
             getter = getattr(self.client, "get_order_snapshots", None)
             try:
-                orders = list(getter(include_all=True) or []) if callable(getter) else []
+                return list(getter(include_all=True) or []) if callable(getter) else []
             except TypeError:
                 try:
-                    orders = list(getter() or []) if callable(getter) else []
+                    return list(getter() or []) if callable(getter) else []
                 except Exception:
-                    orders = []
+                    return []
             except Exception:
-                orders = []
+                return []
+
+        try:
+            orders = self.list_open_orders(include_all=True, force=True, timeout=5.0)
+            if not orders:
+                cached_orders = cached_order_snapshots()
+                if cached_orders:
+                    # reqAllOpenOrders can race with large bracket bursts and
+                    # briefly return empty even though callback/account caches
+                    # still contain active paper orders. Canceling those ids is
+                    # safer than reporting a false flat cancel_all.
+                    orders = cached_orders
+                    order_list_source = "callback_cache_empty_open_orders"
+        except Exception as exc:
+            order_list_error = str(exc)
+            orders = cached_order_snapshots()
             if orders:
                 order_list_source = "callback_cache"
             else:
@@ -4539,12 +4975,31 @@ class BrokerAdapter:
                 skipped_terminal += 1
                 continue
             active_order_ids.append(order_id)
+        self._remember_recent_cancel_order_ids(active_order_ids)
 
         submitted_order_ids: list[str] = []
         errors: list[str] = []
         error_details: list[dict] = []
+        global_cancel_submitted = False
+        global_cancel_error = ""
         clearer = getattr(self.client, "clear_order_error", None)
+        global_canceller = getattr(self.client, "request_global_cancel", None)
+        environment_key = str(metric_environment or os.environ.get("IBKR_BROKER_MODE") or DEFAULT_ENVIRONMENT).strip().lower()
+        global_cancel_enabled = (
+            CANCEL_ALL_GLOBAL_CANCEL_ENABLED
+            and environment_key == "paper"
+            and callable(global_canceller)
+        )
         with self._gateway_write_lock("cancel_all_orders", environment=metric_environment):
+            if global_cancel_enabled:
+                try:
+                    global_canceller()
+                    global_cancel_submitted = True
+                    if CANCEL_ALL_GLOBAL_CANCEL_GRACE_SECONDS > 0:
+                        time.sleep(min(2.0, CANCEL_ALL_GLOBAL_CANCEL_GRACE_SECONDS))
+                except Exception as exc:
+                    global_cancel_error = str(exc) or "global_cancel_failed"
+                    error_details.append({"order_id": "", "error": global_cancel_error, "source": "global_cancel"})
             for order_id in active_order_ids:
                 order_started = time.perf_counter()
                 try:
@@ -4635,6 +5090,10 @@ class BrokerAdapter:
             "cancelled": cancelled,
             "requested": len(active_order_ids),
             "submitted": len(submitted_order_ids),
+            "active_order_ids": list(active_order_ids),
+            "submitted_order_ids": list(submitted_order_ids),
+            "order_ids": list(submitted_order_ids),
+            "remaining_order_ids": list(reconcile.get("remaining_order_ids") or []),
             "skipped_terminal": skipped_terminal,
             "errors": errors,
             "error_details": error_details,
@@ -4642,4 +5101,6 @@ class BrokerAdapter:
             "reconcile": reconcile,
             "order_list_source": order_list_source,
             "order_list_error": order_list_error,
+            "global_cancel_submitted": global_cancel_submitted,
+            "global_cancel_error": global_cancel_error,
         }

@@ -509,6 +509,90 @@ class GatewayOrderProbeTest(unittest.TestCase):
         self.assertEqual("0", calls[0][1]["include_pnl"])
         self.assertEqual("0", calls[0][1]["cache"])
 
+    def test_gateway_readiness_precheck_rejects_running_but_unreachable_gateway(self):
+        status = {
+            "ok": True,
+            "environment": "paper",
+            "broker_mode": "paper",
+            "status_mode": "lite",
+            "gateway": {
+                "running": True,
+                "reachable": False,
+                "status_code": 502,
+                "api_socket_listening": False,
+                "api_socket_port": 4001,
+                "api_socket_reason": "port_not_listening",
+                "broker": {"connected": False, "ready": False, "status_code": 0},
+            },
+            "session": {"authenticated": False},
+            "service_topology": {"services": {"ibkr-gateway": {"status": "degraded"}}},
+        }
+
+        summary = probe.summarize_gateway_readiness(status)
+
+        self.assertFalse(summary["ok"])
+        self.assertFalse(summary["api_socket_listening"])
+        self.assertFalse(summary["gateway_reachable"])
+        self.assertEqual("port_not_listening", summary["api_socket_reason"])
+        failure_names = {item["name"] for item in summary["failures"]}
+        self.assertIn("api_socket_listening", failure_names)
+        self.assertIn("gateway_reachable", failure_names)
+        self.assertIn("session_authenticated", failure_names)
+
+    def test_gateway_readiness_precheck_accepts_ready_paper_gateway(self):
+        status = {
+            "ok": True,
+            "environment": "paper",
+            "broker_mode": "paper",
+            "status_mode": "lite",
+            "gateway": {
+                "running": True,
+                "reachable": True,
+                "status_code": 200,
+                "api_socket_listening": True,
+                "api_socket_port": 4001,
+                "broker": {"connected": True, "ready": True, "status_code": 200},
+            },
+            "session": {"authenticated": True},
+            "service_topology": {"services": {"ibkr-gateway": {"status": "running"}}},
+        }
+
+        summary = probe.summarize_gateway_readiness(status)
+
+        self.assertTrue(summary["ok"])
+        self.assertFalse(summary["failures"])
+        self.assertEqual(4001, summary["api_socket_port"])
+
+    def test_run_probe_checks_confirmation_before_gateway_readiness(self):
+        args = Namespace(execute=True, confirm="", skip_gateway_readiness_precheck=False)
+
+        with mock.patch.object(probe, "collect_gateway_readiness_precheck") as precheck:
+            with self.assertRaises(probe.GatewayProbeError) as ctx:
+                probe.run_probe(args)
+
+        precheck.assert_not_called()
+        self.assertIn("confirmation_required", str(ctx.exception))
+
+    def test_run_probe_fails_fast_when_gateway_readiness_precheck_fails(self):
+        args = Namespace(execute=True, confirm=probe.CONFIRM_TEXT, skip_gateway_readiness_precheck=False)
+        precheck = {
+            "ok": False,
+            "api_socket_listening": False,
+            "gateway_reachable": False,
+            "failures": [{"name": "api_socket_listening"}],
+        }
+
+        with mock.patch.object(probe, "collect_gateway_readiness_precheck", return_value=precheck):
+            with mock.patch.object(probe, "select_probe_plan") as select_plan:
+                with self.assertRaises(probe.GatewayProbeError) as ctx:
+                    probe.run_probe(args)
+
+        select_plan.assert_not_called()
+        self.assertIn("gateway_readiness_precheck_failed", str(ctx.exception))
+        self.assertIn("api_socket_listening", str(ctx.exception))
+        self.assertEqual("gateway_readiness_precheck_failed", ctx.exception.payload["error"])
+        self.assertEqual(precheck, ctx.exception.payload["gateway_readiness_precheck"])
+
     def test_build_stop_loss_modify_items_targets_submitted_stop_legs(self):
         plans = [
             probe.OrderProbePlan("AAPL", "long", 10, 100.0, 50.0, 57.5, 42.5),
@@ -613,6 +697,243 @@ class GatewayOrderProbeTest(unittest.TestCase):
         self.assertTrue(all(item["ok"] for item in results))
         self.assertEqual("already_flat_after_visible_order_rescue", results[0]["reason"])
         self.assertEqual(1, results[0]["result"]["visible_rescue_cancel_count"])
+
+    def test_cleanup_symbols_waits_after_bulk_cancel_before_rescue(self):
+        args = Namespace(
+            api_base_url="https://example.test",
+            account_base_url="",
+            account_snapshot_path="",
+            http_timeout_sec=1200.0,
+            cleanup_http_timeout_sec=30.0,
+            cleanup_timeout_sec=1200.0,
+            bulk_cancel_settle_before_rescue_sec=5.0,
+            symbol_cleanup_timeout_sec=0.0,
+            poll_interval_sec=2.0,
+            cancel_spacing_seconds=0.0,
+            bulk_cancel_all=True,
+        )
+        plans = [
+            probe.OrderProbePlan("AAPL", "long", 1, 100.0, 50.0, 57.5, 42.5),
+            probe.OrderProbePlan("MSFT", "long", 1, 200.0, 100.0, 115.0, 85.0),
+        ]
+        first_snapshot = {
+            "ok": True,
+            "positions": [],
+            "live_open_orders": [{"symbol": "AAPL", "order_id": "101", "status": "Submitted"}],
+        }
+        flat_snapshot = {"ok": True, "positions": [], "orders": [], "live_open_orders": []}
+        cancel_results = [{"source": "cancel_all", "ok": True, "cancelled": 2}]
+
+        with mock.patch.object(probe, "get_snapshot", return_value=first_snapshot), mock.patch.object(
+            probe,
+            "wait_for_flat_symbols",
+            return_value={"ok": True, "snapshot": flat_snapshot},
+        ) as wait_for_flat, mock.patch.object(
+            probe,
+            "cancel_visible_orders_for_symbols",
+        ) as rescue, mock.patch.object(
+            probe.fee_probe,
+            "cleanup_symbol",
+        ) as cleanup_symbol:
+            results = probe.cleanup_symbols(args, plans, [], cancel_results)
+
+        wait_args = wait_for_flat.call_args.args[0]
+        self.assertEqual(5.0, wait_args.cleanup_timeout_sec)
+        rescue.assert_not_called()
+        cleanup_symbol.assert_not_called()
+        self.assertEqual(2, len(results))
+        self.assertTrue(all(item["ok"] for item in results))
+        self.assertEqual("already_flat_after_bulk_cancel_wait", results[0]["reason"])
+
+    def test_cleanup_symbols_retries_cancel_all_after_bulk_wait_before_visible_rescue(self):
+        args = Namespace(
+            api_base_url="https://example.test",
+            account_base_url="",
+            account_snapshot_path="",
+            http_timeout_sec=1200.0,
+            cleanup_http_timeout_sec=30.0,
+            cleanup_timeout_sec=1200.0,
+            bulk_cancel_settle_before_rescue_sec=5.0,
+            symbol_cleanup_timeout_sec=0.0,
+            poll_interval_sec=2.0,
+            cancel_spacing_seconds=0.0,
+            bulk_cancel_all=True,
+            cancel_all_attempts=3,
+            cancel_all_retry_delay_sec=0.0,
+        )
+        plans = [
+            probe.OrderProbePlan("AAPL", "long", 1, 100.0, 50.0, 57.5, 42.5),
+            probe.OrderProbePlan("MSFT", "long", 1, 200.0, 100.0, 115.0, 85.0),
+        ]
+        first_snapshot = {
+            "ok": True,
+            "positions": [],
+            "live_open_orders": [{"symbol": "AAPL", "order_id": "101", "status": "Submitted"}],
+        }
+        flat_snapshot = {"ok": True, "positions": [], "orders": [], "live_open_orders": []}
+        cancel_results = [{"source": "cancel_all", "ok": True, "cancelled": 2}]
+
+        with mock.patch.object(probe, "get_snapshot", return_value=first_snapshot), mock.patch.object(
+            probe,
+            "wait_for_flat_symbols",
+            side_effect=[
+                {"ok": False, "snapshot": first_snapshot},
+                {"ok": True, "snapshot": flat_snapshot},
+            ],
+        ) as wait_for_flat, mock.patch.object(
+            probe,
+            "cancel_all_orders",
+            return_value=[{"ok": True, "source": "cancel_all", "cancelled": 1}],
+        ) as cancel_all, mock.patch.object(
+            probe,
+            "cancel_visible_orders_for_symbols",
+        ) as rescue, mock.patch.object(
+            probe.fee_probe,
+            "cleanup_symbol",
+        ) as cleanup_symbol:
+            results = probe.cleanup_symbols(args, plans, [], cancel_results)
+
+        self.assertEqual(2, wait_for_flat.call_count)
+        cancel_all.assert_called_once()
+        self.assertEqual("gateway_order_probe_post_visibility_cancel_all", cancel_all.call_args.kwargs["source"])
+        rescue.assert_not_called()
+        cleanup_symbol.assert_not_called()
+        self.assertEqual("already_flat_after_post_visibility_cancel_all", results[0]["reason"])
+        self.assertEqual(1, results[0]["result"]["visible_rescue_cancel_count"])
+
+    def test_wait_for_submission_quiescence_waits_for_active_commands_to_drain(self):
+        args = Namespace(
+            pre_cancel_quiesce_sec=1.0,
+            pre_cancel_quiet_sec=0.0,
+            min_pre_cancel_visible_orders=6,
+            min_pending_visible_orders=0,
+            cleanup_http_timeout_sec=1.0,
+            http_timeout_sec=1.0,
+            poll_interval_sec=0.01,
+        )
+        busy_snapshot = {
+            "ok": True,
+            "environment": "paper",
+            "broker_mode": "paper",
+            "positions": [],
+            "live_open_orders": [
+                {"symbol": "AAPL", "order_id": str(order_id), "status": "Submitted"}
+                for order_id in range(100, 106)
+            ],
+            "orders_fast_diagnostics": {
+                "pb_fallback_trust": {
+                    "broker_open_count": 6,
+                    "active_order_command_count": 2,
+                }
+            },
+        }
+        ready_snapshot = {
+            **busy_snapshot,
+            "orders_fast_diagnostics": {
+                "pb_fallback_trust": {
+                    "broker_open_count": 6,
+                    "active_order_command_count": 0,
+                }
+            },
+        }
+
+        with mock.patch.object(probe, "get_snapshot", side_effect=[busy_snapshot, ready_snapshot]):
+            result = probe.wait_for_submission_quiescence(args, ["AAPL"])
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["skipped"])
+        self.assertEqual(2, result["sample_count"])
+        self.assertEqual(0, result["last_sample"]["active_order_command_count"])
+
+    def test_wait_for_submission_quiescence_requires_broker_visible_count(self):
+        args = Namespace(
+            pre_cancel_quiesce_sec=0.03,
+            pre_cancel_quiet_sec=0.0,
+            min_pre_cancel_visible_orders=6,
+            min_pending_visible_orders=0,
+            cleanup_http_timeout_sec=1.0,
+            http_timeout_sec=1.0,
+            poll_interval_sec=0.01,
+        )
+        snapshot = {
+            "ok": True,
+            "environment": "paper",
+            "broker_mode": "paper",
+            "positions": [],
+            "live_open_orders": [
+                {"symbol": "AAPL", "order_id": str(order_id), "status": "Submitted"}
+                for order_id in range(100, 106)
+            ],
+            "orders_fast_diagnostics": {
+                "pb_fallback_trust": {
+                    "broker_open_count": 5,
+                    "active_order_command_count": 0,
+                }
+            },
+        }
+
+        with mock.patch.object(probe, "get_snapshot", return_value=snapshot):
+            result = probe.wait_for_submission_quiescence(args, ["AAPL"])
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("pre_cancel_quiesce_timeout", result["error"])
+        self.assertEqual(5, result["last_sample"]["broker_open_count"])
+
+    def test_exit_cancel_storm_batches_all_legs_by_symbol(self):
+        args = Namespace(
+            api_base_url="https://example.test",
+            http_timeout_sec=30.0,
+            exit_cancel_scope="all",
+            exit_burst_workers=20,
+            exit_cancel_batch_by_symbol=True,
+        )
+        place_results = [
+            {"ok": True, "symbol": "AAPL", "order_ids": ["101", "102", "103"]},
+            {"ok": True, "symbol": "MSFT", "order_ids": ["201", "202", "203"]},
+        ]
+        posts = []
+
+        class _Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def post(self, path, payload, params):
+                posts.append((path, payload, params))
+                return {
+                    "ok": True,
+                    "result": {
+                        "ok": True,
+                        "submitted_order_ids": list(payload.get("order_ids") or []),
+                    },
+                }
+
+        with mock.patch.object(probe.fee_probe, "ApiClient", _Client):
+            result = probe.exit_cancel_storm(args, place_results)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["batch_by_symbol"])
+        self.assertEqual(6, result["requested"])
+        self.assertEqual(6, result["ok_count"])
+        self.assertEqual(2, result["group_count"])
+        self.assertEqual(2, len(posts))
+        self.assertEqual(["101", "102", "103"], posts[0][1]["order_ids"])
+        self.assertEqual(["201", "202", "203"], posts[1][1]["order_ids"])
+
+    def test_apply_probe_safety_defaults_adds_quiesce_for_large_bulk_cancel(self):
+        args = Namespace(
+            bulk_cancel_all=True,
+            orders=45,
+            pre_cancel_quiesce_sec=0.0,
+            pre_cancel_quiet_sec=15.0,
+            min_pre_cancel_visible_orders=0,
+            min_pending_visible_orders=135,
+        )
+
+        result = probe.apply_probe_safety_defaults(args)
+
+        self.assertEqual(300.0, result.pre_cancel_quiesce_sec)
+        self.assertEqual(30.0, result.pre_cancel_quiet_sec)
+        self.assertEqual(135, result.min_pre_cancel_visible_orders)
 
     def test_wait_for_flat_rejects_failed_snapshot_without_false_flat(self):
         args = Namespace(cleanup_timeout_sec=0.1, cleanup_http_timeout_sec=1.0, http_timeout_sec=1.0, poll_interval_sec=0.01)

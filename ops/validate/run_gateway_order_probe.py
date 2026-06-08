@@ -40,7 +40,9 @@ DEFAULT_SYMBOLS = (
 
 
 class GatewayProbeError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, payload: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.payload = payload
 
 
 @dataclass(frozen=True)
@@ -392,6 +394,126 @@ def get_snapshot(
     return client.get(path or fee_probe.DEFAULT_ACCOUNT_SNAPSHOT_PATH, account_snapshot_params(orders_fast=orders_fast))
 
 
+def get_gateway_status_lite(args: argparse.Namespace, *, timeout_sec: float | None = None) -> dict[str, Any]:
+    client, _path = account_snapshot_client(args, timeout_sec=timeout_sec)
+    return client.get(
+        "/ibkr/status",
+        {
+            "environment": "paper",
+            "broker_mode": "paper",
+            "lite": "1",
+            "skip_compute_status": "1",
+        },
+    )
+
+
+def _bool_or_none(value: Any) -> bool | None:
+    if value is None:
+        return None
+    return bool(value)
+
+
+def summarize_gateway_readiness(status: dict[str, Any]) -> dict[str, Any]:
+    payload = status if isinstance(status, dict) else {}
+    gateway = payload.get("gateway") if isinstance(payload.get("gateway"), dict) else {}
+    broker = gateway.get("broker") if isinstance(gateway.get("broker"), dict) else {}
+    session = payload.get("session") if isinstance(payload.get("session"), dict) else {}
+    websocket = payload.get("websocket") if isinstance(payload.get("websocket"), dict) else {}
+    topology = payload.get("service_topology") if isinstance(payload.get("service_topology"), dict) else {}
+    services = topology.get("services") if isinstance(topology.get("services"), dict) else {}
+    topology_gateway = services.get("ibkr-gateway") if isinstance(services.get("ibkr-gateway"), dict) else {}
+    environment = fee_probe.to_text(payload.get("broker_mode") or payload.get("environment")).lower()
+    broker_status_code = 0
+    for source in (broker, gateway):
+        try:
+            broker_status_code = int(float(source.get("status_code") or 0))
+        except Exception:
+            broker_status_code = 0
+        if broker_status_code:
+            break
+    api_socket_listening = _bool_or_none(gateway.get("api_socket_listening"))
+    gateway_reachable = _bool_or_none(gateway.get("reachable"))
+    broker_connected = _bool_or_none(broker.get("connected"))
+    broker_ready = _bool_or_none(broker.get("ready"))
+    session_authenticated = _bool_or_none(session.get("authenticated"))
+    failures: list[dict[str, Any]] = []
+
+    def add_failure(name: str, expected: Any, actual: Any) -> None:
+        failures.append({"name": name, "expected": expected, "actual": actual})
+
+    if payload.get("ok") is False:
+        add_failure("runtime_status_ok", True, payload.get("ok"))
+    if environment and environment != "paper":
+        add_failure("broker_mode", "paper", environment)
+    if gateway.get("running") is not True:
+        add_failure("gateway_running", True, gateway.get("running"))
+    if api_socket_listening is not True:
+        add_failure("api_socket_listening", True, api_socket_listening)
+    if gateway_reachable is not True:
+        add_failure("gateway_reachable", True, gateway_reachable)
+    if broker_connected is not True:
+        add_failure("broker_connected", True, broker_connected)
+    if broker_ready is not True:
+        add_failure("broker_ready", True, broker_ready)
+    if session_authenticated is not True:
+        add_failure("session_authenticated", True, session_authenticated)
+    if broker_status_code and broker_status_code not in {200, 2104, 2106, 2158}:
+        add_failure("broker_status_code", "ready", broker_status_code)
+    return {
+        "ok": not failures,
+        "environment": payload.get("environment"),
+        "broker_mode": payload.get("broker_mode"),
+        "status_mode": payload.get("status_mode"),
+        "gateway_running": gateway.get("running"),
+        "gateway_reachable": gateway.get("reachable"),
+        "gateway_status_code": gateway.get("status_code"),
+        "api_socket_listening": api_socket_listening,
+        "api_socket_host": gateway.get("api_socket_host"),
+        "api_socket_port": gateway.get("api_socket_port"),
+        "api_socket_reason": gateway.get("api_socket_reason"),
+        "broker_connected": broker_connected,
+        "broker_ready": broker_ready,
+        "broker_status_code": broker_status_code,
+        "session_authenticated": session_authenticated,
+        "websocket_ready": websocket.get("ready"),
+        "topology_gateway_status": topology_gateway.get("status"),
+        "topology_runtime_status": (services.get("ibkr-runtime") or {}).get("status") if isinstance(services.get("ibkr-runtime"), dict) else None,
+        "failures": failures,
+    }
+
+
+def collect_gateway_readiness_precheck(args: argparse.Namespace) -> dict[str, Any]:
+    started = time.perf_counter()
+    timeout = min(10.0, max(1.0, float(getattr(args, "http_timeout_sec", 30.0) or 30.0)))
+    try:
+        status = get_gateway_status_lite(args, timeout_sec=timeout)
+        summary = summarize_gateway_readiness(status)
+        return {
+            **summary,
+            "elapsed_s": round(time.perf_counter() - started, 3),
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "elapsed_s": round(time.perf_counter() - started, 3),
+            "error": str(exc),
+            "failures": [{"name": "runtime_status_request", "expected": "success", "actual": str(exc)}],
+        }
+
+
+def build_gateway_precheck_failure_payload(args: argparse.Namespace, gateway_precheck: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "run_id": getattr(args, "run_id", ""),
+        "dry_run": not bool(getattr(args, "execute", False)),
+        "error": "gateway_readiness_precheck_failed",
+        "created_at_et": datetime.now(ET).isoformat(),
+        "created_at_cn": datetime.now(CN).isoformat(),
+        "paper_only": True,
+        "gateway_readiness_precheck": json_clone(gateway_precheck),
+    }
+
+
 def is_flat_for_symbols(snapshot: dict[str, Any], symbols: list[str]) -> bool:
     if not fee_probe.supports_symbol_flat_check(snapshot):
         return False
@@ -430,6 +552,9 @@ def summarize_account_snapshot(snapshot: dict[str, Any], symbols: list[str]) -> 
     cache_meta = snapshot.get("_cache") if isinstance(snapshot.get("_cache"), dict) else {}
     diagnostics = snapshot.get("diagnostics") if isinstance(snapshot.get("diagnostics"), dict) else {}
     account_diagnostics = diagnostics.get("account_snapshot") if isinstance(diagnostics.get("account_snapshot"), dict) else {}
+    orders_fast_diagnostics = (
+        snapshot.get("orders_fast_diagnostics") if isinstance(snapshot.get("orders_fast_diagnostics"), dict) else {}
+    )
     cache_state = fee_probe.to_text(cache_meta.get("state"))
     cache_stale = bool(cache_meta.get("stale")) or cache_state in {"stale", "stale_error", "bypass_stale_error"}
     return {
@@ -449,9 +574,28 @@ def summarize_account_snapshot(snapshot: dict[str, Any], symbols: list[str]) -> 
         "route_cache_state": cache_state,
         "route_cache_stale": cache_stale,
         "account_snapshot_diagnostics": account_diagnostics,
+        "orders_fast_diagnostics": orders_fast_diagnostics,
         "selected_open_order_count": total_open,
         "selected_symbols": selected,
     }
+
+
+def _active_order_command_count(snapshot: dict[str, Any]) -> int:
+    diagnostics = snapshot.get("orders_fast_diagnostics") if isinstance(snapshot.get("orders_fast_diagnostics"), dict) else {}
+    trust = diagnostics.get("pb_fallback_trust") if isinstance(diagnostics.get("pb_fallback_trust"), dict) else {}
+    try:
+        return max(0, int(float(trust.get("active_order_command_count") or 0)))
+    except Exception:
+        return 0
+
+
+def _broker_open_count(snapshot: dict[str, Any]) -> int:
+    diagnostics = snapshot.get("orders_fast_diagnostics") if isinstance(snapshot.get("orders_fast_diagnostics"), dict) else {}
+    trust = diagnostics.get("pb_fallback_trust") if isinstance(diagnostics.get("pb_fallback_trust"), dict) else {}
+    try:
+        return max(0, int(float(trust.get("broker_open_count") or 0)))
+    except Exception:
+        return 0
 
 
 def account_access_ok(summary: dict[str, Any]) -> bool:
@@ -558,6 +702,89 @@ def observe_pending_account_access(args: argparse.Namespace, symbols: list[str])
         "warnings": warnings,
         "samples": samples,
     }
+
+
+def wait_for_submission_quiescence(args: argparse.Namespace, symbols: list[str]) -> dict[str, Any]:
+    timeout = max(0.0, float(getattr(args, "pre_cancel_quiesce_sec", 0.0) or 0.0))
+    if timeout <= 0:
+        return {"ok": True, "skipped": True, "reason": "pre_cancel_quiesce_not_requested", "samples": []}
+    quiet_seconds = max(0.0, float(getattr(args, "pre_cancel_quiet_sec", 0.0) or 0.0))
+    min_visible_orders = max(0, int(getattr(args, "min_pre_cancel_visible_orders", 0) or 0))
+    if min_visible_orders <= 0:
+        min_visible_orders = max(0, int(getattr(args, "min_pending_visible_orders", 0) or 0))
+    poll_interval = max(0.25, float(getattr(args, "poll_interval_sec", 1.0) or 1.0))
+    deadline = time.time() + timeout
+    stable_since = 0.0
+    last_signature: tuple[int, int, tuple[str, ...]] | None = None
+    last_snapshot: dict[str, Any] = {}
+    samples: list[dict[str, Any]] = []
+
+    while True:
+        now = time.time()
+        try:
+            snapshot = get_snapshot(args, timeout_sec=cleanup_http_timeout(args), orders_fast=True)
+            summary = summarize_account_snapshot(snapshot, symbols)
+            selected_ids = sorted(
+                str(order_id)
+                for symbol in symbols
+                for order_id in ((summary.get("selected_symbols") or {}).get(symbol, {}) or {}).get("open_order_ids", [])
+                if str(order_id or "").strip()
+            )
+            selected_open_count = int(summary.get("selected_open_order_count") or 0)
+            active_commands = _active_order_command_count(snapshot)
+            broker_open_count = _broker_open_count(snapshot)
+            signature = (selected_open_count, broker_open_count, tuple(selected_ids))
+            if signature != last_signature:
+                stable_since = now
+                last_signature = signature
+            stable_for = max(0.0, now - stable_since)
+            ready = (
+                account_access_ok(summary)
+                and selected_open_count >= min_visible_orders
+                and (min_visible_orders <= 0 or broker_open_count >= min_visible_orders)
+                and active_commands == 0
+                and stable_for >= quiet_seconds
+            )
+            last_snapshot = snapshot
+            samples.append(
+                {
+                    "ok": True,
+                    "selected_open_order_count": selected_open_count,
+                    "broker_open_count": broker_open_count,
+                    "active_order_command_count": active_commands,
+                    "stable_for_sec": round(stable_for, 3),
+                    "ready": ready,
+                }
+            )
+            if ready:
+                return {
+                    "ok": True,
+                    "skipped": False,
+                    "timeout_sec": timeout,
+                    "quiet_sec": quiet_seconds,
+                    "min_visible_orders": min_visible_orders,
+                    "sample_count": len(samples),
+                    "last_sample": samples[-1],
+                    "samples": samples,
+                    "snapshot": snapshot,
+                }
+        except Exception as exc:
+            samples.append({"ok": False, "error": str(exc), "ready": False})
+
+        if now >= deadline:
+            return {
+                "ok": False,
+                "skipped": False,
+                "error": "pre_cancel_quiesce_timeout",
+                "timeout_sec": timeout,
+                "quiet_sec": quiet_seconds,
+                "min_visible_orders": min_visible_orders,
+                "sample_count": len(samples),
+                "last_sample": samples[-1] if samples else {},
+                "samples": samples,
+                "snapshot": last_snapshot,
+            }
+        time.sleep(min(poll_interval, max(0.0, deadline - now)))
 
 
 def select_probe_plan(args: argparse.Namespace) -> tuple[list[OrderProbePlan], list[dict[str, Any]], dict[str, Any]]:
@@ -1088,11 +1315,96 @@ def cancel_order_items_burst(
     }
 
 
+def cancel_order_items_by_symbol_burst(
+    args: argparse.Namespace,
+    items: list[dict[str, Any]],
+    *,
+    source: str,
+    workers: int,
+) -> dict[str, Any]:
+    if not items:
+        return {"ok": False, "requested": 0, "ok_count": 0, "failed": 0, "results": [], "error": "no_cancel_order_ids"}
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        symbol = fee_probe.normalize_symbol(item.get("symbol")) or "UNKNOWN"
+        grouped.setdefault(symbol, []).append(item)
+    groups = [
+        {
+            "symbol": symbol,
+            "order_ids": [str(item.get("order_id") or "").strip() for item in rows if str(item.get("order_id") or "").strip()],
+            "roles": [str(item.get("role") or "") for item in rows],
+        }
+        for symbol, rows in sorted(grouped.items())
+    ]
+    groups = [item for item in groups if item["order_ids"]]
+    worker_count = max(1, min(len(groups), int(workers or len(groups) or 1)))
+    client = fee_probe.ApiClient(args.api_base_url, timeout=float(args.http_timeout_sec))
+
+    def submit_cancel_group(item: dict[str, Any]) -> dict[str, Any]:
+        started = time.perf_counter()
+        payload = {
+            "symbol": item["symbol"],
+            "order_ids": item["order_ids"],
+            "source": source,
+            "include_snapshot": False,
+        }
+        try:
+            response = client.post("/api/custom/ibkr/orders/cancel", payload, action_params())
+            ok = response_action_ok(response)
+            error = action_error_code({"response": response})
+            result = nested_result(response)
+            submitted = len(result.get("submitted_order_ids") or result.get("order_ids") or []) if isinstance(result, dict) else 0
+        except Exception as exc:
+            response = {}
+            ok = False
+            error = str(exc)
+            submitted = 0
+        requested = len(item.get("order_ids") or [])
+        return {
+            **item,
+            "ok": ok,
+            "payload": payload,
+            "response": response,
+            "requested": requested,
+            "submitted": submitted,
+            "elapsed_s": round(time.perf_counter() - started, 3),
+            "error": error,
+            "source": source,
+            "batch_by_symbol": True,
+        }
+
+    results: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="gateway-probe-exit-symbol") as executor:
+        futures = [executor.submit(submit_cancel_group, item) for item in groups]
+        for future in as_completed(futures):
+            results.append(future.result())
+    results.sort(key=lambda item: str(item.get("symbol") or ""))
+    requested_total = sum(int(item.get("requested") or 0) for item in results)
+    ok_count = sum(int(item.get("submitted") or 0) for item in results if item.get("ok"))
+    return {
+        "ok": ok_count == requested_total and requested_total > 0,
+        "requested": requested_total,
+        "group_count": len(results),
+        "workers": worker_count,
+        "ok_count": ok_count,
+        "failed": requested_total - ok_count,
+        "results": results,
+        "batch_by_symbol": True,
+    }
+
+
 def exit_cancel_storm(args: argparse.Namespace, place_results: list[dict[str, Any]]) -> dict[str, Any]:
     items = build_exit_cancel_items(
         place_results,
         scope=str(getattr(args, "exit_cancel_scope", "entry") or "entry"),
     )
+    if bool(getattr(args, "exit_cancel_batch_by_symbol", True)):
+        return cancel_order_items_by_symbol_burst(
+            args,
+            items,
+            source="gateway_probe_exit_cancel_storm",
+            workers=max(1, int(getattr(args, "exit_burst_workers", 0) or len({item.get("symbol") for item in items}) or 1)),
+        )
     return cancel_order_items_burst(
         args,
         items,
@@ -1216,6 +1528,7 @@ def cancel_all_orders(args: argparse.Namespace, *, source: str = "gateway_order_
             "ok": ok,
             "response": response,
             "cancelled": result.get("cancelled"),
+            "global_cancel_submitted": result.get("global_cancel_submitted"),
             "errors": result.get("errors") if isinstance(result.get("errors"), list) else [],
             "elapsed_s": round(time.perf_counter() - started, 3),
             "error": error,
@@ -1269,7 +1582,43 @@ def already_flat_cleanup_results(
     return results
 
 
-def cleanup_symbols(args: argparse.Namespace, plans: list[OrderProbePlan], place_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _bulk_cancel_was_submitted(cancel_results: list[dict[str, Any]] | None) -> bool:
+    for item in cancel_results or []:
+        if not isinstance(item, dict) or item.get("source") != "cancel_all":
+            continue
+        if item.get("ok") or int(item.get("cancelled") or 0) > 0:
+            return True
+        for attempt in item.get("attempts") or []:
+            if not isinstance(attempt, dict):
+                continue
+            if attempt.get("ok") or int(attempt.get("cancelled") or 0) > 0:
+                return True
+    return False
+
+
+def _bulk_cancel_settle_timeout(args: argparse.Namespace) -> float:
+    explicit = float(getattr(args, "bulk_cancel_settle_before_rescue_sec", 0.0) or 0.0)
+    if explicit > 0:
+        return explicit
+    cleanup_timeout = float(getattr(args, "cleanup_timeout_sec", 0.0) or 0.0)
+    return max(0.0, min(cleanup_timeout, 240.0))
+
+
+def _wait_after_bulk_cancel(args: argparse.Namespace, symbols: list[str]) -> dict[str, Any]:
+    timeout = _bulk_cancel_settle_timeout(args)
+    if timeout <= 0:
+        return {"ok": False, "skipped": True, "reason": "bulk_cancel_settle_disabled"}
+    wait_args = argparse.Namespace(**vars(args))
+    wait_args.cleanup_timeout_sec = timeout
+    return wait_for_flat_symbols(wait_args, symbols)
+
+
+def cleanup_symbols(
+    args: argparse.Namespace,
+    plans: list[OrderProbePlan],
+    place_results: list[dict[str, Any]],
+    cancel_results: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     symbols = [plan.symbol for plan in plans]
     snapshot_timeout = cleanup_http_timeout(args)
     try:
@@ -1278,6 +1627,34 @@ def cleanup_symbols(args: argparse.Namespace, plans: list[OrderProbePlan], place
         global_snapshot = {}
     if global_snapshot and is_flat_for_symbols(global_snapshot, symbols):
         return already_flat_cleanup_results(plans, global_snapshot, reason="already_flat_after_bulk_cancel")
+
+    if bool(getattr(args, "bulk_cancel_all", False)) and _bulk_cancel_was_submitted(cancel_results):
+        try:
+            post_bulk_cancel = _wait_after_bulk_cancel(args, symbols)
+            post_bulk_snapshot = post_bulk_cancel.get("snapshot") or {}
+        except Exception:
+            post_bulk_cancel = {"ok": False}
+            post_bulk_snapshot = {}
+        if post_bulk_cancel.get("ok") and is_flat_for_symbols(post_bulk_snapshot, symbols):
+            return already_flat_cleanup_results(plans, post_bulk_snapshot, reason="already_flat_after_bulk_cancel_wait")
+
+        post_visibility_cancel_results = cancel_all_orders(
+            args,
+            source="gateway_order_probe_post_visibility_cancel_all",
+        )
+        try:
+            post_visibility_wait = _wait_after_bulk_cancel(args, symbols)
+            post_visibility_snapshot = post_visibility_wait.get("snapshot") or {}
+        except Exception:
+            post_visibility_wait = {"ok": False}
+            post_visibility_snapshot = {}
+        if post_visibility_wait.get("ok") and is_flat_for_symbols(post_visibility_snapshot, symbols):
+            return already_flat_cleanup_results(
+                plans,
+                post_visibility_snapshot,
+                reason="already_flat_after_post_visibility_cancel_all",
+                rescue_results=post_visibility_cancel_results,
+            )
 
     visible_rescue_cancel_results = cancel_visible_orders_for_symbols(args, symbols)
     if visible_rescue_cancel_results and all(item.get("ok") for item in visible_rescue_cancel_results):
@@ -1319,6 +1696,20 @@ def cleanup_symbols(args: argparse.Namespace, plans: list[OrderProbePlan], place
 
 
 def run_probe(args: argparse.Namespace) -> dict[str, Any]:
+    if bool(args.execute) and args.confirm != CONFIRM_TEXT:
+        raise GatewayProbeError(f"confirmation_required: pass --confirm {CONFIRM_TEXT}")
+    gateway_precheck: dict[str, Any] = {}
+    if bool(args.execute):
+        if bool(getattr(args, "skip_gateway_readiness_precheck", False)):
+            gateway_precheck = {"ok": True, "skipped": True, "reason": "skip_gateway_readiness_precheck"}
+        else:
+            gateway_precheck = collect_gateway_readiness_precheck(args)
+            if not gateway_precheck.get("ok"):
+                raise GatewayProbeError(
+                    f"gateway_readiness_precheck_failed:{compact_json(gateway_precheck)}",
+                    payload=build_gateway_precheck_failure_payload(args, gateway_precheck),
+                )
+
     plans, excluded, plan_summary = select_probe_plan(args)
     if len(plans) < max(1, int(args.min_orders or 1)):
         raise GatewayProbeError(f"insufficient_clean_probe_symbols:selected={len(plans)} required={args.min_orders}")
@@ -1334,13 +1725,13 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "plan_summary": plan_summary,
         "excluded": excluded,
     }
+    if gateway_precheck:
+        payload["gateway_readiness_precheck"] = gateway_precheck
     if not args.execute:
         payload["ok"] = True
         payload["reason"] = "dry_run_plan_ready"
         payload["artifact"] = write_artifact(args, payload)
         return payload
-    if args.confirm != CONFIRM_TEXT:
-        raise GatewayProbeError(f"confirmation_required: pass --confirm {CONFIRM_TEXT}")
 
     symbols = [plan.symbol for plan in plans]
     before_snapshot = get_snapshot(args)
@@ -1364,12 +1755,16 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     modify_observation: dict[str, Any] = {"ok": True, "skipped": True, "reason": "modify_stop_loss_storm_not_requested"}
     exit_observation: dict[str, Any] = {"ok": True, "skipped": True, "reason": "exit_cancel_storm_not_requested"}
     pending_observation: dict[str, Any] = {}
+    post_place_observation: dict[str, Any] = {"ok": True, "skipped": True, "reason": "post_place_quiesce_not_requested"}
+    pre_cancel_observation: dict[str, Any] = {"ok": True, "skipped": True, "reason": "pre_cancel_quiesce_not_requested"}
     flat_after: dict[str, Any] = {}
     try:
         place_results = submit_burst(args, plans)
         pending_observation = observe_pending_account_access(args, symbols)
+        post_place_observation = wait_for_submission_quiescence(args, symbols)
         if bool(getattr(args, "modify_stop_loss_storm", False)):
             modify_observation = modify_stop_loss_storm(args, plans, place_results)
+        pre_cancel_observation = wait_for_submission_quiescence(args, symbols)
         if bool(getattr(args, "exit_cancel_storm", False)):
             exit_observation = exit_cancel_storm(args, place_results)
             cancel_results = list(exit_observation.get("results") or [])
@@ -1380,7 +1775,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     finally:
         if any(item.get("timed_out") for item in place_results):
             rescue_cancel_results = cancel_visible_orders_for_symbols(args, symbols)
-        cleanup_results = cleanup_symbols(args, plans, place_results)
+        cleanup_results = cleanup_symbols(args, plans, place_results, cancel_results)
         flat_after = wait_for_flat_symbols(args, symbols)
 
     after = collect_stability_with_settle(args, "gateway_probe_after")
@@ -1394,10 +1789,23 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     exit_ok = bool(exit_observation.get("ok")) if bool(getattr(args, "exit_cancel_storm", False)) else True
     cleanup_ok = all(item.get("ok") for item in cleanup_results) and bool(flat_after.get("ok"))
     account_lock_ok = bool(pending_observation.get("ok"))
+    post_place_ok = bool(post_place_observation.get("ok"))
+    pre_cancel_ok = bool(pre_cancel_observation.get("ok"))
     stability_ok = bool((before.get("stability") or {}).get("ok")) and bool((after.get("stability") or {}).get("ok"))
     payload.update(
         {
-            "ok": bool(place_ok and cancel_attempted and cancel_ok and modify_ok and exit_ok and cleanup_ok and account_lock_ok and stability_ok),
+            "ok": bool(
+                place_ok
+                and cancel_attempted
+                and cancel_ok
+                and modify_ok
+                and exit_ok
+                and cleanup_ok
+                and account_lock_ok
+                and post_place_ok
+                and pre_cancel_ok
+                and stability_ok
+            ),
             "reason": "gateway_order_probe_complete",
             "place_results": {
                 "total": len(place_results),
@@ -1444,12 +1852,34 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 "failures": pending_observation.get("failures") or [],
                 "warnings": pending_observation.get("warnings") or [],
             },
+            "post_place_quiesce": {
+                "ok": post_place_observation.get("ok"),
+                "skipped": post_place_observation.get("skipped"),
+                "timeout_sec": post_place_observation.get("timeout_sec"),
+                "quiet_sec": post_place_observation.get("quiet_sec"),
+                "min_visible_orders": post_place_observation.get("min_visible_orders"),
+                "sample_count": post_place_observation.get("sample_count"),
+                "last_sample": post_place_observation.get("last_sample") or {},
+                "error": post_place_observation.get("error"),
+            },
+            "pre_cancel_quiesce": {
+                "ok": pre_cancel_observation.get("ok"),
+                "skipped": pre_cancel_observation.get("skipped"),
+                "timeout_sec": pre_cancel_observation.get("timeout_sec"),
+                "quiet_sec": pre_cancel_observation.get("quiet_sec"),
+                "min_visible_orders": pre_cancel_observation.get("min_visible_orders"),
+                "sample_count": pre_cancel_observation.get("sample_count"),
+                "last_sample": pre_cancel_observation.get("last_sample") or {},
+                "error": pre_cancel_observation.get("error"),
+            },
             "account_flat": {"before": True, "after": bool(flat_after.get("ok"))},
             "stability": {"before": before.get("stability"), "after": after.get("stability")},
             "health": {"before": before.get("health"), "after": after.get("health")},
             "details": {
                 "place": place_results,
                 "pending_hold": pending_observation,
+                "post_place_quiesce": post_place_observation,
+                "pre_cancel_quiesce": pre_cancel_observation,
                 "modify_stop_loss_storm": modify_observation,
                 "exit_cancel_storm": exit_observation,
                 "cancel": cancel_results,
@@ -1505,6 +1935,18 @@ def apply_stress_preset(args: argparse.Namespace) -> argparse.Namespace:
     return args
 
 
+def apply_probe_safety_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    if bool(getattr(args, "bulk_cancel_all", False)) and int(getattr(args, "orders", 0) or 0) >= 10:
+        args.pre_cancel_quiesce_sec = max(float(getattr(args, "pre_cancel_quiesce_sec", 0.0) or 0.0), 300.0)
+        args.pre_cancel_quiet_sec = max(float(getattr(args, "pre_cancel_quiet_sec", 0.0) or 0.0), 30.0)
+        if int(getattr(args, "min_pre_cancel_visible_orders", 0) or 0) <= 0:
+            args.min_pre_cancel_visible_orders = max(
+                int(getattr(args, "min_pending_visible_orders", 0) or 0),
+                int(getattr(args, "orders", 0) or 0) * 3,
+            )
+    return args
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     default_run_id = "GWPROBE_" + datetime.now(ET).strftime("%Y%m%d_%H%M%S_ET")
     parser = argparse.ArgumentParser(description="Safely validate paper IB Gateway order placement/cancel outside market hours.")
@@ -1544,12 +1986,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-pending-snapshot-elapsed-sec", type=float, default=10.0)
     parser.set_defaults(pending_snapshot_orders_fast=True)
     parser.add_argument("--no-pending-snapshot-orders-fast", action="store_false", dest="pending_snapshot_orders_fast", help="Use the full account snapshot during pending-hold samples instead of the cache-only live-orders fast path.")
+    parser.add_argument("--pre-cancel-quiesce-sec", type=float, default=0.0, help="Before any bulk/exit cancel, wait for broker-visible orders to stop changing and active order commands to drain.")
+    parser.add_argument("--pre-cancel-quiet-sec", type=float, default=15.0, help="Stable-order quiet window required by --pre-cancel-quiesce-sec.")
+    parser.add_argument("--min-pre-cancel-visible-orders", type=int, default=0, help="Minimum selected open orders required before pre-cancel quiesce succeeds; defaults to --min-pending-visible-orders.")
     parser.add_argument("--cleanup-timeout-sec", type=float, default=60.0)
     parser.add_argument("--cleanup-http-timeout-sec", type=float, default=0.0, help="Bound account snapshot/order cleanup HTTP calls; defaults to min(http timeout, 60s).")
     parser.add_argument("--symbol-cleanup-timeout-sec", type=float, default=0.0, help="Per-symbol cleanup wait cap; defaults to min(cleanup timeout, 45s).")
     parser.add_argument("--cancel-all-http-timeout-sec", type=float, default=0.0, help="Bulk cancel_all HTTP timeout; defaults to up to 240s so 135-leg bracket bursts can reconcile.")
     parser.add_argument("--cancel-all-attempts", type=int, default=3, help="Retry bulk paper cancel_all before falling back to per-symbol cleanup.")
     parser.add_argument("--cancel-all-retry-delay-sec", type=float, default=10.0)
+    parser.add_argument("--bulk-cancel-settle-before-rescue-sec", type=float, default=0.0, help="After a successful bulk cancel_all request, wait this long for broker callbacks before issuing rescue cancels; defaults to min(cleanup timeout, 240s).")
     parser.add_argument("--poll-interval-sec", type=float, default=2.0)
     parser.add_argument("--http-timeout-sec", type=float, default=30.0)
     parser.add_argument("--submit-timeout-sec", type=float, default=0.0, help="Hard wall-clock limit for the concurrent place burst before timed-out symbols are failed and cleanup starts.")
@@ -1572,15 +2018,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--exit-cancel-storm", action="store_true", help="Use concurrent cancel requests to simulate simultaneous exit signals after placement.")
     parser.add_argument("--exit-cancel-scope", choices=("entry", "all"), default="entry", help="Cancel only entry legs or all known bracket legs during exit storm.")
     parser.add_argument("--exit-burst-workers", type=int, default=0, help="Concurrent workers for exit cancel storm; defaults to all selected cancel requests.")
+    parser.set_defaults(exit_cancel_batch_by_symbol=True)
+    parser.add_argument("--no-exit-cancel-batch-by-symbol", action="store_false", dest="exit_cancel_batch_by_symbol", help="Send one cancel request per leg instead of one batch request per symbol.")
     parser.add_argument("--gateway-stress", action="store_true", help="Require 3 safe paper orders, concurrent placement, staggered cancel, and strict stability gates.")
     parser.add_argument("--account-lock-stress", action="store_true", help="Require 5 concurrent safe paper orders and hold them pending while account/Gateway access is sampled.")
     parser.add_argument("--skip-health", action="store_true")
     parser.add_argument("--skip-stability-gate", action="store_true")
+    parser.add_argument("--skip-gateway-readiness-precheck", action="store_true", help="Bypass the hard paper Gateway API/socket/auth precheck before submitting orders.")
     parser.add_argument("--execute", action="store_true", help="Submit paper orders. Without this flag only the safe plan is built.")
     parser.add_argument("--confirm", default="", help=f"Required with --execute: {CONFIRM_TEXT}")
     parser.add_argument("--format", choices=("text", "json"), default="text")
     parser.add_argument("--use-system-proxy", action="store_true", help="Allow urllib to use OS/env proxy settings. By default the probe bypasses system proxies.")
-    return apply_stress_preset(parser.parse_args(argv))
+    return apply_probe_safety_defaults(apply_stress_preset(parser.parse_args(argv)))
 
 
 def print_text(payload: dict[str, Any]) -> None:
@@ -1597,6 +2046,17 @@ def print_text(payload: dict[str, Any]) -> None:
             "target_notional_per_order={target} total_requested_exposure={total}".format(
                 target=plan_summary.get("target_notional_per_order"),
                 total=plan_summary.get("total_requested_exposure"),
+            )
+        )
+    gateway_precheck = payload.get("gateway_readiness_precheck") or {}
+    if gateway_precheck:
+        print(
+            "gateway_readiness_ok={ok} socket={socket} reachable={reachable} session={session} reason={reason}".format(
+                ok=gateway_precheck.get("ok"),
+                socket=gateway_precheck.get("api_socket_listening"),
+                reachable=gateway_precheck.get("gateway_reachable"),
+                session=gateway_precheck.get("session_authenticated"),
+                reason=",".join(str(item.get("name")) for item in gateway_precheck.get("failures") or []),
             )
         )
     if "place_results" in payload:
@@ -1652,6 +2112,26 @@ def print_text(payload: dict[str, Any]) -> None:
                 failures=",".join(str(item.get("name")) for item in pending.get("failures") or []),
             )
         )
+        post_place = payload.get("post_place_quiesce") or {}
+        if not post_place.get("skipped", True):
+            print(
+                "post_place_quiesce_ok={ok} samples={samples} last={last} error={error}".format(
+                    ok=post_place.get("ok"),
+                    samples=post_place.get("sample_count"),
+                    last=compact_json(post_place.get("last_sample") or {}),
+                    error=post_place.get("error") or "",
+                )
+            )
+        pre_cancel = payload.get("pre_cancel_quiesce") or {}
+        if not pre_cancel.get("skipped", True):
+            print(
+                "pre_cancel_quiesce_ok={ok} samples={samples} last={last} error={error}".format(
+                    ok=pre_cancel.get("ok"),
+                    samples=pre_cancel.get("sample_count"),
+                    last=compact_json(pre_cancel.get("last_sample") or {}),
+                    error=pre_cancel.get("error") or "",
+                )
+            )
         after_values = (((payload.get("stability") or {}).get("after") or {}).get("values") or {})
         print(
             "stability_after_ok={ok} gateway_wait_p95={wait} gateway_timeouts={timeouts} order_p95={order_p95}".format(
@@ -1670,14 +2150,18 @@ def main(argv: list[str] | None = None) -> int:
     try:
         payload = run_probe(args)
     except Exception as exc:
-        payload = {
-            "ok": False,
-            "run_id": args.run_id,
-            "dry_run": not bool(args.execute),
-            "error": str(exc),
-            "created_at_et": datetime.now(ET).isoformat(),
-            "created_at_cn": datetime.now(CN).isoformat(),
-        }
+        structured_payload = getattr(exc, "payload", None)
+        if isinstance(structured_payload, dict):
+            payload = dict(structured_payload)
+        else:
+            payload = {
+                "ok": False,
+                "run_id": args.run_id,
+                "dry_run": not bool(args.execute),
+                "error": str(exc),
+                "created_at_et": datetime.now(ET).isoformat(),
+                "created_at_cn": datetime.now(CN).isoformat(),
+            }
         try:
             payload["artifact"] = write_artifact(args, payload)
         except Exception:

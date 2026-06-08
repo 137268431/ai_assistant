@@ -4,7 +4,7 @@ from flask import request
 
 from ibkr_compute.api.monitor.views import _build_ibkr_monitor_snapshot
 from ibkr_compute.api.shared.route_request import coerce_request_bool
-from ibkr_compute.api.shared.service_status import get_service_status_snapshot
+from ibkr_compute.api.shared.service_status import _build_minimal_runtime_status, get_service_status_snapshot
 from ibkr_compute.api.runtime.common import (
     _api_app,
     _background_start_ibkr_service,
@@ -117,16 +117,31 @@ def _build_ibkr_status_response() -> tuple[dict, int]:
             "runtime_mode": get_runtime_mode(),
             "service_topology": build_service_topology(),
         }, 200
-    _maybe_restore_ibkr_service(service, refresh_auth=False, block=False)
     try:
         skip_compute_status = coerce_request_bool(request.args.get("skip_compute_status"), False)
     except Exception:
         skip_compute_status = False
-    status_payload = get_service_status_snapshot(
-        service,
-        refresh_calendar=True,
-        include_compute_status=not skip_compute_status,
-    )
+    try:
+        lite_status = (
+            coerce_request_bool(request.args.get("lite"), False)
+            or coerce_request_bool(request.args.get("fast"), False)
+            or coerce_request_bool(request.args.get("fast_status"), False)
+            or coerce_request_bool(request.args.get("lightweight"), False)
+        )
+    except Exception:
+        lite_status = False
+    if not lite_status:
+        _maybe_restore_ibkr_service(service, refresh_auth=False, block=False)
+    if lite_status:
+        status_payload = _build_minimal_runtime_status(service)
+        status_payload["status_mode"] = "lite"
+    else:
+        status_payload = get_service_status_snapshot(
+            service,
+            refresh_calendar=True,
+            include_compute_status=not skip_compute_status,
+        )
+        status_payload.setdefault("status_mode", "full")
     if skip_compute_status:
         status_payload["compute_status_lookup_skipped"] = True
     runtime_environment = normalize_broker_mode(

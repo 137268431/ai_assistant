@@ -10,6 +10,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from ibkr_compute.api.account.snapshot_builder.fetch import fetch_snapshot_sources
+from ibkr_compute.api.account.snapshot_builder.context import _snapshot_cache_stale_seconds
 from ibkr_compute.api.account.snapshot_builder.payload import (
     _build_ibkr_account_buying_power_snapshot,
     _build_ibkr_account_snapshot,
@@ -58,6 +59,16 @@ class _FakePB:
         return []
 
 
+class _RowsPB:
+    def __init__(self, rows: list[dict]):
+        self.rows = list(rows or [])
+        self.calls = []
+
+    def get_records(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
+        return list(self.rows)
+
+
 class _FakeApiApp:
     IBKR_ACCOUNT_SNAPSHOT_TTL_SECONDS = 30.0
     IBKR_ACCOUNT_SNAPSHOT_STALE_SECONDS = 120.0
@@ -85,12 +96,15 @@ class _FakeApiApp:
 
 
 class _SnapshotOrderPlacer:
+    environment = "paper"
+
     def get_active_account_id(self, use_paper=False):
         return "DU123"
 
 
 class _SnapshotLifecycle:
     account_id = "DU123"
+    environment = "paper"
 
     def __init__(self, *, delay: float = 0.0):
         self.delay = delay
@@ -122,6 +136,19 @@ class _SnapshotService:
     def __init__(self, lifecycle: _SnapshotLifecycle):
         self.order_placer = _SnapshotOrderPlacer()
         self.order_lifecycle = lifecycle
+
+
+class _ReservationStore:
+    def __init__(self, *, exposure: float = 0.0, count: int = 0):
+        self.exposure = float(exposure or 0.0)
+        self.count = int(count or 0)
+
+    def snapshot(self):
+        return {
+            "exposure": self.exposure,
+            "count": self.count,
+            "order_ids": ["1001"] if self.count else [],
+        }
 
 
 class _FastOrderTracker:
@@ -462,6 +489,81 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertEqual(0, service.ws_client.calls)
         self.assertEqual("fast_runtime_state", payload["orders_fast_diagnostics"]["status_source"])
 
+    def test_orders_fast_snapshot_reads_gateway_flags_without_status_lock(self):
+        class _ReadyEvent:
+            def is_set(self):
+                return True
+
+        class _FastClient:
+            _ready = True
+            _ready_event = _ReadyEvent()
+            _status_code = 200
+            _account_data_circuit_until = 0.0
+            _account_data_circuit_reason = ""
+
+            def isConnected(self):
+                return True
+
+        class _SlowBroker:
+            client = _FastClient()
+
+            def __init__(self):
+                self.status_calls = 0
+
+            def status(self):
+                self.status_calls += 1
+                raise AssertionError("orders_fast should not wait for broker.status lock")
+
+        app = _FakeApiApp()
+        service = _SnapshotService(_SnapshotLifecycle(delay=0.05))
+        service.order_tracker = _FastOrderTracker([])
+        broker = _SlowBroker()
+        service.broker = broker
+
+        payload = _with_fake_api_app(
+            app,
+            lambda: _build_ibkr_account_snapshot(
+                service,
+                include_pnl=False,
+                force_refresh=True,
+                allow_stale=False,
+                orders_fast=True,
+            ),
+        )
+
+        self.assertTrue(payload["gateway_running"])
+        self.assertEqual(0, broker.status_calls)
+        self.assertEqual("fast_runtime_state", payload["orders_fast_diagnostics"]["status_source"])
+
+    def test_orders_fast_snapshot_resolves_environment_without_full_status(self):
+        class _EnvFailApp(_FakeApiApp):
+            def __init__(self):
+                super().__init__()
+                self.environment_calls = 0
+
+            def _ibkr_service_environment(self, _service):
+                self.environment_calls += 1
+                raise AssertionError("orders_fast should use service-local environment")
+
+        app = _EnvFailApp()
+        service = _SnapshotService(_SnapshotLifecycle(delay=0.05))
+        service.order_tracker = _FastOrderTracker([])
+
+        payload = _with_fake_api_app(
+            app,
+            lambda: _build_ibkr_account_snapshot(
+                service,
+                include_pnl=False,
+                force_refresh=True,
+                allow_stale=False,
+                orders_fast=True,
+            ),
+        )
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual("paper", payload["environment"])
+        self.assertEqual(0, app.environment_calls)
+
     def test_orders_fast_snapshot_reuses_cached_full_summary(self):
         app = _FakeApiApp()
         lifecycle = _SnapshotLifecycle()
@@ -479,6 +581,243 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertTrue(fast["summary_available"])
         self.assertEqual("snapshot_cache", fast["orders_fast_diagnostics"]["summary_source"])
         self.assertEqual(1, lifecycle.snapshot_calls)
+
+    def test_orders_fast_snapshot_reuses_stale_full_summary(self):
+        app = _FakeApiApp()
+        lifecycle = _SnapshotLifecycle()
+        service = _SnapshotService(lifecycle)
+        service.order_tracker = _FastOrderTracker([])
+
+        full = _with_fake_api_app(app, lambda: _build_ibkr_account_snapshot(service, include_pnl=False))
+        now = time.time()
+        with app.ibkr_account_snapshot_cache_lock:
+            entry = app.ibkr_account_snapshot_cache[(full["environment"], full["account_id"], False)]
+            entry["fresh_until"] = now - 1
+            entry["expires_at"] = now - 1
+            entry["stale_until"] = now + 120
+
+        fast = _with_fake_api_app(
+            app,
+            lambda: _build_ibkr_account_snapshot(
+                service,
+                include_pnl=False,
+                force_refresh=True,
+                orders_fast=True,
+                orders_fast_open_only=True,
+            ),
+        )
+
+        self.assertTrue(fast["summary_available"])
+        self.assertEqual("snapshot_cache", fast["orders_fast_diagnostics"]["summary_source"])
+        self.assertEqual("stale", fast["orders_fast_diagnostics"]["summary_cache_state"])
+
+    def test_snapshot_cache_stale_window_has_pressure_floor(self):
+        app = _FakeApiApp()
+
+        self.assertGreaterEqual(_snapshot_cache_stale_seconds(app), 900.0)
+
+    def test_orders_fast_snapshot_merges_pb_rows_when_callback_cache_is_partial(self):
+        app = _FakeApiApp()
+        app.pb = _RowsPB(
+            [
+                {
+                    "broker_order_id": "1002",
+                    "symbol": "MSFT",
+                    "status": "Submitted",
+                    "relation_status": "active",
+                    "role": "entry",
+                    "direction": "long",
+                    "quantity": 5,
+                    "limit_price": 250.0,
+                    "environment": "paper",
+                }
+            ]
+        )
+        service = _SnapshotService(_SnapshotLifecycle())
+        service.order_tracker = _FastOrderTracker(
+            [
+                {
+                    "orderId": "1001",
+                    "ticker": "AAPL",
+                    "status": "Submitted",
+                    "side": "BUY",
+                    "orderType": "LMT",
+                    "totalSize": 10,
+                    "price": 123.45,
+                }
+            ]
+        )
+
+        payload = _with_fake_api_app(
+            app,
+            lambda: _build_ibkr_account_snapshot(
+                service,
+                include_pnl=False,
+                force_refresh=True,
+                orders_fast=True,
+                orders_fast_open_only=True,
+            ),
+        )
+
+        self.assertEqual(2, payload["counts"]["open_orders"])
+        self.assertEqual({"1001", "1002"}, {order["order_id"] for order in payload["live_open_orders"]})
+        self.assertEqual(1, payload["orders_fast_diagnostics"]["pb_fallback_order_count"])
+        self.assertFalse(payload["orders_fast_diagnostics"]["pb_fallback_skipped"])
+
+    def test_orders_fast_snapshot_ignores_untrusted_stale_pb_rows(self):
+        app = _FakeApiApp()
+        app.pb = _RowsPB(
+            [
+                {
+                    "broker_order_id": "2002",
+                    "symbol": "MSFT",
+                    "status": "Submitted",
+                    "relation_status": "active",
+                    "role": "entry",
+                    "direction": "long",
+                    "quantity": 5,
+                    "limit_price": 250.0,
+                    "environment": "paper",
+                }
+            ]
+        )
+        service = _SnapshotService(_SnapshotLifecycle())
+        service.order_tracker = _FastOrderTracker([])
+
+        payload = _with_fake_api_app(
+            app,
+            lambda: _build_ibkr_account_snapshot(
+                service,
+                include_pnl=False,
+                force_refresh=True,
+                orders_fast=True,
+                orders_fast_open_only=True,
+            ),
+        )
+
+        self.assertEqual(0, payload["counts"]["open_orders"])
+        self.assertEqual([], payload["live_open_orders"])
+        self.assertEqual(1, payload["orders_fast_diagnostics"]["pb_fallback_raw_order_count"])
+        self.assertEqual(0, payload["orders_fast_diagnostics"]["pb_fallback_order_count"])
+        self.assertTrue(payload["orders_fast_diagnostics"]["pb_fallback_skipped"])
+        self.assertEqual(
+            "no_live_or_pressure_evidence",
+            payload["orders_fast_diagnostics"]["pb_fallback_trust"]["filter_reason"],
+        )
+
+    def test_orders_fast_snapshot_applies_buying_power_reservation_overlay(self):
+        app = _FakeApiApp()
+        lifecycle = _BuyingPowerLifecycle()
+        service = _BuyingPowerService(lifecycle)
+        service.order_tracker = _FastOrderTracker([])
+
+        full = _with_fake_api_app(app, lambda: _build_ibkr_account_snapshot(service, include_pnl=False))
+        service.buying_power_reservations = _ReservationStore(exposure=5000.0, count=1)
+        fast = _with_fake_api_app(
+            app,
+            lambda: _build_ibkr_account_snapshot(
+                service,
+                include_pnl=False,
+                force_refresh=True,
+                orders_fast=True,
+                orders_fast_open_only=True,
+            ),
+        )
+
+        self.assertEqual(50000.0, full["summary"]["buying_power"])
+        self.assertEqual(45000.0, fast["summary"]["buying_power"])
+        self.assertEqual(5000.0, fast["summary"]["local_reserved_exposure"])
+        self.assertEqual(1, fast["buying_power_guard"]["local_reserved_count"])
+
+    def test_invalid_zero_summary_does_not_replace_valid_snapshot_cache(self):
+        class _ZeroLifecycle(_SnapshotLifecycle):
+            def __init__(self):
+                super().__init__()
+                self.zero = False
+
+            def get_account_snapshot(self, _account_id):
+                self.snapshot_calls += 1
+                if self.zero:
+                    return {
+                        "summary": {
+                            "AccountCode": {"value": "DU123"},
+                            "NetLiquidation": {"value": "0"},
+                            "BuyingPower": {"value": "0"},
+                            "AvailableFunds": {"value": "0"},
+                        },
+                        "positions": [],
+                    }
+                return {
+                    "summary": {
+                        "AccountCode": {"value": "DU123"},
+                        "NetLiquidation": {"value": "100000"},
+                        "BuyingPower": {"value": "50000"},
+                        "AvailableFunds": {"value": "25000"},
+                    },
+                    "positions": [],
+                }
+
+        app = _FakeApiApp()
+        lifecycle = _ZeroLifecycle()
+        service = _SnapshotService(lifecycle)
+
+        first = _with_fake_api_app(app, lambda: _build_ibkr_account_snapshot(service, include_pnl=False))
+        lifecycle.zero = True
+        refreshed = _with_fake_api_app(
+            app,
+            lambda: _build_ibkr_account_snapshot(
+                service,
+                include_pnl=False,
+                force_refresh=True,
+                allow_stale=True,
+            ),
+        )
+
+        self.assertTrue(first["summary_available"])
+        self.assertTrue(refreshed["stale"])
+        self.assertEqual("stale_after_error", refreshed["cache_state"])
+        self.assertEqual(50000.0, refreshed["summary"]["buying_power"])
+
+    def test_orders_fast_open_only_omits_cached_full_positions(self):
+        class _PositionLifecycle(_SnapshotLifecycle):
+            def get_account_snapshot(self, _account_id):
+                self.snapshot_calls += 1
+                return {
+                    "summary": {"AccountCode": {"value": "DU123"}, "NetLiquidation": {"value": "1000000"}},
+                    "positions": [
+                        {
+                            "ticker": "AAPL",
+                            "conid": 265598,
+                            "position": 5,
+                            "mktPrice": 100.0,
+                            "acctId": "DU123",
+                        }
+                    ],
+                }
+
+        app = _FakeApiApp()
+        lifecycle = _PositionLifecycle()
+        service = _SnapshotService(lifecycle)
+        service.order_tracker = _FastOrderTracker([])
+
+        full = _with_fake_api_app(app, lambda: _build_ibkr_account_snapshot(service, include_pnl=False))
+        fast = _with_fake_api_app(
+            app,
+            lambda: _build_ibkr_account_snapshot(
+                service,
+                include_pnl=False,
+                force_refresh=True,
+                orders_fast=True,
+                orders_fast_open_only=True,
+            ),
+        )
+
+        self.assertEqual(1, full["counts"]["positions"])
+        self.assertEqual(0, fast["counts"]["positions"])
+        self.assertEqual([], fast["positions"])
+        self.assertEqual("omitted_open_orders_only", fast["orders_fast_diagnostics"]["positions_source"])
+        self.assertTrue(fast["orders_fast_diagnostics"]["positions_omitted"])
+        self.assertIn("runtime_elapsed_ms", fast["diagnostics"]["account_snapshot"])
 
     def test_buying_power_reuses_fresh_full_snapshot_cache(self):
         app = _FakeApiApp()
@@ -510,7 +849,7 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertEqual(0, lifecycle.summary_calls)
         self.assertEqual("ok", buying_power["account_snapshot_health"]["state"])
 
-    def test_buying_power_snapshot_single_flight_refreshes_full_snapshot_when_cache_empty(self):
+    def test_buying_power_snapshot_single_flight_refreshes_summary_when_cache_empty(self):
         app = _FakeApiApp()
         lifecycle = _BuyingPowerLifecycle(delay=0.05)
         service = _BuyingPowerService(lifecycle)
@@ -521,10 +860,10 @@ class AccountSnapshotFetchTest(unittest.TestCase):
 
         payloads = _with_fake_api_app(app, run)
 
-        self.assertEqual(1, lifecycle.snapshot_calls)
-        self.assertEqual(0, lifecycle.summary_calls)
+        self.assertEqual(0, lifecycle.snapshot_calls)
+        self.assertEqual(1, lifecycle.summary_calls)
         self.assertEqual(0, service.status_calls)
-        self.assertTrue(all(payload["source"] == "account_snapshot" for payload in payloads))
+        self.assertTrue(all(payload["source"] == "account_summary" for payload in payloads))
         self.assertTrue(all(payload["buying_power_guard"]["state"] == "ok" for payload in payloads))
 
     def test_buying_power_snapshot_uses_stale_guard_when_refresh_unavailable(self):

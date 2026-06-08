@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -25,9 +26,14 @@ from ibkr_compute.api.account.snapshot_builder.context import (
 )
 from ibkr_compute.api.account.snapshot_builder.fetch import fetch_snapshot_sources
 from ibkr_compute.api.account.snapshot_builder.recovery import (
+    filter_trusted_pb_fallback_order_rows,
     load_pb_fallback_order_rows,
     pb_order_rows_to_live_orders,
     recover_live_open_orders,
+)
+from ibkr_compute.order.buying_power_reservations import (
+    apply_reservations_to_buying_power_summary,
+    merge_reservation_snapshot_into_guard,
 )
 
 
@@ -261,6 +267,82 @@ def _summary_snapshot_available(summary: dict) -> bool:
     return bool(str(summary.get("account_type") or "").strip())
 
 
+def _numeric_summary_keys() -> tuple[str, ...]:
+    return (
+        "remaining_buying_power",
+        "buying_power",
+        "net_liquidation",
+        "available_funds",
+        "excess_liquidity",
+        "equity_with_loan",
+        "gross_position_value",
+        "total_cash_value",
+        "initial_margin",
+        "maintenance_margin",
+    )
+
+
+def _mask_unavailable_summary_values(summary: dict) -> dict:
+    masked = dict(summary or {})
+    if not masked or _summary_snapshot_available(masked):
+        return masked
+    for key in _numeric_summary_keys():
+        if key in masked:
+            masked[key] = None
+    return masked
+
+
+def _reservation_snapshot(service) -> dict:
+    store = getattr(service, "buying_power_reservations", None)
+    snapshotter = getattr(store, "snapshot", None)
+    if not callable(snapshotter):
+        return {}
+    try:
+        snapshot = snapshotter()
+    except Exception:
+        return {}
+    return dict(snapshot) if isinstance(snapshot, dict) else {}
+
+
+def _reservation_overlay_base_summary(summary: dict) -> dict:
+    base = dict(summary or {})
+    existing_reserved = max(0.0, _safe_float(base.get("local_reserved_exposure"), 0.0))
+    if existing_reserved > 0:
+        for key in ("remaining_buying_power", "buying_power"):
+            current = base.get(key)
+            if current not in (None, ""):
+                base[key] = _safe_float(current, 0.0) + existing_reserved
+    for key in ("local_reserved_exposure", "local_reserved_count", "local_reserved_order_ids"):
+        base.pop(key, None)
+    return base
+
+
+def _apply_reservation_overlay_to_account_payload(service, payload: dict) -> dict:
+    result = dict(payload or {})
+    summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+    if not _summary_snapshot_available(summary):
+        result["summary"] = _mask_unavailable_summary_values(summary)
+        return _decorate_account_snapshot_health(result)
+    reservation_snapshot = _reservation_snapshot(service)
+    adjusted_summary = apply_reservations_to_buying_power_summary(
+        _reservation_overlay_base_summary(summary),
+        reservation_snapshot,
+    )
+    result["summary"] = adjusted_summary
+    guard = build_buying_power_guard(
+        adjusted_summary,
+        config=getattr(service, "config", None),
+        environment=result.get("environment") or "",
+    )
+    previous_guard = result.get("buying_power_guard") if isinstance(result.get("buying_power_guard"), dict) else {}
+    for key in ("source", "snapshot_error"):
+        if previous_guard.get(key) not in (None, ""):
+            guard[key] = previous_guard.get(key)
+    merge_reservation_snapshot_into_guard(guard, reservation_snapshot)
+    result["buying_power_guard"] = guard
+    return _decorate_account_snapshot_health(result)
+
+
 def _decorate_account_snapshot_health(payload: dict, *, reason: str = "") -> dict:
     result = payload if isinstance(payload, dict) else {}
     summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
@@ -343,6 +425,59 @@ def _build_buying_power_payload_from_full_snapshot(full_snapshot: dict, context:
     )
 
 
+def _build_buying_power_payload_from_summary_raw(service, context: dict, summary_raw: dict, summary_error: str = "") -> dict:
+    if not isinstance(summary_raw, dict):
+        summary_raw = {}
+    summary = _build_snapshot_summary(summary_raw, context["account_id"], [], {})
+    if not _summary_snapshot_available(summary):
+        summary = _mask_unavailable_summary_values(summary)
+    guard = build_buying_power_guard(
+        summary,
+        config=getattr(service, "config", None),
+        environment=context["runtime_environment"],
+    )
+    guard["source"] = "account_summary"
+    if guard.get("state") == "unavailable":
+        guard["reason"] = _buying_power_unavailable_reason(
+            context["service_status"],
+            summary_error,
+            summary,
+        )
+        guard["snapshot_error"] = summary_error or guard["reason"]
+
+    payload = {
+        "ok": bool(guard.get("available")),
+        "environment": context["runtime_environment"],
+        "account_id": context["account_id"],
+        "service_running": bool(getattr(service, "is_running", False)),
+        "service_starting": bool(getattr(service, "is_starting", False)),
+        "session_authenticated": bool((context["service_status"].get("session") or {}).get("authenticated")),
+        "gateway_running": bool((context["service_status"].get("gateway") or {}).get("running")),
+        "summary": summary,
+        "buying_power_guard": guard,
+        "summary_raw": summary_raw,
+        "errors": {"summary": summary_error},
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "source": "account_summary",
+    }
+    return _decorate_account_snapshot_health(payload)
+
+
+def _fetch_account_summary_raw_for_buying_power(service, context: dict) -> tuple[dict, str]:
+    lifecycle = getattr(service, "order_lifecycle", None)
+    getter = getattr(lifecycle, "get_account_summary", None)
+    if not callable(getter):
+        return {}, "account_summary_unavailable"
+    try:
+        value = getter(context["account_id"])
+        summary_raw = value if isinstance(value, dict) else {}
+    except Exception as exc:
+        return {}, str(exc)
+    if not summary_raw:
+        return {}, "account_summary_unavailable"
+    return summary_raw, ""
+
+
 def _build_account_data_circuit_buying_power_snapshot(service, context: dict, circuit: dict) -> dict:
     retry_after_s = _safe_float((circuit or {}).get("remaining_s"), 0.0)
     reason = "account_data_circuit_open"
@@ -421,67 +556,28 @@ def _build_ibkr_account_buying_power_snapshot(service) -> dict:
             store_cached_snapshot(api_app, cache_key, payload)
             return load_cached_snapshot(api_app, cache_key, allow_stale=False) or payload
 
-        full_refreshed = _build_ibkr_account_snapshot(
-            service,
-            include_pnl=False,
-            force_refresh=False,
-            allow_stale=False,
-            fast_status=True,
-        )
-        payload = _build_buying_power_payload_from_full_snapshot(full_refreshed, context)
-        if payload:
-            store_cached_snapshot(api_app, cache_key, payload)
-            return load_cached_snapshot(api_app, cache_key, allow_stale=False) or payload
-
-        summary_raw = {}
-        summary_error = ""
-        lifecycle = getattr(service, "order_lifecycle", None)
-        getter = getattr(lifecycle, "get_account_summary", None)
-        if callable(getter):
-            try:
-                value = getter(context["account_id"])
-                summary_raw = value if isinstance(value, dict) else {}
-            except Exception as exc:
-                summary_error = str(exc)
-        else:
-            summary_error = "account_summary_unavailable"
-        if not summary_raw and not summary_error:
-            summary_error = "account_summary_unavailable"
-
-        summary = _build_snapshot_summary(summary_raw, context["account_id"], [], {})
-        guard = build_buying_power_guard(
-            summary,
-            config=getattr(service, "config", None),
-            environment=context["runtime_environment"],
-        )
-        guard["source"] = "account_summary"
-        if guard.get("state") == "unavailable":
-            guard["reason"] = _buying_power_unavailable_reason(
-                context["service_status"],
-                summary_error,
-                summary,
+        summary_raw, summary_error = _fetch_account_summary_raw_for_buying_power(service, context)
+        payload = _build_buying_power_payload_from_summary_raw(service, context, summary_raw, summary_error)
+        if (payload.get("buying_power_guard") or {}).get("state") == "unavailable":
+            stale_payload = _stale_buying_power_snapshot_after_error(
+                api_app,
+                cache_key,
+                (payload.get("buying_power_guard") or {}).get("snapshot_error") or summary_error,
             )
-            guard["snapshot_error"] = summary_error or guard["reason"]
-            stale_payload = _stale_buying_power_snapshot_after_error(api_app, cache_key, guard["snapshot_error"])
             if stale_payload:
                 return stale_payload
-
-        payload = {
-            "ok": bool(guard.get("available")),
-            "environment": context["runtime_environment"],
-            "account_id": context["account_id"],
-            "service_running": bool(getattr(service, "is_running", False)),
-            "service_starting": bool(getattr(service, "is_starting", False)),
-            "session_authenticated": bool((context["service_status"].get("session") or {}).get("authenticated")),
-            "gateway_running": bool((context["service_status"].get("gateway") or {}).get("running")),
-            "summary": summary,
-            "buying_power_guard": guard,
-            "summary_raw": summary_raw,
-            "errors": {"summary": summary_error},
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
-            "source": "account_summary",
-        }
-        payload = _decorate_account_snapshot_health(payload)
+            full_refreshed = _build_ibkr_account_snapshot(
+                service,
+                include_pnl=False,
+                force_refresh=False,
+                allow_stale=False,
+                fast_status=True,
+                apply_reservation_overlay=False,
+            )
+            full_payload = _build_buying_power_payload_from_full_snapshot(full_refreshed, context)
+            if full_payload:
+                store_cached_snapshot(api_app, cache_key, full_payload)
+                return load_cached_snapshot(api_app, cache_key, allow_stale=False) or full_payload
         store_cached_snapshot(api_app, cache_key, payload)
         return load_cached_snapshot(api_app, cache_key, allow_stale=False) or payload
 
@@ -538,7 +634,12 @@ def _build_fresh_ibkr_account_snapshot_payload(service, context: dict) -> dict:
     source_errors = snapshot_sources.get("errors") if isinstance(snapshot_sources.get("errors"), dict) else {}
     if source_errors.get("positions") and not bool(snapshot_sources.get("positions_loaded")):
         raise RuntimeError(str(source_errors.get("positions") or "account_positions_unavailable"))
-    fallback_rows = load_pb_fallback_order_rows(api_app, service)
+    fallback_rows_raw = load_pb_fallback_order_rows(api_app, service)
+    fallback_rows, fallback_trust = filter_trusted_pb_fallback_order_rows(
+        service,
+        fallback_rows_raw,
+        broker_rows=snapshot_sources["orders_raw"] if isinstance(snapshot_sources.get("orders_raw"), list) else [],
+    )
     fallback_ids = [
         str(row.get("broker_order_id") or row.get("order_id") or "").strip()
         for row in fallback_rows
@@ -551,6 +652,9 @@ def _build_fresh_ibkr_account_snapshot_payload(service, context: dict) -> dict:
         fallback_ids,
         fallback_rows=fallback_rows,
     )
+    diagnostics = live_open_payload.get("diagnostics") if isinstance(live_open_payload.get("diagnostics"), dict) else {}
+    diagnostics["pb_fallback_trust"] = fallback_trust
+    live_open_payload["diagnostics"] = diagnostics
     positions, orders, live_open_orders, live_open_payload = _normalize_snapshot_rows(
         context["account_id"],
         snapshot_sources["positions_raw"],
@@ -565,6 +669,11 @@ def _build_fresh_ibkr_account_snapshot_payload(service, context: dict) -> dict:
         positions,
         snapshot_sources.get("pnl_raw") if isinstance(snapshot_sources.get("pnl_raw"), dict) else {},
     )
+    if not _summary_snapshot_available(summary):
+        summary = _mask_unavailable_summary_values(summary)
+        source_errors = dict(snapshot_sources["errors"])
+        source_errors["summary"] = source_errors.get("summary") or "account_summary_unavailable"
+        snapshot_sources["errors"] = source_errors
     guard = build_buying_power_guard(
         summary,
         config=getattr(service, "config", None),
@@ -611,7 +720,11 @@ def _load_cached_full_snapshot_for_orders_fast(api_app, context: dict) -> dict:
         seen.add(cache_key)
         cached = load_cached_snapshot(api_app, cache_key, allow_stale=True)
         if isinstance(cached, dict) and cached:
-            return dict(cached)
+            decorated = _decorate_account_snapshot_health(dict(cached))
+            health = decorated.get("account_snapshot_health") if isinstance(decorated.get("account_snapshot_health"), dict) else {}
+            health_state = str(health.get("state") or "").strip().lower()
+            if health_state in {"ok", "stale"} and bool(decorated.get("summary_available")):
+                return decorated
     return {}
 
 
@@ -696,14 +809,41 @@ def _build_orders_fast_ibkr_account_snapshot_payload(
     context: dict,
     *,
     open_orders_only: bool = False,
+    timing_started: float | None = None,
+    context_elapsed_ms: float = 0.0,
 ) -> dict:
+    started = float(timing_started or time.perf_counter())
+    timings_ms: dict[str, float] = {"context_ms": round(float(context_elapsed_ms or 0.0), 1)}
+    last_timing = time.perf_counter()
+
+    def mark_timing(name: str) -> None:
+        nonlocal last_timing
+        now = time.perf_counter()
+        timings_ms[name] = round((now - last_timing) * 1000.0, 1)
+        last_timing = now
+
     api_app = context["api_app"]
     cached_full = _load_cached_full_snapshot_for_orders_fast(api_app, context)
+    mark_timing("cached_full_snapshot_ms")
     cached_order_rows, cached_order_source = _cached_live_order_rows(service, include_all=not bool(open_orders_only))
-    fallback_rows = [] if cached_order_rows else load_pb_fallback_order_rows(api_app, service)
+    mark_timing("cached_live_orders_ms")
+    fallback_rows_raw = load_pb_fallback_order_rows(api_app, service)
+    fallback_rows, fallback_trust = filter_trusted_pb_fallback_order_rows(
+        service,
+        fallback_rows_raw,
+        broker_rows=cached_order_rows,
+    )
+    mark_timing("pb_fallback_orders_ms")
     merged_orders_raw = _merge_cached_and_pb_order_rows(cached_order_rows, fallback_rows)
     live_open_payload = _build_orders_fast_live_open_payload(cached_order_rows, fallback_rows)
-    cached_positions = cached_full.get("positions") if isinstance(cached_full.get("positions"), list) else []
+    cached_positions = (
+        []
+        if open_orders_only
+        else cached_full.get("positions")
+        if isinstance(cached_full.get("positions"), list)
+        else []
+    )
+    positions_source = "omitted_open_orders_only" if open_orders_only else ("snapshot_cache" if cached_full else "unavailable")
     positions, orders, live_open_orders, live_open_payload = _normalize_snapshot_rows(
         context["account_id"],
         cached_positions,
@@ -715,6 +855,7 @@ def _build_orders_fast_ibkr_account_snapshot_payload(
             if isinstance(row, dict) and str(row.get("broker_order_id") or row.get("order_id") or "").strip()
         ],
     )
+    mark_timing("normalize_rows_ms")
     summary = dict(cached_full.get("summary") or {})
     summary_raw = dict(cached_full.get("summary_raw") or {})
     pnl_raw = dict(cached_full.get("pnl_raw") or {})
@@ -731,6 +872,7 @@ def _build_orders_fast_ibkr_account_snapshot_payload(
     errors = dict(cached_full.get("errors") or {})
     if not _summary_snapshot_available(summary):
         errors.setdefault("summary", "orders_fast_summary_cache_unavailable")
+    elapsed_ms = round((time.perf_counter() - started) * 1000.0, 1)
     payload = {
         "ok": True,
         "environment": context["runtime_environment"],
@@ -752,6 +894,14 @@ def _build_orders_fast_ibkr_account_snapshot_payload(
         "recovery_diagnostics": live_open_payload.get("diagnostics") or {},
         "counts": _build_snapshot_counts(positions, orders, live_open_orders),
         "errors": errors,
+        "diagnostics": {
+            "account_snapshot": {
+                "runtime_elapsed_ms": elapsed_ms,
+                "total_elapsed_ms": elapsed_ms,
+                "orders_fast": True,
+                "open_orders_only": bool(open_orders_only),
+            }
+        },
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "source": "account_snapshot_orders_fast",
         "snapshot_profile": "orders_fast",
@@ -761,17 +911,23 @@ def _build_orders_fast_ibkr_account_snapshot_payload(
             "order_source": cached_order_source,
             "cached_order_count": len(cached_order_rows),
             "pb_fallback_order_count": len(fallback_rows),
-            "pb_fallback_skipped": bool(cached_order_rows),
+            "pb_fallback_raw_order_count": len(fallback_rows_raw),
+            "pb_fallback_skipped": bool(fallback_rows_raw and not fallback_rows),
+            "pb_fallback_trust": fallback_trust,
             "open_orders_only": bool(open_orders_only),
             "historical_orders_omitted": bool(open_orders_only),
+            "positions_source": positions_source,
+            "positions_omitted": bool(open_orders_only),
             "summary_source": "snapshot_cache" if cached_full else "unavailable",
             "summary_cache_state": str(cached_full.get("cache_state") or "") if cached_full else "",
             "summary_cache_age_s": cached_full.get("cache_age_s") if cached_full else None,
             "status_source": "fast_runtime_state",
             "skipped_account_data_fetch": True,
+            "elapsed_ms": elapsed_ms,
+            "timings_ms": timings_ms,
         },
     }
-    return _decorate_account_snapshot_health(payload)
+    return _apply_reservation_overlay_to_account_payload(service, payload)
 
 
 def refresh_account_snapshot_cache(service, *, include_pnl: bool = False) -> dict:
@@ -787,27 +943,32 @@ def _build_ibkr_account_snapshot(
     orders_fast: bool = False,
     orders_fast_open_only: bool = False,
     fast_status: bool = False,
+    apply_reservation_overlay: bool = True,
 ) -> dict:
+    started = time.perf_counter()
     context = build_snapshot_context(service, include_pnl=include_pnl, fast_status=bool(orders_fast or fast_status))
+    context_elapsed_ms = round((time.perf_counter() - started) * 1000.0, 1)
     api_app = context["api_app"]
     if orders_fast:
         return _build_orders_fast_ibkr_account_snapshot_payload(
             service,
             context,
             open_orders_only=bool(orders_fast_open_only),
+            timing_started=started,
+            context_elapsed_ms=context_elapsed_ms,
         )
     cache_key = context["cache_key"]
     if not force_refresh:
         cached = load_cached_snapshot(api_app, cache_key, allow_stale=allow_stale)
         if cached:
-            return cached
+            return _apply_reservation_overlay_to_account_payload(service, cached) if apply_reservation_overlay else cached
 
     refresh_lock = get_snapshot_refresh_lock(api_app, cache_key)
     with refresh_lock:
         if not force_refresh:
             cached = load_cached_snapshot(api_app, cache_key, allow_stale=allow_stale)
             if cached:
-                return cached
+                return _apply_reservation_overlay_to_account_payload(service, cached) if apply_reservation_overlay else cached
         try:
             payload = _build_fresh_ibkr_account_snapshot_payload(service, context)
         except Exception as exc:
@@ -815,11 +976,24 @@ def _build_ibkr_account_snapshot(
             mark_cached_snapshot_refresh_error(api_app, cache_key, error)
             cached = load_cached_snapshot(api_app, cache_key, allow_stale=allow_stale)
             if cached:
-                return _stale_snapshot_after_error(cached, error)
-            return _account_snapshot_error_payload(context, error)
+                stale = _stale_snapshot_after_error(cached, error)
+                return _apply_reservation_overlay_to_account_payload(service, stale) if apply_reservation_overlay else stale
+            error_payload = _account_snapshot_error_payload(context, error)
+            return _apply_reservation_overlay_to_account_payload(service, error_payload) if apply_reservation_overlay else error_payload
 
-        store_cached_snapshot(api_app, cache_key, payload)
-        return load_cached_snapshot(api_app, cache_key, allow_stale=False) or payload
+        decorated = _decorate_account_snapshot_health(dict(payload))
+        if not bool(decorated.get("summary_available")):
+            cached = load_cached_snapshot(api_app, cache_key, allow_stale=allow_stale)
+            if cached:
+                stale = _stale_snapshot_after_error(
+                    cached,
+                    (decorated.get("errors") or {}).get("summary") if isinstance(decorated.get("errors"), dict) else "",
+                )
+                return _apply_reservation_overlay_to_account_payload(service, stale) if apply_reservation_overlay else stale
+            return _apply_reservation_overlay_to_account_payload(service, decorated) if apply_reservation_overlay else decorated
+        store_cached_snapshot(api_app, cache_key, decorated)
+        fresh = load_cached_snapshot(api_app, cache_key, allow_stale=False) or decorated
+        return _apply_reservation_overlay_to_account_payload(service, fresh) if apply_reservation_overlay else fresh
 
 
 __all__ = [

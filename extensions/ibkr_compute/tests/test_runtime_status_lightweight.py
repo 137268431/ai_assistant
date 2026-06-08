@@ -244,6 +244,43 @@ def test_service_status_snapshot_can_refresh_calendar_without_auth():
     assert calls == {"refresh_auth": False, "refresh_calendar": True}
 
 
+def test_ibkr_status_lite_uses_minimal_snapshot(monkeypatch):
+    if "flask" not in sys.modules:
+        flask_stub = types.ModuleType("flask")
+        flask_stub.request = types.SimpleNamespace(args={})
+        flask_stub.jsonify = lambda payload: payload
+        flask_stub.Response = object
+        monkeypatch.setitem(sys.modules, "flask", flask_stub)
+    from ibkr_compute.api.runtime import control_views
+
+    runtime = _Runtime()
+
+    def _full_status_should_not_run(**_kwargs):
+        raise AssertionError("lite status must not call the full runtime status snapshot")
+
+    runtime.status = _full_status_should_not_run
+    monkeypatch.setattr(control_views, "get_ibkr_service", lambda: runtime)
+    monkeypatch.setattr(control_views, "_maybe_restore_ibkr_service", lambda *args, **kwargs: None)
+    monkeypatch.setattr(control_views, "get_ibkr_runtime_control", lambda _environment: {"enabled": True})
+    monkeypatch.setattr(control_views, "get_service_profile", lambda: "runtime")
+    monkeypatch.setattr(control_views, "get_runtime_mode", lambda: "remote")
+    monkeypatch.setattr(control_views, "build_service_topology", lambda **_kwargs: {"services": {}})
+    monkeypatch.setattr(
+        control_views,
+        "request",
+        types.SimpleNamespace(args={"lite": "1", "skip_compute_status": "1"}),
+    )
+
+    payload, status_code = control_views._build_ibkr_status_response()
+
+    assert status_code == 200
+    assert payload["ok"] is True
+    assert payload["status_mode"] == "lite"
+    assert payload["compute_status_lookup_skipped"] is True
+    assert payload["gateway"]["running"] is True
+    assert payload["session"]["authenticated"] is True
+
+
 def test_runtime_status_market_session_can_skip_ibkr_calendar_refresh(monkeypatch):
     ibkr_pkg = types.ModuleType("ibkr_compute")
     ibkr_pkg.__path__ = []

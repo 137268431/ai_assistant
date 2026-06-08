@@ -732,11 +732,7 @@ class OrderPlacer:
             or result.get("entry_coid")
             or ""
         )
-        returned_oca_group = str(
-            result.get("oca_group")
-            or (returned_bracket_group if returned_family_type == "bracket_oco" else "")
-            or ""
-        )
+        returned_oca_group = str(result.get("oca_group") or "")
         payload = {
             "ok": bool(result.get("ok")),
             "entry_coid": str(result.get("entry_coid") or ""),
@@ -1130,7 +1126,7 @@ class OrderPlacer:
                 bracket_group = str(trade_group_id or "").strip()
             order_family_type = str(kwargs.get("order_family_type") or "bracket_oco").strip()
             raw_oca_group = str(kwargs.get("oca_group") or "").strip()
-            oca_group = raw_oca_group or (bracket_group if order_family_type == "bracket_oco" else "")
+            oca_group = raw_oca_group
             order_extra = dict(kwargs.get("order_extra") or {})
             symbol = kwargs.get("symbol")
             signal_id = kwargs.get("signal_id", "")

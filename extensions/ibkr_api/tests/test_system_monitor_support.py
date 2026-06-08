@@ -13,6 +13,7 @@ from ibkr_api.system.monitor_support import derive_monitor_service_map
 from ibkr_api.system.scheduler_support import build_scheduler_summary
 from ibkr_api.system.scheduler_support import scheduler_status
 from ibkr_api.system.service_state import derive_compute_state
+from ibkr_api.system.service_state import derive_gateway_state
 from ibkr_api.system.service_state import derive_runtime_state
 from ibkr_api.system.service_state import canonicalize_topology
 
@@ -768,6 +769,87 @@ class SystemMonitorSupportTest(unittest.TestCase):
         self.assertTrue(state["session_authenticated"])
         self.assertTrue(state["gateway_reachable"])
         self.assertTrue(state["websocket_ready"])
+
+    def test_gateway_running_but_api_socket_unreachable_is_degraded(self):
+        runtime_payload = {
+            "runtime_phase": "running",
+            "gateway": {
+                "running": True,
+                "reachable": False,
+                "api_socket_reason": "port_not_listening",
+                "managed_by": "systemd",
+                "pid": 123,
+            },
+            "session": {"authenticated": False},
+            "websocket": {"connected": False, "ready": False},
+        }
+
+        runtime = derive_runtime_state(runtime_payload, observed_at="2026-06-08T00:56:00+00:00")
+        gateway = derive_gateway_state(runtime_payload, observed_at="2026-06-08T00:56:00+00:00")
+
+        self.assertEqual(runtime["status"], "degraded")
+        self.assertEqual(runtime["readiness_phase"], "gateway_pending")
+        self.assertFalse(runtime["gateway_reachable"])
+        self.assertEqual(gateway["status"], "degraded")
+        self.assertEqual(gateway["readiness_phase"], "api_socket_unreachable")
+        self.assertFalse(gateway["ready"])
+        self.assertIn("port_not_listening", gateway["detail"])
+
+    def test_gateway_security_token_expired_reports_manual_login_required(self):
+        runtime_payload = {
+            "runtime_phase": "running",
+            "gateway": {
+                "running": True,
+                "reachable": False,
+                "api_socket_reason": "port_not_listening",
+                "auth_issue": True,
+                "auth_issue_reason": "security_token_expired",
+                "auth_issue_action_required": "manual_gateway_login",
+                "managed_by": "systemd",
+                "pid": 123,
+            },
+            "session": {"authenticated": False},
+            "websocket": {"connected": False, "ready": False},
+        }
+
+        gateway = derive_gateway_state(runtime_payload, observed_at="2026-06-08T00:56:00+00:00")
+
+        self.assertEqual(gateway["status"], "degraded")
+        self.assertEqual(gateway["readiness_phase"], "manual_login_required")
+        self.assertIn("security_token_expired", gateway["detail"])
+        self.assertIn("manual_gateway_login", gateway["detail"])
+
+    def test_monitor_marks_gateway_degraded_when_process_runs_but_socket_is_down(self):
+        service_monitor = derive_monitor_service_map(
+            "paper",
+            {
+                "status": "ok",
+                "runtime": {
+                    "runtime_phase": "running",
+                    "gateway": {
+                        "running": True,
+                        "reachable": False,
+                        "api_socket_reason": "port_not_listening",
+                        "managed_by": "systemd",
+                        "pid": 123,
+                    },
+                    "session": {"authenticated": False},
+                    "websocket": {"connected": False, "ready": False},
+                },
+                "compute": {"status": "running", "total_engines": 1, "ready_engines": 1},
+                "service_topology": {"services": {}},
+            },
+            {"status": "running", "loop_interval_seconds": 30, "jobs": {}},
+            console_probe={"ok": True, "status_code": 200, "target_url": "https://quant.lzw-glory.top/index.html"},
+            pb_health={"ok": True, "status_code": 200},
+            build_service_topology=lambda: {"services": {}},
+        )
+
+        gateway = service_monitor["services"]["ibkr-gateway"]
+        runtime = service_monitor["services"]["ibkr-runtime"]
+        self.assertEqual(gateway["status"], "degraded")
+        self.assertFalse(gateway["ready"])
+        self.assertEqual(runtime["readiness_phase"], "gateway_pending")
 
     def test_canonical_topology_overrides_stale_runtime_session_field(self):
         topology, service_monitor = canonicalize_topology(

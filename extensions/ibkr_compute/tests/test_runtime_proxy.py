@@ -147,6 +147,7 @@ class RuntimeProxyTimeoutTest(unittest.TestCase):
 
         self.assertEqual(3, request_mock.call_args.kwargs["timeout"])
         self.assertIn(("skip_compute_status", "1"), request_mock.call_args.kwargs["params"])
+        self.assertIn(("lite", "1"), request_mock.call_args.kwargs["params"])
 
     def test_default_runtime_proxy_timeout_remains_standard_for_non_status(self):
         _, request_mock = self._proxy_once("/ibkr/history")

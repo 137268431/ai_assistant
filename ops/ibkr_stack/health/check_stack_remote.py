@@ -730,12 +730,12 @@ services = {
     )
 }
 local_http = {
-    "compute_health": http_json(f"{COMPUTE}/health"),
-    "compute_status": http_json(f"{COMPUTE}/status"),
-    "compute_ibkr_status": http_json(f"{COMPUTE}/ibkr/status"),
+    "compute_health": http_json(f"{COMPUTE}/health?lite=1&topology=local"),
+    "compute_status": http_json(f"{COMPUTE}/status?lite=1&topology=local"),
+    "compute_ibkr_status": http_json(f"{COMPUTE}/ibkr/status?lite=1&skip_compute_status=1"),
     "backtest_health": http_json(f"{BACKTEST}/health"),
-    "runtime_health": http_json(f"{RUNTIME}/health"),
-    "runtime_status": http_json(f"{RUNTIME}/ibkr/status"),
+    "runtime_health": http_json(f"{RUNTIME}/health?lite=1&topology=local"),
+    "runtime_status": http_json(f"{RUNTIME}/ibkr/status?lite=1&skip_compute_status=1"),
     "api_health": http_json(f"{API}/health"),
     "api_status": http_json(f"{API}/status?lite=1"),
     "api_system_cronz": http_json(f"{API}/api/custom/system/cronz?lite=1&environment={ENVIRONMENT}"),

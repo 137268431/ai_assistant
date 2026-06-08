@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import socket
 import time
 from typing import TYPE_CHECKING, Dict, List, Optional
@@ -20,6 +21,12 @@ from ibkr_compute.broker.ib_gateway_support import (
 
 
 logger = logging.getLogger(__name__)
+DEFAULT_GATEWAY_USERDIR = os.environ.get("IBKR_GATEWAY_USERDIR", "/opt/ibgateway/userdir").strip() or "/opt/ibgateway/userdir"
+AUTH_TOKEN_EXPIRED_MARKERS = (
+    "security tokens associated with your login credentials have expired",
+    "please manually",
+    "enter your username and password",
+)
 
 if TYPE_CHECKING:
     from ibkr_compute.broker.ib_gateway import BrokerAdapter
@@ -57,6 +64,58 @@ def _pid_uptime_seconds(pid: int) -> Optional[float]:
         return float((proc.stdout or "").strip())
     except (TypeError, ValueError):
         return None
+
+
+def _tail_file(path: str, lines: int = 200) -> str:
+    if not path:
+        return ""
+    proc = _run_command(["tail", "-n", str(max(1, int(lines))), path], timeout=5)
+    if proc is None or proc.returncode != 0:
+        return ""
+    return proc.stdout or ""
+
+
+def _read_file(path: str) -> str:
+    proc = _run_command(["cat", path], timeout=5)
+    if proc is None or proc.returncode != 0:
+        return ""
+    return proc.stdout or ""
+
+
+def _gateway_auth_issue_status(userdir: str = DEFAULT_GATEWAY_USERDIR) -> dict:
+    launcher_log = _tail_file(os.path.join(userdir, "launcher.log"), lines=240)
+    normalized_log = launcher_log.lower()
+    login_fail_raw = _read_file(os.path.join(userdir, "loginFailFrequency.txt")).strip()
+    login_failure_count = 0
+    for line in reversed([piece.strip() for piece in login_fail_raw.splitlines() if piece.strip()]):
+        try:
+            login_failure_count = int(float(line))
+            break
+        except Exception:
+            continue
+    if all(marker in normalized_log for marker in AUTH_TOKEN_EXPIRED_MARKERS):
+        return {
+            "auth_issue": True,
+            "auth_issue_reason": "security_token_expired",
+            "auth_issue_action_required": "manual_gateway_login",
+            "auth_issue_source": "launcher.log",
+            "login_failure_count": login_failure_count,
+        }
+    if login_failure_count > 0:
+        return {
+            "auth_issue": True,
+            "auth_issue_reason": "login_failed",
+            "auth_issue_action_required": "check_gateway_login",
+            "auth_issue_source": "loginFailFrequency.txt",
+            "login_failure_count": login_failure_count,
+        }
+    return {
+        "auth_issue": False,
+        "auth_issue_reason": "",
+        "auth_issue_action_required": "",
+        "auth_issue_source": "",
+        "login_failure_count": login_failure_count,
+    }
 
 
 def _api_socket_status(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> dict:
@@ -211,6 +270,7 @@ class GatewayServiceManager:
         socket_host = str(broker_status.get("host") or DEFAULT_HOST)
         socket_port = _safe_int(broker_status.get("port"), DEFAULT_PORT)
         api_socket = _api_socket_status(socket_host, socket_port)
+        auth_issue = _gateway_auth_issue_status()
         running = str(data.get("ActiveState") or "") == "active"
         status_code = int(broker_status.get("status_code", 0) or 0)
         if not running:
@@ -220,6 +280,14 @@ class GatewayServiceManager:
         elif running and not status_code:
             status_code = 401
         reachable = bool(running and bool(api_socket.get("listening")) and status_code not in {502, 503})
+        if reachable:
+            auth_issue = {
+                "auth_issue": False,
+                "auth_issue_reason": "",
+                "auth_issue_action_required": "",
+                "auth_issue_source": "",
+                "login_failure_count": int(auth_issue.get("login_failure_count") or 0),
+            }
         set_gateway_status(
             running=running,
             uptime_s=self.uptime_seconds,
@@ -244,4 +312,5 @@ class GatewayServiceManager:
             "active_since": str(data.get("ActiveEnterTimestamp") or ""),
             "unit_file_state": str(data.get("UnitFileState") or ""),
             "broker": broker_status,
+            **auth_issue,
         }

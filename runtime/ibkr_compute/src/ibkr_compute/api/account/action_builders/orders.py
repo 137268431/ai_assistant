@@ -60,6 +60,27 @@ def _payload_bool(value, default: bool = False) -> bool:
     return bool(value)
 
 
+def _payload_order_ids(payload: dict) -> list[str]:
+    raw: list[object] = []
+    for key in ("order_ids", "cancel_order_ids", "ids"):
+        value = (payload or {}).get(key)
+        if isinstance(value, list):
+            raw.extend(value)
+        elif isinstance(value, str) and "," in value:
+            raw.extend(value.split(","))
+        elif value not in (None, ""):
+            raw.append(value)
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        order_id = str(item or "").strip()
+        if not order_id or order_id in seen:
+            continue
+        seen.add(order_id)
+        normalized.append(order_id)
+    return normalized
+
+
 def _merge_snapshot_guard_metadata(guard: dict, snapshot_guard: dict | None) -> dict:
     if not isinstance(snapshot_guard, dict):
         return guard
@@ -142,8 +163,25 @@ def _notify_manual_buying_power_event(
 def _build_ibkr_cancel_order_response(service, payload: dict) -> tuple[dict, int]:
     action_started_at = time.perf_counter()
     order_id = str((payload or {}).get("order_id") or (payload or {}).get("id") or "").strip()
+    order_ids = _payload_order_ids(payload)
     acct_id = str((payload or {}).get("account_id") or "").strip() or None
     include_snapshot = _payload_bool((payload or {}).get("include_snapshot"), True)
+    if order_ids:
+        source = str((payload or {}).get("source") or "cancel_order_ids").strip() or "cancel_order_ids"
+        symbol = str((payload or {}).get("symbol") or "").strip().upper()
+        operation_started_at = time.perf_counter()
+        result = service.order_modifier.cancel_order_ids(order_ids, acct_id=acct_id, source=source, symbol=symbol)
+        operation_elapsed_s = time.perf_counter() - operation_started_at
+        return _build_snapshot_action_response(
+            service,
+            "cancel_order_ids",
+            result,
+            delay_seconds=0.0,
+            extra={"order_ids": order_ids},
+            include_snapshot=include_snapshot,
+            action_started_at=action_started_at,
+            operation_elapsed_s=operation_elapsed_s,
+        )
     if not order_id:
         return {"ok": False, "error": "Missing order_id"}, 400
 

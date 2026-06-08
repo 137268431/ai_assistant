@@ -61,6 +61,40 @@ class _StatePB:
         return dict(payload)
 
 
+class _OrdersPB(_StatePB):
+    def __init__(self, orders=None):
+        super().__init__()
+        self.orders = [dict(item) for item in (orders or [])]
+        self.updates = []
+
+    def get_records(self, collection, filter=None, sort=None, per_page=50, page=1):
+        if collection != "orders":
+            return []
+        if 'broker_order_id!=""' in str(filter or ""):
+            return [dict(item) for item in self.orders[: int(per_page or 50)]]
+        if "broker_order_id" not in str(filter or "") and "order_id" not in str(filter or ""):
+            return list(self.orders)
+        matches = []
+        for row in self.orders:
+            broker_id = str(row.get("broker_order_id") or "").strip()
+            order_id = str(row.get("order_id") or "").strip()
+            environment = str(row.get("environment") or "").strip()
+            if f'broker_order_id = "{broker_id}"' in str(filter or "") or f'order_id = "{order_id}"' in str(filter or ""):
+                if f'environment = "{environment}"' in str(filter or ""):
+                    matches.append(row)
+        return [dict(item) for item in matches[: int(per_page or 50)]]
+
+    def update_record(self, collection, record_id, data):
+        if collection != "orders":
+            return {}
+        for row in self.orders:
+            if str(row.get("id") or "") == str(record_id):
+                row.update(dict(data or {}))
+                self.updates.append((collection, record_id, dict(data or {})))
+                return dict(row)
+        raise KeyError(record_id)
+
+
 class _BracketBroker:
     def __init__(self, order_ids=None):
         self.order_ids = list(order_ids or ["101", "102", "103"])
@@ -106,6 +140,31 @@ class _SerialBroker(_BracketBroker):
         return {"ok": True, "order_id": str(order_id), "order": dict(updates or {})}
 
 
+class _TerminalCancelBroker:
+    def __init__(self, status="NOT_OPEN", code=10147):
+        self.status = status
+        self.code = code
+        self.cancelled = []
+
+    def cancel_order(self, order_id):
+        self.cancelled.append(str(order_id))
+        return {
+            "ok": True,
+            "order_id": str(order_id),
+            "status": self.status,
+            "confirm": {
+                "ok": True,
+                "order_id": str(order_id),
+                "status": self.status,
+                "source": "cancel_terminal_notice",
+                "details": {
+                    "code": self.code,
+                    "message": f"OrderId {order_id} that needs to be cancelled is not found.",
+                },
+            },
+        }
+
+
 class GatewaySerialAndReservationTest(unittest.TestCase):
     def test_symbol_queue_serializes_same_symbol_and_limits_cross_symbol_parallelism(self):
         config = _Config({"ibkr_order_symbol_queue_max_active_symbols": 2})
@@ -149,6 +208,14 @@ class GatewaySerialAndReservationTest(unittest.TestCase):
             events.index(("aapl-2", "start")),
         )
         self.assertIn(("msft-1", "start"), events)
+
+    def test_account_summary_request_limit_uses_account_data_backoff(self):
+        self.assertTrue(
+            OrderLifecycle._is_account_data_unavailable_error(
+                "Error processing request.-'Q' : cause - Maximum number of account summary requests exceeded; "
+                "desubscribe to previous request first"
+            )
+        )
 
     def test_buying_power_pre_reservation_is_atomic_under_parallel_requests(self):
         pb = _StatePB()
@@ -349,6 +416,7 @@ class GatewaySerialAndReservationTest(unittest.TestCase):
         class _Client:
             def __init__(self):
                 self.refresh_calls = []
+                self.marked_terminal = []
 
             def get_order_error(self, order_id):
                 return {}
@@ -368,6 +436,10 @@ class GatewaySerialAndReservationTest(unittest.TestCase):
                 self.refresh_calls.append(dict(kwargs))
                 return []
 
+            def mark_order_terminal(self, order_id, *, status="CANCELLED", reason=""):
+                self.marked_terminal.append({"order_id": str(order_id), "status": status, "reason": reason})
+                return {"orderId": str(order_id), "status": status}
+
         adapter = BrokerAdapter.__new__(BrokerAdapter)
         adapter.client = _Client()
 
@@ -381,6 +453,10 @@ class GatewaySerialAndReservationTest(unittest.TestCase):
         self.assertEqual("PreSubmitted", result["order"]["status"])
         self.assertEqual(1, len(adapter.client.refresh_calls))
         self.assertTrue(adapter.client.refresh_calls[0]["include_all"])
+        self.assertEqual(
+            [{"order_id": "999", "status": "CANCELLED", "reason": "open_orders_missing_stale_snapshot"}],
+            adapter.client.marked_terminal,
+        )
 
     def test_cancel_missing_from_open_orders_does_not_hide_fill_evidence(self):
         class _Client:
@@ -407,6 +483,88 @@ class GatewaySerialAndReservationTest(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertEqual("order_filled_during_cancel", result["error"])
+
+    def test_terminal_cancel_closes_pb_order_and_releases_entry_reservation(self):
+        pb = _OrdersPB(
+            [
+                {
+                    "id": "row-entry",
+                    "environment": "paper",
+                    "broker_order_id": "86",
+                    "order_id": "86",
+                    "role": "entry",
+                    "symbol": "AAPL",
+                    "status": "Submitted",
+                    "relation_status": "active",
+                }
+            ]
+        )
+        store = BuyingPowerReservationStore(pb, environment="paper")
+        store.reserve_entry(
+            signal_id="sig-a",
+            trade_group_id="grp-a",
+            entry_order_id="86",
+            symbol="AAPL",
+            direction="long",
+            quantity=50,
+            entry_price=100.0,
+        )
+        modifier = OrderModifier(
+            pb_client=pb,
+            broker=_TerminalCancelBroker(),
+            environment="paper",
+            reservation_store=store,
+        )
+
+        result = modifier.cancel_order("86")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("NOT_OPEN", result["status"])
+        self.assertEqual("Canceled", pb.orders[0]["status"])
+        self.assertEqual("closed", pb.orders[0]["relation_status"])
+        self.assertEqual(0, store.snapshot()["count"])
+        self.assertEqual(1, result["terminal_cancel_sync"]["updated"])
+        self.assertEqual(1, result["terminal_cancel_sync"]["reservation_release"]["released"])
+
+    def test_terminal_cancel_child_does_not_release_entry_reservation(self):
+        pb = _OrdersPB(
+            [
+                {
+                    "id": "row-sl",
+                    "environment": "paper",
+                    "broker_order_id": "87",
+                    "order_id": "87",
+                    "role": "stop_loss",
+                    "symbol": "AAPL",
+                    "status": "Submitted",
+                    "relation_status": "planned",
+                }
+            ]
+        )
+        store = BuyingPowerReservationStore(pb, environment="paper")
+        store.reserve_entry(
+            signal_id="sig-a",
+            trade_group_id="grp-a",
+            entry_order_id="86",
+            symbol="AAPL",
+            direction="long",
+            quantity=50,
+            entry_price=100.0,
+        )
+        modifier = OrderModifier(
+            pb_client=pb,
+            broker=_TerminalCancelBroker(),
+            environment="paper",
+            reservation_store=store,
+        )
+
+        result = modifier.cancel_order("87")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("Canceled", pb.orders[0]["status"])
+        self.assertEqual("closed", pb.orders[0]["relation_status"])
+        self.assertEqual(1, store.snapshot()["count"])
+        self.assertEqual({}, result["terminal_cancel_sync"]["reservation_release"])
 
     def test_cancel_all_uses_callback_cache_when_account_open_orders_unavailable(self):
         class _Client:
@@ -445,6 +603,89 @@ class GatewaySerialAndReservationTest(unittest.TestCase):
         self.assertEqual("callback_cache", result["order_list_source"])
         self.assertEqual(["901", "902"], adapter.client.cancelled)
         self.assertEqual(2, result["submitted"])
+
+    def test_order_modifier_cancel_all_augments_gateway_result_with_pb_active_orders(self):
+        class _Broker:
+            uses_internal_gateway_write_lock = True
+
+            def __init__(self):
+                self.batch_cancelled = []
+
+            def cancel_all_orders(self, metric_environment=""):
+                return {
+                    "ok": True,
+                    "status": "CANCEL_ALL_REQUESTED",
+                    "pending_confirmation": True,
+                    "requested": 1,
+                    "submitted": 1,
+                    "active_order_ids": ["901"],
+                    "submitted_order_ids": ["901"],
+                    "order_ids": ["901"],
+                    "errors": [],
+                    "error_details": [],
+                }
+
+            def cancel_order_ids(self, order_ids, metric_environment="", source=""):
+                self.batch_cancelled.extend([str(item) for item in order_ids])
+                return {
+                    "ok": True,
+                    "status": "CANCEL_REQUESTED",
+                    "pending_confirmation": True,
+                    "requested": len(order_ids),
+                    "submitted": len(order_ids),
+                    "active_order_ids": list(order_ids),
+                    "submitted_order_ids": list(order_ids),
+                    "order_ids": list(order_ids),
+                    "errors": [],
+                    "error_details": [],
+                    "source": source,
+                }
+
+        pb = _OrdersPB(
+            [
+                {
+                    "id": "row-901",
+                    "environment": "paper",
+                    "broker_order_id": "901",
+                    "order_id": "901",
+                    "role": "entry",
+                    "symbol": "AAPL",
+                    "status": "Submitted",
+                    "relation_status": "active",
+                },
+                {
+                    "id": "row-902",
+                    "environment": "paper",
+                    "broker_order_id": "902",
+                    "order_id": "902",
+                    "role": "take_profit",
+                    "symbol": "AAPL",
+                    "status": "PreSubmitted",
+                    "relation_status": "planned",
+                },
+                {
+                    "id": "row-903",
+                    "environment": "paper",
+                    "broker_order_id": "903",
+                    "order_id": "903",
+                    "role": "stop_loss",
+                    "symbol": "AAPL",
+                    "status": "Init",
+                    "relation_status": "planned",
+                },
+            ]
+        )
+        broker = _Broker()
+        modifier = OrderModifier(pb_client=pb, broker=broker, environment="paper")
+
+        result = modifier.cancel_all_orders()
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["pending_confirmation"])
+        self.assertEqual(["902", "903"], broker.batch_cancelled)
+        self.assertEqual("pb_active_cancel_all", result["pb_active_cancel"]["source"])
+        self.assertEqual(["901", "902", "903"], result["active_order_ids"])
+        self.assertEqual(["901", "902", "903"], result["submitted_order_ids"])
 
     def test_action_response_reports_total_operation_and_snapshot_elapsed(self):
         class _Tracker:
@@ -591,6 +832,54 @@ class GatewaySerialAndReservationTest(unittest.TestCase):
         self.assertEqual("recovered", payload["coverage"]["coverage_state"])
         self.assertEqual([], payload["coverage"]["unresolved_order_ids"])
 
+    def test_account_snapshot_does_not_recover_closed_submitted_pb_orders(self):
+        class _ApiApp:
+            class _Logger:
+                def info(self, *args, **kwargs):
+                    pass
+
+                def debug(self, *args, **kwargs):
+                    pass
+
+            logger = _Logger()
+
+        class _Tracker:
+            def get_complete_live_open_orders(self, **kwargs):
+                return {
+                    "orders": [],
+                    "coverage": {
+                        "coverage_state": "degraded",
+                        "unresolved_order_ids": ["801"],
+                        "unresolved_seed_count": 1,
+                    },
+                    "diagnostics": {},
+                }
+
+        class _Service:
+            order_tracker = _Tracker()
+
+        merged, payload = recover_live_open_orders(
+            _ApiApp(),
+            _Service(),
+            [],
+            ["801"],
+            fallback_rows=[
+                {
+                    "broker_order_id": "801",
+                    "symbol": "AAPL",
+                    "role": "entry",
+                    "direction": "long",
+                    "quantity": 10,
+                    "limit_price": 100,
+                    "status": "Submitted",
+                    "relation_status": "closed",
+                }
+            ],
+        )
+
+        self.assertEqual([], merged)
+        self.assertEqual(["801"], payload["coverage"]["unresolved_order_ids"])
+
     def test_lifecycle_backoff_does_not_block_independent_account_summary_retry(self):
         lifecycle = OrderLifecycle.__new__(OrderLifecycle)
         lifecycle._account_data_backoff_until = time.time() + 30.0
@@ -611,6 +900,28 @@ class GatewaySerialAndReservationTest(unittest.TestCase):
         self.assertFalse(lifecycle._should_skip_account_data_fetch(operation="positions"))
         self.assertTrue(lifecycle._should_skip_account_data_fetch(operation="open_orders"))
 
+    def test_lifecycle_defers_account_data_while_symbol_order_commands_active(self):
+        class _Scheduler:
+            def status(self):
+                return {"active_symbols": ["AAPL", "MSFT"], "queued_total": 1}
+
+        class _Modifier:
+            symbol_scheduler = _Scheduler()
+
+        lifecycle = OrderLifecycle.__new__(OrderLifecycle)
+        lifecycle.config = None
+        lifecycle.environment = "paper"
+        lifecycle.order_modifier = _Modifier()
+        lifecycle.order_placer = None
+        lifecycle._account_data_backoff_until = 0.0
+        lifecycle._account_data_backoff_reason = ""
+        lifecycle._account_data_backoff_last_warn_at = time.time()
+
+        self.assertEqual(3, lifecycle._order_pressure_command_count())
+        self.assertTrue(lifecycle._should_skip_account_data_fetch(operation="positions"))
+        self.assertTrue(lifecycle._should_skip_account_data_fetch(operation="account_summary"))
+        self.assertFalse(lifecycle._should_skip_account_data_fetch(operation="open_orders"))
+
     def test_tracker_backoff_is_specific_to_order_fetch_kind(self):
         tracker = OrderTracker.__new__(OrderTracker)
         tracker._account_data_backoff_until = time.time() + 30.0
@@ -619,6 +930,66 @@ class GatewaySerialAndReservationTest(unittest.TestCase):
 
         self.assertFalse(tracker._should_skip_account_data_fetch(operation="live_orders"))
         self.assertTrue(tracker._should_skip_account_data_fetch(operation="recent_execution_fills"))
+
+    def test_duplicate_entry_check_uses_cached_orders_without_live_fetch_on_paper(self):
+        class _Broker:
+            def __init__(self):
+                self.live_calls = 0
+
+            def list_cached_open_orders(self, include_all=False):
+                return [
+                    {
+                        "orderId": "701",
+                        "ticker": "AAPL",
+                        "status": "Submitted",
+                        "side": "BUY",
+                        "orderType": "LMT",
+                        "price": 100.0,
+                        "totalSize": 10,
+                    }
+                ]
+
+            def list_open_orders(self, **kwargs):
+                self.live_calls += 1
+                raise AssertionError("paper duplicate check should not fetch live open orders")
+
+        broker = _Broker()
+        tracker = OrderTracker(broker=broker, environment="paper")
+
+        duplicate = tracker.find_duplicate_open_entry(
+            symbol="AAPL",
+            direction="long",
+            quantity=10,
+            entry_price=100.0,
+        )
+
+        self.assertEqual("701", duplicate["orderId"])
+        self.assertEqual(0, broker.live_calls)
+
+    def test_duplicate_entry_check_skips_slow_live_fetch_when_paper_cache_empty(self):
+        class _Broker:
+            def __init__(self):
+                self.live_calls = 0
+
+            def list_cached_open_orders(self, include_all=False):
+                return []
+
+            def list_open_orders(self, **kwargs):
+                self.live_calls += 1
+                raise AssertionError("paper duplicate check should not fetch live open orders")
+
+        broker = _Broker()
+        tracker = OrderTracker(broker=broker, environment="paper")
+
+        duplicate = tracker.find_duplicate_open_entry(
+            symbol="AAPL",
+            direction="long",
+            quantity=10,
+            entry_price=100.0,
+        )
+
+        self.assertIsNone(duplicate)
+        self.assertEqual(0, broker.live_calls)
 
     def test_buying_power_guard_subtracts_local_reservations_before_next_order(self):
         pb = _StatePB()
@@ -642,6 +1013,92 @@ class GatewaySerialAndReservationTest(unittest.TestCase):
         self.assertEqual(7000.0, adjusted["buying_power"])
         self.assertEqual("blocked", guard["state"])
         self.assertEqual(6000.0, guard["remaining_after"])
+
+    def test_buying_power_reservations_prune_pb_closed_entry_orders(self):
+        pb = _OrdersPB(
+            [
+                {
+                    "id": "row-closed",
+                    "environment": "paper",
+                    "broker_order_id": "301",
+                    "order_id": "301",
+                    "role": "entry",
+                    "status": "Canceled",
+                    "relation_status": "closed",
+                },
+                {
+                    "id": "row-open",
+                    "environment": "paper",
+                    "broker_order_id": "302",
+                    "order_id": "302",
+                    "role": "entry",
+                    "status": "Submitted",
+                    "relation_status": "active",
+                },
+            ]
+        )
+        store = BuyingPowerReservationStore(pb, environment="paper")
+        store.reserve_entry(entry_order_id="301", symbol="AAPL", direction="long", quantity=50, entry_price=100.0)
+        store.reserve_entry(entry_order_id="302", symbol="MSFT", direction="long", quantity=50, entry_price=100.0)
+
+        snapshot = store.snapshot()
+
+        self.assertEqual(1, snapshot["count"])
+        self.assertEqual(["302"], snapshot["order_ids"])
+        state = next(iter(pb.states.values()))["data"]
+        self.assertEqual("pb_terminal_reconcile", state["last_release"]["reason"])
+        self.assertEqual(["301"], state["last_release"]["order_ids"])
+
+    def test_buying_power_pre_reservation_reconciles_closed_pb_orders_before_blocking(self):
+        pb = _OrdersPB(
+            [
+                {
+                    "id": "row-closed",
+                    "environment": "paper",
+                    "broker_order_id": "301",
+                    "order_id": "301",
+                    "role": "entry",
+                    "status": "Canceled",
+                    "relation_status": "closed",
+                }
+            ]
+        )
+        store = BuyingPowerReservationStore(pb, environment="paper")
+        config = _Config(
+            {
+                "ibkr_buying_power_guard_enabled": "true",
+                "ibkr_buying_power_warn_usd": "0",
+                "ibkr_buying_power_warn_pct_net_liq": "0",
+                "ibkr_buying_power_block_usd": "0",
+                "ibkr_buying_power_block_pct_net_liq": "0",
+            }
+        )
+        stale_guard = build_buying_power_guard(
+            {"buying_power": 7000.0, "net_liquidation": 100000.0},
+            config=config,
+            environment="paper",
+            requested_exposure=5000.0,
+        )
+        store.reserve_entry(entry_order_id="301", symbol="AAPL", direction="long", quantity=50, entry_price=100.0)
+
+        result = store.reserve_entry_if_available(
+            pre_submit_guard=dict(stale_guard),
+            config=config,
+            symbol="MSFT",
+            direction="long",
+            quantity=50,
+            entry_price=100.0,
+            exposure=5000.0,
+        )
+
+        self.assertTrue(result["ok"])
+        snapshot = store.snapshot()
+        self.assertEqual(1, snapshot["count"])
+        self.assertEqual([], snapshot["order_ids"])
+        self.assertEqual("MSFT", snapshot["active"][0]["symbol"])
+        state = next(iter(pb.states.values()))["data"]
+        self.assertEqual("pb_terminal_reconcile", state["last_release"]["reason"])
+        self.assertEqual(["301"], state["last_release"]["order_ids"])
 
     def test_gateway_gate_rechecks_stale_buying_power_guard_against_latest_reservations(self):
         class _IncrementingBroker(_BracketBroker):

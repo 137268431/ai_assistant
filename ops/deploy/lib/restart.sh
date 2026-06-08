@@ -38,10 +38,10 @@ service_healthcheck_url() {
       printf '%s\n' "${DEPLOY_WAIT_URL_POCKETBASE:-http://127.0.0.1:8090/api/health}"
       ;;
     ibkr-runtime)
-      printf '%s\n' "${DEPLOY_WAIT_URL_IBKR_RUNTIME:-http://127.0.0.1:5101/health}"
+      printf '%s\n' "${DEPLOY_WAIT_URL_IBKR_RUNTIME:-http://127.0.0.1:5101/health?lite=1}"
       ;;
     ibkr-compute)
-      printf '%s\n' "${DEPLOY_WAIT_URL_IBKR_COMPUTE:-http://127.0.0.1:5100/health}"
+      printf '%s\n' "${DEPLOY_WAIT_URL_IBKR_COMPUTE:-http://127.0.0.1:5100/health?lite=1}"
       ;;
     ibkr-backtest)
       printf '%s\n' "${DEPLOY_WAIT_URL_IBKR_BACKTEST:-http://127.0.0.1:5105/health}"

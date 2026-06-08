@@ -1,0 +1,183 @@
+{
+  "ok": false,
+  "run_id": "GWPSUITE_20260607_212135_ET",
+  "dry_run": false,
+  "created_at_et": "2026-06-07T21:21:35.158578-04:00",
+  "created_at_cn": "2026-06-08T09:21:35.158585+08:00",
+  "suite_dir": "artifacts/validation/gateway_pressure_suite/GWPSUITE_20260607_212135_ET",
+  "stages_requested": "20_open_modify_exit,over_bp,45_open_pressure",
+  "pre_account": {
+    "ok": true,
+    "elapsed_s": 0.406,
+    "open_orders": 0,
+    "buying_power": null,
+    "local_reserved_exposure": null,
+    "local_reserved_count": null,
+    "summary_source": "unavailable",
+    "pb_fallback_order_count": 0,
+    "broker_open_count": 0,
+    "active_order_command_count": 0,
+    "elapsed_ms": 236.0
+  },
+  "pre_alerts": {
+    "ok": true,
+    "elapsed_s": 0.152,
+    "alerts": [
+      {
+        "alertname": "DiskSpaceLow",
+        "state": "firing",
+        "summary": "Disk free space is below 15%"
+      },
+      {
+        "alertname": "GatewaySocketNotListening",
+        "state": "firing",
+        "summary": "IB Gateway socket is not listening"
+      },
+      {
+        "alertname": "BrokerNotReadyOrDisconnected",
+        "state": "firing",
+        "summary": "IB broker is disconnected or not ready"
+      },
+      {
+        "alertname": "GatewayRuntimeStateDown",
+        "state": "firing",
+        "summary": "Gateway/session/websocket runtime state is down"
+      }
+    ]
+  },
+  "stages": [],
+  "readiness": {
+    "ok": false,
+    "attempt_count": 1,
+    "attempts": [
+      {
+        "at_et": "2026-06-07T21:21:36.078186-04:00",
+        "ok": false,
+        "elapsed_s": 0.361,
+        "gateway_running": true,
+        "gateway_reachable": false,
+        "api_socket_listening": false,
+        "api_socket_reason": "port_not_listening",
+        "session_authenticated": false,
+        "topology_gateway_status": "degraded",
+        "topology_runtime_status": "degraded",
+        "failures": [
+          {
+            "name": "api_socket_listening",
+            "expected": true,
+            "actual": false
+          },
+          {
+            "name": "gateway_reachable",
+            "expected": true,
+            "actual": false
+          },
+          {
+            "name": "broker_connected",
+            "expected": true,
+            "actual": false
+          },
+          {
+            "name": "broker_ready",
+            "expected": true,
+            "actual": false
+          },
+          {
+            "name": "session_authenticated",
+            "expected": true,
+            "actual": false
+          },
+          {
+            "name": "broker_status_code",
+            "expected": "ready",
+            "actual": 502
+          }
+        ]
+      }
+    ],
+    "last": {
+      "at_et": "2026-06-07T21:21:36.078186-04:00",
+      "ok": false,
+      "elapsed_s": 0.361,
+      "gateway_running": true,
+      "gateway_reachable": false,
+      "api_socket_listening": false,
+      "api_socket_reason": "port_not_listening",
+      "session_authenticated": false,
+      "topology_gateway_status": "degraded",
+      "topology_runtime_status": "degraded",
+      "failures": [
+        {
+          "name": "api_socket_listening",
+          "expected": true,
+          "actual": false
+        },
+        {
+          "name": "gateway_reachable",
+          "expected": true,
+          "actual": false
+        },
+        {
+          "name": "broker_connected",
+          "expected": true,
+          "actual": false
+        },
+        {
+          "name": "broker_ready",
+          "expected": true,
+          "actual": false
+        },
+        {
+          "name": "session_authenticated",
+          "expected": true,
+          "actual": false
+        },
+        {
+          "name": "broker_status_code",
+          "expected": "ready",
+          "actual": 502
+        }
+      ]
+    }
+  },
+  "error": "gateway_not_ready",
+  "post_account": {
+    "ok": true,
+    "elapsed_s": 0.315,
+    "open_orders": 0,
+    "buying_power": null,
+    "local_reserved_exposure": null,
+    "local_reserved_count": null,
+    "summary_source": "unavailable",
+    "pb_fallback_order_count": 0,
+    "broker_open_count": 0,
+    "active_order_command_count": 0,
+    "elapsed_ms": 70.3
+  },
+  "post_alerts": {
+    "ok": true,
+    "elapsed_s": 0.132,
+    "alerts": [
+      {
+        "alertname": "GatewaySocketNotListening",
+        "state": "firing",
+        "summary": "IB Gateway socket is not listening"
+      },
+      {
+        "alertname": "BrokerNotReadyOrDisconnected",
+        "state": "firing",
+        "summary": "IB broker is disconnected or not ready"
+      },
+      {
+        "alertname": "GatewayRuntimeStateDown",
+        "state": "firing",
+        "summary": "Gateway/session/websocket runtime state is down"
+      },
+      {
+        "alertname": "DiskSpaceLow",
+        "state": "firing",
+        "summary": "Disk free space is below 15%"
+      }
+    ]
+  }
+}

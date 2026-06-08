@@ -5,10 +5,11 @@ import threading
 
 from ibkr_compute.api.account.live import _api_app
 from ibkr_compute.api.shared.service_status import get_service_status_snapshot
+from ibkr_compute.core.broker_mode import configured_broker_mode, normalize_broker_mode
 
 
-def _resolve_snapshot_account_id(api_app, service) -> str:
-    use_paper = api_app._ibkr_service_uses_paper_account(service)
+def _resolve_snapshot_account_id(api_app, service, runtime_environment: str) -> str:
+    use_paper = str(runtime_environment or "").strip().lower() == "paper"
     account_id = ""
     if hasattr(service, "order_placer"):
         try:
@@ -39,9 +40,57 @@ def _to_int(value, default: int = 0) -> int:
         return int(default)
 
 
+def _fast_account_data_circuit_status(client) -> dict:
+    current = time.time()
+    try:
+        until = float(getattr(client, "_account_data_circuit_until", 0.0) or 0.0)
+    except Exception:
+        until = 0.0
+    active = bool(until and current < until)
+    return {
+        "active": active,
+        "reason": str(getattr(client, "_account_data_circuit_reason", "") or ""),
+        "remaining_s": round(max(0.0, until - current), 1) if active else 0.0,
+        "source": "fast_runtime_state",
+    }
+
+
 def _fast_gateway_status(service) -> dict:
-    broker_status: dict = {}
     broker = getattr(service, "broker", None)
+    client = getattr(broker, "client", None)
+    if client is not None:
+        is_connected = getattr(client, "isConnected", None)
+        try:
+            connected = bool(is_connected()) if callable(is_connected) else False
+        except Exception:
+            connected = False
+        ready_event = getattr(client, "_ready_event", None)
+        ready_event_set = getattr(ready_event, "is_set", None)
+        try:
+            event_ready = bool(ready_event_set()) if callable(ready_event_set) else False
+        except Exception:
+            event_ready = False
+        ready = bool(getattr(client, "_ready", False) or event_ready)
+        status_code = _to_int(getattr(client, "_status_code", 0), 0)
+        circuit = _fast_account_data_circuit_status(client)
+        return {
+            "running": bool(connected or ready or getattr(service, "is_running", False)),
+            "reachable": bool(connected or ready or status_code not in {0, 502, 503}),
+            "connected": connected,
+            "ready": ready,
+            "status_code": status_code,
+            "broker": {
+                "connected": connected,
+                "ready": ready,
+                "status_code": status_code,
+                "account_data_circuit": circuit,
+                "source": "fast_runtime_state",
+            },
+            "account_data_circuit": circuit,
+            "source": "fast_runtime_state",
+        }
+
+    broker_status: dict = {}
     status_fn = getattr(broker, "status", None)
     if callable(status_fn):
         try:
@@ -93,11 +142,40 @@ def build_fast_snapshot_status(service) -> dict:
     }
 
 
+def _fast_runtime_environment(service) -> str:
+    for component in (
+        service,
+        getattr(service, "order_placer", None),
+        getattr(service, "order_lifecycle", None),
+        getattr(service, "order_tracker", None),
+        getattr(service, "order_modifier", None),
+        getattr(service, "signal_processor", None),
+    ):
+        if component is None:
+            continue
+        for attr_name in ("broker_mode", "environment", "runtime_environment"):
+            value = str(getattr(component, attr_name, "") or "").strip()
+            if value:
+                return normalize_broker_mode(value, configured_broker_mode())
+    return ""
+
+
+def resolve_snapshot_runtime_environment(api_app, service, *, fast_status: bool = False) -> str:
+    if fast_status:
+        resolved = _fast_runtime_environment(service)
+        if resolved:
+            return resolved
+    try:
+        return api_app._ibkr_service_environment(service)
+    except Exception:
+        return configured_broker_mode()
+
+
 def build_snapshot_context(service, *, include_pnl: bool = True, fast_status: bool = False) -> dict:
     api_app = _api_app()
-    runtime_environment = api_app._ibkr_service_environment(service)
+    runtime_environment = resolve_snapshot_runtime_environment(api_app, service, fast_status=bool(fast_status))
     service_status = build_fast_snapshot_status(service) if fast_status else get_service_status_snapshot(service)
-    account_id = _resolve_snapshot_account_id(api_app, service)
+    account_id = _resolve_snapshot_account_id(api_app, service, runtime_environment)
     include_pnl_flag = bool(include_pnl)
     return {
         "api_app": api_app,
@@ -118,10 +196,11 @@ def _snapshot_cache_ttl_seconds(api_app) -> float:
 
 def _snapshot_cache_stale_seconds(api_app) -> float:
     try:
-        fallback = max(60.0, _snapshot_cache_ttl_seconds(api_app) * 12.0)
-        return max(_snapshot_cache_ttl_seconds(api_app), float(getattr(api_app, "IBKR_ACCOUNT_SNAPSHOT_STALE_SECONDS", fallback) or fallback))
+        fallback = max(900.0, _snapshot_cache_ttl_seconds(api_app) * 60.0)
+        configured = float(getattr(api_app, "IBKR_ACCOUNT_SNAPSHOT_STALE_SECONDS", fallback) or fallback)
+        return max(fallback, _snapshot_cache_ttl_seconds(api_app), configured)
     except Exception:
-        return 60.0
+        return 900.0
 
 
 def _ensure_snapshot_cache_state(api_app) -> None:
@@ -206,5 +285,6 @@ __all__ = [
     "get_snapshot_refresh_lock",
     "load_cached_snapshot",
     "mark_cached_snapshot_refresh_error",
+    "resolve_snapshot_runtime_environment",
     "store_cached_snapshot",
 ]

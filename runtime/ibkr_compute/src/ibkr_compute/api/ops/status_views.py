@@ -10,6 +10,80 @@ from ibkr_compute.api.shared.route_request import coerce_request_bool
 from ibkr_compute.api.startup_preload import get_compute_startup_preload_state
 
 
+def _full_health_requested() -> bool:
+    try:
+        args = request.args or {}
+    except Exception:
+        return False
+    return coerce_request_bool(args.get("full"), False) or coerce_request_bool(args.get("deep"), False)
+
+
+def _health_requested_symbols(app_mod, *, full: bool) -> list[str]:
+    symbols = _requested_status_symbols(app_mod)
+    if full or symbols:
+        return symbols
+    return []
+
+
+def _lite_omitted_status(reason: str) -> dict:
+    return {
+        "status": "omitted",
+        "reason": reason,
+    }
+
+
+def _safe_service_status(service, *, full: bool, reason: str) -> dict:
+    if not full:
+        return _lite_omitted_status(reason)
+    try:
+        status_fn = getattr(service, "status", None)
+        if callable(status_fn):
+            return status_fn()
+    except Exception as exc:
+        return {"status": "unknown", "error": str(exc)}
+    return {"status": "unavailable"}
+
+
+def _safe_history_rebuild_status(app_mod, requested_environment: str, *, full: bool) -> dict:
+    manager = getattr(app_mod, "history_rebuild_manager", None)
+    if not full:
+        return _lite_omitted_status("health_lite")
+    try:
+        status_fn = getattr(manager, "status", None)
+        if callable(status_fn):
+            return status_fn(requested_environment)
+    except Exception as exc:
+        return {"status": "unknown", "environment": requested_environment, "error": str(exc)}
+    return {"status": "unavailable", "environment": requested_environment}
+
+
+def _lite_runtime_status_payload(app_mod, requested_environment: str) -> dict:
+    payload: dict[str, object] = {
+        "ok": True,
+        "environment": requested_environment,
+    }
+    if get_service_profile() != "runtime":
+        return payload
+    service = getattr(app_mod, "_ibkr_service", None)
+    if service is None:
+        return payload
+    gateway_manager = getattr(service, "gateway_manager", None)
+    gateway_status = getattr(gateway_manager, "status", None)
+    if callable(gateway_status):
+        try:
+            payload["gateway"] = gateway_status()
+        except Exception as exc:
+            payload["gateway"] = {"running": False, "reachable": False, "error": str(exc)}
+    session_keeper = getattr(service, "session_keeper", None)
+    session_status = getattr(session_keeper, "status", None)
+    if callable(session_status):
+        try:
+            payload["session"] = session_status()
+        except Exception as exc:
+            payload["session"] = {"authenticated": False, "error": str(exc)}
+    return payload
+
+
 def _build_topology_payload(app_mod, requested_environment: str) -> dict:
     if _skip_runtime_status_lookup():
         payload = build_service_topology(
@@ -125,13 +199,29 @@ def _safe_backtest_preload_queue(app_mod) -> dict:
 def build_health_response():
     app_mod = get_app_module()
     requested_environment = get_requested_environment("live")
-    requested_symbols = _requested_status_symbols(app_mod)
-    multi_timeframe_readiness = _safe_multi_timeframe_readiness(app_mod, requested_environment, requested_symbols)
+    full_health = _full_health_requested()
+    service_profile = get_service_profile()
+    requested_symbols = _health_requested_symbols(app_mod, full=full_health)
+    multi_timeframe_readiness = (
+        _safe_multi_timeframe_readiness(app_mod, requested_environment, requested_symbols)
+        if full_health or requested_symbols
+        else _lite_omitted_status("health_lite")
+    )
+    if full_health:
+        lite_runtime_status = {}
+        service_topology = _build_topology_payload(app_mod, requested_environment)
+    else:
+        lite_runtime_status = _lite_runtime_status_payload(app_mod, requested_environment)
+        service_topology = build_service_topology(
+            service_status=lite_runtime_status,
+            fetch_runtime_status=False,
+        )
     return jsonify(
         {
             "ok": True,
             "status": "running",
-            "service_profile": get_service_profile(),
+            "health_mode": "full" if full_health else "lite",
+            "service_profile": service_profile,
             "runtime_mode": get_runtime_mode(),
             "engines": len(app_mod.engines),
             "compute_startup_preload": get_compute_startup_preload_state(app_mod),
@@ -139,9 +229,25 @@ def build_health_response():
             "bar_repair_queue": _safe_bar_repair_queue(app_mod),
             "backtest_preload_queue": _safe_backtest_preload_queue(app_mod),
             **_build_runtime_summary(app_mod),
-            "backtest": app_mod.backtest_service.status(),
-            "history_rebuild": app_mod.history_rebuild_manager.status(requested_environment),
-            "service_topology": _build_topology_payload(app_mod, requested_environment),
+            "backtest": _safe_service_status(
+                getattr(app_mod, "backtest_service", None),
+                full=full_health,
+                reason="health_lite",
+            ),
+            "history_rebuild": _safe_history_rebuild_status(
+                app_mod,
+                requested_environment,
+                full=full_health,
+            ),
+            **(
+                {
+                    "gateway": lite_runtime_status.get("gateway"),
+                    "session": lite_runtime_status.get("session"),
+                }
+                if not full_health and service_profile == "runtime"
+                else {}
+            ),
+            "service_topology": service_topology,
         }
     )
 

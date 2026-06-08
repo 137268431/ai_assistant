@@ -6,6 +6,7 @@ import os
 import json
 import time
 import requests
+from requests.adapters import HTTPAdapter
 from typing import Dict, Any, List, Optional
 
 from ibkr_compute.core.broker_mode import (
@@ -18,6 +19,8 @@ from ibkr_compute.core.broker_mode import (
 PB_RETRY_ATTEMPTS = max(1, int(os.environ.get("PB_RETRY_ATTEMPTS", "7")))
 PB_RETRY_BACKOFF_SECONDS = max(0.2, float(os.environ.get("PB_RETRY_BACKOFF_SECONDS", "0.5")))
 PB_RETRY_STATUS_CODES = {502, 503, 504}
+PB_HTTP_POOL_CONNECTIONS = max(10, int(os.environ.get("PB_HTTP_POOL_CONNECTIONS", "32") or 32))
+PB_HTTP_POOL_MAXSIZE = max(PB_HTTP_POOL_CONNECTIONS, int(os.environ.get("PB_HTTP_POOL_MAXSIZE", "96") or 96))
 
 
 class PBClient:
@@ -37,6 +40,9 @@ class PBClient:
         self.token = token
         self.prefer_runtime_config_api = bool(prefer_runtime_config_api)
         self.session = requests.Session()
+        adapter = HTTPAdapter(pool_connections=PB_HTTP_POOL_CONNECTIONS, pool_maxsize=PB_HTTP_POOL_MAXSIZE)
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
         self._batch_requests_supported: Optional[bool] = None
         if token:
             self.session.headers["Authorization"] = token

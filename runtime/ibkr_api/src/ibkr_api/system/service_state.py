@@ -119,6 +119,12 @@ def _warmup_active(runtime: dict[str, Any]) -> bool:
     return warmup and warmup.get("trading_gate_open") is False and not warmup.get("finished_at")
 
 
+def _gateway_connection_reachable(gateway: dict[str, Any]) -> bool:
+    if "reachable" in gateway:
+        return bool(gateway.get("reachable"))
+    return bool(gateway.get("running"))
+
+
 def derive_compute_state(compute: dict[str, Any], *, observed_at: str) -> dict[str, Any]:
     payload = as_dict(compute)
     status_text = normalize_service_status(payload.get("status") or ("running" if payload else "offline"))
@@ -176,7 +182,8 @@ def derive_runtime_state(runtime: dict[str, Any], *, observed_at: str) -> dict[s
         or broker.get("client_id")
         or gateway.get("client_id")
     )
-    gateway_ready = bool(gateway.get("running") or gateway.get("reachable"))
+    gateway_running = bool(gateway.get("running"))
+    gateway_ready = _gateway_connection_reachable(gateway)
     session_ready = bool(session.get("authenticated"))
     websocket_ready = bool(websocket.get("connected") or websocket.get("ready"))
     startup_incomplete = bool(payload.get("starting")) or (
@@ -192,7 +199,7 @@ def derive_runtime_state(runtime: dict[str, Any], *, observed_at: str) -> dict[s
         ready = False
         detail = "runtime payload unavailable"
     elif runtime_phase in {"stopped", "stop_requested", "stopping"}:
-        status = "degraded" if (gateway_ready or session_ready or websocket_ready) else "offline"
+        status = "degraded" if (gateway_running or gateway_ready or session_ready or websocket_ready) else "offline"
         phase = runtime_phase
         ready = False
         detail = f"phase {runtime_phase}"
@@ -204,12 +211,12 @@ def derive_runtime_state(runtime: dict[str, Any], *, observed_at: str) -> dict[s
     elif startup_incomplete or auth_active or warmup_active:
         status = "starting"
         ready = False
-        if auth_active or not session_ready:
+        if not gateway_ready:
+            phase = "gateway_pending"
+        elif auth_active or not session_ready:
             phase = "auth_pending"
         elif warmup_active:
             phase = "warmup"
-        elif not gateway_ready:
-            phase = "gateway_pending"
         elif not websocket_ready:
             phase = "websocket_pending"
         else:
@@ -247,8 +254,8 @@ def derive_runtime_state(runtime: dict[str, Any], *, observed_at: str) -> dict[s
         "last_observed_at": observed_at,
         "stale": bool(payload.get("stale", False)),
         "detail": detail,
-        "gateway_running": bool(gateway.get("running")),
-        "gateway_reachable": bool(gateway.get("reachable")),
+        "gateway_running": gateway_running,
+        "gateway_reachable": gateway_ready,
         "session_authenticated": session_ready,
         "websocket_ready": websocket_ready,
     }
@@ -261,12 +268,27 @@ def derive_gateway_state(runtime: dict[str, Any], *, observed_at: str) -> dict[s
     payload = as_dict(runtime)
     gateway = as_dict(payload.get("gateway"))
     runtime_state = derive_runtime_state(payload, observed_at=observed_at)
-    gateway_ready = bool(gateway.get("running") or gateway.get("reachable"))
+    gateway_running = bool(gateway.get("running"))
+    gateway_ready = _gateway_connection_reachable(gateway)
     if gateway_ready:
         status = "running"
         phase = "ready"
         ready = True
         detail = "reachable" if gateway.get("reachable") else "running"
+    elif gateway_running:
+        status = "degraded"
+        auth_issue_reason = str(gateway.get("auth_issue_reason") or "").strip()
+        auth_action = str(gateway.get("auth_issue_action_required") or "").strip()
+        phase = "manual_login_required" if auth_issue_reason == "security_token_expired" else "api_socket_unreachable"
+        ready = False
+        reason = str(gateway.get("api_socket_reason") or gateway.get("error") or "").strip()
+        if auth_issue_reason:
+            issue = auth_issue_reason
+            if auth_action:
+                issue = f"{issue}; {auth_action}"
+            detail = f"running but not reachable ({issue})"
+        else:
+            detail = f"running but not reachable ({reason})" if reason else "running but not reachable"
     elif runtime_state["status"] == "starting":
         status = "starting"
         phase = "gateway_pending"

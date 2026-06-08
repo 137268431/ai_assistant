@@ -105,6 +105,7 @@ def _build_snapshot_action_response(
             "place_order",
             "modify_order",
             "cancel_order",
+            "cancel_order_ids",
             "cancel_all_orders",
             "close_position",
         }

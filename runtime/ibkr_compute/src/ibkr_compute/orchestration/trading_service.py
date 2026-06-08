@@ -332,6 +332,7 @@ class IBKRTradingService(
             environment=ENVIRONMENT,
             gateway_gate=self.gateway_order_gate,
             symbol_scheduler=self.symbol_order_scheduler,
+            reservation_store=self.buying_power_reservations,
         )
         self.order_tracker = OrderTracker(
             pb_client=self.pb,

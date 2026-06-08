@@ -66,6 +66,10 @@ def _state_data(record: dict[str, Any] | None) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _escape_filter_value(value: Any) -> str:
+    return str(value or "").replace("\\", "\\\\").replace('"', '\\"')
+
+
 def _reservation_key(
     *,
     entry_order_id: Any = "",
@@ -138,6 +142,91 @@ class BuyingPowerReservationStore:
             return False
         return True
 
+    @staticmethod
+    def _pb_order_row_terminal(row: dict[str, Any]) -> bool:
+        status = str((row or {}).get("status") or "").strip().upper()
+        relation_status = str((row or {}).get("relation_status") or "").strip().lower()
+        return relation_status == "closed" or status in {
+            "FILLED",
+            "EXECUTED",
+            "CANCELLED",
+            "CANCELED",
+            "INACTIVE",
+            "REJECTED",
+            "EXPIRED",
+            "API_CANCELLED",
+        }
+
+    def _load_pb_order_rows_for_entry_ids(self, entry_order_ids: list[str]) -> list[dict[str, Any]]:
+        getter = getattr(self.pb_client, "get_records", None)
+        if not callable(getter):
+            return []
+        ids = [str(item or "").strip() for item in (entry_order_ids or []) if str(item or "").strip()]
+        if not ids:
+            return []
+        environment_filter = _escape_filter_value(self.environment)
+        rows: list[dict[str, Any]] = []
+        for start in range(0, len(ids), 25):
+            chunk = ids[start:start + 25]
+            id_filter = " || ".join(
+                f'broker_order_id = "{_escape_filter_value(order_id)}" || order_id = "{_escape_filter_value(order_id)}"'
+                for order_id in chunk
+            )
+            try:
+                batch = getter(
+                    "orders",
+                    filter=f'environment = "{environment_filter}" && ({id_filter})',
+                    sort="-updated",
+                    per_page=max(50, len(chunk) * 2),
+                )
+            except Exception:
+                continue
+            rows.extend(dict(row) for row in (batch or []) if isinstance(row, dict))
+        return rows
+
+    def _reconcile_active_with_pb_locked(self, active: list[dict[str, Any]], data: dict[str, Any]) -> list[dict[str, Any]]:
+        entry_ids = [
+            str(item.get("entry_order_id") or "").strip()
+            for item in active
+            if str(item.get("entry_order_id") or "").strip()
+        ]
+        if not entry_ids:
+            return active
+        rows = self._load_pb_order_rows_for_entry_ids(entry_ids)
+        if not rows:
+            return active
+        rows_by_order_id: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            for key in ("broker_order_id", "order_id"):
+                order_id = str(row.get(key) or "").strip()
+                if order_id:
+                    rows_by_order_id.setdefault(order_id, []).append(row)
+        terminal_ids = {
+            order_id
+            for order_id, order_rows in rows_by_order_id.items()
+            if any(self._pb_order_row_terminal(row) for row in order_rows)
+        }
+        if not terminal_ids:
+            return active
+        remaining = [
+            item for item in active
+            if str(item.get("entry_order_id") or "").strip() not in terminal_ids
+        ]
+        released = len(active) - len(remaining)
+        if released:
+            data["last_release"] = {
+                "released_at": _iso(),
+                "reason": "pb_terminal_reconcile",
+                "count": released,
+                "order_ids": sorted(terminal_ids),
+                "symbols": sorted({
+                    str(item.get("symbol") or "").upper()
+                    for item in active
+                    if str(item.get("entry_order_id") or "").strip() in terminal_ids and item.get("symbol")
+                }),
+            }
+        return remaining
+
     def cleanup_expired(self) -> dict[str, Any]:
         with _state_lock(self.environment):
             data, _record = self._load_state()
@@ -147,6 +236,7 @@ class BuyingPowerReservationStore:
                 item for item in (data.get("reservations") or [])
                 if self._is_active(item, now_epoch)
             ]
+            data["reservations"] = self._reconcile_active_with_pb_locked(data["reservations"], data)
             removed = before - len(data["reservations"])
             if removed:
                 self._save_state(data)
@@ -156,6 +246,7 @@ class BuyingPowerReservationStore:
         with _state_lock(self.environment):
             data, _record = self._load_state()
             active = [item for item in (data.get("reservations") or []) if self._is_active(item)]
+            active = self._reconcile_active_with_pb_locked(active, data)
             if len(active) != len(data.get("reservations") or []):
                 data["reservations"] = active
                 self._save_state(data)
@@ -289,6 +380,11 @@ class BuyingPowerReservationStore:
         with _state_lock(self.environment):
             data, _record = self._load_state()
             active = [item for item in (data.get("reservations") or []) if self._is_active(item)]
+            reconciled = self._reconcile_active_with_pb_locked(active, data)
+            if len(reconciled) != len(active):
+                active = reconciled
+                data["reservations"] = active
+                self._save_state(data)
             current_reserved = sum(max(0.0, _safe_float(item.get("exposure"), 0.0)) for item in active)
             guard_remaining = _safe_float(guard.get("remaining"), 0.0)
             guard_local_reserved = _safe_float(guard.get("local_reserved_exposure"), 0.0)

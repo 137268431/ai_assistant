@@ -40,7 +40,7 @@ if "flask" not in sys.modules:
 
 from ibkr_compute.api.monitor.runtime.compute import _build_compute_summary
 from ibkr_compute.api.ops.common import _snapshot_engine_items
-from ibkr_compute.api.ops.status_views import _build_topology_payload, build_status_response
+from ibkr_compute.api.ops.status_views import _build_topology_payload, build_health_response, build_status_response
 
 
 class _GuardedLock:
@@ -182,6 +182,67 @@ class OpsStatusViewsTest(unittest.TestCase):
         self.assertEqual(payload["status_mode"], "full")
         self.assertEqual(payload["engines"]["live/AAPL/5m"]["last_close"], 210.5)
         self.assertEqual(payload["engines"]["live/MSFT/15m"]["bar_count"], 180)
+
+    def test_build_health_response_defaults_to_lite_non_blocking(self):
+        fake_app = _build_fake_app()
+        fake_app.backtest_service = SimpleNamespace(
+            status=lambda: (_ for _ in ()).throw(AssertionError("lite health must not call backtest status"))
+        )
+        fake_app.history_rebuild_manager = SimpleNamespace(
+            status=lambda _environment: (_ for _ in ()).throw(
+                AssertionError("lite health must not call history status")
+            )
+        )
+
+        with mock.patch("ibkr_compute.api.ops.status_views.get_app_module", return_value=fake_app):
+            with mock.patch("ibkr_compute.api.ops.status_views.get_requested_environment", return_value="live"):
+                with mock.patch("ibkr_compute.api.ops.status_views.get_service_profile", return_value="runtime"):
+                    with mock.patch("ibkr_compute.api.ops.status_views.get_runtime_mode", return_value="remote"):
+                        with mock.patch("ibkr_compute.api.ops.status_views.get_compute_startup_preload_state", return_value={"status": "idle"}):
+                            with mock.patch("ibkr_compute.api.ops.status_views.build_service_topology", return_value={"services": {}}) as topology_mock:
+                                with mock.patch("ibkr_compute.api.ops.status_views.request", SimpleNamespace(args={})):
+                                    with mock.patch("ibkr_compute.api.ops.status_views.jsonify", side_effect=lambda payload: payload):
+                                        payload = build_health_response()
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual("lite", payload["health_mode"])
+        self.assertEqual("omitted", payload["multi_timeframe_readiness"]["status"])
+        self.assertEqual("omitted", payload["backtest"]["status"])
+        self.assertEqual("omitted", payload["history_rebuild"]["status"])
+        topology_mock.assert_called_once()
+        self.assertFalse(topology_mock.call_args.kwargs["fetch_runtime_status"])
+
+    def test_build_health_response_lite_includes_runtime_gateway_context(self):
+        fake_app = _build_fake_app()
+        fake_app._ibkr_service = SimpleNamespace(
+            gateway_manager=SimpleNamespace(
+                status=lambda: {
+                    "running": True,
+                    "reachable": False,
+                    "api_socket_listening": False,
+                    "api_socket_reason": "port_not_listening",
+                }
+            ),
+            session_keeper=SimpleNamespace(status=lambda: {"authenticated": False}),
+        )
+
+        with mock.patch("ibkr_compute.api.ops.status_views.get_app_module", return_value=fake_app):
+            with mock.patch("ibkr_compute.api.ops.status_views.get_requested_environment", return_value="paper"):
+                with mock.patch("ibkr_compute.api.ops.status_views.get_service_profile", return_value="runtime"):
+                    with mock.patch("ibkr_compute.api.ops.status_views.get_runtime_mode", return_value="remote"):
+                        with mock.patch("ibkr_compute.api.ops.status_views.get_compute_startup_preload_state", return_value={"status": "idle"}):
+                            with mock.patch("ibkr_compute.api.ops.status_views.build_service_topology", return_value={"services": {"ibkr-gateway": {"status": "degraded"}}}) as topology_mock:
+                                with mock.patch("ibkr_compute.api.ops.status_views.request", SimpleNamespace(args={})):
+                                    with mock.patch("ibkr_compute.api.ops.status_views.jsonify", side_effect=lambda payload: payload):
+                                        payload = build_health_response()
+
+        self.assertEqual("lite", payload["health_mode"])
+        self.assertFalse(payload["gateway"]["reachable"])
+        self.assertFalse(payload["gateway"]["api_socket_listening"])
+        self.assertFalse(payload["session"]["authenticated"])
+        service_status = topology_mock.call_args.kwargs["service_status"]
+        self.assertEqual("port_not_listening", service_status["gateway"]["api_socket_reason"])
+        self.assertFalse(topology_mock.call_args.kwargs["fetch_runtime_status"])
 
     def test_topology_skip_runtime_status_does_not_call_runtime_resolver(self):
         resolver = mock.Mock(return_value={"session": {"authenticated": True}})

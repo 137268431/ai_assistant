@@ -82,6 +82,17 @@ class OrderTracker:
             return fallback
         return self.config.get_int_for_environment(key, self.environment, fallback)
 
+    def _get_bool_setting(self, key: str, fallback: bool) -> bool:
+        if not self.config:
+            return bool(fallback)
+        getter = getattr(self.config, "get_bool_for_environment", None)
+        if callable(getter):
+            try:
+                return bool(getter(key, self.environment, fallback))
+            except Exception:
+                return bool(fallback)
+        return bool(fallback)
+
     def _get_mode_setting(self, key: str, fallback: str) -> str:
         if not self.config:
             return fallback
@@ -107,6 +118,52 @@ class OrderTracker:
 
     def _execution_fill_sync_interval(self) -> int:
         return max(0, self._get_int_setting("ibkr_execution_fill_sync_interval_sec", EXECUTION_FILL_SYNC_INTERVAL))
+
+    def _use_callback_cache_during_activity(self) -> bool:
+        return self._get_bool_setting("ibkr_order_tracker_callback_cache_during_activity", True)
+
+    def _active_reservation_count(self) -> int:
+        getter = getattr(self.pb_client, "get_state", None)
+        if not callable(getter):
+            return 0
+        try:
+            record = getter(
+                "buying_power_reservations:v1",
+                self.environment,
+                datetime.now(ET).strftime("%Y-%m-%d"),
+            )
+        except Exception:
+            return 0
+        data = (record or {}).get("data") if isinstance(record, dict) else {}
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except Exception:
+                data = {}
+        reservations = data.get("reservations") if isinstance(data, dict) else []
+        if not isinstance(reservations, list):
+            return 0
+        count = 0
+        now = time.time()
+        for item in reservations:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("status") or "active").strip().lower() != "active":
+                continue
+            expires_at = str(item.get("expires_at") or "").strip()
+            if expires_at:
+                try:
+                    if datetime.fromisoformat(expires_at.replace("Z", "+00:00")).timestamp() <= now:
+                        continue
+                except Exception:
+                    pass
+            count += 1
+        return count
+
+    def _skip_live_order_fetch_during_order_pressure(self) -> bool:
+        if not self._get_bool_setting("ibkr_order_tracker_skip_live_fetch_during_order_pressure", True):
+            return False
+        return self._active_reservation_count() > 0
 
     def _mark_order_activity(self):
         self._last_order_activity = time.time()
@@ -490,6 +547,44 @@ class OrderTracker:
         include_all: bool = False,
     ) -> List[Dict]:
         started = time.perf_counter()
+        if self._use_callback_cache_during_activity():
+            last_activity = float(self._last_order_activity or 0.0)
+            if last_activity > 0 and (time.time() - last_activity) <= self._fast_track_window():
+                cached = self.get_cached_live_orders(include_all=include_all)
+                if cached:
+                    self._last_live_orders_fetch_unavailable = False
+                    record_order_event(
+                        environment=self.environment,
+                        operation="tracker_live_orders_fetch",
+                        order_family_type="all" if include_all else "open",
+                        result="ok",
+                        reason_code="callback_cache_recent_activity",
+                        duration_s=time.perf_counter() - started,
+                    )
+                    return cached
+        if self._skip_live_order_fetch_during_order_pressure():
+            cached = self.get_cached_live_orders(include_all=include_all)
+            if cached:
+                self._last_live_orders_fetch_unavailable = False
+                record_order_event(
+                    environment=self.environment,
+                    operation="tracker_live_orders_fetch",
+                    order_family_type="all" if include_all else "open",
+                    result="ok",
+                    reason_code="callback_cache_order_pressure",
+                    duration_s=time.perf_counter() - started,
+                )
+                return cached
+            self._last_live_orders_fetch_unavailable = True
+            record_order_event(
+                environment=self.environment,
+                operation="tracker_live_orders_fetch",
+                order_family_type="all" if include_all else "open",
+                result="skipped",
+                reason_code="order_pressure_reservations",
+                duration_s=time.perf_counter() - started,
+            )
+            return []
         if self._should_skip_account_data_fetch(operation="live_orders"):
             self._last_live_orders_fetch_unavailable = True
             record_order_event(
@@ -852,7 +947,13 @@ class OrderTracker:
         if not normalized_symbol or not expected_side or expected_qty <= 0:
             return None
 
-        live_orders = self.get_live_orders()
+        live_orders = self.get_cached_live_orders()
+        live_fetch_enabled = self._get_bool_setting(
+            "ibkr_duplicate_order_live_fetch_enabled",
+            self.environment == "live",
+        )
+        if not live_orders and live_fetch_enabled:
+            live_orders = self.get_live_orders(retries=1, retry_delay=0.0)
         for order in live_orders:
             if self._extract_live_parent_id(order):
                 continue

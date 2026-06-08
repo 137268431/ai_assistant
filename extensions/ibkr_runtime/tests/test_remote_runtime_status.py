@@ -102,6 +102,37 @@ class RemoteRuntimeTopologyTest(unittest.TestCase):
         self.assertEqual(gateway_service["pid"], 319433)
         self.assertEqual(gateway_service["managed_by"], "systemd")
 
+    def test_runtime_topology_marks_socket_down_runtime_degraded(self):
+        runtime_payload = {
+            "ok": True,
+            "session": {"authenticated": False},
+            "gateway": {
+                "running": True,
+                "reachable": False,
+                "status_code": 502,
+                "api_socket_listening": False,
+                "api_socket_reason": "port_not_listening",
+                "pid": 319433,
+                "managed_by": "systemd",
+            },
+        }
+        with mock.patch.dict(
+            os.environ,
+            {
+                "IBKR_SERVICE_PROFILE": "runtime",
+                "IBKR_RUNTIME_MODE": "remote",
+            },
+            clear=False,
+        ):
+            topology = build_service_topology(service_status=runtime_payload)
+
+        runtime_service = topology["services"]["ibkr-runtime"]
+        gateway_service = topology["services"]["ibkr-gateway"]
+        self.assertEqual(runtime_service["status"], "degraded")
+        self.assertFalse(runtime_service["session_authenticated"])
+        self.assertEqual(gateway_service["status"], "degraded")
+        self.assertEqual(gateway_service["pid"], 319433)
+
     def test_compute_topology_falls_back_when_remote_snapshot_unavailable(self):
         with mock.patch.dict(
             os.environ,

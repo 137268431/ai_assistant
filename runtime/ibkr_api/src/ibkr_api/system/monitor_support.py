@@ -1426,7 +1426,7 @@ def derive_monitor_service_map(
     runtime_phase = str(runtime.get("runtime_phase") or "").strip().lower()
     session = runtime.get("session") if isinstance(runtime.get("session"), dict) else {}
     websocket = runtime.get("websocket") if isinstance(runtime.get("websocket"), dict) else {}
-    gateway_reachable = bool(gateway.get("running") or gateway.get("reachable"))
+    gateway_reachable = bool(gateway.get("reachable")) if "reachable" in gateway else bool(gateway.get("running"))
     websocket_ready = bool(websocket.get("connected") or websocket.get("ready"))
     session_authenticated = bool(session.get("authenticated"))
     if runtime:
@@ -1439,11 +1439,12 @@ def derive_monitor_service_map(
     elif compute_status != "running":
         runtime_status = "offline"
 
-    gateway_status = (
-        "running"
-        if bool(gateway.get("running") or gateway.get("reachable"))
-        else ("unknown" if monitor_source_unavailable and not gateway else "offline")
-    )
+    if gateway_reachable:
+        gateway_status = "running"
+    elif bool(gateway.get("running")):
+        gateway_status = "degraded"
+    else:
+        gateway_status = "unknown" if monitor_source_unavailable and not gateway else "offline"
     scheduler_status = str(scheduler_summary.get("status") or "").strip().lower() or "unknown"
     scheduler_unavailable = scheduler_status == "unknown" and not bool(scheduler_summary.get("ok", True))
     compute_preload_active = _compute_startup_preload_active() or _scheduler_compute_preload_deferred()
