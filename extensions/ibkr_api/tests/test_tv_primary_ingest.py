@@ -532,6 +532,213 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertTrue(rejected["rejected"])
         self.assertEqual(rejected["reason"], "symbol_not_authorized_for_tv_entry")
 
+    def test_ordinary_premarket_entry_still_rejected_before_primary_window(self):
+        pb = _FakePB()
+
+        def config_value(key, default, environment):
+            values = {
+                "tv_entry_requires_active_target": "FALSE",
+                "tv_entry_requires_authorized_symbol": "FALSE",
+                "tv_entry_window_enforce_enabled": "TRUE",
+            }
+            return values.get(key, _config_value(key, default, environment))
+
+        response, status = _process(
+            pb,
+            {
+                "source": "tv",
+                "event_type": "entry",
+                "event_id": "tv-entry-premarket-ordinary",
+                "signal_id": "tv-entry-premarket-ordinary",
+                "symbol": "AAPL",
+                "direction": "long",
+                "entry_price": 188.25,
+                "quantity": 12,
+                "stop_loss": 185.80,
+                "take_profit": 193.10,
+                "market_date": "2026-05-29",
+                "environment": "live",
+                "broker_mode": "paper",
+                "market_data_mode": "live",
+                "us_time": "2026-05-29 04:10:00",
+                "activity_score": 100,
+                "quality_score": 100,
+            },
+            config_value=config_value,
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(response["rejected"])
+        self.assertEqual(response["reason"], "outside_tv_entry_window")
+        self.assertEqual(len(pb.records["ibkr_signals"]), 0)
+        self.assertEqual(pb.records[TV_EVENT_COLLECTION][0]["status"], "rejected")
+
+    def test_authorized_paper_premarket_validation_entry_bypasses_only_entry_window(self):
+        pb = _FakePB()
+
+        def config_value(key, default, environment):
+            values = {
+                "tv_entry_requires_active_target": "FALSE",
+                "tv_entry_requires_authorized_symbol": "FALSE",
+                "tv_entry_window_enforce_enabled": "TRUE",
+                "tv_premarket_validation_enabled": "TRUE",
+                "tv_premarket_validation_run_id": "RUN1",
+                "tv_premarket_validation_token": "TOK1",
+                "tv_premarket_validation_expires_at_ms": "4102444800000",
+            }
+            return values.get(key, _config_value(key, default, environment))
+
+        response, status = _process(
+            pb,
+            {
+                "source": "tv",
+                "event_type": "entry",
+                "event_id": "tv-entry-premarket-validation",
+                "signal_id": "tv-entry-premarket-validation",
+                "symbol": "AAPL",
+                "direction": "long",
+                "entry_price": 188.25,
+                "quantity": 12,
+                "stop_loss": 185.80,
+                "take_profit": 193.10,
+                "market_date": "2026-05-29",
+                "environment": "live",
+                "data_environment": "live",
+                "market_data_mode": "live",
+                "broker_mode": "paper",
+                "us_time": "2026-05-29 04:10:00",
+                "activity_score": 100,
+                "quality_score": 100,
+                "validation_mode": "premarket_linkage",
+                "validation_run_id": "RUN1",
+                "validation_token": "TOK1",
+                "paper_only": True,
+                "outside_rth": True,
+            },
+            config_value=config_value,
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(response["ok"])
+        saved = pb.records["ibkr_signals"][0]
+        self.assertEqual(saved["signal_id"], "tv-entry-premarket-validation")
+        self.assertEqual(saved["extra"]["execution_window"], "premarket_validation")
+        self.assertEqual(saved["extra"]["admission_reason"], "premarket_validation")
+        self.assertEqual(saved["extra"]["target_backfill"]["reason"], "premarket_validation")
+        self.assertTrue(saved["extra"]["premarket_validation"])
+        self.assertTrue(saved["extra"]["outside_rth"])
+        self.assertTrue(saved["extra"]["premarket_validation_status"]["authorized"])
+        self.assertEqual(len(pb.records["ibkr_targets"]), 0)
+        self.assertEqual(pb.records[TV_EVENT_COLLECTION][0]["status"], "routed")
+
+    def test_authorized_premarket_validation_pre_alert_does_not_seed_trade_target(self):
+        pb = _FakePB()
+
+        def config_value(key, default, environment):
+            values = {
+                "tv_premarket_validation_enabled": "TRUE",
+                "tv_premarket_validation_run_id": "RUN1",
+                "tv_premarket_validation_token": "TOK1",
+                "tv_premarket_validation_expires_at_ms": "4102444800000",
+            }
+            return values.get(key, _config_value(key, default, environment))
+
+        response, status = _process(
+            pb,
+            {
+                "source": "tv",
+                "event_type": "pre_alert",
+                "event_id": "tv-pre-premarket-validation",
+                "symbol": "SPY",
+                "direction_bias": "long",
+                "market_date": "2026-05-29",
+                "environment": "live",
+                "market_data_mode": "live",
+                "broker_mode": "paper",
+                "us_time": "2026-05-29 04:10:00",
+                "activity_score": 100,
+                "quality_score": 100,
+                "validation_mode": "premarket_linkage",
+                "validation_run_id": "RUN1",
+                "validation_token": "TOK1",
+                "paper_only": True,
+                "outside_rth": True,
+            },
+            config_value=config_value,
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["target"], TV_EVENT_COLLECTION)
+        self.assertEqual(response["watchlist_sync"]["reason"], "premarket_validation")
+        self.assertTrue(response["premarket_validation"])
+        self.assertEqual(len(pb.records["ibkr_targets"]), 0)
+        self.assertEqual(len(pb.records["watchlist"]), 0)
+
+    def test_premarket_validation_entry_rejects_live_or_mismatched_runs(self):
+        def config_value(key, default, environment):
+            values = {
+                "tv_entry_requires_active_target": "FALSE",
+                "tv_entry_requires_authorized_symbol": "FALSE",
+                "tv_entry_window_enforce_enabled": "TRUE",
+                "tv_premarket_validation_enabled": "TRUE",
+                "tv_premarket_validation_run_id": "RUN1",
+                "tv_premarket_validation_token": "TOK1",
+                "tv_premarket_validation_expires_at_ms": "4102444800000",
+            }
+            return values.get(key, _config_value(key, default, environment))
+
+        base_payload = {
+            "source": "tv",
+            "event_type": "entry",
+            "symbol": "AAPL",
+            "direction": "long",
+            "entry_price": 188.25,
+            "quantity": 12,
+            "stop_loss": 185.80,
+            "take_profit": 193.10,
+            "market_date": "2026-05-29",
+            "environment": "live",
+            "market_data_mode": "live",
+            "us_time": "2026-05-29 04:10:00",
+            "activity_score": 100,
+            "quality_score": 100,
+            "validation_mode": "premarket_linkage",
+            "validation_run_id": "RUN1",
+            "validation_token": "TOK1",
+            "paper_only": True,
+            "outside_rth": True,
+        }
+
+        live_response, live_status = _process(
+            _FakePB(),
+            {
+                **base_payload,
+                "event_id": "tv-entry-premarket-live",
+                "signal_id": "tv-entry-premarket-live",
+                "broker_mode": "live",
+            },
+            config_value=config_value,
+        )
+        mismatch_response, mismatch_status = _process(
+            _FakePB(),
+            {
+                **base_payload,
+                "event_id": "tv-entry-premarket-mismatch",
+                "signal_id": "tv-entry-premarket-mismatch",
+                "broker_mode": "paper",
+                "validation_run_id": "OTHER",
+            },
+            config_value=config_value,
+        )
+
+        self.assertEqual(live_status, 200)
+        self.assertTrue(live_response["rejected"])
+        self.assertEqual(live_response["reason"], "premarket_validation_not_authorized")
+        self.assertEqual(mismatch_status, 200)
+        self.assertTrue(mismatch_response["rejected"])
+        self.assertEqual(mismatch_response["reason"], "premarket_validation_not_authorized")
+
     def test_entry_backfill_creates_missing_trade_watchlist_for_current_market_date(self):
         pb = _FakePB()
 

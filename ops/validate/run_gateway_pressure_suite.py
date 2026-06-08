@@ -65,6 +65,12 @@ def write_summary(suite_dir: Path, payload: dict[str, Any]) -> str:
     return str(path)
 
 
+def finalize_summary(suite_dir: Path, payload: dict[str, Any]) -> str:
+    path = str(suite_dir / "summary.json")
+    payload["artifact"] = path
+    return write_summary(suite_dir, payload)
+
+
 def account_fast_snapshot(args: argparse.Namespace) -> dict:
     started = time.perf_counter()
     try:
@@ -424,7 +430,7 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
         payload["post_account"] = account_fast_snapshot(args)
         payload["post_alerts"] = firing_alerts(args)
         payload["ok"] = False
-        payload["artifact"] = write_summary(suite_dir, payload)
+        finalize_summary(suite_dir, payload)
         return payload
 
     commands = stage_commands(args, suite_dir)
@@ -454,7 +460,7 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
         )
         if not payload["ok"]:
             payload["error"] = "post_account_not_clean"
-    payload["artifact"] = write_summary(suite_dir, payload)
+    finalize_summary(suite_dir, payload)
     return payload
 
 

@@ -628,6 +628,7 @@ class TradingServiceSignalsMixin:
                             entry_algo_strategy="Adaptive" if bool(extra.get("tv_entry_adaptive_enabled")) else "",
                             entry_adaptive_priority=str(extra.get("tv_entry_adaptive_priority") or ""),
                             buying_power_guard=buying_power_guard,
+                            outside_rth=bool(extra.get("outside_rth")),
                         )
                 else:
                     harvest_settings = self._harvest_entry_settings()
@@ -662,6 +663,7 @@ class TradingServiceSignalsMixin:
                             trade_group_id=trade_group_id,
                             settings=harvest_settings,
                             buying_power_guard=buying_power_guard,
+                            outside_rth=bool(extra.get("outside_rth")),
                         )
 
                 submission_duration = time.perf_counter() - submission_started

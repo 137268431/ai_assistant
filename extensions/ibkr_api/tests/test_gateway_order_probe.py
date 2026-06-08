@@ -453,6 +453,44 @@ class GatewayOrderProbeTest(unittest.TestCase):
         self.assertTrue(results[1]["late_after_submit_timeout"])
         self.assertTrue(results[1]["late_ok"])
 
+    def test_submit_burst_retries_transient_buying_power_unavailable(self):
+        args = Namespace(
+            api_base_url="https://example.test",
+            http_timeout_sec=30.0,
+            burst_workers=1,
+            burst_spacing_seconds=0.0,
+            submit_timeout_sec=10.0,
+            buying_power_unavailable_retries=2,
+            buying_power_unavailable_retry_delay_sec=0.01,
+        )
+        plans = [probe.OrderProbePlan("AAPL", "long", 1, 100.0, 50.0, 57.5, 42.5)]
+        calls = []
+
+        def fake_submit(_client, plan, *, delay_s=0.0):
+            calls.append(plan.symbol)
+            if len(calls) == 1:
+                return {
+                    "ok": False,
+                    "symbol": plan.symbol,
+                    "error": "buying_power_unavailable",
+                    "response": {"ok": False, "error": "buying_power_unavailable"},
+                    "order_ids": [],
+                    "elapsed_s": 0.1,
+                }
+            return {"ok": True, "symbol": plan.symbol, "order_ids": ["101"], "elapsed_s": 0.2}
+
+        with mock.patch.object(probe.fee_probe, "ApiClient", return_value=object()), mock.patch.object(
+            probe,
+            "submit_one",
+            side_effect=fake_submit,
+        ), mock.patch.object(probe.time, "sleep", return_value=None):
+            results = probe.submit_burst(args, plans)
+
+        self.assertEqual(2, len(calls))
+        self.assertTrue(results[0]["ok"])
+        self.assertEqual(2, results[0]["attempt"])
+        self.assertEqual(2, len(results[0]["attempts"]))
+
     def test_place_acceptance_allows_expected_buying_power_blocks(self):
         args = Namespace(expect_buying_power_blocks=True, min_buying_power_blocks=1)
         plans = [
@@ -563,6 +601,65 @@ class GatewayOrderProbeTest(unittest.TestCase):
         self.assertFalse(summary["failures"])
         self.assertEqual(4001, summary["api_socket_port"])
 
+    def test_gateway_readiness_accepts_public_statusz_runtime_shape(self):
+        status = {
+            "ok": True,
+            "requested_broker_mode": "paper",
+            "runtime": {
+                "ok": True,
+                "environment": "paper",
+                "broker_mode": "paper",
+                "gateway": {
+                    "running": True,
+                    "reachable": True,
+                    "status_code": 200,
+                    "api_socket_listening": True,
+                    "api_socket_port": 4001,
+                },
+                "session": {"authenticated": True},
+                "websocket": {"ready": True},
+            },
+            "service_topology": {"services": {"ibkr-gateway": {"status": "running"}}},
+        }
+
+        summary = probe.summarize_gateway_readiness(status)
+
+        self.assertTrue(summary["ok"])
+        self.assertEqual("paper", summary["broker_mode"])
+        self.assertTrue(summary["gateway_reachable"])
+        self.assertTrue(summary["session_authenticated"])
+        self.assertTrue(summary["broker_connected"])
+        self.assertTrue(summary["broker_ready"])
+
+    def test_get_gateway_status_lite_falls_back_to_public_statusz(self):
+        args = Namespace()
+        calls = []
+        statusz = {
+            "ok": True,
+            "requested_broker_mode": "paper",
+            "runtime": {
+                "ok": True,
+                "environment": "paper",
+                "broker_mode": "paper",
+                "gateway": {"running": True, "reachable": True, "api_socket_listening": True},
+                "session": {"authenticated": True},
+            },
+        }
+
+        class _Client:
+            def get(self, path, params=None):
+                calls.append((path, dict(params or {})))
+                if path == "/ibkr/status":
+                    return {"ok": False, "error": "non_json_response", "_request_url": "https://example/ibkr/status"}
+                return statusz
+
+        with mock.patch.object(probe, "account_snapshot_client", return_value=(_Client(), "")):
+            payload = probe.get_gateway_status_lite(args)
+
+        self.assertEqual(["/ibkr/status", "/api/custom/ibkr/statusz"], [item[0] for item in calls])
+        self.assertEqual(statusz, {key: value for key, value in payload.items() if not key.startswith("_status_probe")})
+        self.assertEqual("https://example/ibkr/status", payload["_status_probe_fallback_from"])
+
     def test_run_probe_checks_confirmation_before_gateway_readiness(self):
         args = Namespace(execute=True, confirm="", skip_gateway_readiness_precheck=False)
 
@@ -592,6 +689,53 @@ class GatewayOrderProbeTest(unittest.TestCase):
         self.assertIn("api_socket_listening", str(ctx.exception))
         self.assertEqual("gateway_readiness_precheck_failed", ctx.exception.payload["error"])
         self.assertEqual(precheck, ctx.exception.payload["gateway_readiness_precheck"])
+
+    def test_account_global_activity_summary_detects_unrelated_open_orders(self):
+        snapshot = {
+            "counts": {"open_orders": 1, "open_positions": 1},
+            "live_open_orders": [{"symbol": "MSFT", "order_id": "201", "status": "Submitted"}],
+            "positions": [{"ticker": "TSLA", "position": 2}],
+        }
+
+        summary = probe.account_global_activity_summary(snapshot)
+
+        self.assertFalse(summary["flat"])
+        self.assertEqual(1, summary["open_order_count"])
+        self.assertEqual(1, summary["open_position_count"])
+        self.assertEqual("MSFT", summary["sample_open_orders"][0]["symbol"])
+        self.assertEqual("TSLA", summary["sample_positions"][0]["symbol"])
+
+    def test_run_probe_rejects_unrelated_open_orders_before_submit(self):
+        args = Namespace(
+            execute=True,
+            confirm=probe.CONFIRM_TEXT,
+            skip_gateway_readiness_precheck=True,
+            allow_unrelated_open_orders=False,
+            run_id="TEST",
+            artifact_root="artifacts/test",
+            min_orders=1,
+        )
+        plans = [probe.OrderProbePlan("AAPL", "long", 1, 100.0, 50.0, 57.5, 42.5)]
+        plan_summary = {"selected_symbols": ["AAPL"], "selected_orders": 1}
+        snapshot = {
+            "ok": True,
+            "environment": "paper",
+            "broker_mode": "paper",
+            "live_open_orders": [{"symbol": "MSFT", "order_id": "201", "status": "Submitted"}],
+            "orders": [],
+            "positions": [],
+        }
+
+        with mock.patch.object(probe, "select_probe_plan", return_value=(plans, [], plan_summary)), mock.patch.object(
+            probe,
+            "get_snapshot",
+            return_value=snapshot,
+        ), mock.patch.object(probe, "submit_burst") as submit_burst:
+            with self.assertRaises(probe.GatewayProbeError) as ctx:
+                probe.run_probe(args)
+
+        submit_burst.assert_not_called()
+        self.assertIn("preflight_account_not_flat", str(ctx.exception))
 
     def test_build_stop_loss_modify_items_targets_submitted_stop_legs(self):
         plans = [

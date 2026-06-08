@@ -297,6 +297,12 @@ def write_artifact(args: argparse.Namespace, payload: dict[str, Any]) -> str:
     return str(summary_path)
 
 
+def finalize_artifact(args: argparse.Namespace, payload: dict[str, Any]) -> str:
+    path = str(artifact_dir(args) / "summary.json")
+    payload["artifact"] = path
+    return write_artifact(args, payload)
+
+
 def configure_http_proxy(args: argparse.Namespace) -> None:
     if bool(getattr(args, "use_system_proxy", False)):
         return
@@ -396,15 +402,31 @@ def get_snapshot(
 
 def get_gateway_status_lite(args: argparse.Namespace, *, timeout_sec: float | None = None) -> dict[str, Any]:
     client, _path = account_snapshot_client(args, timeout_sec=timeout_sec)
-    return client.get(
+    params = {
+        "environment": "paper",
+        "broker_mode": "paper",
+        "lite": "1",
+        "skip_compute_status": "1",
+    }
+    status = client.get(
         "/ibkr/status",
-        {
-            "environment": "paper",
-            "broker_mode": "paper",
-            "lite": "1",
-            "skip_compute_status": "1",
-        },
+        params,
     )
+    if isinstance(status.get("gateway"), dict) or isinstance(status.get("runtime"), dict):
+        return status
+    # Public quant only exposes control traffic under /api/custom/*, so fall
+    # back to the split-stack statusz route before declaring Gateway offline.
+    try:
+        fallback = client.get("/api/custom/ibkr/statusz", params)
+    except Exception:
+        return status
+    if isinstance(fallback, dict) and (
+        isinstance(fallback.get("gateway"), dict) or isinstance(fallback.get("runtime"), dict)
+    ):
+        payload = dict(fallback)
+        payload["_status_probe_fallback_from"] = status.get("_request_url") or "/ibkr/status"
+        return payload
+    return status
 
 
 def _bool_or_none(value: Any) -> bool | None:
@@ -415,14 +437,29 @@ def _bool_or_none(value: Any) -> bool | None:
 
 def summarize_gateway_readiness(status: dict[str, Any]) -> dict[str, Any]:
     payload = status if isinstance(status, dict) else {}
+    runtime_payload = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
     gateway = payload.get("gateway") if isinstance(payload.get("gateway"), dict) else {}
+    if not gateway and isinstance(runtime_payload.get("gateway"), dict):
+        gateway = runtime_payload.get("gateway") or {}
     broker = gateway.get("broker") if isinstance(gateway.get("broker"), dict) else {}
     session = payload.get("session") if isinstance(payload.get("session"), dict) else {}
+    if not session and isinstance(runtime_payload.get("session"), dict):
+        session = runtime_payload.get("session") or {}
     websocket = payload.get("websocket") if isinstance(payload.get("websocket"), dict) else {}
+    if not websocket and isinstance(runtime_payload.get("websocket"), dict):
+        websocket = runtime_payload.get("websocket") or {}
     topology = payload.get("service_topology") if isinstance(payload.get("service_topology"), dict) else {}
+    if not topology and isinstance(runtime_payload.get("service_topology"), dict):
+        topology = runtime_payload.get("service_topology") or {}
     services = topology.get("services") if isinstance(topology.get("services"), dict) else {}
     topology_gateway = services.get("ibkr-gateway") if isinstance(services.get("ibkr-gateway"), dict) else {}
-    environment = fee_probe.to_text(payload.get("broker_mode") or payload.get("environment")).lower()
+    environment = fee_probe.to_text(
+        payload.get("broker_mode")
+        or payload.get("environment")
+        or payload.get("requested_broker_mode")
+        or runtime_payload.get("broker_mode")
+        or runtime_payload.get("environment")
+    ).lower()
     broker_status_code = 0
     for source in (broker, gateway):
         try:
@@ -436,6 +473,17 @@ def summarize_gateway_readiness(status: dict[str, Any]) -> dict[str, Any]:
     broker_connected = _bool_or_none(broker.get("connected"))
     broker_ready = _bool_or_none(broker.get("ready"))
     session_authenticated = _bool_or_none(session.get("authenticated"))
+    statusz_shape = bool(runtime_payload) or fee_probe.to_text(payload.get("source")) == "ibkr-api"
+    if statusz_shape and broker_connected is None and gateway_reachable is True and session_authenticated is True:
+        broker_connected = True
+    if (
+        statusz_shape
+        and broker_ready is None
+        and gateway_reachable is True
+        and api_socket_listening is True
+        and session_authenticated is True
+    ):
+        broker_ready = True
     failures: list[dict[str, Any]] = []
 
     def add_failure(name: str, expected: Any, actual: Any) -> None:
@@ -461,8 +509,8 @@ def summarize_gateway_readiness(status: dict[str, Any]) -> dict[str, Any]:
         add_failure("broker_status_code", "ready", broker_status_code)
     return {
         "ok": not failures,
-        "environment": payload.get("environment"),
-        "broker_mode": payload.get("broker_mode"),
+        "environment": payload.get("environment") or runtime_payload.get("environment") or payload.get("requested_environment"),
+        "broker_mode": payload.get("broker_mode") or runtime_payload.get("broker_mode") or payload.get("requested_broker_mode"),
         "status_mode": payload.get("status_mode"),
         "gateway_running": gateway.get("running"),
         "gateway_reachable": gateway.get("reachable"),
@@ -518,6 +566,65 @@ def is_flat_for_symbols(snapshot: dict[str, Any], symbols: list[str]) -> bool:
     if not fee_probe.supports_symbol_flat_check(snapshot):
         return False
     return all(fee_probe.is_flat_for_symbol(snapshot, symbol) for symbol in symbols)
+
+
+def _position_symbol(position: dict[str, Any]) -> str:
+    return fee_probe.normalize_symbol(
+        position.get("symbol")
+        or position.get("ticker")
+        or position.get("contractDesc")
+        or position.get("contract_description")
+        or ""
+    )
+
+
+def _position_quantity(position: dict[str, Any]) -> float:
+    return fee_probe.to_float(
+        position.get("quantity")
+        or position.get("position")
+        or position.get("qty")
+        or position.get("position_qty"),
+        0.0,
+    )
+
+
+def account_global_activity_summary(snapshot: dict[str, Any]) -> dict[str, Any]:
+    counts = snapshot.get("counts") if isinstance(snapshot.get("counts"), dict) else {}
+    open_orders: list[dict[str, Any]] = []
+    seen_orders: set[str] = set()
+    for key in ("live_open_orders", "orders"):
+        for raw in snapshot.get(key) or []:
+            if not isinstance(raw, dict) or not fee_probe.is_open_order(raw):
+                continue
+            identity = fee_probe.order_id(raw) or compact_json(raw)[:200]
+            if identity in seen_orders:
+                continue
+            seen_orders.add(identity)
+            open_orders.append(
+                {
+                    "symbol": fee_probe.order_symbol(raw),
+                    "order_id": fee_probe.order_id(raw),
+                    "status": fee_probe.order_status(raw),
+                }
+            )
+    positions = [
+        {
+            "symbol": _position_symbol(position),
+            "quantity": _position_quantity(position),
+        }
+        for position in snapshot.get("positions") or []
+        if isinstance(position, dict) and abs(_position_quantity(position)) > 1e-9
+    ]
+    count_open_orders = int(fee_probe.to_float(counts.get("open_orders"), len(open_orders)) or 0)
+    count_open_positions = int(fee_probe.to_float(counts.get("open_positions"), len(positions)) or 0)
+    flat = count_open_orders <= 0 and count_open_positions <= 0 and not open_orders and not positions
+    return {
+        "flat": flat,
+        "open_order_count": max(count_open_orders, len(open_orders)),
+        "open_position_count": max(count_open_positions, len(positions)),
+        "sample_open_orders": open_orders[:20],
+        "sample_positions": positions[:20],
+    }
 
 
 def wait_for_flat_symbols(args: argparse.Namespace, symbols: list[str]) -> dict[str, Any]:
@@ -1044,10 +1151,32 @@ def submit_burst(args: argparse.Namespace, plans: list[OrderProbePlan]) -> list[
             return submit_timeout_result(plan, timeout_s=effective_timeout, reason="submit_timeout_before_start")
         request_timeout = max(1.0, min(float(args.http_timeout_sec), remaining + 1.0))
         client = fee_probe.ApiClient(args.api_base_url, timeout=request_timeout)
-        try:
-            result = submit_one(client, plan, delay_s=0.0)
-        except Exception as exc:
-            result = {"ok": False, "symbol": plan.symbol, "payload": plan.payload(), "error": str(exc), "order_ids": []}
+        max_attempts = 1 + max(0, int(getattr(args, "buying_power_unavailable_retries", 0) or 0))
+        retry_delay = max(0.0, float(getattr(args, "buying_power_unavailable_retry_delay_sec", 0.0) or 0.0))
+        attempts: list[dict[str, Any]] = []
+        for attempt in range(1, max_attempts + 1):
+            try:
+                result = submit_one(client, plan, delay_s=0.0)
+            except Exception as exc:
+                result = {"ok": False, "symbol": plan.symbol, "payload": plan.payload(), "error": str(exc), "order_ids": []}
+            result["attempt"] = attempt
+            attempts.append(
+                {
+                    "attempt": attempt,
+                    "ok": result.get("ok"),
+                    "error": action_error_code(result) or result.get("error") or "",
+                    "elapsed_s": result.get("elapsed_s"),
+                    "order_ids": list(result.get("order_ids") or []),
+                }
+            )
+            if result.get("ok") or action_error_code(result) != "buying_power_unavailable" or attempt >= max_attempts:
+                break
+            sleep_for = min(max(0.0, deadline - time.monotonic()), retry_delay * attempt + min(1.0, index * 0.03))
+            if sleep_for <= 0:
+                break
+            time.sleep(sleep_for)
+        if len(attempts) > 1:
+            result["attempts"] = attempts
         result["_finished_monotonic"] = time.monotonic()
         return result
 
@@ -1737,11 +1866,15 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     if not args.execute:
         payload["ok"] = True
         payload["reason"] = "dry_run_plan_ready"
-        payload["artifact"] = write_artifact(args, payload)
+        finalize_artifact(args, payload)
         return payload
 
     symbols = [plan.symbol for plan in plans]
     before_snapshot = get_snapshot(args)
+    if not bool(getattr(args, "allow_unrelated_open_orders", False)):
+        global_activity = account_global_activity_summary(before_snapshot)
+        if not global_activity.get("flat"):
+            raise GatewayProbeError(f"preflight_account_not_flat:{compact_json(global_activity)[:1200]}")
     if not is_flat_for_symbols(before_snapshot, symbols):
         raise GatewayProbeError(f"preflight_not_flat:{compact_json({symbol: fee_probe.open_orders_for_symbol(before_snapshot, symbol) for symbol in symbols})[:1200]}")
     before = collect_health_and_stability(args, "gateway_probe_before")
@@ -1903,7 +2036,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             },
         }
     )
-    payload["artifact"] = write_artifact(args, payload)
+    finalize_artifact(args, payload)
     return payload
 
 
@@ -2013,6 +2146,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--poll-interval-sec", type=float, default=2.0)
     parser.add_argument("--http-timeout-sec", type=float, default=30.0)
     parser.add_argument("--submit-timeout-sec", type=float, default=0.0, help="Hard wall-clock limit for the concurrent place burst before timed-out symbols are failed and cleanup starts.")
+    parser.add_argument("--buying-power-unavailable-retries", type=int, default=2, help="Retry transient buying_power_unavailable placement responses before failing a symbol.")
+    parser.add_argument("--buying-power-unavailable-retry-delay-sec", type=float, default=1.5)
     parser.add_argument("--sqlite-timeout-sec", type=float, default=45.0)
     parser.add_argument("--stability-lookback-minutes", type=float, default=5.0)
     parser.add_argument("--max-firing-alerts", type=float, default=0.0)
@@ -2039,6 +2174,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--skip-health", action="store_true")
     parser.add_argument("--skip-stability-gate", action="store_true")
     parser.add_argument("--skip-gateway-readiness-precheck", action="store_true", help="Bypass the hard paper Gateway API/socket/auth precheck before submitting orders.")
+    parser.add_argument("--allow-unrelated-open-orders", action="store_true", help="Allow pressure probes to run when the paper account already has unrelated open orders/positions.")
     parser.add_argument("--execute", action="store_true", help="Submit paper orders. Without this flag only the safe plan is built.")
     parser.add_argument("--confirm", default="", help=f"Required with --execute: {CONFIRM_TEXT}")
     parser.add_argument("--format", choices=("text", "json"), default="text")
@@ -2177,7 +2313,7 @@ def main(argv: list[str] | None = None) -> int:
                 "created_at_cn": datetime.now(CN).isoformat(),
             }
         try:
-            payload["artifact"] = write_artifact(args, payload)
+            finalize_artifact(args, payload)
         except Exception:
             pass
     if args.format == "json":

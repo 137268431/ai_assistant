@@ -646,6 +646,48 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
         self.assertEqual(["206", "207", "208"], result["order_ids"])
         self.assertEqual(ib_gateway.BRACKET_SUBMISSION_CONFIRM_TIMEOUT_SECONDS, adapter.client.await_order_submissions_calls[-1]["timeout"])
 
+    def test_place_bracket_order_sets_outside_rth_on_all_bracket_legs(self):
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeClient(
+            submission_result={
+                "ok": True,
+                "orders": {"101": {"ok": True}, "102": {"ok": True}, "103": {"ok": True}},
+                "missing_order_ids": [],
+            }
+        )
+        adapter.resolve_contract = lambda **kwargs: {
+            "conid": 265598,
+            "symbol": "AAPL",
+            "sec_type": "STK",
+            "exchange": "SMART",
+            "currency": "USD",
+        }
+
+        original_order = ib_gateway.Order
+        original_contract = ib_gateway.Contract
+        try:
+            ib_gateway.Order = FakeOrder
+            ib_gateway.Contract = FakeContract
+            result = ib_gateway.BrokerAdapter.place_bracket_order(
+                adapter,
+                conid=265598,
+                symbol="AAPL",
+                direction="long",
+                quantity=10,
+                entry_price=188.25,
+                take_profit_price=193.10,
+                stop_loss_price=185.80,
+                outside_rth=True,
+            )
+        finally:
+            ib_gateway.Order = original_order
+            ib_gateway.Contract = original_contract
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["outside_rth"])
+        self.assertEqual(3, len(adapter.client.placed_orders))
+        self.assertTrue(all(getattr(order, "outsideRth", False) for _, order in adapter.client.placed_orders))
+
     def test_place_bracket_order_can_fast_ack_and_confirm_in_background(self):
         adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
         adapter.client = FakeClient(open_orders=[{"orderId": "205"}])
@@ -2261,6 +2303,30 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
         self.assertEqual("Patient", broker.calls[0]["entry_adaptive_priority"])
         self.assertEqual("Adaptive", result["entry_algo_strategy"])
         self.assertEqual("Patient", result["entry_adaptive_priority"])
+
+    def test_order_placer_passes_outside_rth_to_broker_and_order_rows(self):
+        pb_client = FakeOrderPBClient()
+        broker = FakeBracketBroker()
+        placer = OrderPlacer(pb_client=pb_client, broker=broker, account_id="DU123")
+
+        result = placer.place_bracket_order(
+            conid=123,
+            symbol="AAPL",
+            direction="long",
+            quantity=10,
+            entry_price=100.15,
+            take_profit_price=104.0,
+            stop_loss_price=98.0,
+            signal_id="sig-aapl-outside-rth",
+            outside_rth=True,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["outside_rth"])
+        self.assertTrue(result["order_extra"]["outside_rth"])
+        self.assertTrue(broker.calls[0]["outside_rth"])
+        self.assertEqual(3, len(pb_client.upserts))
+        self.assertTrue(all(row["extra"]["outside_rth"] for row in pb_client.upserts))
 
     def test_order_placer_treats_background_confirmation_as_pending_not_incomplete(self):
         pb_client = FakeOrderPBClient()

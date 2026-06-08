@@ -25,6 +25,8 @@ TRADINGVIEW_SOURCE = "tradingview"
 TV_WEBHOOK_SPOOL_DIR_ENV = "IBKR_TV_WEBHOOK_SPOOL_DIR"
 TV_RUNTIME_WAKEUP_EVENT_TYPES = {"entry", "risk_update", "exit"}
 TV_RUNTIME_WAKEUP_TARGETS = {"ibkr_signals", "ibkr_reverse_signals"}
+TV_PREMARKET_VALIDATION_MODES = {"premarket_linkage", "tv_premarket_linkage"}
+TV_PREMARKET_VALIDATION_REJECTED_REASON = "premarket_validation_not_authorized"
 TV_REAL_ACTIVE_ORDER_STATUSES = {"presubmitted", "pre_submitted", "submitted", "submitted_waiting_fill"}
 TV_REAL_FILLED_ORDER_STATUSES = {
     "executed",
@@ -574,6 +576,70 @@ def _payload_has_key(payload: dict[str, Any], *keys: str) -> bool:
     return False
 
 
+def _payload_bool(payload: dict[str, Any], *keys: str, default: bool = False) -> bool:
+    return parse_boolean(_payload_first(payload, *keys, default=default), default)
+
+
+def _validation_run_id(payload: dict[str, Any]) -> str:
+    return _text(_payload_first(payload, "validation_run_id", "run_id", "tv_validation_run_id", default=""))
+
+
+def _validation_mode(payload: dict[str, Any]) -> str:
+    return _lower(_payload_first(payload, "validation_mode", "tv_validation_mode", default=""))
+
+
+def _premarket_validation_status(
+    payload: dict[str, Any],
+    *,
+    config_value: Callable[[str, str, str], str] | None,
+    broker_mode: str,
+) -> dict[str, Any]:
+    mode = _validation_mode(payload)
+    run_id = _validation_run_id(payload)
+    requested = mode in TV_PREMARKET_VALIDATION_MODES or bool(run_id)
+    detail = {
+        "requested": requested,
+        "authorized": False,
+        "mode": mode,
+        "run_id": run_id,
+        "reason": "not_requested",
+    }
+    if not requested:
+        return detail
+    if _lower(broker_mode) != "paper":
+        detail["reason"] = "broker_mode_not_paper"
+        return detail
+    if mode not in TV_PREMARKET_VALIDATION_MODES:
+        detail["reason"] = "invalid_validation_mode"
+        return detail
+    if not _payload_bool(payload, "paper_only", "validation_paper_only", default=False):
+        detail["reason"] = "paper_only_required"
+        return detail
+    if not _config_bool(config_value, "tv_premarket_validation_enabled", False, "paper"):
+        detail["reason"] = "config_disabled"
+        return detail
+    expected_run_id = _config(config_value, "tv_premarket_validation_run_id", "", "paper")
+    if not expected_run_id or run_id != expected_run_id:
+        detail["reason"] = "run_id_mismatch"
+        detail["expected_run_id_configured"] = bool(expected_run_id)
+        return detail
+    configured_token = _config(config_value, "tv_premarket_validation_token", "", "paper")
+    supplied_token = _text(_payload_first(payload, "validation_token", "tv_validation_token", default=""))
+    if not configured_token or supplied_token != configured_token:
+        detail["reason"] = "token_mismatch"
+        detail["token_configured"] = bool(configured_token)
+        return detail
+    expires_at_ms = _int(_config(config_value, "tv_premarket_validation_expires_at_ms", "0", "paper"), 0)
+    if expires_at_ms > 0 and _epoch_ms() > expires_at_ms:
+        detail["reason"] = "expired"
+        detail["expires_at_ms"] = expires_at_ms
+        return detail
+    detail["authorized"] = True
+    detail["reason"] = "authorized"
+    detail["expires_at_ms"] = expires_at_ms
+    return detail
+
+
 def _payload_text_first(payload: dict[str, Any], *keys: str, default: Any = "") -> str:
     return _text(_payload_first(payload, *keys, default=default))
 
@@ -794,6 +860,16 @@ def _base_extra(
         "tv_snapshot": _as_object(payload.get("tv_snapshot")),
         "reason": _text(payload.get("reason") or extra.get("reason")),
     }
+    for key in (
+        "validation_mode",
+        "validation_run_id",
+        "paper_only",
+        "outside_rth",
+        "premarket_validation",
+    ):
+        value = _payload_first(payload, key)
+        if value not in (None, "", []):
+            base[key] = value
     if interval:
         base["interval"] = interval
     for key in (
@@ -1260,7 +1336,12 @@ def _ensure_entry_backfill_target(
 
 
 def _entry_window_status(
-    payload: dict[str, Any], *, config_value: Callable[[str, str, str], str] | None, environment: str) -> tuple[bool, str]:
+    payload: dict[str, Any],
+    *,
+    config_value: Callable[[str, str, str], str] | None,
+    environment: str,
+    validation_status: dict[str, Any] | None = None,
+) -> tuple[bool, str]:
     if not _config_bool(config_value, "tv_entry_window_enforce_enabled", True, environment):
         return True, "disabled"
     current = _event_time_hhmm(payload)
@@ -1268,6 +1349,11 @@ def _entry_window_status(
     primary_end = _parse_hhmm(_config(config_value, "tv_entry_primary_end", "11:30", environment), "11:30")
     quality_end = _parse_hhmm(_config(config_value, "tv_entry_quality_end", "14:30", environment), "14:30")
     if current < primary_start:
+        validation = validation_status or {}
+        if validation.get("authorized"):
+            return True, "premarket_validation"
+        if validation.get("requested"):
+            return False, TV_PREMARKET_VALIDATION_REJECTED_REASON
         return False, "outside_tv_entry_window"
     if current <= primary_end:
         return True, "primary"
@@ -1330,20 +1416,29 @@ def _route_entry(
             "mtf_block_reason": _mtf_block_reason(payload),
         }, 200
 
-    window_ok, window = _entry_window_status(payload, config_value=config_value, environment=broker_mode)
+    validation_status = _premarket_validation_status(payload, config_value=config_value, broker_mode=broker_mode)
+    window_ok, window = _entry_window_status(
+        payload,
+        config_value=config_value,
+        environment=broker_mode,
+        validation_status=validation_status,
+    )
     if not window_ok:
         raise TvPrimaryError(window, 200)
+    validation_authorized = bool(validation_status.get("authorized"))
 
     date = _market_date(payload)
     target = _load_target(pb, symbol=symbol, date=date, environment=environment, escape_filter=escape_filter)
     authorized_symbols, authorized_source = _authorized_symbol_universe(pb, config_value=config_value, environment=environment)
     requires_authorized_symbol = _config_bool(config_value, "tv_entry_requires_authorized_symbol", True, environment)
     authorized_symbol = symbol in authorized_symbols if authorized_symbols else None
-    if requires_authorized_symbol and authorized_symbols and not authorized_symbol:
+    if not validation_authorized and requires_authorized_symbol and authorized_symbols and not authorized_symbol:
         raise TvPrimaryError("symbol_not_authorized_for_tv_entry", 200)
     has_same_day_tv_target = _is_same_day_tv_pre_alert_target(target)
     admission_reason = ""
-    if has_same_day_tv_target:
+    if validation_authorized:
+        admission_reason = "premarket_validation"
+    elif has_same_day_tv_target:
         admission_reason = "same_day_tv_pre_alert_target"
     elif requires_authorized_symbol and authorized_symbol:
         admission_reason = "authorized_symbol"
@@ -1382,20 +1477,25 @@ def _route_entry(
 
     signal_id = _text(payload.get("signal_id")) or event_id
     trade_group_id = _trade_group_id(payload, default=signal_id)
-    target_backfill = _ensure_entry_backfill_target(
-        pb,
-        payload,
-        event_id=event_id,
-        signal_id=signal_id,
-        direction=direction,
-        environment=environment,
-        escape_filter=escape_filter,
-        existing_target=target,
+    target_backfill = (
+        {"action": "skipped", "reason": "premarket_validation"}
+        if validation_authorized
+        else _ensure_entry_backfill_target(
+            pb,
+            payload,
+            event_id=event_id,
+            signal_id=signal_id,
+            direction=direction,
+            environment=environment,
+            escape_filter=escape_filter,
+            existing_target=target,
+        )
     )
     if isinstance(target_backfill.get("target"), dict):
         target = dict(target_backfill["target"])
         target_extra = _as_object(target.get("extra"))
     target_backfill_meta = {key: value for key, value in target_backfill.items() if key != "target"}
+    outside_rth = validation_authorized and _payload_bool(payload, "outside_rth", "outsideRth", default=True)
     extra = {
         **_base_extra(payload, event_id, event_type),
         "execution_window": window,
@@ -1413,6 +1513,9 @@ def _route_entry(
         "bracket_group": trade_group_id,
         "entry_order_linkage_policy": "tv_signal_id_trade_group",
         "take_profit": take_profit,
+        "premarket_validation": validation_authorized,
+        "premarket_validation_status": validation_status,
+        "outside_rth": bool(outside_rth),
         **_runner_fields(payload, take_profit=take_profit, event_type=event_type),
     }
     signal_payload = {
@@ -1431,6 +1534,7 @@ def _route_entry(
         "entry": entry_price,
         "stop_loss": stop_loss,
         "take_profit": take_profit,
+        "outside_rth": bool(outside_rth),
         "shares": _shares(payload),
         "date": _market_date(payload),
         "us_time": _text(payload.get("us_time")),
@@ -1995,24 +2099,38 @@ def _route_persisted_tv_event(
         if event_type == "heartbeat":
             route_payload, status_code = {"ok": True, "target": TV_EVENT_COLLECTION, "id": _text(event.get("id")), "event_type": event_type}, 200
         elif event_type == "pre_alert":
-            target = _upsert_target(
-                pb,
-                data,
-                event_id=event_id,
-                event_type=event_type,
-                environment=environment,
-                config_value=config_value,
-                escape_filter=escape_filter_string,
-            )
-            route_payload, status_code = {
-                "ok": True,
-                "target": "ibkr_targets",
-                "id": _text(target.get("id")),
-                "status": _text(target.get("status")),
-                "watchlist_sync": target.get("watchlist_sync") if isinstance(target.get("watchlist_sync"), dict) else {},
-                "event_type": event_type,
-                "event_id": event_id,
-            }, 200
+            validation_status = _premarket_validation_status(data, config_value=config_value, broker_mode=broker_mode)
+            if validation_status.get("authorized"):
+                route_payload, status_code = {
+                    "ok": True,
+                    "target": TV_EVENT_COLLECTION,
+                    "id": _text(event.get("id")),
+                    "status": "validation_pre_alert_received",
+                    "watchlist_sync": {"action": "skipped", "reason": "premarket_validation"},
+                    "event_type": event_type,
+                    "event_id": event_id,
+                    "premarket_validation": True,
+                    "premarket_validation_status": validation_status,
+                }, 200
+            else:
+                target = _upsert_target(
+                    pb,
+                    data,
+                    event_id=event_id,
+                    event_type=event_type,
+                    environment=environment,
+                    config_value=config_value,
+                    escape_filter=escape_filter_string,
+                )
+                route_payload, status_code = {
+                    "ok": True,
+                    "target": "ibkr_targets",
+                    "id": _text(target.get("id")),
+                    "status": _text(target.get("status")),
+                    "watchlist_sync": target.get("watchlist_sync") if isinstance(target.get("watchlist_sync"), dict) else {},
+                    "event_type": event_type,
+                    "event_id": event_id,
+                }, 200
         elif event_type == "entry":
             route_payload, status_code = _route_entry(
                 pb,
@@ -2044,6 +2162,7 @@ def _route_persisted_tv_event(
         event_status = "routed" if status_code < 400 and route_payload.get("ok") else "failed"
         if route_payload.get("error") or route_payload.get("reason") in {
             "outside_tv_entry_window",
+            TV_PREMARKET_VALIDATION_REJECTED_REASON,
             "no_new_entry_after",
             "target_not_active_by_activity_rank",
             "symbol_not_authorized_for_tv_entry",

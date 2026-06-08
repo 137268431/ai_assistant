@@ -4112,6 +4112,7 @@ class BrokerAdapter:
         entry_adaptive_priority: str = "",
         metric_environment: str = "",
         confirmation_mode: str = "",
+        outside_rth: bool = False,
     ) -> dict:
         contract_info = self.resolve_contract(symbol=symbol, conid=conid)
         if not contract_info:
@@ -4149,6 +4150,10 @@ class BrokerAdapter:
         normalized_entry_price = self._normalize_order_price(entry_price)
         normalized_tp_price = self._normalize_order_price(take_profit_price)
         normalized_sl_price = self._normalize_order_price(stop_loss_price)
+        if isinstance(outside_rth, str):
+            outside_rth_enabled = outside_rth.strip().lower() in {"1", "true", "yes", "y", "on"}
+        else:
+            outside_rth_enabled = bool(outside_rth)
         price_normalization = self._price_normalization_details(
             entry_price=entry_price,
             take_profit_price=take_profit_price,
@@ -4166,6 +4171,7 @@ class BrokerAdapter:
             entry.account = account_id
         entry.transmit = False
         self._clear_legacy_order_flags(entry)
+        entry.outsideRth = outside_rth_enabled
         if entry.orderType == "LMT":
             entry.lmtPrice = float(normalized_entry_price)
         algo_strategy = str(entry_algo_strategy or "").strip()
@@ -4190,6 +4196,7 @@ class BrokerAdapter:
             tp.ocaType = 1
         tp.transmit = False
         self._clear_legacy_order_flags(tp)
+        tp.outsideRth = outside_rth_enabled
 
         sl = Order()
         sl.orderId = int(order_ids[2])
@@ -4207,6 +4214,7 @@ class BrokerAdapter:
             sl.ocaType = 1
         sl.transmit = True
         self._clear_legacy_order_flags(sl)
+        sl.outsideRth = outside_rth_enabled
 
         try:
             with self._gateway_write_lock("place_bracket_order", environment=metric_environment):
@@ -4233,6 +4241,7 @@ class BrokerAdapter:
                 "entry_price": normalized_entry_price if entry.orderType == "LMT" else float(entry_price or 0.0),
                 "take_profit_price": normalized_tp_price,
                 "stop_loss_price": normalized_sl_price,
+                "outside_rth": outside_rth_enabled,
                 "price_normalization": price_normalization,
                 "entry_algo_strategy": algo_strategy,
                 "entry_adaptive_priority": adaptive_priority if algo_strategy.lower() == "adaptive" else "",
@@ -4262,6 +4271,7 @@ class BrokerAdapter:
                 "entry_price": normalized_entry_price if entry.orderType == "LMT" else float(entry_price or 0.0),
                 "take_profit_price": normalized_tp_price,
                 "stop_loss_price": normalized_sl_price,
+                "outside_rth": outside_rth_enabled,
                 "price_normalization": price_normalization,
                 "submission": {
                     "ok": True,
@@ -4334,6 +4344,7 @@ class BrokerAdapter:
                     "entry_price": normalized_entry_price if entry.orderType == "LMT" else float(entry_price or 0.0),
                     "take_profit_price": normalized_tp_price,
                     "stop_loss_price": normalized_sl_price,
+                    "outside_rth": outside_rth_enabled,
                     "price_normalization": price_normalization,
                     "entry_algo_strategy": algo_strategy,
                     "entry_adaptive_priority": adaptive_priority if algo_strategy.lower() == "adaptive" else "",
@@ -4361,6 +4372,7 @@ class BrokerAdapter:
                 "entry_price": normalized_entry_price if entry.orderType == "LMT" else float(entry_price or 0.0),
                 "take_profit_price": normalized_tp_price,
                 "stop_loss_price": normalized_sl_price,
+                "outside_rth": outside_rth_enabled,
                 "price_normalization": price_normalization,
                 "entry_algo_strategy": algo_strategy,
                 "entry_adaptive_priority": adaptive_priority if algo_strategy.lower() == "adaptive" else "",
@@ -4382,6 +4394,7 @@ class BrokerAdapter:
             "entry_price": normalized_entry_price if entry.orderType == "LMT" else float(entry_price or 0.0),
             "take_profit_price": normalized_tp_price,
             "stop_loss_price": normalized_sl_price,
+            "outside_rth": outside_rth_enabled,
             "price_normalization": price_normalization,
             "submission": submission_result,
             "protection_complete": True,

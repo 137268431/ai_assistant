@@ -79,6 +79,18 @@ class OrderPlacer:
         return {}
 
     @staticmethod
+    def _coerce_bool(value: Any, default: bool = False) -> bool:
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if text in {"1", "true", "yes", "y", "on"}:
+                return True
+            if text in {"0", "false", "no", "n", "off"}:
+                return False
+        if value in (None, ""):
+            return bool(default)
+        return bool(value)
+
+    @staticmethod
     def _escape_filter_value(value: Any) -> str:
         return str(value or "").replace("\\", "\\\\").replace('"', '\\"')
 
@@ -606,10 +618,16 @@ class OrderPlacer:
         entry_adaptive_priority: str = "",
         buying_power_pre_reservation: Dict[str, Any] | None = None,
         confirmation_mode: str = "",
+        outside_rth: bool = False,
     ) -> Dict[str, Any]:
         started = time.perf_counter()
         acct_id = self.get_active_account_id(use_paper)
         order_extra_payload = dict(order_extra or {})
+        resolved_outside_rth = self._coerce_bool(
+            outside_rth if outside_rth not in (None, "") else order_extra_payload.get("outside_rth"),
+            False,
+        )
+        order_extra_payload["outside_rth"] = bool(resolved_outside_rth)
         resolved_trade_group_id = self._resolve_origin_trade_group_id(
             trade_group_id=str(trade_group_id or bracket_group or "").strip(),
             signal_id=signal_id,
@@ -651,6 +669,7 @@ class OrderPlacer:
             "entry_algo_strategy": str(entry_algo_strategy or ""),
             "entry_adaptive_priority": str(entry_adaptive_priority or ""),
             "confirmation_mode": str(confirmation_mode or ""),
+            "outside_rth": bool(resolved_outside_rth),
         }
         if getattr(self.broker, "uses_internal_gateway_write_lock", False):
             broker_kwargs["metric_environment"] = self.environment
@@ -771,6 +790,7 @@ class OrderPlacer:
             "entry_algo_strategy": str(result.get("entry_algo_strategy") or entry_algo_strategy or ""),
             "entry_adaptive_priority": str(result.get("entry_adaptive_priority") or entry_adaptive_priority or ""),
             "confirmation_mode": str(result.get("confirmation_mode") or confirmation_mode or ""),
+            "outside_rth": bool(result.get("outside_rth", resolved_outside_rth)),
             "pending_confirmation": bool(result.get("pending_confirmation") or protection_confirmation_pending),
             "raw_response": result.get("raw"),
         }
@@ -800,6 +820,7 @@ class OrderPlacer:
         settings: Dict[str, Any] | None = None,
         entry_order_type: str = "LMT",
         buying_power_guard: Dict[str, Any] | None = None,
+        outside_rth: bool = False,
     ) -> Dict[str, Any]:
         from ibkr_compute.core.intraday_harvest import (
             INTRADAY_VOLATILITY_HARVEST_PROFILE,
@@ -851,6 +872,7 @@ class OrderPlacer:
             bracket_group=bracket_group,
             order_family_type="partial_harvest_bracket" if partial_harvest else "bracket_oco",
             buying_power_guard=buying_power_guard,
+            outside_rth=outside_rth,
         )
         result["harvest_split"] = False
         result["partial_harvest"] = partial_harvest
