@@ -114,6 +114,77 @@ class GatewayFillChainProbeTest(unittest.TestCase):
         self.assertEqual(98.98, short_tp)
         self.assertEqual(102.01, short_sl)
 
+    def test_order_price_is_not_used_as_actual_avg_fill(self):
+        row = {
+            "order_id": "101",
+            "symbol": "AAPL",
+            "status": "Filled",
+            "filled": 1,
+            "price": 100.25,
+        }
+
+        self.assertEqual(0.0, probe._avg_fill_price_from_order(row))
+
+    def test_cleanup_close_payload_uses_marketable_limit_and_waits_for_fill(self):
+        args = Namespace(
+            cleanup_fill_timeout_sec=15.0,
+            outside_rth=True,
+            tif="DAY",
+        )
+        plan = _plan()
+        snapshot = {
+            "positions": [
+                {
+                    "symbol": "AAPL",
+                    "quantity": 1,
+                    "conid": 265598,
+                    "avg_cost": 100.0,
+                    "market_price": 100.5,
+                }
+            ]
+        }
+
+        payload = probe.build_marketable_limit_close_payload(
+            args,
+            plan,
+            snapshot=snapshot,
+            place_response={"result": {"order_ids": ["101", "102", "103"]}},
+            close_context={"limit_price": 99.95},
+            reason="post_modify_flatten",
+        )
+
+        self.assertEqual("marketable_limit", payload["order_type"])
+        self.assertEqual(99.95, payload["limit_price"])
+        self.assertTrue(payload["wait_for_fill"])
+        self.assertEqual(15.0, payload["fill_timeout"])
+        self.assertTrue(payload["outside_rth"])
+        self.assertEqual("DAY", payload["tif"])
+        self.assertEqual("GRP_AAPL_PROBE", payload["trade_group_id"])
+
+    def test_cleanup_limit_context_uses_bid_for_long_and_ask_for_short(self):
+        args = Namespace(
+            max_quote_age_sec=10.0,
+            cleanup_buffer_pct=0.10,
+        )
+        long_plan = _plan(direction="long")
+        short_plan = _plan(symbol="TSLA", direction="short")
+
+        with mock.patch.object(
+            probe,
+            "fetch_quotes",
+            side_effect=[
+                {"AAPL": {"symbol": "AAPL", "bid": 99.9, "ask": 100.1, "quote_age_s": 0.0, "quote_fallback": False}},
+                {"TSLA": {"symbol": "TSLA", "bid": 199.8, "ask": 200.0, "quote_age_s": 0.0, "quote_fallback": False}},
+            ],
+        ):
+            long_context = probe.build_close_limit_context(args, long_plan)
+            short_context = probe.build_close_limit_context(args, short_plan)
+
+        self.assertEqual("bid", long_context["reference_source"])
+        self.assertEqual(99.80, long_context["limit_price"])
+        self.assertEqual("ask", short_context["reference_source"])
+        self.assertEqual(200.20, short_context["limit_price"])
+
     def test_modify_payload_uses_actual_fill_repriced_tp_sl(self):
         class _Client:
             posts = []

@@ -1267,6 +1267,8 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
                 quantity=7,
                 order_type="marketable_limit",
                 limit_price=101.25,
+                outside_rth=True,
+                tif="DAY",
             )
         finally:
             ib_gateway.Order = original_order
@@ -1277,8 +1279,12 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
         self.assertEqual("BUY", close_order.action)
         self.assertEqual("LMT", close_order.orderType)
         self.assertEqual(101.25, close_order.lmtPrice)
+        self.assertTrue(close_order.outsideRth)
+        self.assertEqual("DAY", close_order.tif)
         self.assertEqual("LMT", result["order_type"])
         self.assertEqual(101.25, result["limit_price"])
+        self.assertTrue(result["outside_rth"])
+        self.assertEqual("DAY", result["tif"])
 
     def test_place_market_close_normalizes_marketable_limit_price(self):
         adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)

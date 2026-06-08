@@ -267,6 +267,18 @@ def fetch_storage_quote_snapshots(
 
 def merge_quote_with_storage(existing: dict[str, Any] | None, snapshot: dict[str, Any]) -> dict[str, Any]:
     item = dict(existing or {})
+    had_live_quote = (
+        item.get("quote_fallback") is False
+        or item.get("snapshot_ok") is True
+        or (
+            item.get("quote_fallback") is not True
+            and (
+                _coerce_float(item.get("bid")) is not None
+                or _coerce_float(item.get("ask")) is not None
+                or (_coerce_float(item.get("last_price")) is not None and item.get("quote_age_s") is not None)
+            )
+        )
+    )
     if not item.get("symbol"):
         item["symbol"] = str(snapshot.get("symbol") or "").strip().upper()
     if not item.get("conid") and snapshot.get("conid"):
@@ -280,7 +292,7 @@ def merge_quote_with_storage(existing: dict[str, Any] | None, snapshot: dict[str
     item.setdefault("volume", None)
     item.setdefault("quote_age_s", None)
     item.setdefault("last_update", snapshot.get("updated") or "")
-    item["quote_fallback"] = True
+    item["quote_fallback"] = not had_live_quote
     item["fallback_source"] = snapshot.get("source") or "storage"
     item["last_price_source"] = item.get("last_price_source") or (snapshot.get("source") if snapshot.get("last_price") is not None else "missing")
     item["day_change_pct_source"] = item.get("day_change_pct_source") or snapshot.get("day_change_pct_source") or snapshot.get("source") or "storage"

@@ -1,4 +1,10 @@
 import unittest
+import sys
+from pathlib import Path
+
+SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 from ibkr_compute.api.account.action_builders import positions as positions_mod
 
@@ -143,6 +149,35 @@ class ClosePositionActionTest(unittest.TestCase):
             ["102", "103"],
             payload["result"]["protection_cancel"]["cancelled_order_ids"],
         )
+
+    def test_close_position_passes_marketable_limit_controls(self):
+        service = FakeService(orders=[])
+
+        payload, status_code = positions_mod._build_ibkr_close_position_response(
+            service,
+            {
+                "symbol": "NVDA",
+                "conid": 123,
+                "quantity": 3,
+                "direction": "long",
+                "order_type": "marketable_limit",
+                "limit_price": 500.12,
+                "wait_for_fill": True,
+                "fill_timeout": 17,
+                "outside_rth": True,
+                "tif": "DAY",
+            },
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        call = service.order_placer.calls[0]
+        self.assertEqual("marketable_limit", call["order_type"])
+        self.assertEqual(500.12, call["limit_price"])
+        self.assertTrue(call["wait_for_fill"])
+        self.assertEqual(17.0, call["fill_timeout"])
+        self.assertTrue(call["outside_rth"])
+        self.assertEqual("DAY", call["tif"])
 
     def test_market_close_uses_explicit_protection_order_ids(self):
         service = FakeService(orders=[])

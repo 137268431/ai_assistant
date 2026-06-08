@@ -1722,7 +1722,9 @@ class _IBGatewayApp(EWrapper, EClient):
                 self.reqMarketDataType(1)
             except Exception:
                 logger.debug("reqMarketDataType(1) failed before snapshot conid=%s", normalized_conid, exc_info=True)
-            self.reqMktData(req_id, contract, "233", True, False, [])
+            # IB rejects snapshot requests that include generic tick lists; bid/ask/last
+            # snapshots do not need generic ticks.
+            self.reqMktData(req_id, contract, "", True, False, [])
 
             while True:
                 now_ts = time.time()
@@ -4413,6 +4415,8 @@ class BrokerAdapter:
         order_ref: str = "",
         order_type: str = "MKT",
         limit_price: float = 0.0,
+        outside_rth: bool = False,
+        tif: str = "DAY",
         wait_for_fill: bool = False,
         fill_timeout: float = 5.0,
         metric_environment: str = "",
@@ -4430,6 +4434,10 @@ class BrokerAdapter:
         wants_limit = normalized_order_type in {"LMT", "LIMIT", "MARKETABLE_LIMIT"}
         normalized_limit_price = self._normalize_order_price(limit_price) if wants_limit else 0.0
         price_normalization = self._price_normalization_details(limit_price=limit_price) if wants_limit else {}
+        if isinstance(outside_rth, str):
+            outside_rth_enabled = outside_rth.strip().lower() in {"1", "true", "yes", "y", "on"}
+        else:
+            outside_rth_enabled = bool(outside_rth)
         if wants_limit and normalized_limit_price <= 0:
             return {
                 "ok": False,
@@ -4443,7 +4451,8 @@ class BrokerAdapter:
         if use_limit:
             order.lmtPrice = float(normalized_limit_price)
         order.totalQuantity = float(quantity)
-        order.tif = "DAY"
+        order.tif = str(tif or "DAY").strip().upper() or "DAY"
+        order.outsideRth = outside_rth_enabled
         order_ref = str(order_ref or "").strip()
         order.orderRef = order_ref or f"close_{contract.symbol}_{datetime.now(ET).strftime('%Y%m%d_%H%M%S')}"
         account_id = str(account_id or "").strip()
@@ -4482,6 +4491,8 @@ class BrokerAdapter:
             "entry_coid": order.orderRef,
             "order_type": order.orderType,
             "limit_price": float(normalized_limit_price) if use_limit else 0.0,
+            "outside_rth": outside_rth_enabled,
+            "tif": order.tif,
             "price_normalization": price_normalization,
         }
         if wait_for_fill:

@@ -231,7 +231,9 @@ def fetch_quotes(args: argparse.Namespace, symbols: list[str]) -> dict[str, dict
             "symbols": ",".join(symbols),
             "environment": "paper",
             "broker_mode": "paper",
-            "market_data_mode": "paper",
+            "market_data_mode": safe_text(getattr(args, "market_data_mode", "")) or "live",
+            "snapshot": "1" if bool(getattr(args, "quote_snapshot", True)) else "",
+            "snapshot_timeout": float(getattr(args, "quote_snapshot_timeout_sec", 3.0) or 3.0),
         },
     )
     if int(payload.get("_http_status") or 0) >= 400 or payload.get("ok") is False:
@@ -278,7 +280,7 @@ def fetch_latest_reference_context(args: argparse.Namespace, symbol: str) -> dic
     rows = fee_probe.run_remote_sql(
         args,
         f"""
-        select symbol, close, conid, conidEx, environment, interval, us_time, bar_time_ms
+        select symbol, close, environment, interval, us_time, bar_time_ms, extra
         from ibkr_bars
         where symbol = {safe_symbol}
           and close > 0
@@ -293,6 +295,16 @@ def fetch_latest_reference_context(args: argparse.Namespace, symbol: str) -> dic
     close = safe_float(row.get("close"), 0.0)
     if close <= 0:
         raise FillChainProbeError(f"reference_price_invalid:{compact_json(row)[:500]}")
+    extra = row.get("extra")
+    if isinstance(extra, str) and extra.strip().startswith("{"):
+        try:
+            extra = json.loads(extra)
+        except Exception:
+            extra = {}
+    if isinstance(extra, dict):
+        for key in ("conid", "conidEx"):
+            if row.get(key) in (None, "") and extra.get(key) not in (None, ""):
+                row[key] = extra.get(key)
     row.setdefault("source", "ibkr_bars_close")
     return row
 
@@ -403,7 +415,7 @@ def resolve_price_context(args: argparse.Namespace, symbol: str) -> PriceContext
         reference = {"source": "unavailable", "error": str(exc)}
     if quote_error:
         reference.setdefault("quote_error", quote_error)
-    return build_price_context(
+    price = build_price_context(
         symbol=symbol,
         direction=args.direction,
         quote=quote,
@@ -412,6 +424,21 @@ def resolve_price_context(args: argparse.Namespace, symbol: str) -> PriceContext
         tp_pct=float(args.tp_pct),
         sl_pct=float(args.sl_pct),
     )
+    max_age = float(getattr(args, "max_quote_age_sec", 0.0) or 0.0)
+    quote_age = safe_float((price.raw_quote or {}).get("quote_age_s"), -1.0)
+    quote_fallback = bool((price.raw_quote or {}).get("quote_fallback"))
+    fresh_age = quote_age < 0 or max_age <= 0 or quote_age <= max_age
+    has_bid_ask = price.bid > 0 and price.ask > 0 and price.ask >= price.bid
+    if (
+        not bool(getattr(args, "dry_run", True))
+        and not bool(getattr(args, "allow_reference_fallback", False))
+        and (price.fallback_without_bid_ask or quote_fallback or not has_bid_ask or not fresh_age)
+    ):
+        raise FillChainProbeError(
+            "fresh_bid_ask_required_for_execute:"
+            f"symbol={symbol}:bid={price.bid}:ask={price.ask}:quote_age_s={quote_age}:quote_fallback={quote_fallback}"
+        )
+    return price
 
 
 def quantity_for_target(entry_price: float, *, quantity: int, target_notional: float) -> tuple[int, float]:
@@ -647,7 +674,6 @@ def _avg_fill_price_from_order(row: dict[str, Any]) -> float:
         "avg_price",
         "avgPrice",
         "averagePrice",
-        "price",
     )
 
 
@@ -1080,22 +1106,165 @@ def cleanup_symbol(
     client = fee_probe.ApiClient(args.api_base_url, timeout=float(args.http_timeout_sec))
     snapshot_client, snapshot_path = account_snapshot_client(args, timeout_sec=float(args.http_timeout_sec))
     snapshot_fn = lambda: fee_probe.get_account_snapshot(snapshot_client, snapshot_path)
+    cleanup: dict[str, Any] = {
+        "attempted": True,
+        "reason": reason,
+        "close_order_type": "marketable_limit",
+        "flat": False,
+        "close": {},
+        "cancel_results": [],
+    }
     try:
-        result = fee_probe.cleanup_symbol(
-            client,
-            plan.symbol,
-            plan.direction,
-            plan.quantity,
-            place_response,
-            snapshot_fn=snapshot_fn,
-            timeout_s=float(args.cleanup_timeout_sec),
-            interval_s=float(args.poll_interval_sec),
-        )
+        snapshot = snapshot_fn()
+        if fee_probe.has_nonzero_position(snapshot, plan.symbol):
+            close_context = build_close_limit_context(args, plan)
+            close_payload = build_marketable_limit_close_payload(
+                args,
+                plan,
+                snapshot=snapshot,
+                place_response=place_response,
+                close_context=close_context,
+                reason=reason,
+            )
+            cleanup["close_limit_context"] = close_context
+            cleanup["close_payload"] = close_payload
+            cleanup["close"] = client.post("/api/custom/ibkr/positions/close", close_payload, fee_probe.action_params())
+            try:
+                cleanup["final_snapshot"] = fee_probe.wait_for(
+                    f"{plan.symbol}_flat_cleanup",
+                    snapshot_fn,
+                    lambda value: fee_probe.is_flat_for_symbol(value, plan.symbol),
+                    timeout_s=float(args.cleanup_timeout_sec),
+                    interval_s=float(args.poll_interval_sec),
+                )
+            except fee_probe.ProbeError:
+                cleanup["final_snapshot"] = snapshot_fn()
+        else:
+            cleanup["close"] = {"skipped": True, "reason": "already_flat"}
+            cleanup["final_snapshot"] = snapshot
+
+        cleanup["flat"] = fee_probe.is_flat_for_symbol(cleanup.get("final_snapshot") or {}, plan.symbol)
+        if cleanup["flat"]:
+            cleanup["cancel_results"] = fee_probe.cancel_residual_orders(client, cleanup.get("final_snapshot") or {}, plan.symbol)
+            if cleanup["cancel_results"]:
+                try:
+                    cleanup["final_snapshot"] = fee_probe.wait_for(
+                        f"{plan.symbol}_flat_after_residual_cancel",
+                        snapshot_fn,
+                        lambda value: fee_probe.is_flat_for_symbol(value, plan.symbol),
+                        timeout_s=float(args.cleanup_timeout_sec),
+                        interval_s=float(args.poll_interval_sec),
+                    )
+                except fee_probe.ProbeError:
+                    cleanup["final_snapshot"] = snapshot_fn()
+                cleanup["flat"] = fee_probe.is_flat_for_symbol(cleanup.get("final_snapshot") or {}, plan.symbol)
+        else:
+            close_order_ids = fee_probe.extract_order_ids(cleanup.get("close") or {})
+            cleanup["close_cancel_results"] = cancel_order_ids(client, close_order_ids)
+            cleanup["residual_cancel_skipped"] = "position_not_flat_keep_existing_protection"
+        return cleanup
     except Exception as exc:
-        result = {"attempted": True, "flat": False, "error": str(exc)}
-    result["reason"] = reason
-    result["elapsed_s"] = round(time.perf_counter() - started, 3)
-    return result
+        cleanup["error"] = str(exc)
+        try:
+            cleanup["final_snapshot"] = snapshot_fn()
+            cleanup["flat"] = fee_probe.is_flat_for_symbol(cleanup["final_snapshot"], plan.symbol)
+        except Exception:
+            pass
+        return cleanup
+    finally:
+        cleanup["elapsed_s"] = round(time.perf_counter() - started, 3)
+
+
+def build_close_limit_context(args: argparse.Namespace, plan: FillChainPlan) -> dict[str, Any]:
+    quotes = fetch_quotes(args, [plan.symbol])
+    quote = dict(quotes.get(plan.symbol) or {})
+    bid = quote_price(quote, "bid", "bid_price", "84")
+    ask = quote_price(quote, "ask", "ask_price", "86")
+    max_age = float(getattr(args, "max_quote_age_sec", 0.0) or 0.0)
+    quote_age = safe_float(quote.get("quote_age_s"), -1.0)
+    quote_fallback = bool(quote.get("quote_fallback"))
+    fresh_age = quote_age < 0 or max_age <= 0 or quote_age <= max_age
+    buffer_ratio = pct_to_ratio(getattr(args, "cleanup_buffer_pct", getattr(args, "entry_buffer_pct", 0.05)))
+    direction = normalize_direction(plan.direction)
+    if direction == "long" and bid > 0:
+        reference = bid
+        reference_source = "bid"
+        limit_price = round_price(bid * (1.0 - buffer_ratio))
+    elif direction == "short" and ask > 0:
+        reference = ask
+        reference_source = "ask"
+        limit_price = round_price(ask * (1.0 + buffer_ratio))
+    else:
+        raise FillChainProbeError(
+            f"cleanup_fresh_bid_ask_required:{plan.symbol}:bid={bid}:ask={ask}:quote_fallback={quote_fallback}"
+        )
+    has_bid_ask = bid > 0 and ask > 0 and ask >= bid
+    if quote_fallback or not has_bid_ask or not fresh_age:
+        raise FillChainProbeError(
+            "cleanup_fresh_bid_ask_required:"
+            f"{plan.symbol}:bid={bid}:ask={ask}:quote_age_s={quote_age}:quote_fallback={quote_fallback}"
+        )
+    return {
+        "symbol": plan.symbol,
+        "direction": direction,
+        "bid": round_price(bid),
+        "ask": round_price(ask),
+        "quote_age_s": quote_age,
+        "quote_fallback": quote_fallback,
+        "reference_price": round_price(reference),
+        "reference_source": reference_source,
+        "buffer_pct": float(getattr(args, "cleanup_buffer_pct", getattr(args, "entry_buffer_pct", 0.05)) or 0.0),
+        "limit_price": limit_price,
+        "quote": quote,
+    }
+
+
+def build_marketable_limit_close_payload(
+    args: argparse.Namespace,
+    plan: FillChainPlan,
+    *,
+    snapshot: dict[str, Any],
+    place_response: dict[str, Any],
+    close_context: dict[str, Any],
+    reason: str,
+) -> dict[str, Any]:
+    payload = fee_probe.close_payload_from_snapshot(
+        snapshot,
+        symbol=plan.symbol,
+        direction=plan.direction,
+        quantity=plan.quantity,
+        place_result=place_response,
+    )
+    payload.update(
+        {
+            "source": "gateway_fill_chain_probe_cleanup",
+            "close_reason": f"gateway_fill_chain_probe_{reason}",
+            "close_reason_human": "Gateway fill-chain probe cleanup",
+            "order_type": "marketable_limit",
+            "limit_price": float(close_context["limit_price"]),
+            "wait_for_fill": True,
+            "fill_timeout": float(getattr(args, "cleanup_fill_timeout_sec", 20.0) or 20.0),
+            "outside_rth": bool(getattr(args, "outside_rth", True)),
+            "outsideRth": bool(getattr(args, "outside_rth", True)),
+            "tif": safe_text(getattr(args, "tif", "DAY")).upper() or "DAY",
+            "trade_group_id": plan.ids.trade_group_id,
+            "signal_id": plan.ids.signal_id,
+            "entry_order_unique_id": plan.ids.client_order_id,
+        }
+    )
+    return payload
+
+
+def cancel_order_ids(client: fee_probe.ApiClient, order_ids: list[str]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for order_id in order_ids:
+        oid = safe_text(order_id)
+        if not oid or oid in seen:
+            continue
+        seen.add(oid)
+        results.append(client.post("/api/custom/ibkr/orders/cancel", {"order_id": oid}, fee_probe.action_params()))
+    return results
 
 
 def is_flat_for_symbols(snapshot: dict[str, Any], symbols: list[str]) -> bool:
@@ -1234,10 +1403,17 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             "entry_buffer_pct": args.entry_buffer_pct,
             "tp_pct": args.tp_pct,
             "sl_pct": args.sl_pct,
+            "cleanup_buffer_pct": args.cleanup_buffer_pct,
+            "cleanup_fill_timeout_sec": args.cleanup_fill_timeout_sec,
             "timeout_sec": args.timeout_sec,
             "poll_interval_sec": args.poll_interval_sec,
             "api_base_url": args.api_base_url,
             "account_base_url": args.account_base_url,
+            "market_data_mode": args.market_data_mode,
+            "quote_snapshot": args.quote_snapshot,
+            "quote_snapshot_timeout_sec": args.quote_snapshot_timeout_sec,
+            "max_quote_age_sec": args.max_quote_age_sec,
+            "allow_reference_fallback": args.allow_reference_fallback,
             "outside_rth": args.outside_rth,
             "tif": args.tif,
         },
@@ -1309,7 +1485,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--entry-buffer-pct", type=float, default=0.05, help="Percent points; 0.05 means 0.05%%.")
     parser.add_argument("--tp-pct", type=float, default=1.0, help="Percent points from actual fill price.")
     parser.add_argument("--sl-pct", type=float, default=1.0, help="Percent points from actual fill price.")
+    parser.add_argument("--cleanup-buffer-pct", type=float, default=0.05, help="Percent points for cleanup marketable limit.")
+    parser.add_argument("--cleanup-fill-timeout-sec", type=float, default=20.0)
     parser.add_argument("--reference-price", type=float, default=0.0)
+    parser.add_argument("--market-data-mode", default="live")
+    parser.set_defaults(quote_snapshot=True)
+    parser.add_argument("--quote-snapshot", action="store_true", dest="quote_snapshot")
+    parser.add_argument("--no-quote-snapshot", action="store_false", dest="quote_snapshot")
+    parser.add_argument("--quote-snapshot-timeout-sec", type=float, default=3.0)
+    parser.add_argument("--max-quote-age-sec", type=float, default=10.0)
+    parser.add_argument(
+        "--allow-reference-fallback",
+        action="store_true",
+        help="Allow execute without fresh bid/ask; unsafe for fill-chain validation and disabled by default.",
+    )
     parser.add_argument("--timeout-sec", "--timeout", dest="timeout_sec", type=float, default=60.0)
     parser.add_argument("--poll-interval-sec", "--poll", dest="poll_interval_sec", type=float, default=2.0)
     parser.add_argument("--cleanup-timeout-sec", type=float, default=60.0)
@@ -1341,6 +1530,14 @@ def validate_args(args: argparse.Namespace) -> None:
         raise FillChainProbeError("entry_buffer_pct must be non-negative")
     if float(args.tp_pct or 0.0) <= 0 or float(args.sl_pct or 0.0) <= 0:
         raise FillChainProbeError("tp_pct and sl_pct must be positive")
+    if float(args.cleanup_buffer_pct or 0.0) < 0:
+        raise FillChainProbeError("cleanup_buffer_pct must be non-negative")
+    if float(args.cleanup_fill_timeout_sec or 0.0) <= 0:
+        raise FillChainProbeError("cleanup_fill_timeout_sec must be positive")
+    if float(args.quote_snapshot_timeout_sec or 0.0) <= 0:
+        raise FillChainProbeError("quote_snapshot_timeout_sec must be positive")
+    if float(args.max_quote_age_sec or 0.0) < 0:
+        raise FillChainProbeError("max_quote_age_sec must be non-negative")
     if not bool(args.dry_run) and args.confirm != CONFIRM_TEXT:
         raise FillChainProbeError(f"confirmation_required: pass --confirm {CONFIRM_TEXT}")
     args.symbols = ",".join(symbols)

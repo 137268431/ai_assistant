@@ -942,9 +942,11 @@ class OrderPlacer:
             payload["symbol"] = str(payload.get("symbol") or "").upper()
         if "direction" in payload:
             payload["direction"] = str(payload.get("direction") or "").lower()
-        for name in ("signal_id", "trade_group_id", "entry_order_unique_id", "close_reason"):
+        for name in ("signal_id", "trade_group_id", "entry_order_unique_id", "close_reason", "order_type"):
             if kwargs.get(name):
                 payload[name] = kwargs.get(name)
+        if kwargs.get("limit_price") not in (None, ""):
+            payload["limit_price"] = kwargs.get("limit_price")
         return payload
 
     def _place_market_close_unlocked(
@@ -961,6 +963,8 @@ class OrderPlacer:
         source: str = "",
         order_type: str = "MKT",
         limit_price: float = 0.0,
+        outside_rth: bool = False,
+        tif: str = "DAY",
         position_snapshot: Dict[str, Any] | None = None,
         wait_for_fill: bool = False,
         fill_timeout: float = 5.0,
@@ -998,6 +1002,8 @@ class OrderPlacer:
             "order_ref": close_order_ref,
             "order_type": order_type,
             "limit_price": limit_price,
+            "outside_rth": outside_rth,
+            "tif": tif,
             "wait_for_fill": wait_for_fill,
             "fill_timeout": fill_timeout,
         }

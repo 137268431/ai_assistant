@@ -6,6 +6,7 @@ import traceback
 from flask import jsonify
 
 from ibkr_compute.api.route_request import get_json_payload, get_query_arg_csv, get_query_arg_int, get_query_arg_text
+from ibkr_compute.api.route_request import get_query_arg_bool
 from ibkr_compute.api.route_runtime import (
     build_runtime_environment_payload,
     get_requested_environment,
@@ -30,9 +31,50 @@ def build_ibkr_quotes_response():
     requested_environment = get_requested_environment("live")
     runtime_status = get_service_status(service)
     symbols = app_mod._normalize_symbol_list(get_query_arg_csv("symbols"))
+    force_snapshot = get_query_arg_bool("snapshot", False) or get_query_arg_bool("force_snapshot", False)
+    snapshot_timeout = max(0.2, min(float(get_query_arg_text("snapshot_timeout", "3") or 3.0), 10.0))
     items = service.realtime_quote_book.get_quotes(symbols=symbols)
+    snapshot_results: dict[str, dict] = {}
     if symbols:
         by_symbol = {str(item.get("symbol") or "").strip().upper(): dict(item) for item in items if isinstance(item, dict)}
+        if force_snapshot:
+            requester = getattr(getattr(service, "ws_client", None), "request_market_data_snapshot", None)
+            if not callable(requester):
+                requester = getattr(getattr(service, "broker", None), "request_market_data_snapshot", None)
+            for symbol in symbols:
+                current = by_symbol.get(symbol) or {}
+                conid = int(current.get("conid") or current.get("conidEx") or 0)
+                if conid <= 0 and getattr(service, "conid_resolver", None) is not None:
+                    try:
+                        conid = int(service.conid_resolver.resolve(symbol) or 0)
+                    except Exception:
+                        conid = 0
+                if not callable(requester) or conid <= 0:
+                    snapshot_results[symbol] = {
+                        "ok": False,
+                        "error": "market_data_snapshot_unavailable" if not callable(requester) else "conid_unavailable",
+                    }
+                    continue
+                try:
+                    result = dict(requester(conid=conid, symbol=symbol, timeout=snapshot_timeout) or {})
+                except Exception as exc:
+                    result = {"ok": False, "error": str(exc)}
+                snapshot_results[symbol] = result
+                quote = result.get("quote") if isinstance(result.get("quote"), dict) else {}
+                if not quote and isinstance(result.get("payload"), dict):
+                    quote = result.get("payload") or {}
+                if quote:
+                    merged = {**current, **dict(quote)}
+                    merged["symbol"] = symbol
+                    merged["conid"] = int(merged.get("conid") or conid or 0)
+                    merged["quote_fallback"] = False
+                    merged["snapshot_requested"] = True
+                    merged["snapshot_ok"] = result.get("ok") is not False
+                    merged["snapshot_source"] = result.get("source") or "ibkr_market_data_snapshot"
+                    merged["snapshot_error"] = str(result.get("error") or "")
+                    if merged.get("quote_age_s") is None:
+                        merged["quote_age_s"] = 0.0
+                    by_symbol[symbol] = merged
         fallback_symbols = []
         for symbol in symbols:
             item = by_symbol.get(symbol) or {}
@@ -54,6 +96,8 @@ def build_ibkr_quotes_response():
                 by_symbol[str(symbol or "").strip().upper()] = merge_quote_with_storage(by_symbol.get(symbol), snapshot)
             if fallback_map:
                 items = [by_symbol[symbol] for symbol in symbols if symbol in by_symbol]
+        else:
+            items = [by_symbol[symbol] for symbol in symbols if symbol in by_symbol]
     return jsonify(
         {
             "ok": True,
@@ -62,6 +106,8 @@ def build_ibkr_quotes_response():
             "symbols": symbols,
             "items": items,
             "summary": (runtime_status.get("realtime_quotes") or {}),
+            "snapshot_requested": bool(force_snapshot),
+            "snapshot_results": snapshot_results if force_snapshot else {},
         }
     )
 

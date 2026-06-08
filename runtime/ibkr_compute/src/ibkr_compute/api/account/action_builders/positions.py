@@ -364,6 +364,12 @@ def _build_ibkr_close_position_response(service, payload: dict) -> tuple[dict, i
         position=position_value,
         direction=direction,
     )
+    order_type = _text(payload.get("order_type") or payload.get("close_order_type") or "MKT") or "MKT"
+    limit_price = float(_app_coerce_float(payload.get("limit_price") or payload.get("close_limit_price"), 0) or 0)
+    wait_for_fill = _truthy(payload.get("wait_for_fill"), False)
+    fill_timeout = float(_app_coerce_float(payload.get("fill_timeout") or payload.get("fill_timeout_sec"), 5.0) or 5.0)
+    outside_rth = _truthy(payload.get("outside_rth", payload.get("outsideRth")), False)
+    tif = _text(payload.get("tif")) or "DAY"
     operation_started_at = time.perf_counter()
     result = service.order_placer.place_market_close(
         conid=conid,
@@ -371,6 +377,12 @@ def _build_ibkr_close_position_response(service, payload: dict) -> tuple[dict, i
         direction=direction,
         quantity=quantity,
         use_paper=api_app._ibkr_service_uses_paper_account(service),
+        order_type=order_type,
+        limit_price=limit_price,
+        wait_for_fill=wait_for_fill,
+        fill_timeout=fill_timeout,
+        outside_rth=outside_rth,
+        tif=tif,
         trade_group_id=_text(payload.get("trade_group_id")),
         entry_order_unique_id=_text(payload.get("entry_order_unique_id")),
         signal_id=_text(payload.get("signal_id")),
