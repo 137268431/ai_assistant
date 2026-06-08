@@ -2319,12 +2319,15 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
             stop_loss_price=98.0,
             signal_id="sig-aapl-outside-rth",
             outside_rth=True,
+            tif="DAY",
         )
 
         self.assertTrue(result["ok"])
         self.assertTrue(result["outside_rth"])
+        self.assertEqual("DAY", result["tif"])
         self.assertTrue(result["order_extra"]["outside_rth"])
         self.assertTrue(broker.calls[0]["outside_rth"])
+        self.assertEqual("DAY", broker.calls[0]["tif"])
         self.assertEqual(3, len(pb_client.upserts))
         self.assertTrue(all(row["extra"]["outside_rth"] for row in pb_client.upserts))
 

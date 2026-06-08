@@ -4,10 +4,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from math import ceil
 from pathlib import Path
@@ -57,8 +58,12 @@ class OrderProbePlan:
     target_notional: float = 0.0
     requested_exposure: float = 0.0
     conid: int = 0
+    trade_group_id: str = ""
+    signal_id: str = ""
+    client_order_id: str = ""
 
     def payload(self) -> dict[str, Any]:
+        tracking = plan_tracking_ids(self)
         payload = {
             "symbol": self.symbol,
             "direction": self.direction,
@@ -67,12 +72,20 @@ class OrderProbePlan:
             "entry_price": self.entry_price,
             "take_profit_price": self.take_profit_price,
             "stop_loss_price": self.stop_loss_price,
+            "trade_group_id": tracking["trade_group_id"],
+            "bracket_group": tracking["trade_group_id"],
+            "signal_id": tracking["signal_id"],
+            "client_order_id": tracking["client_order_id"],
+            "entry_order_unique_id": tracking["client_order_id"],
+            "unique_id": tracking["client_order_id"],
+            "source": "gateway_order_probe",
         }
         if int(self.conid or 0) > 0:
             payload["conid"] = int(self.conid)
         return payload
 
     def summary(self) -> dict[str, Any]:
+        tracking = plan_tracking_ids(self)
         return {
             "symbol": self.symbol,
             "conid": int(self.conid or 0),
@@ -84,6 +97,9 @@ class OrderProbePlan:
             "stop_loss_price": self.stop_loss_price,
             "target_notional": self.target_notional,
             "requested_exposure": self.requested_exposure,
+            "trade_group_id": tracking["trade_group_id"],
+            "signal_id": tracking["signal_id"],
+            "client_order_id": tracking["client_order_id"],
         }
 
 
@@ -106,6 +122,64 @@ def split_symbols(raw: str) -> list[str]:
 
 def round_price(value: float) -> float:
     return max(0.01, round(float(value or 0.0), 2))
+
+
+def normalize_tracking_id(value: Any, fallback: str = "") -> str:
+    text = fee_probe.to_text(value).strip()
+    if not text:
+        text = fallback
+    text = re.sub(r"[^A-Za-z0-9_.:-]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("._:-")
+    if not text:
+        text = re.sub(r"[^A-Za-z0-9_.:-]+", "_", fallback or "gateway_probe")
+    return text[:120] or "gateway_probe"
+
+
+def _tracking_base(args: argparse.Namespace | None, plan: OrderProbePlan, index: int = 0) -> str:
+    run_id = normalize_tracking_id(getattr(args, "run_id", "") if args is not None else "", "GWPROBE")
+    symbol = fee_probe.normalize_symbol(plan.symbol) or "UNKNOWN"
+    direction = normalize_tracking_id(plan.direction, "long").lower()
+    return normalize_tracking_id(f"{run_id}_{index + 1:03d}_{symbol}_{direction}", f"GWPROBE_{symbol}_{index + 1:03d}")
+
+
+def tracking_ids_for_plan(args: argparse.Namespace | None, plan: OrderProbePlan, index: int = 0) -> dict[str, str]:
+    base = _tracking_base(args, plan, index)
+    trade_group_id = normalize_tracking_id(plan.trade_group_id, f"{base}_group")
+    signal_id = normalize_tracking_id(plan.signal_id, base)
+    client_order_id = normalize_tracking_id(plan.client_order_id, f"entry_{trade_group_id}")
+    return {
+        "trade_group_id": trade_group_id,
+        "signal_id": signal_id,
+        "client_order_id": client_order_id,
+    }
+
+
+def plan_tracking_ids(plan: OrderProbePlan) -> dict[str, str]:
+    return tracking_ids_for_plan(None, plan, 0)
+
+
+def ensure_plan_tracking(args: argparse.Namespace | None, plans: list[OrderProbePlan]) -> list[OrderProbePlan]:
+    tracked: list[OrderProbePlan] = []
+    for index, plan in enumerate(plans):
+        tracking = tracking_ids_for_plan(args, plan, index)
+        tracked.append(
+            replace(
+                plan,
+                trade_group_id=tracking["trade_group_id"],
+                signal_id=tracking["signal_id"],
+                client_order_id=tracking["client_order_id"],
+            )
+        )
+    return tracked
+
+
+def planned_prices(plan: OrderProbePlan) -> dict[str, float]:
+    return {
+        "reference_price": plan.reference_price,
+        "entry_price": plan.entry_price,
+        "take_profit_price": plan.take_profit_price,
+        "stop_loss_price": plan.stop_loss_price,
+    }
 
 
 def build_non_marketable_bracket(
@@ -1033,12 +1107,14 @@ def select_probe_plan(args: argparse.Namespace) -> tuple[list[OrderProbePlan], l
                 conid=conid,
             )
         )
+    selected = ensure_plan_tracking(args, selected)
     summary = {
         "requested_symbols": symbols,
         "selected_symbols": [plan.symbol for plan in selected],
         "selected_orders": len(selected),
         "target_notional_per_order": float(getattr(args, "target_notional_per_order", 0.0) or 0.0),
         "total_requested_exposure": round(sum(plan.requested_exposure for plan in selected), 4),
+        "tracking": [plan_tracking_ids(plan) | {"symbol": plan.symbol} for plan in selected],
         "excluded": excluded,
     }
     return selected, excluded, summary
@@ -1077,6 +1153,16 @@ def load_probe_plan(args: argparse.Namespace) -> tuple[list[OrderProbePlan], lis
                 requested_exposure = round(float(item.get("requested_exposure") or entry * quantity), 4)
             if conid <= 0:
                 conid = fetch_latest_conid(args, symbol)
+            extra = item.get("extra") if isinstance(item.get("extra"), dict) else {}
+            trade_group_id = item.get("trade_group_id") or item.get("bracket_group") or extra.get("trade_group_id")
+            signal_id = item.get("signal_id") or extra.get("signal_id")
+            client_order_id = (
+                item.get("client_order_id")
+                or item.get("entry_order_unique_id")
+                or item.get("unique_id")
+                or extra.get("client_order_id")
+                or extra.get("entry_order_unique_id")
+            )
             if not symbol or entry <= 0 or tp <= 0 or sl <= 0:
                 raise GatewayProbeError("invalid_plan_item_prices")
         except Exception as exc:
@@ -1094,14 +1180,19 @@ def load_probe_plan(args: argparse.Namespace) -> tuple[list[OrderProbePlan], lis
                 target_notional=target_notional,
                 requested_exposure=requested_exposure,
                 conid=conid,
+                trade_group_id=fee_probe.to_text(trade_group_id),
+                signal_id=fee_probe.to_text(signal_id),
+                client_order_id=fee_probe.to_text(client_order_id),
             )
         )
+    selected = ensure_plan_tracking(args, selected)
     summary = {
         "requested_symbols": [fee_probe.normalize_symbol(item.get("symbol")) for item in raw_plan if isinstance(item, dict)],
         "selected_symbols": [plan.symbol for plan in selected],
         "selected_orders": len(selected),
         "target_notional_per_order": float(getattr(args, "target_notional_per_order", 0.0) or (payload.get("plan_summary") or {}).get("target_notional_per_order") or 0.0),
         "total_requested_exposure": round(sum(plan.requested_exposure for plan in selected), 4),
+        "tracking": [plan_tracking_ids(plan) | {"symbol": plan.symbol} for plan in selected],
         "excluded": excluded,
         "plan_path": str(plan_path),
     }
@@ -1161,15 +1252,59 @@ def collect_stability_with_settle(args: argparse.Namespace, phase: str) -> dict[
     return result
 
 
+def submitted_unknown_result(
+    plan: OrderProbePlan,
+    *,
+    error: str,
+    elapsed_s: float | None = None,
+    timeout_s: float | None = None,
+    reason: str = "place_exception",
+) -> dict[str, Any]:
+    tracking = plan_tracking_ids(plan)
+    result: dict[str, Any] = {
+        "ok": False,
+        "symbol": plan.symbol,
+        "payload": plan.payload(),
+        "error": error or reason,
+        "order_ids": [],
+        "submitted_unknown": True,
+        "submitted_unknown_reason": reason,
+        "tracking": tracking,
+        "trade_group_id": tracking["trade_group_id"],
+        "signal_id": tracking["signal_id"],
+        "client_order_id": tracking["client_order_id"],
+        "planned_prices": planned_prices(plan),
+        "recovered_order_ids": [],
+    }
+    if elapsed_s is not None:
+        result["elapsed_s"] = round(max(0.0, float(elapsed_s or 0.0)), 3)
+    if timeout_s is not None:
+        result["timeout_s"] = round(max(0.0, float(timeout_s or 0.0)), 3)
+    return result
+
+
+def expected_bracket_order_count(_plan: OrderProbePlan | None = None) -> int:
+    return 3
+
+
 def submit_one(client: fee_probe.ApiClient, plan: OrderProbePlan, *, delay_s: float = 0.0) -> dict[str, Any]:
     if delay_s > 0:
         time.sleep(delay_s)
     started = time.perf_counter()
     request_payload = plan.payload()
     request_payload["include_snapshot"] = False
-    response = client.post("/api/custom/ibkr/orders/place", request_payload, action_params())
+    try:
+        response = client.post("/api/custom/ibkr/orders/place", request_payload, action_params())
+    except Exception as exc:
+        return submitted_unknown_result(
+            plan,
+            error=str(exc),
+            elapsed_s=time.perf_counter() - started,
+            reason="place_http_exception",
+        )
     elapsed = time.perf_counter() - started
     result = nested_result(response)
+    tracking = plan_tracking_ids(plan)
     return {
         "ok": response_action_ok(response),
         "symbol": plan.symbol,
@@ -1177,6 +1312,11 @@ def submit_one(client: fee_probe.ApiClient, plan: OrderProbePlan, *, delay_s: fl
         "response": response,
         "error": response.get("error") or result.get("error") or result.get("reason") or "",
         "order_ids": fee_probe.extract_order_ids(response),
+        "tracking": tracking,
+        "trade_group_id": tracking["trade_group_id"],
+        "signal_id": tracking["signal_id"],
+        "client_order_id": tracking["client_order_id"],
+        "planned_prices": planned_prices(plan),
         "elapsed_s": round(elapsed, 3),
     }
 
@@ -1190,6 +1330,7 @@ def submit_timeout_result(
     cancelled: bool = False,
 ) -> dict[str, Any]:
     late_payload = dict(late_result or {})
+    tracking = plan_tracking_ids(plan)
     result = {
         "ok": False,
         "symbol": plan.symbol,
@@ -1198,15 +1339,31 @@ def submit_timeout_result(
         "timed_out": True,
         "timeout_s": round(max(0.0, float(timeout_s or 0.0)), 3),
         "order_ids": list(late_payload.get("order_ids") or []),
+        "tracking": tracking,
+        "trade_group_id": tracking["trade_group_id"],
+        "signal_id": tracking["signal_id"],
+        "client_order_id": tracking["client_order_id"],
+        "planned_prices": planned_prices(plan),
+        "recovered_order_ids": list(late_payload.get("recovered_order_ids") or []),
     }
     if cancelled:
         result["cancelled_before_start"] = True
+    submitted_unknown = not cancelled and reason != "submit_timeout_before_start" and not is_expected_buying_power_block(late_payload)
+    if submitted_unknown:
+        result["submitted_unknown"] = True
+        result["submitted_unknown_reason"] = reason
     if late_payload:
         result["late_after_submit_timeout"] = True
         result["late_ok"] = bool(late_payload.get("ok"))
         result["late_error"] = late_payload.get("error") or ""
         result["late_elapsed_s"] = late_payload.get("elapsed_s")
         result["response"] = late_payload.get("response") or {}
+        if late_payload.get("submitted_unknown"):
+            result["submitted_unknown"] = True
+            result["submitted_unknown_reason"] = late_payload.get("submitted_unknown_reason") or reason
+    if result.get("submitted_unknown") and len(result.get("order_ids") or []) >= expected_bracket_order_count(plan):
+        result["submitted_unknown_recovered"] = True
+        result["submitted_unknown_recovered_source"] = "late_submit_result"
     return result
 
 
@@ -1244,7 +1401,7 @@ def submit_burst(args: argparse.Namespace, plans: list[OrderProbePlan]) -> list[
             try:
                 result = submit_one(client, plan, delay_s=0.0)
             except Exception as exc:
-                result = {"ok": False, "symbol": plan.symbol, "payload": plan.payload(), "error": str(exc), "order_ids": []}
+                result = submitted_unknown_result(plan, error=str(exc), reason="place_worker_exception")
             result["attempt"] = attempt
             attempts.append(
                 {
@@ -1270,7 +1427,7 @@ def submit_burst(args: argparse.Namespace, plans: list[OrderProbePlan]) -> list[
         try:
             result = future.result()
         except Exception as exc:
-            result = {"ok": False, "symbol": plan.symbol, "payload": plan.payload(), "error": str(exc), "order_ids": []}
+            result = submitted_unknown_result(plan, error=str(exc), reason="submit_future_exception")
         finished_at = float(result.pop("_finished_monotonic", time.monotonic()) or time.monotonic())
         if timed_out or finished_at > deadline:
             results_by_index[index] = submit_timeout_result(plan, timeout_s=effective_timeout, late_result=result)
@@ -1319,28 +1476,352 @@ def submit_burst(args: argparse.Namespace, plans: list[OrderProbePlan]) -> list[
     return [results_by_index[index] for index in range(len(plans))]
 
 
+def _append_unique(values: list[str], value: Any) -> None:
+    text = fee_probe.to_text(value)
+    if text and text not in values:
+        values.append(text)
+
+
+def _result_tracking(result: dict[str, Any], plan: OrderProbePlan | None = None) -> dict[str, str]:
+    tracking = dict(plan_tracking_ids(plan) if plan is not None else {})
+    for source in (result.get("tracking") if isinstance(result.get("tracking"), dict) else {}, result, result.get("payload") if isinstance(result.get("payload"), dict) else {}):
+        for key in ("trade_group_id", "signal_id", "client_order_id"):
+            value = fee_probe.to_text(source.get(key) if isinstance(source, dict) else "")
+            if value:
+                tracking[key] = normalize_tracking_id(value, tracking.get(key, ""))
+    if "trade_group_id" not in tracking:
+        tracking["trade_group_id"] = ""
+    if "signal_id" not in tracking:
+        tracking["signal_id"] = ""
+    if "client_order_id" not in tracking:
+        tracking["client_order_id"] = ""
+    return tracking
+
+
+def _tracking_search_values(result: dict[str, Any], plan: OrderProbePlan | None = None) -> list[str]:
+    values: list[str] = []
+    tracking = _result_tracking(result, plan)
+    for value in tracking.values():
+        _append_unique(values, value)
+    response = result.get("response") if isinstance(result.get("response"), dict) else {}
+    sources = [
+        result,
+        result.get("payload") if isinstance(result.get("payload"), dict) else {},
+        response,
+        nested_result(response),
+    ]
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key in (
+            "trade_group_id",
+            "bracket_group",
+            "signal_id",
+            "client_order_id",
+            "entry_order_unique_id",
+            "unique_id",
+            "entry_coid",
+            "entry_order_unique_id",
+            "parent_order_unique_id",
+            "parent_client_order_id",
+        ):
+            _append_unique(values, source.get(key))
+        for key in ("order_ids", "submitted_order_ids", "broker_order_ids", "recovered_order_ids"):
+            for item in source.get(key) or []:
+                _append_unique(values, item)
+
+    trade_group_id = tracking.get("trade_group_id")
+    client_order_id = tracking.get("client_order_id")
+    for base in (trade_group_id, client_order_id):
+        if not base:
+            continue
+        for prefix in ("entry", "tp", "sl", "take_profit", "stop_loss"):
+            _append_unique(values, f"{prefix}_{base}")
+    return [value for value in values if len(value) >= 3]
+
+
+def _row_symbol(row: dict[str, Any]) -> str:
+    return fee_probe.order_symbol(row) or fee_probe.normalize_symbol(row.get("symbol") or row.get("ticker"))
+
+
+def _row_broker_order_id(row: dict[str, Any], *, allow_id: bool = False) -> str:
+    for key in ("order_id", "broker_order_id", "ib_order_id", "orderId", "perm_id", "permId"):
+        text = fee_probe.to_text(row.get(key))
+        if text:
+            return text
+    if allow_id:
+        return fee_probe.order_id(row)
+    return ""
+
+
+def _row_matches_tracking(row: dict[str, Any], *, symbol: str, search_values: list[str]) -> bool:
+    row_symbol = _row_symbol(row)
+    if row_symbol and symbol and row_symbol != symbol:
+        return False
+    if not search_values:
+        return False
+    haystack = compact_json(row).lower()
+    return any(value.lower() in haystack for value in search_values)
+
+
+def _role_rank(row: dict[str, Any]) -> int:
+    role_text = fee_probe.to_text(
+        row.get("role")
+        or row.get("order_family_type")
+        or row.get("order_type")
+        or row.get("orderType")
+        or row.get("type")
+    ).lower()
+    client_ref = fee_probe.to_text(
+        row.get("client_order_id")
+        or row.get("clientOrderId")
+        or row.get("unique_id")
+        or row.get("entry_order_unique_id")
+        or row.get("local_order_id")
+    ).lower()
+    combined = f"{role_text} {client_ref}"
+    if "entry" in combined:
+        return 0
+    if "take_profit" in combined or "takeprofit" in combined or "profit" in combined or client_ref.startswith("tp_"):
+        return 1
+    if "stop_loss" in combined or "stoploss" in combined or "stop" in combined or client_ref.startswith("sl_"):
+        return 2
+    return 9
+
+
+def _order_sort_key(row: dict[str, Any]) -> tuple[int, int, str]:
+    order_id = _row_broker_order_id(row, allow_id=True)
+    try:
+        numeric = int(float(order_id))
+    except Exception:
+        numeric = 10**12
+    return (_role_rank(row), numeric, order_id)
+
+
+def _matching_snapshot_order_rows(
+    snapshot: dict[str, Any],
+    *,
+    symbol: str,
+    search_values: list[str],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for key in ("live_open_orders", "orders"):
+        for raw in snapshot.get(key) or []:
+            if not isinstance(raw, dict) or not fee_probe.is_open_order(raw):
+                continue
+            if not _row_matches_tracking(raw, symbol=symbol, search_values=search_values):
+                continue
+            order_id = _row_broker_order_id(raw, allow_id=True)
+            identity = order_id or compact_json(raw)[:200]
+            if identity in seen:
+                continue
+            seen.add(identity)
+            row = dict(raw)
+            row["_reconcile_source"] = f"snapshot.{key}"
+            rows.append(row)
+    return rows
+
+
+def _fetch_pb_reconcile_rows(args: argparse.Namespace, symbols: list[str]) -> tuple[list[dict[str, Any]], str]:
+    normalized_symbols = [fee_probe.normalize_symbol(symbol) for symbol in symbols if fee_probe.normalize_symbol(symbol)]
+    if not normalized_symbols:
+        return [], ""
+    symbol_list = ", ".join(fee_probe.sqlite_literal(symbol) for symbol in normalized_symbols)
+    limit = max(500, len(normalized_symbols) * 100)
+    sql_with_order = f"""
+        select *
+        from ibkr_order_details
+        where symbol in ({symbol_list})
+        order by created desc
+        limit {int(limit)};
+    """
+    sql_plain = f"""
+        select *
+        from ibkr_order_details
+        where symbol in ({symbol_list})
+        limit {int(limit)};
+    """
+    try:
+        rows = fee_probe.run_remote_sql(args, sql_with_order)
+        return [row for row in rows if isinstance(row, dict)], ""
+    except Exception as first_exc:
+        try:
+            rows = fee_probe.run_remote_sql(args, sql_plain)
+            return [row for row in rows if isinstance(row, dict)], str(first_exc)
+        except Exception as second_exc:
+            return [], str(second_exc)
+
+
+def _matching_pb_order_rows(
+    pb_rows: list[dict[str, Any]],
+    *,
+    symbol: str,
+    search_values: list[str],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in pb_rows:
+        if not isinstance(raw, dict) or not fee_probe.is_open_order(raw):
+            continue
+        if not _row_matches_tracking(raw, symbol=symbol, search_values=search_values):
+            continue
+        order_id = _row_broker_order_id(raw)
+        if not order_id:
+            continue
+        identity = order_id or compact_json(raw)[:200]
+        if identity in seen:
+            continue
+        seen.add(identity)
+        row = dict(raw)
+        row["_reconcile_source"] = "pb.ibkr_order_details"
+        rows.append(row)
+    return rows
+
+
+def _merge_recovered_order_rows(rows: list[dict[str, Any]], known_ids: list[str]) -> tuple[list[str], list[dict[str, Any]]]:
+    merged_rows = sorted(rows, key=_order_sort_key)
+    recovered_ids: list[str] = []
+    recovered_meta: list[dict[str, Any]] = []
+    seen = set(known_ids)
+    for row in merged_rows:
+        order_id = _row_broker_order_id(row, allow_id=True)
+        if not order_id or order_id in seen:
+            continue
+        seen.add(order_id)
+        recovered_ids.append(order_id)
+        recovered_meta.append(
+            {
+                "order_id": order_id,
+                "symbol": _row_symbol(row),
+                "role": row.get("role") or row.get("order_family_type") or "",
+                "status": fee_probe.order_status(row) or row.get("status"),
+                "source": row.get("_reconcile_source"),
+                "client_order_id": row.get("client_order_id") or row.get("clientOrderId") or row.get("unique_id"),
+                "trade_group_id": row.get("trade_group_id") or row.get("bracket_group"),
+                "signal_id": row.get("signal_id"),
+            }
+        )
+    return recovered_ids, recovered_meta
+
+
+def reconcile_place_results(
+    args: argparse.Namespace,
+    plans: list[OrderProbePlan],
+    place_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    plan_by_symbol = {plan.symbol: plan for plan in plans}
+    needs_reconcile = [
+        item
+        for item in place_results
+        if item.get("submitted_unknown")
+        or (item.get("timed_out") and len(item.get("order_ids") or []) < expected_bracket_order_count(plan_by_symbol.get(str(item.get("symbol") or ""))))
+    ]
+    if not needs_reconcile:
+        return {"ok": True, "skipped": True, "unknown_submitted_orders": 0, "unknown_unresolved_orders": 0}
+
+    symbols = sorted({fee_probe.normalize_symbol(item.get("symbol")) for item in needs_reconcile if fee_probe.normalize_symbol(item.get("symbol"))})
+    try:
+        snapshot = get_snapshot(args, timeout_sec=cleanup_http_timeout(args), orders_fast=True)
+    except Exception as exc:
+        snapshot = {"ok": False, "error": str(exc)}
+    pb_rows, pb_error = _fetch_pb_reconcile_rows(args, symbols)
+
+    result_summaries: list[dict[str, Any]] = []
+    recovered_total: list[str] = []
+    for item in needs_reconcile:
+        symbol = fee_probe.normalize_symbol(item.get("symbol"))
+        plan = plan_by_symbol.get(symbol)
+        search_values = _tracking_search_values(item, plan)
+        known_ids = [fee_probe.to_text(order_id) for order_id in item.get("order_ids") or [] if fee_probe.to_text(order_id)]
+        rows = [
+            *_matching_snapshot_order_rows(snapshot, symbol=symbol, search_values=search_values),
+            *_matching_pb_order_rows(pb_rows, symbol=symbol, search_values=search_values),
+        ]
+        recovered_ids, recovered_meta = _merge_recovered_order_rows(rows, known_ids)
+        for order_id in recovered_ids:
+            _append_unique(recovered_total, order_id)
+            _append_unique(known_ids, order_id)
+        item["order_ids"] = known_ids
+        item["recovered_order_ids"] = list(recovered_ids)
+        item["recovered_order_count"] = len(recovered_ids)
+        item["recovered_orders"] = recovered_meta
+        item["reconcile_search_values"] = search_values
+        complete = len(known_ids) >= expected_bracket_order_count(plan)
+        if item.get("submitted_unknown"):
+            item["submitted_unknown_recovered"] = complete
+            item["submitted_unknown_unresolved"] = not complete
+            if complete:
+                sources = sorted({str(row.get("source") or "") for row in recovered_meta if row.get("source")})
+                item["submitted_unknown_recovered_source"] = ",".join(sources) or item.get("submitted_unknown_recovered_source") or "known_order_ids"
+        result_summaries.append(
+            {
+                "symbol": symbol,
+                "submitted_unknown": bool(item.get("submitted_unknown")),
+                "known_order_ids": known_ids,
+                "recovered_order_ids": recovered_ids,
+                "recovered_order_count": len(recovered_ids),
+                "expected_order_count": expected_bracket_order_count(plan),
+                "complete": complete,
+                "tracking": _result_tracking(item, plan),
+            }
+        )
+
+    unknown_items = [item for item in place_results if item.get("submitted_unknown")]
+    unresolved_items = [item for item in unknown_items if not item.get("submitted_unknown_recovered")]
+    return {
+        "ok": not unresolved_items,
+        "skipped": False,
+        "unknown_submitted_orders": len(unknown_items),
+        "unknown_recovered_orders": len(unknown_items) - len(unresolved_items),
+        "unknown_unresolved_orders": len(unresolved_items),
+        "recovered_order_ids": recovered_total,
+        "results": result_summaries,
+        "snapshot_ok": snapshot.get("ok") is not False if isinstance(snapshot, dict) else False,
+        "pb_rows_scanned": len(pb_rows),
+        "pb_error": pb_error,
+    }
+
+
+def unresolved_submitted_unknown_count(place_results: list[dict[str, Any]]) -> int:
+    return sum(1 for item in place_results if item.get("submitted_unknown") and not item.get("submitted_unknown_recovered"))
+
+
 def summarize_place_acceptance(
     args: argparse.Namespace,
     place_results: list[dict[str, Any]],
     plans: list[OrderProbePlan],
 ) -> dict[str, Any]:
     expected_bp_blocks = [item for item in place_results if is_expected_buying_power_block(item)]
+    recovered_unknown = [
+        item
+        for item in place_results
+        if item.get("submitted_unknown") and item.get("submitted_unknown_recovered")
+    ]
+    unresolved_unknown = [
+        item
+        for item in place_results
+        if item.get("submitted_unknown") and not item.get("submitted_unknown_recovered")
+    ]
     unexpected_failures = [
         {
             "symbol": item.get("symbol"),
             "error": action_error_code(item) or item.get("error") or "place_failed",
+            "submitted_unknown": bool(item.get("submitted_unknown")),
+            "recovered_order_ids": list(item.get("recovered_order_ids") or []),
         }
         for item in place_results
-        if not item.get("ok") and not is_expected_buying_power_block(item)
+        if not item.get("ok") and not is_expected_buying_power_block(item) and item not in recovered_unknown
     ]
     expect_blocks = bool(getattr(args, "expect_buying_power_blocks", False))
     min_blocks = max(0, int(getattr(args, "min_buying_power_blocks", 0) or 0))
     if expect_blocks and min_blocks <= 0:
         min_blocks = 1
-    accepted_count = sum(1 for item in place_results if item.get("ok")) + len(expected_bp_blocks)
+    accepted_count = sum(1 for item in place_results if item.get("ok")) + len(expected_bp_blocks) + len(recovered_unknown)
     ok = (
         len(place_results) == len(plans)
         and not unexpected_failures
+        and not unresolved_unknown
         and (expect_blocks or not expected_bp_blocks)
         and len(expected_bp_blocks) >= min_blocks
         and accepted_count == len(plans)
@@ -1350,10 +1831,15 @@ def summarize_place_acceptance(
         "accepted": accepted_count,
         "placed_ok": sum(1 for item in place_results if item.get("ok")),
         "buying_power_blocked": len(expected_bp_blocks),
+        "submitted_unknown": len([item for item in place_results if item.get("submitted_unknown")]),
+        "submitted_unknown_recovered": len(recovered_unknown),
+        "unknown_submitted_orders": len(unresolved_unknown),
         "expected_buying_power_blocks": expect_blocks,
         "min_buying_power_blocks": min_blocks,
         "unexpected_failures": unexpected_failures,
         "blocked_symbols": [str(item.get("symbol") or "") for item in expected_bp_blocks],
+        "recovered_unknown_symbols": [str(item.get("symbol") or "") for item in recovered_unknown],
+        "unresolved_unknown_symbols": [str(item.get("symbol") or "") for item in unresolved_unknown],
     }
 
 
@@ -1380,7 +1866,7 @@ def build_stop_loss_modify_items(
     plan_by_symbol = {plan.symbol: plan for plan in plans}
     items: list[dict[str, Any]] = []
     for result in place_results:
-        if not result.get("ok"):
+        if not result.get("ok") and not result.get("submitted_unknown_recovered"):
             continue
         symbol = str(result.get("symbol") or "").upper()
         plan = plan_by_symbol.get(symbol)
@@ -1466,7 +1952,7 @@ def build_exit_cancel_items(place_results: list[dict[str, Any]], *, scope: str =
     seen: set[str] = set()
     items: list[dict[str, Any]] = []
     for result in place_results:
-        if not result.get("ok"):
+        if not result.get("ok") and not result.get("submitted_unknown_recovered"):
             continue
         order_ids = [fee_probe.to_text(item) for item in (result.get("order_ids") or []) if fee_probe.to_text(item)]
         if not order_ids:
@@ -2084,6 +2570,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     cancel_results: list[dict[str, Any]] = []
     rescue_cancel_results: list[dict[str, Any]] = []
     cleanup_results: list[dict[str, Any]] = []
+    place_reconcile: dict[str, Any] = {"ok": True, "skipped": True, "unknown_submitted_orders": 0, "unknown_unresolved_orders": 0}
     modify_observation: dict[str, Any] = {"ok": True, "skipped": True, "reason": "modify_stop_loss_storm_not_requested"}
     exit_observation: dict[str, Any] = {"ok": True, "skipped": True, "reason": "exit_cancel_storm_not_requested"}
     pending_observation: dict[str, Any] = {}
@@ -2092,8 +2579,10 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     flat_after: dict[str, Any] = {}
     try:
         place_results = submit_burst(args, plans)
+        place_reconcile = reconcile_place_results(args, plans, place_results)
         submitted_order_count = sum(len(item.get("order_ids") or []) for item in place_results)
-        if submitted_order_count <= 0:
+        maybe_submitted_unknown = any(item.get("submitted_unknown") for item in place_results)
+        if submitted_order_count <= 0 and not maybe_submitted_unknown:
             pending_observation = {"ok": True, "skipped": True, "reason": "no_submitted_orders"}
             post_place_observation = {"ok": True, "skipped": True, "reason": "no_submitted_orders"}
             pre_cancel_observation = {"ok": True, "skipped": True, "reason": "no_submitted_orders"}
@@ -2131,7 +2620,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             else:
                 cancel_results = cancel_known_order_ids(args, place_results)
     finally:
-        if any(item.get("timed_out") for item in place_results):
+        if unresolved_submitted_unknown_count(place_results) > 0:
             rescue_cancel_results = cancel_visible_orders_for_symbols(args, symbols)
         cleanup_results = cleanup_symbols(args, plans, place_results, cancel_results)
         flat_after = wait_for_flat_symbols(args, symbols)
@@ -2139,7 +2628,10 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     after = collect_stability_with_settle(args, "gateway_probe_after")
     place_acceptance = summarize_place_acceptance(args, place_results, plans)
     place_ok = bool(place_acceptance.get("ok"))
-    cancel_attempted = bool(cancel_results) or all(item.get("order_ids") == [] for item in place_results)
+    unknown_unresolved_count = unresolved_submitted_unknown_count(place_results)
+    cancel_attempted = bool(cancel_results) or bool(rescue_cancel_results) or (
+        unknown_unresolved_count == 0 and all(item.get("order_ids") == [] for item in place_results)
+    )
     cancel_ok = (not cancel_results and all(item.get("order_ids") == [] for item in place_results)) or all(
         item.get("ok") for item in cancel_results
     )
@@ -2169,7 +2661,20 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 "total": len(place_results),
                 "ok": sum(1 for item in place_results if item.get("ok")),
                 "failed": sum(1 for item in place_results if not item.get("ok")),
+                "unknown_submitted_orders": place_acceptance.get("unknown_submitted_orders"),
+                "submitted_unknown": place_acceptance.get("submitted_unknown"),
+                "submitted_unknown_recovered": place_acceptance.get("submitted_unknown_recovered"),
                 "acceptance": place_acceptance,
+                "reconcile": {
+                    "ok": place_reconcile.get("ok"),
+                    "skipped": place_reconcile.get("skipped"),
+                    "unknown_submitted_orders": place_reconcile.get("unknown_submitted_orders"),
+                    "unknown_recovered_orders": place_reconcile.get("unknown_recovered_orders"),
+                    "unknown_unresolved_orders": place_reconcile.get("unknown_unresolved_orders"),
+                    "recovered_order_ids": place_reconcile.get("recovered_order_ids") or [],
+                    "pb_rows_scanned": place_reconcile.get("pb_rows_scanned"),
+                    "pb_error": place_reconcile.get("pb_error") or "",
+                },
             },
             "cancel_results": {
                 "total": len(cancel_results) + len(rescue_cancel_results),
@@ -2235,6 +2740,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             "health": {"before": before.get("health"), "after": after.get("health")},
             "details": {
                 "place": place_results,
+                "place_reconcile": place_reconcile,
                 "pending_hold": pending_observation,
                 "post_place_quiesce": post_place_observation,
                 "pre_cancel_quiesce": pre_cancel_observation,
@@ -2458,10 +2964,12 @@ def print_text(payload: dict[str, Any]) -> None:
         acceptance = ((payload.get("place_results") or {}).get("acceptance") or {})
         if acceptance:
             print(
-                "place_acceptance_ok={ok} accepted={accepted} bp_blocked={blocked} unexpected_failures={unexpected}".format(
+                "place_acceptance_ok={ok} accepted={accepted} bp_blocked={blocked} unknown={unknown} recovered_unknown={recovered} unexpected_failures={unexpected}".format(
                     ok=acceptance.get("ok"),
                     accepted=acceptance.get("accepted"),
                     blocked=acceptance.get("buying_power_blocked"),
+                    unknown=acceptance.get("unknown_submitted_orders"),
+                    recovered=acceptance.get("submitted_unknown_recovered"),
                     unexpected=len(acceptance.get("unexpected_failures") or []),
                 )
             )

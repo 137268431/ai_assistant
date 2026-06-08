@@ -73,6 +73,14 @@ def _payload_modify_family(payload: dict) -> str:
     return ""
 
 
+def _payload_text(payload: dict, *keys: str) -> str:
+    for key in keys:
+        value = (payload or {}).get(key)
+        if value not in (None, ""):
+            return str(value).strip()
+    return ""
+
+
 def _payload_order_ids(payload: dict) -> list[str]:
     raw: list[object] = []
     for key in ("order_ids", "cancel_order_ids", "ids"):
@@ -521,7 +529,36 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
             "snapshot": snapshot,
         }, 409
 
-    signal_id = f"MANUAL_{runtime_environment.upper()}_{symbol}_{int(time.time())}"
+    signal_id = _payload_text(payload, "signal_id", "client_signal_id") or f"MANUAL_{runtime_environment.upper()}_{symbol}_{int(time.time())}"
+    trade_group_id = _payload_text(
+        payload,
+        "trade_group_id",
+        "bracket_group",
+        "client_order_id",
+        "order_ref",
+        "orderRef",
+        "cOID",
+        "coid",
+    )
+    order_extra = (payload or {}).get("order_extra")
+    if not isinstance(order_extra, dict):
+        order_extra = (payload or {}).get("extra") if isinstance((payload or {}).get("extra"), dict) else {}
+    order_extra = dict(order_extra or {})
+    if trade_group_id:
+        order_extra.setdefault("trade_group_id", trade_group_id)
+        order_extra.setdefault("client_order_id", trade_group_id)
+    order_extra.setdefault("manual_order_api", True)
+    tif = _payload_text(payload, "tif", "entry_tif").upper() or "DAY"
+    outside_rth = _payload_bool(
+        (payload or {}).get("outside_rth")
+        if (payload or {}).get("outside_rth") not in (None, "")
+        else (payload or {}).get("outsideRth")
+        if (payload or {}).get("outsideRth") not in (None, "")
+        else (payload or {}).get("extended_hours")
+        if (payload or {}).get("extended_hours") not in (None, "")
+        else (payload or {}).get("outside_regular_trading_hours"),
+        False,
+    )
     config = getattr(service, "config", None)
     config_has_value = getattr(config, "has_value_for_environment", None)
     has_fast_accept_config = False
@@ -555,7 +592,11 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
         stop_loss_price=float(stop_loss_price),
         use_paper=api_app._ibkr_service_uses_paper_account(service),
         signal_id=signal_id,
+        trade_group_id=trade_group_id,
         entry_order_type=order_type,
+        tif=tif,
+        order_extra=order_extra,
+        outside_rth=outside_rth,
         buying_power_guard=buying_power_guard,
         confirmation_mode=confirmation_mode,
     )
@@ -592,10 +633,13 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
             "take_profit_price": float(take_profit_price),
             "stop_loss_price": float(stop_loss_price),
             "signal_id": signal_id,
+            "trade_group_id": trade_group_id,
             "buying_power_guard": submitted_buying_power_guard,
             "pre_submit_buying_power_guard": buying_power_guard,
             "confirmation_mode": confirmation_mode,
             "fast_ack": bool(fast_accept_enabled),
+            "tif": tif,
+            "outside_rth": outside_rth,
         },
         include_snapshot=_payload_bool((payload or {}).get("include_snapshot"), True),
         action_started_at=action_started_at,

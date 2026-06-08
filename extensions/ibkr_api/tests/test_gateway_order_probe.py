@@ -529,6 +529,117 @@ class GatewayOrderProbeTest(unittest.TestCase):
         self.assertEqual(2, results[0]["attempt"])
         self.assertEqual(2, len(results[0]["attempts"]))
 
+    def test_timeout_unknown_reconciles_snapshot_and_pb_then_cancels_recovered_ids(self):
+        args = Namespace(
+            run_id="TEST_RUN",
+            api_base_url="https://example.test",
+            http_timeout_sec=30.0,
+            cleanup_http_timeout_sec=2.0,
+            cancel_spacing_seconds=0.0,
+        )
+        plan = probe.ensure_plan_tracking(
+            args,
+            [probe.OrderProbePlan("AAPL", "long", 1, 100.0, 50.0, 57.5, 42.5)],
+        )[0]
+        place_results = [probe.submit_timeout_result(plan, timeout_s=1.0)]
+        snapshot = {
+            "ok": True,
+            "environment": "paper",
+            "broker_mode": "paper",
+            "positions": [],
+            "live_open_orders": [
+                {
+                    "symbol": "AAPL",
+                    "order_id": "101",
+                    "status": "Submitted",
+                    "client_order_id": plan.client_order_id,
+                    "trade_group_id": plan.trade_group_id,
+                    "signal_id": plan.signal_id,
+                    "role": "entry",
+                }
+            ],
+            "orders": [],
+        }
+        pb_rows = [
+            {
+                "symbol": "AAPL",
+                "order_id": "102",
+                "status": "Submitted",
+                "unique_id": f"tp_{plan.trade_group_id}",
+                "trade_group_id": plan.trade_group_id,
+                "signal_id": plan.signal_id,
+                "role": "take_profit",
+            },
+            {
+                "symbol": "AAPL",
+                "order_id": "103",
+                "status": "Submitted",
+                "unique_id": f"sl_{plan.trade_group_id}",
+                "trade_group_id": plan.trade_group_id,
+                "signal_id": plan.signal_id,
+                "role": "stop_loss",
+            },
+        ]
+        posts = []
+
+        class _Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def post(self, path, payload, params):
+                posts.append((path, payload, params))
+                return {"ok": True, "result": {"ok": True, "submitted_order_ids": [payload["order_id"]]}}
+
+        with mock.patch.object(probe, "get_snapshot", return_value=snapshot), mock.patch.object(
+            probe.fee_probe,
+            "run_remote_sql",
+            return_value=pb_rows,
+        ), mock.patch.object(probe.fee_probe, "ApiClient", _Client):
+            reconcile = probe.reconcile_place_results(args, [plan], place_results)
+            cancel_results = probe.cancel_known_order_ids(args, place_results)
+
+        self.assertTrue(reconcile["ok"])
+        self.assertTrue(place_results[0]["submitted_unknown_recovered"])
+        self.assertEqual(["101", "102", "103"], place_results[0]["order_ids"])
+        self.assertEqual(["101", "102", "103"], [payload["order_id"] for _path, payload, _params in posts])
+        self.assertTrue(all(item["ok"] for item in cancel_results))
+        acceptance = probe.summarize_place_acceptance(Namespace(expect_buying_power_blocks=False, min_buying_power_blocks=0), place_results, [plan])
+        self.assertTrue(acceptance["ok"])
+        self.assertEqual(1, acceptance["submitted_unknown_recovered"])
+        self.assertEqual(0, acceptance["unknown_submitted_orders"])
+
+    def test_unrecovered_unknown_submit_fails_acceptance_with_unknown_count(self):
+        args = Namespace(
+            run_id="TEST_RUN",
+            http_timeout_sec=30.0,
+            cleanup_http_timeout_sec=2.0,
+        )
+        plan = probe.ensure_plan_tracking(
+            args,
+            [probe.OrderProbePlan("AAPL", "long", 1, 100.0, 50.0, 57.5, 42.5)],
+        )[0]
+        place_results = [probe.submit_timeout_result(plan, timeout_s=1.0)]
+        snapshot = {"ok": True, "environment": "paper", "broker_mode": "paper", "positions": [], "live_open_orders": [], "orders": []}
+
+        with mock.patch.object(probe, "get_snapshot", return_value=snapshot), mock.patch.object(
+            probe.fee_probe,
+            "run_remote_sql",
+            return_value=[],
+        ):
+            reconcile = probe.reconcile_place_results(args, [plan], place_results)
+
+        acceptance = probe.summarize_place_acceptance(
+            Namespace(expect_buying_power_blocks=False, min_buying_power_blocks=0),
+            place_results,
+            [plan],
+        )
+
+        self.assertFalse(reconcile["ok"])
+        self.assertEqual(1, reconcile["unknown_unresolved_orders"])
+        self.assertTrue(place_results[0]["submitted_unknown_unresolved"])
+        self.assertFalse(acceptance["ok"])
+        self.assertEqual(1, acceptance["unknown_submitted_orders"])
+
     def test_place_acceptance_allows_expected_buying_power_blocks(self):
         args = Namespace(expect_buying_power_blocks=True, min_buying_power_blocks=1)
         plans = [

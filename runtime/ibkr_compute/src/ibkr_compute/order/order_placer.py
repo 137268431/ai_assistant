@@ -619,6 +619,7 @@ class OrderPlacer:
         buying_power_pre_reservation: Dict[str, Any] | None = None,
         confirmation_mode: str = "",
         outside_rth: bool = False,
+        tif: str = "DAY",
     ) -> Dict[str, Any]:
         started = time.perf_counter()
         acct_id = self.get_active_account_id(use_paper)
@@ -670,6 +671,7 @@ class OrderPlacer:
             "entry_adaptive_priority": str(entry_adaptive_priority or ""),
             "confirmation_mode": str(confirmation_mode or ""),
             "outside_rth": bool(resolved_outside_rth),
+            "tif": str(tif or "DAY").strip().upper() or "DAY",
         }
         if getattr(self.broker, "uses_internal_gateway_write_lock", False):
             broker_kwargs["metric_environment"] = self.environment
@@ -791,6 +793,7 @@ class OrderPlacer:
             "entry_adaptive_priority": str(result.get("entry_adaptive_priority") or entry_adaptive_priority or ""),
             "confirmation_mode": str(result.get("confirmation_mode") or confirmation_mode or ""),
             "outside_rth": bool(result.get("outside_rth", resolved_outside_rth)),
+            "tif": str(result.get("tif") or tif or "DAY").strip().upper() or "DAY",
             "pending_confirmation": bool(result.get("pending_confirmation") or protection_confirmation_pending),
             "raw_response": result.get("raw"),
         }

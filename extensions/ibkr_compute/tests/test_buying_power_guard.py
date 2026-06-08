@@ -392,6 +392,46 @@ class BuyingPowerManualOrderActionTest(unittest.TestCase):
         self.assertTrue(any(event["title"] == "手动开仓购买力预警" for event in service.pb.events))
         self.assertTrue(any(event["title"] == "手动开仓已提交" for event in service.pb.events))
 
+    def test_manual_order_passes_tracking_tif_and_outside_rth_to_order_placer(self):
+        service = FakeOrderService()
+        order_actions._build_ibkr_account_buying_power_snapshot = lambda _service: {
+            "ok": True,
+            "summary": {"buying_power": 100000, "net_liquidation": 120000},
+        }
+        order_actions._build_snapshot_action_response = lambda _service, action, result, delay_seconds=0, extra=None, **_kwargs: (
+            {"ok": bool(result.get("ok")), "action": action, "result": result, **dict(extra or {})},
+            200,
+        )
+
+        payload, status = order_actions._build_ibkr_place_order_response(
+            service,
+            {
+                "symbol": "AAPL",
+                "direction": "long",
+                "quantity": 10,
+                "order_type": "LMT",
+                "entry_price": 100,
+                "take_profit_price": 104,
+                "stop_loss_price": 98,
+                "signal_id": "probe-signal-1",
+                "trade_group_id": "probe-group-1",
+                "tif": "day",
+                "outsideRth": True,
+                "extra": {"probe": True},
+            },
+        )
+
+        self.assertEqual(200, status)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(1, len(service.order_placer.calls))
+        call = service.order_placer.calls[0]
+        self.assertEqual("probe-signal-1", call["signal_id"])
+        self.assertEqual("probe-group-1", call["trade_group_id"])
+        self.assertEqual("DAY", call["tif"])
+        self.assertTrue(call["outside_rth"])
+        self.assertEqual("probe-group-1", call["order_extra"]["client_order_id"])
+        self.assertTrue(call["order_extra"]["probe"])
+
     def test_manual_order_pauses_when_buying_power_snapshot_unavailable(self):
         service = FakeOrderService()
         order_actions._build_ibkr_account_buying_power_snapshot = lambda _service: {
