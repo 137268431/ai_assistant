@@ -92,6 +92,23 @@ class CloseExecutionPlannerTest(unittest.TestCase):
         self.assertFalse(plan["ok"])
         self.assertEqual("overnight_premarket_break", plan["error"])
 
+    def test_close_plan_defaults_overnight_to_smart_include_overnight(self):
+        from datetime import datetime
+        from ibkr_compute.core.time_utils import ET
+
+        plan = build_close_execution_plan(
+            symbol="MSTR",
+            direction="short",
+            quote={"bid": 126.1, "ask": 126.2},
+            now=datetime(2026, 6, 8, 21, 0, tzinfo=ET),
+        )
+
+        self.assertTrue(plan["ok"])
+        self.assertEqual("overnight", plan["session"])
+        self.assertEqual("SMART", plan["exchange"])
+        self.assertTrue(plan["include_overnight"])
+        self.assertTrue(plan["outside_rth"])
+
 
 class FakeClient:
     def __init__(self, ack_result=None, submission_result=None, open_orders=None):
@@ -2324,6 +2341,26 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
         self.assertEqual(103.0, close_row["extra"]["position_avg_cost"])
         self.assertEqual(103.0, close_row["extra"]["entry_price_for_pnl"])
         self.assertEqual(10.5, close_row["extra"]["position_snapshot"]["unrealized_pnl"])
+
+    def test_overnight_close_defaults_to_smart_include_overnight(self):
+        pb_client = FakeOrderPBClient()
+        broker = FakeMarketCloseBroker()
+        placer = OrderPlacer(pb_client=pb_client, broker=broker, account_id="DU123")
+
+        result = placer.place_market_close(
+            conid=272110,
+            symbol="MSTR",
+            direction="short",
+            quantity=39,
+            session_override="overnight",
+            position_snapshot={"bid": 126.1, "ask": 126.2, "market_price": 126.2},
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("SMART", broker.calls[0]["exchange"])
+        self.assertTrue(broker.calls[0]["include_overnight"])
+        self.assertTrue(broker.calls[0]["outside_rth"])
+        self.assertEqual("SMART", result["close_execution_plan"]["exchange"])
 
     def test_unconfirmed_market_close_prewrites_pending_close_mapping(self):
         pb_client = FakeOrderAndSignalPBClient(

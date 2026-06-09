@@ -64,6 +64,8 @@ def infer_close_session(now: datetime | None = None, *, session_override: str = 
         if override in {"afterhours", "after_hours", "postmarket", "post_market", "post"}:
             return CloseSession("afterhours", True, True, "DAY", "SMART", False, DEFAULT_EXTENDED_LIMIT_BPS)
         if override in {"overnight", "overnight_smart", "overnight+smart"}:
+            return CloseSession("overnight", True, True, "DAY", "SMART", True, DEFAULT_OVERNIGHT_LIMIT_BPS)
+        if override in {"overnight_direct", "overnight_only", "overnight_exchange"}:
             return CloseSession("overnight", True, True, "DAY", "OVERNIGHT", True, DEFAULT_OVERNIGHT_LIMIT_BPS)
         if override in {"closed", "halt", "halted"}:
             return CloseSession("closed", False, False, "DAY", "SMART", False, DEFAULT_EXTENDED_LIMIT_BPS, "session_override_closed")
@@ -78,13 +80,13 @@ def infer_close_session(now: datetime | None = None, *, session_override: str = 
     late_overnight = t >= dt_time(20, 0)
     if early_overnight:
         if weekday in {0, 1, 2, 3, 4}:
-            return CloseSession("overnight", True, True, "DAY", "OVERNIGHT", True, DEFAULT_OVERNIGHT_LIMIT_BPS)
+            return CloseSession("overnight", True, True, "DAY", "SMART", True, DEFAULT_OVERNIGHT_LIMIT_BPS)
         return CloseSession("closed", False, False, "DAY", "SMART", False, DEFAULT_EXTENDED_LIMIT_BPS, "weekend_overnight_closed")
     if dt_time(3, 50) <= t < dt_time(4, 0):
         return CloseSession("closed", False, False, "DAY", "SMART", False, DEFAULT_EXTENDED_LIMIT_BPS, "overnight_premarket_break")
     if weekday not in {0, 1, 2, 3, 4}:
         if weekday == 6 and late_overnight:
-            return CloseSession("overnight", True, True, "DAY", "OVERNIGHT", True, DEFAULT_OVERNIGHT_LIMIT_BPS)
+            return CloseSession("overnight", True, True, "DAY", "SMART", True, DEFAULT_OVERNIGHT_LIMIT_BPS)
         return CloseSession("closed", False, False, "DAY", "SMART", False, DEFAULT_EXTENDED_LIMIT_BPS, "weekend_closed")
     if dt_time(4, 0) <= t < dt_time(9, 30):
         return CloseSession("premarket", True, True, "DAY", "SMART", False, DEFAULT_EXTENDED_LIMIT_BPS)
@@ -93,7 +95,7 @@ def infer_close_session(now: datetime | None = None, *, session_override: str = 
     if dt_time(16, 0) <= t < dt_time(20, 0):
         return CloseSession("afterhours", True, True, "DAY", "SMART", False, DEFAULT_EXTENDED_LIMIT_BPS)
     if late_overnight and weekday in {0, 1, 2, 3}:
-        return CloseSession("overnight", True, True, "DAY", "OVERNIGHT", True, DEFAULT_OVERNIGHT_LIMIT_BPS)
+        return CloseSession("overnight", True, True, "DAY", "SMART", True, DEFAULT_OVERNIGHT_LIMIT_BPS)
     return CloseSession("closed", False, False, "DAY", "SMART", False, DEFAULT_EXTENDED_LIMIT_BPS, "overnight_weekend_closed")
 
 
@@ -247,4 +249,3 @@ def build_close_execution_plan(
         "quote": q,
         "allow_market": False,
     }
-

@@ -1146,7 +1146,7 @@ class OrderPlacer:
         source: str = "",
         order_type: str = "LMT",
         limit_price: float = 0.0,
-        outside_rth: bool = False,
+        outside_rth: Any = None,
         tif: str = "DAY",
         execution_profile: str = "auto_session_limit",
         session_override: str = "",
