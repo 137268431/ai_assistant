@@ -1,5 +1,6 @@
 import sys
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "src"
@@ -28,12 +29,15 @@ class _FakeConfig:
 
 
 class _FakeBroker:
-    def __init__(self, positions=None, fill_result=None):
+    def __init__(self, positions=None, fill_result=None, positions_error=None):
         self.positions = list(positions or [])
         self.fill_result = dict(fill_result or {})
+        self.positions_error = positions_error
         self.fill_calls = []
 
     def list_positions(self):
+        if self.positions_error:
+            raise RuntimeError(self.positions_error)
         return list(self.positions)
 
     def await_order_fill(self, order_id, **kwargs):
@@ -103,6 +107,7 @@ class _FakeOrderModifier:
     def __init__(self, cancel_results=None):
         self.modifications = []
         self.cancellations = []
+        self.cancel_all_calls = []
         self.cancel_results = list(cancel_results or [])
 
     def modify_order(self, order_id, updates, acct_id=None):
@@ -120,11 +125,16 @@ class _FakeOrderModifier:
             return result
         return {"ok": True, "order_id": str(order_id)}
 
+    def cancel_all_orders(self, acct_id=None):
+        self.cancel_all_calls.append(acct_id)
+        return {"ok": True}
+
 
 class _FakeOrderPlacer:
-    def __init__(self):
+    def __init__(self, close_result=None):
         self.brackets = []
         self.closes = []
+        self.close_result = dict(close_result or {})
 
     def place_bracket_order(self, **kwargs):
         self.brackets.append(dict(kwargs))
@@ -136,6 +146,8 @@ class _FakeOrderPlacer:
 
     def place_market_close(self, **kwargs):
         self.closes.append(dict(kwargs))
+        if self.close_result:
+            return dict(self.close_result)
         return {
             "ok": True,
             "submitted": True,
@@ -591,6 +603,107 @@ class OrderLifecycleRiskLimitTests(unittest.TestCase):
         self.assertTrue(lifecycle.is_fixed_position_symbol("bil"))
         self.assertTrue(lifecycle.is_fixed_position_symbol("BOXX"))
         self.assertTrue(lifecycle.is_fixed_position_symbol("IBKR"))
+
+    def test_eod_close_does_not_cancel_or_mark_done_when_positions_unavailable(self):
+        pb = _FakePB()
+        modifier = _FakeOrderModifier()
+        placer = _FakeOrderPlacer()
+        lifecycle = OrderLifecycle(
+            pb_client=pb,
+            order_modifier=modifier,
+            order_placer=placer,
+            broker=_FakeBroker(positions_error="account_data_circuit_open:positions_timeout:retry_after_s=60.0"),
+            environment="paper",
+            config=_FakeConfig({"eod_close_time": "15:55"}),
+        )
+
+        result = lifecycle.eod_close_all()
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["position_snapshot_unavailable"])
+        self.assertFalse(lifecycle.status()["eod_closed_today"])
+        self.assertEqual([], modifier.cancel_all_calls)
+        self.assertEqual([], placer.closes)
+        self.assertEqual(1, len(pb.events))
+        self.assertEqual("EOD 平仓未执行：持仓快照不可用", pb.events[0]["title"])
+        self.assertEqual("error", pb.events[0]["level"])
+
+    def test_eod_close_places_force_flat_when_positions_available(self):
+        pb = _FakePB()
+        modifier = _FakeOrderModifier()
+        placer = _FakeOrderPlacer()
+        lifecycle = OrderLifecycle(
+            pb_client=pb,
+            order_modifier=modifier,
+            order_placer=placer,
+            broker=_FakeBroker(
+                [
+                    {"ticker": "AAPL", "position": 5, "conid": 123},
+                    {"ticker": "BOXX", "position": 2, "conid": 456},
+                ]
+            ),
+            environment="paper",
+            config=_FakeConfig({"eod_keep_symbols": "BOXX,IBKR"}),
+        )
+
+        result = lifecycle.eod_close_all()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(1, result["closed"])
+        self.assertTrue(lifecycle.status()["eod_closed_today"])
+        self.assertEqual([None], modifier.cancel_all_calls)
+        self.assertEqual(1, len(placer.closes))
+        close = placer.closes[0]
+        self.assertEqual("AAPL", close["symbol"])
+        self.assertEqual("long", close["direction"])
+        self.assertEqual(5, close["quantity"])
+        self.assertEqual("eod_force_close", close["source"])
+        self.assertEqual("force_flat_eod", close["close_reason"])
+        self.assertEqual([], pb.events)
+
+    def test_eod_close_alerts_when_close_submission_or_fill_fails(self):
+        pb = _FakePB()
+        modifier = _FakeOrderModifier()
+        placer = _FakeOrderPlacer(close_result={"ok": False, "error": "order_fill_unconfirmed"})
+        lifecycle = OrderLifecycle(
+            pb_client=pb,
+            order_modifier=modifier,
+            order_placer=placer,
+            broker=_FakeBroker([{"ticker": "AAPL", "position": 5, "conid": 123}]),
+            environment="paper",
+            config=_FakeConfig({}),
+        )
+
+        result = lifecycle.eod_close_all()
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(1, result["errors"])
+        self.assertTrue(lifecycle.status()["eod_closed_today"])
+        self.assertEqual(1, len(placer.closes))
+        self.assertEqual(1, len(pb.events))
+        self.assertEqual("EOD 平仓失败：需要人工确认", pb.events[0]["title"])
+        self.assertEqual("error", pb.events[0]["level"])
+        self.assertEqual("AAPL", pb.events[0]["detail"]["失败标的"])
+
+    def test_eod_close_window_closed_alerts_without_submitting_orders(self):
+        pb = _FakePB()
+        placer = _FakeOrderPlacer()
+        lifecycle = OrderLifecycle(
+            pb_client=pb,
+            order_placer=placer,
+            broker=_FakeBroker([{"ticker": "AAPL", "position": 5, "conid": 123}]),
+            environment="paper",
+            config=_FakeConfig({}),
+        )
+
+        result = lifecycle._mark_eod_close_window_closed(datetime(2026, 6, 8, 20, 1))
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("eod_close_window_closed", result["reason"])
+        self.assertTrue(lifecycle.status()["eod_closed_today"])
+        self.assertEqual([], placer.closes)
+        self.assertEqual(1, len(pb.events))
+        self.assertEqual("EOD 平仓未执行：平仓窗口已过", pb.events[0]["title"])
 
     def test_detects_filled_position_without_active_protection_and_alerts(self):
         pb = _FakePB(

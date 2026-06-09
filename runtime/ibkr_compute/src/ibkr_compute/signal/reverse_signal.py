@@ -96,6 +96,7 @@ class ReverseSignalHandler:
         self.environment = normalize_broker_mode(environment, configured_broker_mode())
         self.config = config or getattr(order_lifecycle, "config", None) or getattr(signal_processor, "config", None)
         self._processed_ids = set()
+        self._position_snapshot_alerted = set()
 
     def check_and_process(self):
         started = time.perf_counter()
@@ -1275,14 +1276,25 @@ class ReverseSignalHandler:
         if not conid:
             return self._mark_blocked(detail, "conid_unresolved", symbol=symbol)
 
-        cancel_result = self._cancel_old_order_if_present(signal, detail)
-        if cancel_result is not None and not cancel_result.get("ok"):
-            return cancel_result
+        positions_result = self._get_positions_result()
+        detail["position_snapshot"] = self._compact_position_snapshot_result(positions_result)
+        if not positions_result.get("ok"):
+            self._notify_position_snapshot_unavailable(signal, symbol, positions_result)
+            return self._mark_retryable_blocked(
+                detail,
+                "position_snapshot_unavailable",
+                error=str(positions_result.get("error") or ""),
+                retry_after_s=positions_result.get("retry_after_s"),
+                account_data_backoff_reason=positions_result.get("account_data_backoff_reason"),
+            )
 
-        positions = self._get_positions()
+        positions = list(positions_result.get("positions") or [])
         qty = self._position_quantity(symbol, positions)
         detail["position_qty_before_close"] = qty
         if qty == 0:
+            cancel_result = self._cancel_old_order_if_present(signal, detail)
+            if cancel_result is not None and not cancel_result.get("ok"):
+                return cancel_result
             detail["close_old_position"] = "skipped_flat"
             detail["wait_flat"] = "confirmed"
             detail["flat_confirmation"] = {
@@ -1291,6 +1303,10 @@ class ReverseSignalHandler:
                 "source": "broker_positions",
             }
             return self._start_cooldown_and_ready(signal, symbol, detail, "already_flat_ready_reentry")
+
+        cancel_result = self._cancel_old_order_if_present(signal, detail)
+        if cancel_result is not None and not cancel_result.get("ok"):
+            return cancel_result
 
         self._append_state(detail, "close_old_position")
         direction = "long" if qty > 0 else "short"
@@ -3840,12 +3856,87 @@ class ReverseSignalHandler:
                 matches.append(dict(order))
         return matches
 
-    def _get_positions(self) -> List[Dict[str, Any]]:
+    def _get_positions_result(self) -> Dict[str, Any]:
+        lifecycle = getattr(self, "order_lifecycle", None)
+        if not lifecycle:
+            return {
+                "ok": False,
+                "positions": [],
+                "source": "broker_positions",
+                "reason": "position_snapshot_unavailable",
+                "error": "order_lifecycle_missing",
+            }
+        result_getter = getattr(lifecycle, "get_positions_result", None)
         try:
-            return list(self.order_lifecycle.get_positions() or [])
+            if callable(result_getter):
+                result = dict(result_getter() or {})
+                result.setdefault("positions", [])
+                result.setdefault("source", "broker_positions")
+                result.setdefault("reason", "ok" if result.get("ok") else "position_snapshot_unavailable")
+                result.setdefault("error", "" if result.get("ok") else "position_snapshot_unavailable")
+                return result
+            positions = list(lifecycle.get_positions() or [])
+            return {
+                "ok": True,
+                "positions": positions,
+                "source": "broker_positions",
+                "reason": "ok",
+                "error": "",
+            }
         except Exception as exc:
             logger.warning("Failed to get positions for reverse confirmation: %s", exc)
+            return {
+                "ok": False,
+                "positions": [],
+                "source": "broker_positions",
+                "reason": "position_snapshot_unavailable",
+                "error": str(exc) or "positions_unavailable",
+            }
+
+    @staticmethod
+    def _compact_position_snapshot_result(result: Dict[str, Any]) -> Dict[str, Any]:
+        payload = dict(result or {})
+        positions = payload.pop("positions", []) or []
+        payload["position_count"] = len(positions) if isinstance(positions, list) else 0
+        return payload
+
+    def _notify_position_snapshot_unavailable(self, signal: dict, symbol: str, result: Dict[str, Any]) -> None:
+        rid = str((signal or {}).get("id") or "").strip()
+        alert_key = f"{self.environment}:{rid or symbol}:position_snapshot_unavailable"
+        if alert_key in self._position_snapshot_alerted:
+            return
+        notifier = getattr(self.pb_client, "notify_system_event", None)
+        if not callable(notifier):
+            return
+        self._position_snapshot_alerted.add(alert_key)
+        error = str((result or {}).get("error") or "position_snapshot_unavailable")
+        try:
+            notifier(
+                "TV 平仓未执行：持仓快照不可用",
+                {
+                    "状态结论": "收到 TV close，但券商持仓快照不可用；系统未取消保护单、未提交平仓单，保留 pending 等待重试。",
+                    "标的": str(symbol or "-").upper(),
+                    "ActionID": rid or "-",
+                    "Broker模式": self.environment,
+                    "原因": error,
+                    "RetryAfter秒": (result or {}).get("retry_after_s", 0),
+                    "AccountDataBackoff": (result or {}).get("account_data_backoff_reason") or error,
+                    "处理建议": "检查 IBKR account data / positions 通道；恢复后该 close action 会重试，必要时人工核对持仓。",
+                },
+                event_type="alert",
+                level="error",
+                source="ibkr_compute",
+                environment=self.environment,
+                message_id=f"ibkr_reverse_close_position_snapshot_unavailable:{self.environment}:{rid or symbol}",
+            )
+        except Exception as exc:
+            logger.debug("Reverse close position snapshot notification failed: %s", exc)
+
+    def _get_positions(self) -> List[Dict[str, Any]]:
+        result = self._get_positions_result()
+        if not result.get("ok"):
             return []
+        return list(result.get("positions") or [])
 
     def _position_quantity(self, symbol: str, positions: List[Dict[str, Any]]) -> float:
         target = str(symbol or "").upper()
@@ -3864,7 +3955,19 @@ class ReverseSignalHandler:
     def _confirm_flat(self, symbol: str) -> Tuple[bool, Dict[str, Any]]:
         last_qty = 0.0
         for attempt in range(1, REVERSE_CONFIRM_ATTEMPTS + 1):
-            positions = self._get_positions()
+            positions_result = self._get_positions_result()
+            if not positions_result.get("ok"):
+                return False, {
+                    "confirmed": False,
+                    "source": "broker_positions",
+                    "attempts": attempt,
+                    "position_qty": None,
+                    "reason": "position_snapshot_unavailable",
+                    "error": str(positions_result.get("error") or "position_snapshot_unavailable"),
+                    "retry_after_s": positions_result.get("retry_after_s"),
+                    "account_data_backoff_reason": positions_result.get("account_data_backoff_reason"),
+                }
+            positions = list(positions_result.get("positions") or [])
             last_qty = self._position_quantity(symbol, positions)
             if last_qty == 0:
                 return True, {

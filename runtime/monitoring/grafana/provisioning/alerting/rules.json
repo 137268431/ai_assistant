@@ -1488,7 +1488,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "max by (service, environment, source) (ibkr_account_buying_power_guard_state{source=\"account_snapshot\", state=\"unavailable\"}) > 0",
+                "expr": "max by (service, environment, source) (ibkr_account_buying_power_guard_state{source=\"account_snapshot\", state=\"unavailable\"}) > bool 0",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -1542,7 +1542,7 @@
             }
           ],
           "dashboardUid": "quant-monitoring-overview",
-          "noDataState": "Alerting",
+          "noDataState": "OK",
           "execErrState": "Error",
           "for": "2m",
           "annotations": {
@@ -1574,7 +1574,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "(max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=\"account_snapshot\"}) < max by (service, environment, source) (ibkr_account_buying_power_block_floor_usd{source=\"account_snapshot\"})) and (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=\"account_snapshot\"}) >= 0)",
+                "expr": "(max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=\"account_snapshot\"}) < bool max by (service, environment, source) (ibkr_account_buying_power_block_floor_usd{source=\"account_snapshot\"})) * (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=\"account_snapshot\"}) >= bool 0)",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -1628,7 +1628,7 @@
             }
           ],
           "dashboardUid": "quant-monitoring-overview",
-          "noDataState": "Alerting",
+          "noDataState": "OK",
           "execErrState": "Error",
           "for": "2m",
           "annotations": {
@@ -1660,7 +1660,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "(max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=\"account_snapshot\"}) < max by (service, environment, source) (ibkr_account_buying_power_warn_floor_usd{source=\"account_snapshot\"})) and (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=\"account_snapshot\"}) >= max by (service, environment, source) (ibkr_account_buying_power_block_floor_usd{source=\"account_snapshot\"}))",
+                "expr": "(max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=\"account_snapshot\"}) < bool max by (service, environment, source) (ibkr_account_buying_power_warn_floor_usd{source=\"account_snapshot\"})) * (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source=\"account_snapshot\"}) >= bool max by (service, environment, source) (ibkr_account_buying_power_block_floor_usd{source=\"account_snapshot\"}))",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -1714,7 +1714,7 @@
             }
           ],
           "dashboardUid": "quant-monitoring-overview",
-          "noDataState": "Alerting",
+          "noDataState": "OK",
           "execErrState": "Error",
           "for": "2m",
           "annotations": {
@@ -1746,7 +1746,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "max by (service, environment, source) (ibkr_account_snapshot_available{source=\"account_snapshot\"}) == 0",
+                "expr": "max by (service, environment, source) (ibkr_account_snapshot_available{source=\"account_snapshot\"}) == bool 0",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -1800,7 +1800,7 @@
             }
           ],
           "dashboardUid": "quant-monitoring-overview",
-          "noDataState": "Alerting",
+          "noDataState": "OK",
           "execErrState": "Error",
           "for": "2m",
           "annotations": {
@@ -1832,7 +1832,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "(ibkr_gateway_reachable == 0) or (ibkr_gateway_session_authenticated == 0) or (ibkr_gateway_websocket_ready == 0)",
+                "expr": "max by (service, environment) (label_replace(ibkr_gateway_reachable == bool 0, \"runtime_check\", \"gateway_reachable\", \"service\", \".*\") or label_replace(ibkr_gateway_session_authenticated == bool 0, \"runtime_check\", \"session_authenticated\", \"service\", \".*\") or label_replace(ibkr_gateway_websocket_ready == bool 0, \"runtime_check\", \"websocket_ready\", \"service\", \".*\"))",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -1886,7 +1886,7 @@
             }
           ],
           "dashboardUid": "quant-monitoring-overview",
-          "noDataState": "Alerting",
+          "noDataState": "OK",
           "execErrState": "Error",
           "for": "2m",
           "annotations": {
@@ -1918,7 +1918,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "ibkr_account_data_circuit_active == 1",
+                "expr": "max by (service, environment) (ibkr_account_data_circuit_active) == bool 1",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -1972,7 +1972,7 @@
             }
           ],
           "dashboardUid": "quant-monitoring-overview",
-          "noDataState": "Alerting",
+          "noDataState": "OK",
           "execErrState": "Error",
           "for": "2m",
           "annotations": {

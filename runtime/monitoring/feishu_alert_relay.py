@@ -241,6 +241,10 @@ def _clean_time(value: Any) -> str:
     return text
 
 
+def _grafana_state_reason(annotations: dict[str, str]) -> str:
+    return _first_text(annotations.get("grafana_state_reason"), annotations.get("__grafana_state_reason__"))
+
+
 def _dashboard_url(payload: dict[str, Any], alerts: list[dict[str, Any]]) -> str:
     for key in ("panelURL", "dashboardURL", "generatorURL"):
         for alert in alerts:
@@ -260,6 +264,9 @@ def _alert_block(idx: int, alert: dict[str, Any], fallback_status: str) -> str:
     item_summary = _first_text(annotations.get("summary"), annotations.get("description"), default="")
     if item_summary:
         lines.append(f"**摘要**: {item_summary}")
+    grafana_reason = _grafana_state_reason(annotations)
+    if grafana_reason:
+        lines.append(f"**Grafana 原因**: {grafana_reason}")
     source = _alert_source_line(labels)
     if source and source != "labels unavailable":
         lines.append(f"**标签**: {source}")
@@ -283,6 +290,7 @@ def _build_card(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
     template = _header_template(status, severity)
     summary = _first_text(common_annotations.get("summary"), payload.get("message"), default="Grafana alert notification")
     description = _first_text(common_annotations.get("description"), default="")
+    grafana_reason = _grafana_state_reason(common_annotations)
     dashboard_url = _dashboard_url(payload, alerts)
     max_alerts = _max_alert_items()
     group_line = _label_line(_payload_common_labels(payload) or common_labels, _SUMMARY_LABEL_KEYS, default="")
@@ -295,6 +303,8 @@ def _build_card(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
     ]
     if description and description != summary:
         summary_lines.append(f"**说明**: {description}")
+    if grafana_reason:
+        summary_lines.append(f"**Grafana 原因**: {grafana_reason}")
     if group_line:
         summary_lines.append(f"**分组**: {group_line}")
 

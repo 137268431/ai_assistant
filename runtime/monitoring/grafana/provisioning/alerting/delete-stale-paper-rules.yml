@@ -1,0 +1,9 @@
+apiVersion: 1
+
+deleteRules:
+  - orgId: 1
+    uid: paper_bp_guard_unavailable
+  - orgId: 1
+    uid: paper_bp_remaining_critical
+  - orgId: 1
+    uid: paper_bp_remaining_low

@@ -26,6 +26,7 @@ class _FakePB:
         self.updates = []
         self.acks = []
         self.created = []
+        self.events = []
 
     def get_records(self, collection, filter=None, sort=None, per_page=100, page=1):
         rows = [copy.deepcopy(row) for row in self.records.get(collection, [])]
@@ -69,6 +70,10 @@ class _FakePB:
         }
         self.acks.append(payload)
         return {"ok": True, **payload}
+
+    def notify_system_event(self, title, detail=None, **kwargs):
+        self.events.append({"title": title, "detail": copy.deepcopy(detail or {}), **copy.deepcopy(kwargs)})
+        return {"ok": True}
 
     def set_order_status(self, order_id, status):
         for row in self.records["orders"]:
@@ -187,15 +192,22 @@ class _FakeOrderModifier:
 
 
 class _FakeOrderLifecycle:
-    def __init__(self, position_snapshots):
-        self.position_snapshots = [copy.deepcopy(item) for item in position_snapshots]
+    def __init__(self, position_snapshots=None, position_results=None):
+        self.position_snapshots = [copy.deepcopy(item) for item in (position_snapshots or [])]
+        self.position_results = [copy.deepcopy(item) for item in (position_results or [])]
         self.calls = 0
 
-    def get_positions(self):
+    def get_positions_result(self):
         self.calls += 1
+        if self.position_results:
+            return copy.deepcopy(self.position_results.pop(0))
         if self.position_snapshots:
-            return copy.deepcopy(self.position_snapshots.pop(0))
-        return []
+            return {"ok": True, "positions": copy.deepcopy(self.position_snapshots.pop(0))}
+        return {"ok": True, "positions": []}
+
+    def get_positions(self):
+        result = self.get_positions_result()
+        return copy.deepcopy(result.get("positions") or []) if result.get("ok") else []
 
 
 class _FakeOrderPlacer:
@@ -430,6 +442,79 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
         self.assertFalse(extra["blocked"])
         self.assertTrue(extra["auto_reentry_disabled"])
         self.assertIn("tv_exit_confirmed", extra["reverse_state_path"])
+
+    def test_close_keeps_pending_and_alerts_when_position_snapshot_unavailable(self):
+        reverse = {
+            "id": "rev-close-no-positions",
+            "symbol": "AAPL",
+            "conid": 123,
+            "action_type": "close",
+            "status": "pending",
+            "environment": "live",
+            "priority": 10,
+            "bar_time_ms": 1,
+            "extra": {
+                "origin_signal_id": "sig-close-no-positions",
+                "trade_group_id": "grp-no-positions",
+            },
+        }
+        signals = [
+            {
+                "id": "sig-close-no-positions-row",
+                "signal_id": "sig-close-no-positions",
+                "environment": "live",
+                "symbol": "AAPL",
+                "direction": "long",
+                "status": "protected_active",
+                "extra": {"execution_by_mode": {"live": {"status": "filled"}}},
+            }
+        ]
+        orders = [
+            {
+                "id": "tp",
+                "broker_order_id": "1002",
+                "order_id": "1002",
+                "role": "take_profit",
+                "trade_group_id": "grp-no-positions",
+                "status": "Submitted",
+                "environment": "live",
+            }
+        ]
+        pb = _FakePB(reverse_rows=[reverse], signal_rows=signals, order_rows=orders)
+        lifecycle = _FakeOrderLifecycle(
+            position_results=[
+                {
+                    "ok": False,
+                    "positions": [],
+                    "error": "account_data_circuit_open:positions_timeout:retry_after_s=60.0",
+                    "retry_after_s": 60.0,
+                    "account_data_backoff_reason": "positions_timeout",
+                }
+            ]
+        )
+        modifier = _FakeOrderModifier(pb)
+        placer = _FakeOrderPlacer()
+
+        ReverseSignalHandler(
+            pb,
+            order_lifecycle=lifecycle,
+            order_modifier=modifier,
+            order_placer=placer,
+            environment="live",
+        ).check_and_process()
+
+        updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        extra = updated["extra"]
+        self.assertEqual("pending", updated["status"])
+        self.assertIn("position_snapshot_unavailable", updated["reason"])
+        self.assertEqual("pending_retry", extra["result_status"])
+        self.assertEqual("skipped", extra["cancel_old_order"])
+        self.assertEqual("skipped", extra["close_old_position"])
+        self.assertEqual([], modifier.cancelled)
+        self.assertEqual([], placer.calls)
+        self.assertEqual(1, len(pb.events))
+        self.assertEqual("TV 平仓未执行：持仓快照不可用", pb.events[0]["title"])
+        self.assertEqual("error", pb.events[0]["level"])
 
     def test_close_without_real_order_evidence_expires_without_gateway_lookup(self):
         reverse = {

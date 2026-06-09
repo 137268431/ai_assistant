@@ -96,6 +96,7 @@ class OrderLifecycle:
         self._order_flow_risk_error_count = 0
         self._last_order_flow_risk_action_ms = 0
         self._protection_missing_alerted: set[str] = set()
+        self._last_eod_close_result: dict[str, Any] = {}
         self._account_data_backoff_until = 0.0
         self._account_data_backoff_reason = ""
         self._account_data_backoff_last_warn_at = 0.0
@@ -282,6 +283,37 @@ class OrderLifecycle:
             self._account_data_backoff_last_warn_at = now
         return True
 
+    def _account_data_unavailable_result(self, *, operation: str, reason: str) -> dict[str, Any]:
+        retry_after_s = round(self._account_data_backoff_remaining(), 1)
+        return {
+            "ok": False,
+            "positions": [],
+            "operation": operation,
+            "source": "broker_positions",
+            "reason": "position_snapshot_unavailable",
+            "error": str(reason or "position_snapshot_unavailable"),
+            "retry_after_s": retry_after_s,
+            "account_data_backoff_reason": str(self._account_data_backoff_reason or reason or ""),
+            "account_data_backoff_active": retry_after_s > 0,
+        }
+
+    def _notify_position_snapshot_unavailable(self, title: str, detail: dict[str, Any], *, message_id: str = "") -> None:
+        notifier = getattr(self.pb_client, "notify_system_event", None)
+        if not callable(notifier):
+            return
+        try:
+            notifier(
+                title,
+                detail,
+                event_type="alert",
+                level="error",
+                source="ibkr_compute",
+                environment=self.environment,
+                message_id=message_id,
+            )
+        except Exception as exc:
+            logger.debug("Position snapshot unavailable notification failed: %s", exc)
+
     def _eod_close_time(self) -> tuple[int, int]:
         raw_value = self._get_config_value(
             "eod_close_time",
@@ -296,6 +328,58 @@ class OrderLifecycle:
         except Exception:
             pass
         return DEFAULT_EOD_CLOSE_TIME
+
+    def _eod_close_latest_time(self) -> tuple[int, int]:
+        raw_value = self._get_config_value("eod_close_latest_time", "20:00").strip()
+        try:
+            hour_text, minute_text = raw_value.split(":", 1)
+            hour = int(hour_text)
+            minute = int(minute_text)
+            if 0 <= hour <= 23 and 0 <= minute <= 59:
+                return hour, minute
+        except Exception:
+            pass
+        return (20, 0)
+
+    def _mark_eod_close_window_closed(self, et_now: datetime) -> dict[str, Any]:
+        eod_close_hour, eod_close_minute = self._eod_close_time()
+        latest_hour, latest_minute = self._eod_close_latest_time()
+        payload = {
+            "ok": False,
+            "closed": 0,
+            "errors": 0,
+            "position_snapshot_ok": False,
+            "position_snapshot_unavailable": False,
+            "reason": "eod_close_window_closed",
+            "error": "eod_close_window_closed",
+            "eod_closed_today": True,
+            "eod_close_time": f"{eod_close_hour:02d}:{eod_close_minute:02d}",
+            "eod_close_latest_time": f"{latest_hour:02d}:{latest_minute:02d}",
+            "now_et": et_now.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        self._eod_closed_today = True
+        self._last_eod_close_result = dict(payload)
+        logger.error(
+            "EOD close skipped: close window closed now=%s latest=%02d:%02d",
+            payload["now_et"],
+            latest_hour,
+            latest_minute,
+        )
+        market_date = et_now.strftime("%Y-%m-%d")
+        self._notify_position_snapshot_unavailable(
+            "EOD 平仓未执行：平仓窗口已过",
+            {
+                "状态结论": "runtime 在 EOD 平仓时间之后才恢复/重启，但已超过允许自动平仓窗口；系统未提交新的平仓单，避免隔夜/闭市错误下单。",
+                "Broker模式": self.environment,
+                "交易日": market_date,
+                "EOD时间": payload["eod_close_time"],
+                "最晚自动平仓时间": payload["eod_close_latest_time"],
+                "当前ET": payload["now_et"],
+                "处理建议": "人工核对 IBKR 持仓；如仍需处理，请在交易允许时段手动平仓或重新授权自动处理。",
+            },
+            message_id=f"ibkr_eod_close_window_closed:{self.environment}:{market_date}",
+        )
+        return payload
 
     def _position_limit_max(self) -> int:
         return max(0, self._get_config_int("position_limit_max", DEFAULT_POSITION_LIMIT_MAX))
@@ -898,20 +982,48 @@ class OrderLifecycle:
         return bool(self.strategy_capacity_snapshot().get("capacity_full"))
 
 
-    def get_positions(self, acct_id: str = None) -> List[Dict]:
+    def get_positions_result(self, acct_id: str = None) -> dict[str, Any]:
         if self._should_skip_account_data_fetch(operation="positions"):
-            return []
+            reason = str(self._account_data_backoff_reason or "").strip()
+            if not reason and self._should_skip_account_data_during_order_pressure("positions"):
+                reason = "order_pressure"
+            return self._account_data_unavailable_result(
+                operation="positions",
+                reason=reason or "account_data_backoff",
+            )
         try:
             positions = list(self.broker.list_positions() or [])
             self._account_data_backoff_until = 0.0
             self._account_data_backoff_reason = ""
-            return positions
+            return {
+                "ok": True,
+                "positions": positions,
+                "operation": "positions",
+                "source": "broker_positions",
+                "reason": "ok",
+                "error": "",
+                "retry_after_s": 0.0,
+                "account_data_backoff_reason": "",
+                "account_data_backoff_active": False,
+            }
         except Exception as exc:
             if self._is_account_data_unavailable_error(exc):
                 self._mark_account_data_backoff(exc, operation="positions")
-                return []
+                return self._account_data_unavailable_result(
+                    operation="positions",
+                    reason=self._account_data_error_text(exc) or "positions_unavailable",
+                )
             logger.warning("Failed to get positions: %s", exc)
+            return self._account_data_unavailable_result(
+                operation="positions",
+                reason=self._account_data_error_text(exc) or "positions_unavailable",
+            )
+
+    def get_positions(self, acct_id: str = None) -> List[Dict]:
+        result = self.get_positions_result(acct_id)
+        if not result.get("ok"):
             return []
+        return list(result.get("positions") or [])
 
     def get_account_summary(self, acct_id: str = None) -> Dict:
         if self._should_skip_account_data_fetch(operation="account_summary"):
@@ -959,9 +1071,45 @@ class OrderLifecycle:
             return {"ok": False, "error": str(exc)}
 
     def eod_close_all(self, acct_id: str = None) -> Dict:
-        positions = self.get_positions(acct_id)
+        position_result = self.get_positions_result(acct_id)
+        if not position_result.get("ok"):
+            eod_close_hour, eod_close_minute = self._eod_close_time()
+            market_date = datetime.now(ET).strftime("%Y-%m-%d")
+            error = str(position_result.get("error") or "position_snapshot_unavailable")
+            payload = {
+                "ok": False,
+                "closed": 0,
+                "errors": 0,
+                "position_snapshot_ok": False,
+                "position_snapshot_unavailable": True,
+                "reason": "position_snapshot_unavailable",
+                "error": error,
+                "retry_after_s": position_result.get("retry_after_s", 0.0),
+                "account_data_backoff_reason": position_result.get("account_data_backoff_reason") or error,
+                "eod_closed_today": False,
+                "eod_close_time": f"{eod_close_hour:02d}:{eod_close_minute:02d}",
+            }
+            self._last_eod_close_result = dict(payload)
+            logger.error("EOD close skipped: position snapshot unavailable: %s", error)
+            self._notify_position_snapshot_unavailable(
+                "EOD 平仓未执行：持仓快照不可用",
+                {
+                    "状态结论": "到达 EOD 平仓窗口，但券商持仓快照不可用；系统未取消保护单、未提交平仓单、未标记 EOD 完成。",
+                    "Broker模式": self.environment,
+                    "交易日": market_date,
+                    "EOD时间": payload["eod_close_time"],
+                    "原因": error,
+                    "RetryAfter秒": payload["retry_after_s"],
+                    "处理建议": "检查 IBKR account data / positions 通道；恢复后让生命周期循环重试，或人工确认持仓后手动处理。",
+                },
+                message_id=f"ibkr_eod_position_snapshot_unavailable:{self.environment}:{market_date}",
+            )
+            return payload
+
+        positions = list(position_result.get("positions") or [])
         closed = 0
         errors = 0
+        error_items: list[dict[str, Any]] = []
 
         if self.order_modifier:
             self.order_modifier.cancel_all_orders(acct_id)
@@ -997,11 +1145,54 @@ class OrderLifecycle:
                 logger.info("EOD close: %s %s %s shares", symbol, direction, abs(position_qty))
             else:
                 errors += 1
+                error_items.append(
+                    {
+                        "symbol": symbol,
+                        "direction": direction,
+                        "quantity": abs(int(round(position_qty))),
+                        "error": str(result.get("error") or "close_failed"),
+                        "result": dict(result or {}),
+                    }
+                )
                 logger.error("EOD close failed for %s: %s", symbol, result.get("error"))
 
         self._eod_closed_today = True
+        payload = {
+            "ok": errors == 0,
+            "closed": closed,
+            "errors": errors,
+            "position_snapshot_ok": True,
+            "position_snapshot_unavailable": False,
+            "positions_seen": len(positions),
+            "error_items": error_items,
+            "eod_closed_today": True,
+        }
+        self._last_eod_close_result = dict(payload)
+        if error_items:
+            market_date = datetime.now(ET).strftime("%Y-%m-%d")
+            self._notify_position_snapshot_unavailable(
+                "EOD 平仓失败：需要人工确认",
+                {
+                    "状态结论": "EOD 持仓快照读取成功，但至少一个平仓单提交或成交确认失败；系统已停止重复提交以避免重复平仓。",
+                    "Broker模式": self.environment,
+                    "交易日": market_date,
+                    "失败数量": len(error_items),
+                    "失败标的": ",".join(item.get("symbol") or "-" for item in error_items),
+                    "失败明细": [
+                        {
+                            "symbol": item.get("symbol"),
+                            "direction": item.get("direction"),
+                            "quantity": item.get("quantity"),
+                            "error": item.get("error"),
+                        }
+                        for item in error_items
+                    ],
+                    "处理建议": "立即核对 IBKR 持仓、open orders 和成交回报；确认没有重复单后再人工处理剩余持仓。",
+                },
+                message_id=f"ibkr_eod_close_failed:{self.environment}:{market_date}",
+            )
         logger.info("EOD close complete: %d closed, %d errors", closed, errors)
-        return {"closed": closed, "errors": errors}
+        return payload
 
     def _eod_close_link_context(self, symbol: str) -> dict[str, str]:
         rows = self._load_live_order_rows_for_symbol(symbol)
@@ -3246,8 +3437,12 @@ class OrderLifecycle:
 
             eod_close_hour, eod_close_minute = self._eod_close_time()
             if (et_now.hour, et_now.minute) >= (eod_close_hour, eod_close_minute) and not self._eod_closed_today:
-                logger.info("EOD close triggered at %s", et_now.strftime("%H:%M:%S"))
-                self.eod_close_all()
+                latest_hour, latest_minute = self._eod_close_latest_time()
+                if (et_now.hour, et_now.minute) >= (latest_hour, latest_minute):
+                    self._mark_eod_close_window_closed(et_now)
+                else:
+                    logger.info("EOD close triggered at %s", et_now.strftime("%H:%M:%S"))
+                    self.eod_close_all()
 
             positions = self.get_positions()
             self._sync_positions_to_pb_from_snapshot(positions)
@@ -3324,6 +3519,7 @@ class OrderLifecycle:
             "environment": self.environment,
             "eod_closed_today": self._eod_closed_today,
             "eod_close_time": f"{eod_close_hour:02d}:{eod_close_minute:02d}",
+            "last_eod_close_result": dict(self._last_eod_close_result or {}),
             "eod_keep_symbols": sorted(self._keep_symbols()),
             "fixed_position_symbols": sorted(self._fixed_position_symbols()),
             "daily_sl_count": sl_count,
