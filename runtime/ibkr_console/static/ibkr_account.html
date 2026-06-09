@@ -197,7 +197,7 @@
             return headers;
         }
 
-        async function requestAccountJson(path, { method = 'GET', body = null, timeoutMs = 12000, timeoutLabel = '请求', force = false, cacheProfile = '' } = {}) {
+        async function requestAccountJson(path, { method = 'GET', body = null, timeoutMs = 12000, timeoutLabel = '请求', force = false, cacheProfile = '', params = {} } = {}) {
             const controller = typeof AbortController === 'function' ? new AbortController() : null;
             const timer = controller ? setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs) || 12000)) : null;
             const methodText = String(method || 'GET').toUpperCase();
@@ -208,7 +208,7 @@
             };
             if (body) options.body = JSON.stringify(body);
             try {
-                const requestPath = buildPageUrl(path, {}, { environment: currentEnvironment });
+                const requestPath = buildPageUrl(path, params || {}, { environment: currentEnvironment });
                 if (methodText === 'GET' && typeof cachedPageJson === 'function') {
                     return await cachedPageJson(requestPath, {
                         ...options,
@@ -246,7 +246,10 @@
                 return data;
             } catch (error) {
                 if (error?.name === 'AbortError') {
-                    throw new Error(`${timeoutLabel}超时（${Math.round((Math.max(1000, Number(timeoutMs) || 12000)) / 1000)}s），请稍后重试或检查 API / Runtime`);
+                    const timeoutError = new Error(`${timeoutLabel}超时（${Math.round((Math.max(1000, Number(timeoutMs) || 12000)) / 1000)}s），请稍后重试或检查 API / Runtime`);
+                    timeoutError.code = 'ACCOUNT_REQUEST_TIMEOUT';
+                    timeoutError.timeoutMs = Math.max(1000, Number(timeoutMs) || 12000);
+                    throw timeoutError;
                 }
                 throw error;
             } finally {
@@ -2781,12 +2784,18 @@
             if (!initAuth()) return;
             const refreshInfo = document.getElementById('refreshInfo');
             refreshInfo.textContent = '刷新中...';
+            const fastSnapshot = !showFeedback;
             try {
                 const snapshot = await requestAccountJson('/api/custom/ibkr/account_snapshot', {
-                    timeoutMs: 20000,
-                    timeoutLabel: '账户快照',
+                    timeoutMs: fastSnapshot ? 8000 : 20000,
+                    timeoutLabel: fastSnapshot ? '账户快速快照' : '账户快照',
                     force: showFeedback,
                     cacheProfile: 'runtimeStatus',
+                    params: fastSnapshot ? {
+                        snapshot_profile: 'orders_fast',
+                        orders_fast: '1',
+                        prefer_stale: '1',
+                    } : {},
                 });
                 latestSnapshot = snapshot;
                 renderBlocker(snapshot);
@@ -2797,7 +2806,7 @@
                 renderHistoryOrders(snapshot);
                 renderTicketPreview();
                 setPageRefreshTime(snapshot.fetched_at || new Date());
-                refreshInfo.textContent = '账户状态已加载';
+                refreshInfo.textContent = fastSnapshot || snapshot?.orders_fast ? '账户状态已快速加载' : '账户状态已加载';
                 void loadAccountTargetSummary(Boolean(showFeedback));
                 if (showFeedback) showToast('账户状态已刷新');
             } catch (error) {
@@ -2816,13 +2825,20 @@
             }
         }
 
-        async function runAction(label, path, body, successMessage) {
+        function isAccountRequestTimeout(error) {
+            return error?.code === 'ACCOUNT_REQUEST_TIMEOUT' || String(error?.message || '').includes('超时');
+        }
+
+        async function runAction(label, path, body, successMessage, options = {}) {
             if (actionBusy) return;
             setActionState(true);
+            const actionOptions = options || {};
             try {
                 const payload = await requestAccountJson(path, {
                     method: 'POST',
-                    body: buildModePayload(body, { brokerMode: currentEnvironment, dataEnvironment: getSharedDataEnvironment() })
+                    body: buildModePayload(body, { brokerMode: currentEnvironment, dataEnvironment: getSharedDataEnvironment() }),
+                    timeoutMs: actionOptions.timeoutMs || 45000,
+                    timeoutLabel: actionOptions.timeoutLabel || label || '操作'
                 });
                 latestSnapshot = payload.snapshot || latestSnapshot;
                 if (payload.snapshot) {
@@ -2840,7 +2856,12 @@
                 showToast(message || `${label} 已执行`);
                 return payload;
             } catch (error) {
-                showToast(`${label} 失败: ${error.message || error}`);
+                if (isAccountRequestTimeout(error)) {
+                    showToast(actionOptions.timeoutMessage || `${label} 请求已发出但等待确认超时，请刷新账户状态核对是否已提交`);
+                    setTimeout(() => loadAccountSnapshot(false), 1200);
+                } else {
+                    showToast(`${label} 失败: ${error.message || error}`);
+                }
                 return false;
             } finally {
                 setActionState(false);
@@ -2914,7 +2935,7 @@
             }, `确认对 ${position.symbol} 发起真实限价平仓？\n数量: ${formatQty(Math.abs(qty))}`);
             if (!confirmed) return;
             const actionPayload = await runAction(
-                '平仓',
+                '限价平仓',
                 '/api/custom/ibkr/positions/close',
                 {
                     symbol: position.symbol,
@@ -2944,9 +2965,14 @@
                     const protection = payload?.result?.protection_cancel || {};
                     const cancelled = Array.isArray(protection.cancelled_order_ids) ? protection.cancelled_order_ids.length : 0;
                     const errors = Array.isArray(protection.errors) ? protection.errors.length : 0;
-                    if (errors > 0) return `${position.symbol} 平仓已提交，保护单撤销失败 ${errors} 个`;
-                    if (cancelled > 0) return `${position.symbol} 平仓已提交，已撤保护单 ${cancelled} 个`;
-                    return `${position.symbol} 平仓请求已发送，未发现需撤的保护单`;
+                    if (errors > 0) return `${position.symbol} 限价平仓已提交，成交前持仓仍可能显示未平；保护单撤销失败 ${errors} 个`;
+                    if (cancelled > 0) return `${position.symbol} 限价平仓已提交，成交前持仓仍可能显示未平；已撤保护单 ${cancelled} 个`;
+                    return `${position.symbol} 限价平仓已提交，成交前持仓仍可能显示未平；未发现需撤保护单`;
+                },
+                {
+                    timeoutMs: 60000,
+                    timeoutLabel: '限价平仓',
+                    timeoutMessage: `${position.symbol} 限价平仓请求可能已提交但确认超时，请刷新账户状态查看挂单/成交`,
                 }
             );
             if (!actionPayload || !localCloseGroupId) return;
@@ -2958,6 +2984,8 @@
                         source: 'account_limit_close',
                         reason: '账户页真实限价平仓后关闭交易组',
                     }, { brokerMode: currentEnvironment, dataEnvironment: getSharedDataEnvironment() }),
+                    timeoutMs: 30000,
+                    timeoutLabel: '本地交易组关闭',
                 });
                 showToast(`${position.symbol} 本地交易组已关闭`);
                 setTimeout(() => loadAccountSnapshot(false), 800);

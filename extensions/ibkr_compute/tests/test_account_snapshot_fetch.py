@@ -292,6 +292,48 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertEqual(0, service.order_lifecycle.positions_calls)
         self.assertEqual("", payload["errors"]["positions"])
 
+    def test_account_snapshot_preserves_already_normalized_positions(self):
+        class _NormalizedPositionLifecycle(_SnapshotLifecycle):
+            def get_account_snapshot(self, _account_id):
+                self.snapshot_calls += 1
+                return {
+                    "summary": {"AccountCode": {"value": "DU123"}, "NetLiquidation": {"value": "1000000"}},
+                    "positions": [
+                        {
+                            "symbol": "MSTR",
+                            "conid": 272110,
+                            "quantity": -39,
+                            "direction": "short",
+                            "avg_cost": 127.34,
+                            "avg_price": 127.34,
+                            "market_price": 126.2,
+                            "market_value": -4921.8,
+                            "unrealized_pnl": 44.52,
+                            "realized_pnl": 0,
+                            "account": "DU123",
+                            "currency": "USD",
+                            "asset_class": "STK",
+                            "raw": {
+                                "ticker": "MSTR",
+                                "position": -39,
+                                "mktPrice": 126.2,
+                                "avgCost": 127.34,
+                            },
+                        }
+                    ],
+                }
+
+        app = _FakeApiApp()
+        service = _SnapshotService(_NormalizedPositionLifecycle())
+
+        payload = _with_fake_api_app(app, lambda: _build_ibkr_account_snapshot(service, include_pnl=False))
+
+        self.assertEqual(1, payload["counts"]["positions"])
+        self.assertEqual(1, payload["counts"]["open_positions"])
+        self.assertEqual("MSTR", payload["positions"][0]["symbol"])
+        self.assertEqual(-39.0, payload["positions"][0]["quantity"])
+        self.assertEqual("short", payload["positions"][0]["direction"])
+
     def test_account_snapshot_empty_cache_single_flight(self):
         app = _FakeApiApp()
         lifecycle = _SnapshotLifecycle(delay=0.05)

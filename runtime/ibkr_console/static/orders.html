@@ -785,7 +785,12 @@
             brokerLiveError = '';
             renderBrokerLivePanel();
             try {
-                const requestPath = buildPageUrl('/api/custom/ibkr/account_snapshot', {}, { environment: currentEnvironment });
+                const requestPath = buildPageUrl('/api/custom/ibkr/account_snapshot', {
+                    snapshot_profile: 'orders_fast',
+                    orders_fast: '1',
+                    orders_open_only: '1',
+                    prefer_stale: '1',
+                }, { environment: currentEnvironment });
                 if (typeof cachedPageJson === 'function') {
                     const payload = await cachedPageJson(requestPath, {
                         headers: getOrderActionHeaders(),
@@ -2535,7 +2540,7 @@
                 } catch (syncError) {
                     console.warn('[Orders] 本地交易组状态同步失败:', syncError);
                 }
-                showToast(`已发送真实平仓请求，${describeProtectionCancel(result)}`);
+                showToast(`限价平仓已提交，成交前持仓仍可能显示未平；${describeProtectionCancel(result)}`);
                 loadOrders({ showLoadingState: false });
             } catch (error) {
                 showToast(`平仓失败: ${error.message}`);

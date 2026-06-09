@@ -11,7 +11,11 @@ for src_root in SERVICE_SRC_ROOTS:
     if str(src_root) not in sys.path:
         sys.path.insert(0, str(src_root))
 
-from ibkr_api.home.dashboard import build_home_dashboard_response
+from ibkr_api.home.dashboard import (
+    _load_execution_fills_for_orders,
+    _load_linked_entry_orders,
+    build_home_dashboard_response,
+)
 from ibkr_api.home.current_metrics import publish_current_signal_metrics, summarize_current_signal_counts
 from ibkr_api.home.market import build_home_market_response
 from ibkr_api.app_core.route_cache import RouteSWRCache, request_cache_bypass, canonical_cache_key
@@ -152,6 +156,94 @@ def _nested_runtime_account_request(*, positions=None, live_open_orders=None, li
 
 
 class HomeOverviewApiTest(unittest.TestCase):
+    def test_dashboard_uses_fast_runtime_account_snapshot(self):
+        calls = []
+
+        def runtime_request(method, base_url, path, params=None, timeout=0, **kwargs):
+            calls.append({"method": method, "base_url": base_url, "path": path, "params": list(params or []), "timeout": timeout})
+            return _runtime_account_request(positions=[], live_open_orders=[])(method, base_url, path, params=params, timeout=timeout, **kwargs)
+
+        payload, status = build_home_dashboard_response(
+            _HomePB({"ibkr_signals": [], "ibkr_reverse_signals": [], "orders": [], "ibkr_execution_fills": []}),
+            payload={"broker_mode": "paper", "market_data_mode": "live", "market_date": "2026-04-23"},
+            time_strings=lambda: {"date": "2026-04-23"},
+            request_json_request=runtime_request,
+            runtime_base_url="http://runtime.local",
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(1, len(calls))
+        self.assertEqual("/ibkr/account", calls[0]["path"])
+        params = dict(calls[0]["params"])
+        self.assertEqual("0", params["include_pnl"])
+        self.assertEqual("1", params["orders_fast"])
+        self.assertEqual("1", params["orders_open_only"])
+        self.assertEqual("orders_fast", params["snapshot_profile"])
+
+    def test_execution_fills_load_once_by_day_and_filter_locally(self):
+        start_ms = 1776916800000
+        rows = {
+            "ibkr_execution_fills": [
+                {"environment": "paper", "exec_id": f"e-{idx}", "order_id": str(idx), "trade_time_ms": start_ms + idx}
+                for idx in range(30)
+            ]
+            + [
+                {"environment": "paper", "exec_id": "old", "order_id": "1", "trade_time_ms": start_ms - 1000},
+                {"environment": "paper", "exec_id": "other-order", "order_id": "999", "trade_time_ms": start_ms + 10},
+            ]
+        }
+        pb = _HomePB(rows)
+
+        fills = _load_execution_fills_for_orders(
+            pb,
+            broker_filter="paper",
+            orders=[{"order_id": str(idx)} for idx in range(30)],
+            start_ms=start_ms,
+            end_ms=start_ms + 10_000,
+        )
+
+        fill_calls = [call for call in pb.calls if call["type"] == "records" and call["collection"] == "ibkr_execution_fills"]
+        self.assertEqual(1, len(fill_calls))
+        self.assertIn("trade_time_ms >=", fill_calls[0]["filter"])
+        self.assertEqual(30, len(fills))
+        self.assertNotIn("old", {row.get("exec_id") for row in fills})
+        self.assertNotIn("other-order", {row.get("exec_id") for row in fills})
+
+    def test_linked_entry_orders_dedupes_repeated_lookup_values(self):
+        pb = _HomePB(
+            {
+                "orders": [
+                    {
+                        "id": "entry-row",
+                        "environment": "paper",
+                        "role": "entry",
+                        "unique_id": "entry-1",
+                        "trade_group_id": "tg-1",
+                        "signal_id": "sig-1",
+                    }
+                ]
+            }
+        )
+
+        entries = _load_linked_entry_orders(
+            pb,
+            broker_filter="paper",
+            orders=[
+                {
+                    "id": f"exit-{idx}",
+                    "environment": "paper",
+                    "role": "take_profit",
+                    "entry_order_unique_id": "entry-1",
+                }
+                for idx in range(50)
+            ],
+        )
+
+        order_calls = [call for call in pb.calls if call["type"] == "records" and call["collection"] == "orders"]
+        self.assertEqual(1, len(order_calls))
+        self.assertEqual(["entry-1"], [row.get("unique_id") for row in entries])
+
     def test_current_signal_summary_excludes_terminal_statuses_by_broker_mode(self):
         rows = [
             {"direction": "long", "status": "pending"},

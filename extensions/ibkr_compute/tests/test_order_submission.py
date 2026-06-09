@@ -190,6 +190,32 @@ class FakeOrderAndSignalPBClient(FakeOrderPBClient):
         return dict(self.record)
 
 
+class StrictNotifyOrderAndSignalPBClient(FakeOrderAndSignalPBClient):
+    def notify_system_event(
+        self,
+        title,
+        detail=None,
+        *,
+        event_type="status_change",
+        level="info",
+        source="ibkr_compute",
+        environment=None,
+        message_id="",
+    ):
+        self.system_events.append(
+            {
+                "title": title,
+                "detail": dict(detail or {}),
+                "event_type": event_type,
+                "level": level,
+                "source": source,
+                "environment": environment,
+                "message_id": message_id,
+            }
+        )
+        return {"ok": True}
+
+
 class FakeSignalPBClient:
     def __init__(self, record):
         self.record = dict(record)
@@ -2368,7 +2394,7 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
         self.assertEqual("SMART", result["close_execution_plan"]["exchange"])
 
     def test_unconfirmed_market_close_prewrites_pending_close_mapping(self):
-        pb_client = FakeOrderAndSignalPBClient(
+        pb_client = StrictNotifyOrderAndSignalPBClient(
             {
                 "id": "sig-ba-row",
                 "signal_id": "sig-ba",
@@ -2414,7 +2440,7 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
         self.assertEqual("order_submission_unconfirmed", close_row["extra"]["submission_error"])
 
     def test_rejected_market_close_does_not_prewrite_active_close_mapping(self):
-        pb_client = FakeOrderAndSignalPBClient(
+        pb_client = StrictNotifyOrderAndSignalPBClient(
             {
                 "id": "sig-ba-row",
                 "signal_id": "sig-ba",
@@ -2447,6 +2473,8 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
         self.assertEqual([], pb_client.upserts)
         self.assertEqual(1, len(pb_client.system_events))
         self.assertEqual("平仓未执行：券商拒绝或提交失败", pb_client.system_events[0]["title"])
+        self.assertEqual("ibkr_close_execution", pb_client.system_events[0]["event_type"])
+        self.assertNotIn("category", pb_client.system_events[0])
         self.assertEqual("broker_rejected_order", pb_client.system_events[0]["detail"]["错误"])
 
     def test_pb_upserts_use_canonical_bracket_trade_group_and_oco_metadata(self):

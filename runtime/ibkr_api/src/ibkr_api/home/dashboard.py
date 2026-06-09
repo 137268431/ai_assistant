@@ -341,9 +341,9 @@ def _build_market_time_filter(environment_filter: str, market_date: str, start_m
 
 def _runtime_account_timeout_seconds() -> float:
     try:
-        return max(1.0, float(os.environ.get("IBKR_HOME_ACCOUNT_TIMEOUT_SEC", "15.0") or 15.0))
+        return max(1.0, float(os.environ.get("IBKR_HOME_ACCOUNT_TIMEOUT_SEC", "5.0") or 5.0))
     except Exception:
-        return 15.0
+        return 5.0
 
 
 def _normalize_runtime_account_error(error: Any, *, status_code: int = 0) -> str:
@@ -395,7 +395,15 @@ def _load_runtime_account_payload(
             "GET",
             runtime_base_url,
             "/ibkr/account",
-            params=[("broker_mode", broker_mode), ("environment", broker_mode), ("include_pnl", "0")],
+            params=[
+                ("broker_mode", broker_mode),
+                ("environment", broker_mode),
+                ("include_pnl", "0"),
+                ("orders_fast", "1"),
+                ("orders_fast_open_only", "1"),
+                ("orders_open_only", "1"),
+                ("snapshot_profile", "orders_fast"),
+            ],
             timeout=_runtime_account_timeout_seconds(),
         )
     except Exception as exc:
@@ -791,6 +799,8 @@ def _load_execution_fills_for_orders(
     *,
     broker_filter: str,
     orders: list[dict[str, Any]],
+    start_ms: int = 0,
+    end_ms: int = 0,
 ) -> list[dict[str, Any]]:
     order_ids: list[str] = []
     seen: set[str] = set()
@@ -801,6 +811,34 @@ def _load_execution_fills_for_orders(
                 order_ids.append(order_id)
     if not order_ids:
         return []
+
+    if start_ms > 0 and end_ms > start_ms:
+        try:
+            day_fills = load_records(
+                pb,
+                "ibkr_execution_fills",
+                filter_expr=(
+                    f'environment = "{broker_filter}" && '
+                    f"trade_time_ms >= {int(start_ms)} && trade_time_ms < {int(end_ms)}"
+                ),
+                sort="trade_time_ms,created",
+                per_page=500,
+                max_pages=10,
+            )
+        except Exception:
+            day_fills = []
+        if day_fills:
+            order_id_set = set(order_ids)
+            filtered_fills: list[dict[str, Any]] = []
+            for fill in day_fills:
+                fill_order_id = to_text(fill.get("order_id") or fill.get("broker_order_id") or fill.get("ib_order_id"))
+                if fill_order_id not in order_id_set:
+                    continue
+                fill_time_ms = to_int(fill.get("trade_time_ms") or fill.get("bar_time_ms"), 0)
+                if fill_time_ms > 0 and (fill_time_ms < start_ms or fill_time_ms >= end_ms):
+                    continue
+                filtered_fills.append(fill)
+            return filtered_fills
 
     fills: list[dict[str, Any]] = []
     for offset in range(0, len(order_ids), 24):
@@ -830,11 +868,14 @@ def _load_linked_entry_orders(pb: Any, *, broker_filter: str, orders: list[dict[
         "trade_group_id": [],
         "signal_id": [],
     }
-    existing: set[str] = {
-        to_text(order.get("id") or _order_field(order, "unique_id"))
-        for order in orders or []
-        if isinstance(order, dict)
-    }
+    existing: set[str] = set()
+    for order in orders or []:
+        if not isinstance(order, dict):
+            continue
+        for value in (order.get("id"), _order_field(order, "unique_id")):
+            text = to_text(value)
+            if text:
+                existing.add(text)
     for order in orders or []:
         if _is_entry_order(order):
             continue
@@ -853,8 +894,18 @@ def _load_linked_entry_orders(pb: Any, *, broker_filter: str, orders: list[dict[
     entries: list[dict[str, Any]] = []
     seen = set(existing)
     for field_name, values in values_by_field.items():
-        for offset in range(0, len(values), 24):
-            value_filter = _or_equals_filter(field_name, values[offset:offset + 24], limit=24)
+        unique_values: list[str] = []
+        seen_values: set[str] = set()
+        for value in values:
+            text = to_text(value)
+            if not text or text in seen_values:
+                continue
+            if field_name == "unique_id" and text in existing:
+                continue
+            seen_values.add(text)
+            unique_values.append(text)
+        for offset in range(0, len(unique_values), 24):
+            value_filter = _or_equals_filter(field_name, unique_values[offset:offset + 24], limit=24)
             if not value_filter:
                 continue
             rows = load_records(
@@ -922,7 +973,13 @@ def build_home_dashboard_response(
     today_orders = load_records(pb, "orders", filter_expr=today_broker_filter, sort="-bar_time_ms,-created", per_page=200, max_pages=40)
     linked_entry_orders = _load_linked_entry_orders(pb, broker_filter=broker_filter, orders=today_orders)
     pnl_orders = [*today_orders, *linked_entry_orders]
-    execution_fills = _load_execution_fills_for_orders(pb, broker_filter=broker_filter, orders=pnl_orders)
+    execution_fills = _load_execution_fills_for_orders(
+        pb,
+        broker_filter=broker_filter,
+        orders=pnl_orders,
+        start_ms=start_ms,
+        end_ms=end_ms,
+    )
     recent_signals = today_signals[:4]
 
     signal_summary = _summarize_signals(

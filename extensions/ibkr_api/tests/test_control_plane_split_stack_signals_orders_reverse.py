@@ -694,6 +694,86 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
         fake_pb.create_record.assert_not_called()
         notify_order_status.assert_not_called()
 
+    def test_build_order_upsert_response_recovers_unique_create_race(self):
+        existing_row = {
+            "id": "order-1",
+            "unique_id": "close_MSTR_20260609_015511",
+            "order_type": "LMT",
+            "order_id": "11291",
+            "broker_order_id": "11291",
+            "symbol": "MSTR",
+            "environment": "paper",
+            "direction": "short",
+            "quantity": 39,
+            "limit_price": 127.46,
+            "status": "Submitted",
+            "filled_qty": 0,
+            "fill_price": 0,
+            "signal_id": "",
+            "trade_group_id": "grp-mstr",
+            "entry_order_unique_id": "entry-mstr",
+            "parent_order_unique_id": "",
+            "sibling_order_unique_id": "",
+            "role": "close",
+            "relation_status": "active",
+            "position_side": "short",
+            "order_time": "2026-06-09 01:55:11",
+            "fill_time": "",
+            "bar_time_ms": 1780984511000,
+            "us_time": "2026-06-09 01:55:11",
+            "cn_time": "2026-06-09 13:55:11",
+            "extra": {"environment": "paper", "role": "close"},
+        }
+        request_payload = {
+            "environment": "paper",
+            "unique_id": "close_MSTR_20260609_015511",
+            "order_type": "LMT",
+            "order_id": "11291",
+            "broker_order_id": "11291",
+            "symbol": "MSTR",
+            "direction": "short",
+            "quantity": 39,
+            "limit_price": 127.46,
+            "status": "Filled",
+            "filled_qty": 39,
+            "fill_price": 127.46,
+            "trade_group_id": "grp-mstr",
+            "entry_order_unique_id": "entry-mstr",
+            "role": "close",
+            "us_time": "2026-06-09 02:05:00",
+            "cn_time": "2026-06-09 14:05:00",
+            "bar_time_ms": 1780985100000,
+        }
+
+        def create_record(collection, data):
+            if collection == "orders":
+                raise RuntimeError(
+                    "pb_request_failed:POST:/api/collections/orders/records:status=400:"
+                    "body={\"data\":{\"environment\":{\"code\":\"validation_not_unique\"},"
+                    "\"unique_id\":{\"code\":\"validation_not_unique\"}}}"
+                )
+            return {**data, "id": f"{collection}-1"}
+
+        fake_pb = _FakePB()
+        fake_pb.get_first_record = mock.Mock(side_effect=[None, existing_row])
+        fake_pb.get_records = mock.Mock(return_value=[])
+        fake_pb.update_record = mock.Mock(side_effect=lambda collection, record_id, data: {**data, "id": record_id})
+        fake_pb.create_record = mock.Mock(side_effect=create_record)
+
+        payload, status_code = build_order_upsert_response(
+            fake_pb,
+            payload=request_payload,
+            normalize_environment=api_app_mod._normalize_environment,
+            escape_filter_string=api_app_mod._escape_filter_string,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["success"])
+        self.assertEqual("Submitted", payload["previous_status"])
+        self.assertEqual("Filled", payload["order"]["status"])
+        self.assertEqual("order-1", payload["order"]["id"])
+        fake_pb.update_record.assert_called_once()
+
     def test_build_order_upsert_response_treats_callback_heartbeat_as_idempotent(self):
         existing_row = {
             "id": "order-1",

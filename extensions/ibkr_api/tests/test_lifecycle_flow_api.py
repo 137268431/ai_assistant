@@ -576,6 +576,63 @@ class LifecycleFlowApiTest(unittest.TestCase):
         self.assertFalse(any(node["type"] == "order_detail_snapshot" for node in payload["nodes"]))
         self.assertTrue(any(node["type"] == "lifecycle_endpoint" for node in payload["nodes"]))
 
+    def test_order_detail_snapshots_are_compressed_by_repeated_status(self):
+        payload, status_code = self.build(
+            {
+                "orders": [
+                    {
+                        "symbol": "AAPL",
+                        "signal_id": "sig_compress",
+                        "trade_group_id": "tg_compress",
+                        "order_id": "4301",
+                        "role": "entry",
+                        "status": "Submitted",
+                        "quantity": 2,
+                        "limit_price": 77,
+                        "bar_time_ms": 2000,
+                    }
+                ],
+                "ibkr_order_details": [
+                    {
+                        "id": f"detail-submitted-{idx}",
+                        "symbol": "AAPL",
+                        "signal_id": "sig_compress",
+                        "trade_group_id": "tg_compress",
+                        "order_id": "4301",
+                        "role": "entry",
+                        "status": "Submitted",
+                        "quantity": 2,
+                        "limit_price": 77,
+                        "bar_time_ms": 2010 + idx,
+                    }
+                    for idx in range(5)
+                ]
+                + [
+                    {
+                        "id": "detail-filled",
+                        "symbol": "AAPL",
+                        "signal_id": "sig_compress",
+                        "trade_group_id": "tg_compress",
+                        "order_id": "4301",
+                        "role": "entry",
+                        "status": "Filled",
+                        "quantity": 2,
+                        "filled_qty": 2,
+                        "fill_price": 77,
+                        "bar_time_ms": 2020,
+                    }
+                ],
+            },
+            {"signal_id": "sig_compress", "trade_group_id": "tg_compress"},
+        )
+
+        self.assertEqual(status_code, 200)
+        snapshots = [event for event in payload["events"] if event["event_type"] == "order_detail_snapshot"]
+        self.assertEqual(3, len(snapshots))
+        self.assertEqual(6, payload["source_summary"]["raw_counts"]["order_details"])
+        self.assertEqual(3, payload["source_summary"]["counts"]["order_details"])
+        self.assertTrue(payload["source_summary"]["order_detail_compression"]["compressed"])
+
     def test_modified_protection_events_include_change_summary_and_times(self):
         payload, status_code = self.build(
             {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -1126,6 +1127,71 @@ def _dedupe_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
+def _order_detail_event_limit() -> int:
+    try:
+        return max(20, int(float(os.environ.get("IBKR_LIFECYCLE_ORDER_DETAIL_EVENT_LIMIT", "300") or 300)))
+    except Exception:
+        return 300
+
+
+def _order_detail_compression_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
+    extra = _json_object(row.get("extra"))
+    relation_status = _lower(first_defined(row.get("relation_status"), extra.get("relation_status")))
+    order_key = _order_id(row) or _safe_text(first_defined(row.get("id"), row.get("unique_id")))
+    if not order_key:
+        order_key = _order_detail_row_identity(row)
+    return (
+        order_key,
+        _role(row),
+        _order_status(row),
+        relation_status,
+    )
+
+
+def _order_detail_row_identity(row: dict[str, Any]) -> str:
+    return "|".join(
+        [
+            _safe_text(row.get("id")),
+            _safe_text(first_defined(row.get("unique_id"), row.get("order_ref"), row.get("cOID"))),
+            _order_id(row),
+            _role(row),
+            _order_status(row),
+            str(_order_time_ms(row) or 0),
+            _safe_text(first_defined(row.get("created"), row.get("updated"))),
+        ]
+    )
+
+
+def _compress_order_detail_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ordered_rows = sorted(
+        [row for row in rows or [] if isinstance(row, dict)],
+        key=lambda item: (_order_time_ms(item) or 9_999_999_999_999, _role(item), _order_id(item), _safe_text(item.get("created"))),
+    )
+    grouped: dict[tuple[str, str, str, str], dict[str, dict[str, Any]]] = {}
+    for row in ordered_rows:
+        key = _order_detail_compression_key(row)
+        bucket = grouped.setdefault(key, {"first": row, "latest": row})
+        bucket["latest"] = row
+
+    kept: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for bucket in grouped.values():
+        for row in (bucket.get("first"), bucket.get("latest")):
+            if not isinstance(row, dict):
+                continue
+            identity = _order_detail_row_identity(row)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            kept.append(row)
+
+    kept.sort(key=lambda item: (_order_time_ms(item) or 9_999_999_999_999, _role(item), _order_id(item), _safe_text(item.get("created"))))
+    limit = _order_detail_event_limit()
+    if len(kept) > limit:
+        return kept[-limit:]
+    return kept
+
+
 def _fill_order_id(row: dict[str, Any]) -> str:
     return _safe_text(first_defined(row.get("order_id"), row.get("broker_order_id"), row.get("ib_order_id")))
 
@@ -1297,6 +1363,15 @@ def _build_live_events(
     signal_id = context.get("signal_id") or ""
     trade_group_id = context.get("trade_group_id") or ""
     fill_source = _fill_source_for_environment(environment)
+    raw_order_details = list(sources.get("order_details") or [])
+    compressed_order_details = _compress_order_detail_rows(raw_order_details)
+    sources["order_details"] = compressed_order_details
+    order_detail_compression = {
+        "raw": len(raw_order_details),
+        "events": len(compressed_order_details),
+        "compressed": len(compressed_order_details) < len(raw_order_details),
+        "limit": _order_detail_event_limit(),
+    }
     events: list[dict[str, Any]] = []
 
     for row in sources["targets"]:
@@ -1975,6 +2050,11 @@ def _build_live_events(
 
     source_summary = {
         "counts": {name: len(rows) for name, rows in sources.items()},
+        "raw_counts": {
+            **{name: len(rows) for name, rows in sources.items()},
+            "order_details": len(raw_order_details),
+        },
+        "order_detail_compression": order_detail_compression,
         "fill_policy": "live/paper prices and quantities come from ibkr_execution_fills first, then verified order actual fill fields; planned signal prices are never treated as fills.",
         "actual_entry_qty": entry_actual_qty,
         "actual_exit_qty": exit_actual_qty,

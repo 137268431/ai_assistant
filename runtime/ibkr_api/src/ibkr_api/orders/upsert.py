@@ -82,6 +82,30 @@ def _resolve_nonzero_planned_limit_price(
     return None
 
 
+def _order_identity_filter(unique_id: str, environment: str, escape_filter_string: Callable[[Any], str]) -> str:
+    return (
+        f'unique_id = "{escape_filter_string(unique_id)}" && '
+        f'environment = "{escape_filter_string(environment)}"'
+    )
+
+
+def _load_existing_order(pb: Any, *, unique_id: str, environment: str, escape_filter_string: Callable[[Any], str]) -> dict[str, Any] | None:
+    row = pb.get_first_record(
+        "orders",
+        filter=_order_identity_filter(unique_id, environment, escape_filter_string),
+    )
+    return row if isinstance(row, dict) else None
+
+
+def _is_unique_order_create_error(exc: Exception) -> bool:
+    text = str(exc or "").lower()
+    return (
+        "validation_not_unique" in text
+        or ("unique" in text and "unique_id" in text and "environment" in text)
+        or ("unique" in text and "orders" in text and "already" in text)
+    )
+
+
 def build_order_record_payload(payload: dict[str, Any], existing_row: dict[str, Any] | None, environment: str) -> dict[str, Any]:
     existing = existing_row or {}
     existing_extra = ensure_object(existing.get("extra"))
@@ -375,14 +399,12 @@ def build_order_upsert_response(
     if not unique_id or not order_type or not symbol:
         return {"error": "Missing required fields"}, 400
 
-    existing_row = pb.get_first_record(
-        "orders",
-        filter=(
-            f'unique_id = "{escape_filter_string(unique_id)}" && '
-            f'environment = "{escape_filter_string(environment)}"'
-        ),
+    existing_dict = _load_existing_order(
+        pb,
+        unique_id=unique_id,
+        environment=environment,
+        escape_filter_string=escape_filter_string,
     )
-    existing_dict = existing_row if isinstance(existing_row, dict) else None
     next_payload = build_order_record_payload(payload, existing_dict, environment)
     is_idempotent = is_idempotent_order_payload(existing_dict, next_payload)
     previous_status = to_text((existing_dict or {}).get("status"))
@@ -395,7 +417,28 @@ def build_order_upsert_response(
         else:
             saved_order = dict(existing_dict)
     else:
-        saved_order = pb.create_record("orders", next_payload)
+        try:
+            saved_order = pb.create_record("orders", next_payload)
+        except Exception as exc:
+            if not _is_unique_order_create_error(exc):
+                raise
+            existing_dict = _load_existing_order(
+                pb,
+                unique_id=unique_id,
+                environment=environment,
+                escape_filter_string=escape_filter_string,
+            )
+            if not existing_dict or not existing_dict.get("id"):
+                raise
+            next_payload = build_order_record_payload(payload, existing_dict, environment)
+            is_idempotent = is_idempotent_order_payload(existing_dict, next_payload)
+            previous_status = to_text((existing_dict or {}).get("status"))
+            status = to_text(next_payload.get("status"))
+            reason = to_text(ensure_object(next_payload.get("extra")).get("reason"))
+            if not is_idempotent:
+                saved_order = pb.update_record("orders", str(existing_dict.get("id")), next_payload)
+            else:
+                saved_order = dict(existing_dict)
 
     if not is_idempotent:
         detail_payload = build_order_detail_payload(
