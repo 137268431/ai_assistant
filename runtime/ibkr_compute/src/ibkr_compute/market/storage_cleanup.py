@@ -150,6 +150,16 @@ STANDARD_POLICIES: tuple[dict[str, Any], ...] = (
         "include_legacy_empty": True,
         "sort": "bar_time_ms",
     },
+    {
+        "collection": "ibkr_cache_snapshots",
+        "mode": "snapshot_cache_retention",
+        "field": "stale_until_ms",
+        "kind": "ms",
+        "retention_days": 1,
+        "reason": "expired_ui_snapshot_cache",
+        "run_once": True,
+        "sort": "stale_until_ms",
+    },
 )
 
 BACKTEST_CHILD_TABLES = (
@@ -885,6 +895,8 @@ class StorageCleanup:
                 "errors": 0,
                 "skipped": True,
             }
+        if mode == "snapshot_cache_retention":
+            return self._run_snapshot_cache_cleanup(policy, now_et, dry_run=dry_run)
         if mode == "truncate_collection":
             pb_filter = _build_environment_filter(environment, include_legacy_empty=bool(policy.get("include_legacy_empty")))
             sql_where, sql_params = self._environment_sql_clause(environment, bool(policy.get("include_legacy_empty")))
@@ -917,6 +929,48 @@ class StorageCleanup:
             "filter": pb_filter,
             "estimated": int(count or 0) if count is not None else None,
             "count_source": count_source,
+            **delete_result,
+        }
+
+    def _run_snapshot_cache_cleanup(self, policy: dict[str, Any], now_et: datetime, *, dry_run: bool) -> dict[str, Any]:
+        collection = str(policy.get("collection") or "ibkr_cache_snapshots")
+        cutoff_value, _ = self._cutoff_for_policy(policy, now_et)
+        cutoff_ms = int(cutoff_value)
+        filters = [
+            f"stale_until_ms > 0 && stale_until_ms < {cutoff_ms}",
+            'status = "expired"',
+            f'status = "error" && stale_until_ms < {cutoff_ms}',
+            "stale_until_ms < 1",
+        ]
+        rows_by_id: dict[str, dict[str, Any]] = {}
+        filter_counts: list[dict[str, Any]] = []
+        for filter_text in filters:
+            rows = self._fetch_pb_records(
+                collection,
+                filter_text,
+                str(policy.get("sort") or "stale_until_ms"),
+                max_pages=200,
+            )
+            filter_counts.append({"filter": filter_text, "matched": len(rows)})
+            for row in rows:
+                record_id = str(row.get("id") or "").strip()
+                if record_id:
+                    rows_by_id.setdefault(record_id, row)
+        record_ids = sorted(rows_by_id)
+        delete_result = self._delete_record_ids(collection, record_ids, dry_run=dry_run)
+        return {
+            "collection": collection,
+            "mode": "snapshot_cache_retention",
+            "field": str(policy.get("field") or "stale_until_ms"),
+            "kind": str(policy.get("kind") or "ms"),
+            "retention_days": int(policy.get("retention_days") or 0),
+            "cutoff": cutoff_ms,
+            "reason": str(policy.get("reason") or ""),
+            "environment_scope": "all",
+            "filters": filter_counts,
+            "filter": " || ".join(f"({item})" for item in filters),
+            "estimated": len(record_ids),
+            "count_source": "pocketbase_unique_ids",
             **delete_result,
         }
 
@@ -1198,6 +1252,7 @@ class StorageCleanup:
             self._last_summary = summary
             return summary
 
+        run_once_policies_executed: set[str] = set()
         for environment in runtime_environments:
             enabled = self._config_bool("storage_cleanup_enabled", environment, True)
             env_result: dict[str, Any] = {
@@ -1226,7 +1281,28 @@ class StorageCleanup:
 
             env_result["disk_before"] = self._disk_snapshot()
             for policy in self.policies:
+                policy_key = ":".join(
+                    str(policy.get(key) or "")
+                    for key in ("collection", "mode", "field", "reason")
+                )
+                if bool(policy.get("run_once")) and policy_key in run_once_policies_executed:
+                    env_result["policies"].append(
+                        {
+                            "collection": str(policy.get("collection") or ""),
+                            "mode": str(policy.get("mode") or "standard_retention"),
+                            "estimated": 0,
+                            "deleted": 0,
+                            "errors": 0,
+                            "batches": 0,
+                            "dry_run": bool(dry_run),
+                            "skipped": True,
+                            "reason": "run_once_already_executed",
+                        }
+                    )
+                    continue
                 policy_result = self._run_standard_policy(policy, environment, now_et, dry_run=dry_run)
+                if bool(policy.get("run_once")):
+                    run_once_policies_executed.add(policy_key)
                 env_result["policies"].append(policy_result)
                 env_result["total_deleted"] += int(policy_result.get("deleted") or 0)
                 env_result["total_errors"] += int(policy_result.get("errors") or 0)

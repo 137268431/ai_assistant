@@ -57,7 +57,7 @@
                 </div>
                 <div class="section-copy mono" id="positionsMeta">--</div>
             </div>
-            <div class="card-list section-scroll-body" id="positionsArea"></div>
+            <div class="card-list" id="positionsArea"></div>
         </div>
 
         <div class="section">
@@ -155,6 +155,8 @@
         let actionBusy = false;
         let ticketDrawerOpen = false;
         let orderViewState = { search: '', scope: 'all' };
+        const FLAT_POSITION_PAGE_SIZE_OPTIONS = [5, 10, 20];
+        let positionViewState = { flatPage: 1, flatPageSize: 5 };
         let accountTargetSummary = {
             status: 'loading',
             active: 0,
@@ -1991,6 +1993,26 @@
                 if (timeDiff) return timeDiff;
                 return String(a?.symbol || '').localeCompare(String(b?.symbol || ''));
             });
+            const pageModel = createClientPaginationModel(sortedFlat, {
+                page: positionViewState.flatPage,
+                pageSize: positionViewState.flatPageSize,
+            }, {
+                pageSize: 5,
+                pageSizeOptions: FLAT_POSITION_PAGE_SIZE_OPTIONS,
+            });
+            positionViewState.flatPage = pageModel.page;
+            positionViewState.flatPageSize = pageModel.pageSize;
+            const pagerHtml = renderClientPaginationBar(pageModel, {
+                key: 'flatPositions',
+                label: 'FLAT',
+                pageAction: 'setFlatPositionsPage',
+                pageSizeAction: 'setFlatPositionsPageSize',
+                rootClass: 'client-pagination page-pagination flat-position-pagination',
+                statusText: pageModel.total
+                    ? `FLAT ${pageModel.start + 1}-${pageModel.end} / ${pageModel.total}`
+                    : 'FLAT 0 / 0',
+                pageText: `第 ${pageModel.page} / ${pageModel.totalPages} 页`,
+            });
             return `
                 <div class="surface-card flat-position-section">
                     <div class="record-head">
@@ -2002,9 +2024,26 @@
                             <span class="badge neutral">${escapeHtml(String(sortedFlat.length))} FLAT ROWS</span>
                         </div>
                     </div>
-                    <div class="flat-position-list">${sortedFlat.map(renderFlatPositionRow).join('')}</div>
+                    ${pagerHtml}
+                    <div class="flat-position-list">${pageModel.pageRows.map(renderFlatPositionRow).join('')}</div>
+                    ${pagerHtml}
                 </div>
             `;
+        }
+
+        function setFlatPositionsPage(_key, page) {
+            const nextPage = Math.max(1, Number(page || 1) || 1);
+            positionViewState.flatPage = nextPage;
+            if (latestSnapshot) renderPositions(latestSnapshot);
+        }
+
+        function setFlatPositionsPageSize(_key, pageSize) {
+            const requested = Number(pageSize || positionViewState.flatPageSize);
+            positionViewState.flatPageSize = FLAT_POSITION_PAGE_SIZE_OPTIONS.includes(requested)
+                ? requested
+                : FLAT_POSITION_PAGE_SIZE_OPTIONS[0];
+            positionViewState.flatPage = 1;
+            if (latestSnapshot) renderPositions(latestSnapshot);
         }
 
         function renderPositions(snapshot) {
@@ -3033,6 +3072,8 @@
         window.openHistoryOrdersPage = openHistoryOrdersPage;
         window.onOrderSearchChange = onOrderSearchChange;
         window.setOrderScope = setOrderScope;
+        window.setFlatPositionsPage = setFlatPositionsPage;
+        window.setFlatPositionsPageSize = setFlatPositionsPageSize;
         window.openTicketDrawer = openTicketDrawer;
         window.closeTicketDrawer = closeTicketDrawer;
         window.onTicketDrawerBackdrop = onTicketDrawerBackdrop;

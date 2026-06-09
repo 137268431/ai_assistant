@@ -341,7 +341,7 @@ class SnapshotCacheHelperTest(unittest.TestCase):
         self.assertNotEqual(live_key, paper_key)
         self.assertTrue(live_key.startswith("home.dashboard:"))
 
-    def test_clear_cached_snapshots_deletes_matching_scope(self):
+    def test_clear_cached_snapshots_invalidates_matching_scope_with_short_stale_window(self):
         pb = _FakePB()
         keep_key = "home.market:keep"
         drop_key = "home.dashboard:drop"
@@ -351,7 +351,16 @@ class SnapshotCacheHelperTest(unittest.TestCase):
         invalidated = clear_cached_snapshots(pb, scopes=("home.dashboard",))
 
         self.assertEqual(1, invalidated)
-        self.assertIsNone(get_cached_snapshot(pb, drop_key))
+        dropped = get_cached_snapshot(pb, drop_key)
+        self.assertIsNotNone(dropped)
+        self.assertEqual("stale", dropped["status"])
+        self.assertLessEqual(dropped["fresh_until_ms"], _now_ms())
+        self.assertGreaterEqual(dropped["stale_until_ms"], _now_ms())
+        self.assertEqual("invalidated", dropped["error"])
+        update_payload = pb.updated[-1][2]
+        self.assertEqual(drop_key, update_payload["cache_key"])
+        self.assertEqual("home.dashboard", update_payload["scope"])
+        self.assertEqual({"value": "drop"}, update_payload["payload"])
         self.assertEqual("keep", get_cached_snapshot(pb, keep_key)["payload"]["value"])
 
 

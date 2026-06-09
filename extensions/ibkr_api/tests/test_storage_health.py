@@ -11,6 +11,7 @@ if str(SERVICE_SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SERVICE_SRC_ROOT))
 
 from ibkr_api.system.storage_health import collect_storage_health
+from ibkr_api.system.pocketbase_disk import collect_pocketbase_disk_snapshot
 
 
 def _create_table(conn, name, extra_fields=""):
@@ -31,6 +32,8 @@ class StorageHealthTest(unittest.TestCase):
     def test_collect_storage_health_reports_tables_and_retention_lag(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "data.db"
+            (Path(tmpdir) / "auxiliary.db").write_bytes(b"aux")
+            (Path(tmpdir) / "auxiliary.db-wal").write_bytes(b"wal")
             conn = sqlite3.connect(db_path)
             _create_table(
                 conn,
@@ -51,6 +54,11 @@ class StorageHealthTest(unittest.TestCase):
             _create_table(conn, "config", ", key text default '' not null")
             _create_table(conn, "watchlist", ", symbol text default '' not null")
             _create_table(conn, "system_events", ", event_type text default '' not null")
+            _create_table(
+                conn,
+                "ibkr_cache_snapshots",
+                ", scope text default '' not null, stale_until_ms numeric default 0 not null, status text default '' not null",
+            )
             for name in ("ibkr_bar_integrity", "ibkr_bar_coverage_daily", "ibkr_bar_truth_audit", "ibkr_bar_truth_repair_events"):
                 _create_table(conn, name, ", market_date text default '' not null")
             for name in (
@@ -75,11 +83,16 @@ class StorageHealthTest(unittest.TestCase):
                 "insert into orders(id, environment, status, created, updated) values(?, ?, ?, ?, ?)",
                 ("order1", "live", "submitted", "2026-05-07 10:00:00", "2026-05-07 10:00:00"),
             )
+            conn.execute(
+                "insert into ibkr_cache_snapshots(id, environment, scope, stale_until_ms, status, created, updated) values(?, ?, ?, ?, ?, ?, ?)",
+                ("cache1", "paper", "system-summaryz", 1780000000000, "fresh", "2026-05-07 10:00:00", "2026-05-07 10:00:00"),
+            )
             conn.execute("analyze")
             conn.commit()
             conn.close()
 
             with mock.patch.dict(os.environ, {"PB_DB_PATH": str(db_path)}):
+                collect_pocketbase_disk_snapshot(force_refresh=True)
                 payload = collect_storage_health(
                     "live",
                     config_map={"ibkr_history_retention_days": "30"},
@@ -90,6 +103,10 @@ class StorageHealthTest(unittest.TestCase):
         self.assertIn(payload["status"], {"warning", "error"})
         self.assertEqual(payload["summary"]["monitored_tables"], len(payload["tables"]))
         self.assertTrue(any(table["name"] == "ibkr_bars" for table in payload["tables"]))
+        cache_table = next(table for table in payload["tables"] if table["name"] == "ibkr_cache_snapshots")
+        self.assertEqual(cache_table["row_count"], 1)
+        self.assertEqual(cache_table["status_counts"]["fresh"], 1)
+        self.assertEqual(payload["db_files"]["auxiliary_total_size_bytes"], 6)
         self.assertTrue(any(flag["code"] == "ibkr_bars_retention_lag" for flag in payload["flags"]))
         orders = next(table for table in payload["tables"] if table["name"] == "orders")
         self.assertEqual(orders["status_counts"]["submitted"], 1)

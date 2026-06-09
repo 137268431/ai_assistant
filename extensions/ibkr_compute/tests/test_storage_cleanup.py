@@ -178,6 +178,32 @@ class StorageCleanupTest(unittest.TestCase):
         self.assertEqual({row["id"] for row in pb.records["config"]}, {"cfg"})
         self.assertEqual({row["id"] for row in pb.records["ibkr_state"]}, {"state"})
 
+    def test_default_profile_deletes_only_expired_cache_snapshots(self):
+        expired_ms = int(datetime(2026, 5, 7, 12, 0, tzinfo=ET).timestamp() * 1000)
+        recent_ms = int(datetime(2026, 5, 9, 11, 50, tzinfo=ET).timestamp() * 1000)
+        pb = _FakePB(
+            {
+                "ibkr_cache_snapshots": [
+                    {"id": "expired", "environment": "live", "stale_until_ms": expired_ms, "scope": "home-dashboard"},
+                    {"id": "recent", "environment": "live", "stale_until_ms": recent_ms, "scope": "home-market"},
+                    {"id": "paper-expired", "environment": "paper", "stale_until_ms": expired_ms, "scope": "home-dashboard"},
+                    {"id": "global-expired", "environment": "global", "stale_until_ms": expired_ms, "scope": "monitorz"},
+                    {"id": "invalidated", "environment": "live", "stale_until_ms": 0, "status": "expired", "scope": "today-targets"},
+                ]
+            }
+        )
+        cleanup = StorageCleanup(pb, _FakeConfig(), default_environments=["live"])
+
+        result = cleanup.cleanup(dry_run=False, now=datetime(2026, 5, 9, 12, 0, tzinfo=ET))
+
+        self.assertTrue(result["ok"])
+        self.assertIn(("ibkr_cache_snapshots", "expired"), pb.deleted)
+        self.assertIn(("ibkr_cache_snapshots", "paper-expired"), pb.deleted)
+        self.assertIn(("ibkr_cache_snapshots", "global-expired"), pb.deleted)
+        self.assertIn(("ibkr_cache_snapshots", "invalidated"), pb.deleted)
+        self.assertNotIn(("ibkr_cache_snapshots", "recent"), pb.deleted)
+        self.assertEqual({row["id"] for row in pb.records["ibkr_cache_snapshots"]}, {"recent"})
+
     def test_balanced_50g_profile_aliases_to_tv_primary_lean(self):
         pb = _FakePB(
             {

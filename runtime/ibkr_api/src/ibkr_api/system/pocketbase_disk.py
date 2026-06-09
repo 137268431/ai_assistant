@@ -136,6 +136,10 @@ def collect_pocketbase_disk_snapshot(force_refresh: bool = False) -> dict[str, A
 
     db_backup_entries = [item for item in top_entries if str(item.get("name") or "").startswith("data.db.backup.")]
     db_backup_size_bytes = sum(int(item.get("size_bytes") or 0) for item in db_backup_entries)
+    auxiliary_db_size = int(top_entry_sizes.get("auxiliary.db") or 0)
+    auxiliary_wal_size = int(top_entry_sizes.get("auxiliary.db-wal") or 0)
+    auxiliary_shm_size = int(top_entry_sizes.get("auxiliary.db-shm") or 0)
+    auxiliary_total_size = auxiliary_db_size + auxiliary_wal_size + auxiliary_shm_size
     snapshot = {
         "source": "ibkr_api_disk_monitor",
         "collected_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
@@ -159,6 +163,11 @@ def collect_pocketbase_disk_snapshot(force_refresh: bool = False) -> dict[str, A
         "db_backup_file_count": len(db_backup_entries),
         "aux_path": str(data_path / "aux"),
         "aux_size_bytes": int(top_entry_sizes.get("aux") or 0),
+        "auxiliary_db_path": str(data_path / "auxiliary.db"),
+        "auxiliary_db_size_bytes": auxiliary_db_size,
+        "auxiliary_wal_size_bytes": auxiliary_wal_size,
+        "auxiliary_shm_size_bytes": auxiliary_shm_size,
+        "auxiliary_total_size_bytes": auxiliary_total_size,
         "filesystem": filesystem,
         "top_entries": top_entries[:6],
     }
@@ -207,7 +216,8 @@ def build_pocketbase_disk_flags(snapshot: dict[str, Any]) -> list[dict[str, Any]
     detail = (
         f"{mount_path} 已使用 {float(used_pct):.1f}%，剩余 {format_bytes(filesystem.get('available_bytes'))}，"
         f"pb_data {format_bytes(snapshot.get('data_size_bytes'))}，"
-        f"db backups {int(snapshot.get('db_backup_file_count') or 0)} 个 / {format_bytes(snapshot.get('db_backup_size_bytes'))}"
+        f"db backups {int(snapshot.get('db_backup_file_count') or 0)} 个 / {format_bytes(snapshot.get('db_backup_size_bytes'))}，"
+        f"auxiliary.db* {format_bytes(snapshot.get('auxiliary_total_size_bytes'))}"
     )
     if float(used_pct) >= POCKETBASE_DISK_CRITICAL_USED_PCT:
         return [{"severity": "error", "code": "pb_disk_critical", "title": "PocketBase disk critical", "detail": detail}]

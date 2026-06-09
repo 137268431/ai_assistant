@@ -38,6 +38,13 @@ def _disabled(value: Any) -> bool:
     return _to_text(value).lower() in {"0", "false", "no", "off"}
 
 
+def _float_env(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
 def snapshots_enabled() -> bool:
     return not _disabled(os.environ.get("IBKR_PB_SNAPSHOT_CACHE_ENABLED", "true"))
 
@@ -149,26 +156,34 @@ def _delete_or_expire_record(pb: Any, record: dict[str, Any]) -> bool:
     record_id = _to_text(record.get("id"))
     if not record_id:
         return False
+    grace_ms = max(0, int(_float_env("IBKR_PB_SNAPSHOT_INVALIDATION_STALE_SEC", 30.0) * 1000))
+    update_record = getattr(pb, "update_record", None)
+    if callable(update_record):
+        try:
+            data = {
+                "cache_key": _to_text(record.get("cache_key")),
+                "scope": _to_text(record.get("scope")),
+                "environment": _to_text(record.get("environment")) or "global",
+                "market_date": _to_text(record.get("market_date")) or "global",
+                "payload": record.get("payload") if isinstance(record.get("payload"), dict) else {},
+                "computed_at_ms": int(float(record.get("computed_at_ms") or 0)),
+                "fresh_until_ms": 1,
+                "stale_until_ms": now_ms() + grace_ms if grace_ms > 0 else 1,
+                "status": "stale",
+                "error": "invalidated",
+            }
+            update_record(
+                COLLECTION,
+                record_id,
+                data,
+            )
+            return True
+        except Exception:
+            pass
     delete_record = getattr(pb, "delete_record", None)
     if callable(delete_record):
         try:
             delete_record(COLLECTION, record_id)
-            return True
-        except Exception:
-            pass
-    update_record = getattr(pb, "update_record", None)
-    if callable(update_record):
-        try:
-            update_record(
-                COLLECTION,
-                record_id,
-                {
-                    "fresh_until_ms": 0,
-                    "stale_until_ms": 0,
-                    "status": "expired",
-                    "error": "invalidated",
-                },
-            )
             return True
         except Exception:
             pass

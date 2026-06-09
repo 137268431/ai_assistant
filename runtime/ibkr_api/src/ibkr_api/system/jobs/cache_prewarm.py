@@ -26,12 +26,17 @@ DEFAULT_PAGES = (
     "system-summary-lite",
     "today-targets-home",
     "today-targets-screener",
+)
+FULL_PAGES = (
+    *DEFAULT_PAGES,
     "active-window-progress",
     "active-window-progress-default",
     "lifecycle-flow",
 )
 PAGE_ALIASES = {
     "all": set(DEFAULT_PAGES),
+    "full": set(FULL_PAGES),
+    "everything": set(FULL_PAGES),
     "home": {"home-dashboard", "home-market", "today-targets-home"},
     "summary": {"system-summary-lite"},
     "system": {"system-summary-lite"},

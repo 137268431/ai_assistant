@@ -44,6 +44,10 @@ DISK_ERROR_FREE_PCT = max(
     1.0,
     float(os.environ.get("IBKR_STORAGE_HEALTH_DISK_ERROR_FREE_PCT", "8.0") or "8.0"),
 )
+AUXILIARY_WARNING_BYTES = max(
+    256 * 1024 * 1024,
+    int(os.environ.get("IBKR_STORAGE_HEALTH_AUXILIARY_WARN_BYTES", str(GIB)) or str(GIB)),
+)
 
 
 MONITORED_TABLES: tuple[dict[str, Any], ...] = (
@@ -62,6 +66,15 @@ MONITORED_TABLES: tuple[dict[str, Any], ...] = (
     {"name": "config", "group": "runtime", "critical": True},
     {"name": "watchlist", "group": "runtime", "critical": True},
     {"name": "system_events", "group": "runtime", "critical": False},
+    {
+        "name": "ibkr_cache_snapshots",
+        "group": "runtime",
+        "critical": False,
+        "retention": True,
+        "time_field": "stale_until_ms",
+        "status_counts": True,
+        "environment_scoped": False,
+    },
     {"name": "ibkr_backtest_runs", "group": "backtest", "critical": False},
     {"name": "ibkr_backtest_batches", "group": "backtest", "critical": False},
     {"name": "ibkr_backtest_trades", "group": "backtest", "critical": False},
@@ -225,10 +238,13 @@ def _load_sqlite_pragmas(conn: sqlite3.Connection) -> dict[str, Any]:
     page_size = one("pragma page_size")
     page_count = one("pragma page_count")
     freelist_count = one("pragma freelist_count")
+    freelist_bytes = page_size * freelist_count if page_size > 0 and freelist_count > 0 else 0
     return {
         "page_size": page_size,
         "page_count": page_count,
         "freelist_count": freelist_count,
+        "freelist_bytes": freelist_bytes,
+        "freelist_ratio": round(freelist_count / page_count, 4) if page_count > 0 else 0.0,
         "estimated_db_bytes": page_size * page_count if page_size > 0 and page_count > 0 else 0,
     }
 
@@ -317,10 +333,11 @@ def _edge_numeric_time(
     descending: bool,
     interval: str = "",
     timeout_ms: int = TABLE_QUERY_TIMEOUT_MS,
+    environment_scoped: bool = True,
 ) -> tuple[int, float, str]:
     where = [f"{field} > 0"]
     params: list[Any] = []
-    if "environment" in columns:
+    if environment_scoped and "environment" in columns:
         where.append("environment = ?")
         params.append(environment)
     if interval and "interval" in columns:
@@ -352,10 +369,11 @@ def _edge_text_time(
     columns: set[str],
     *,
     descending: bool,
+    environment_scoped: bool = True,
 ) -> tuple[str, float, str]:
     where = [f"{field} != ''"]
     params: list[Any] = []
-    if "environment" in columns:
+    if environment_scoped and "environment" in columns:
         where.append("environment = ?")
         params.append(environment)
     direction = "desc" if descending else "asc"
@@ -425,12 +443,19 @@ def _bar_time_edges_by_interval(
     )
 
 
-def _status_counts(conn: sqlite3.Connection, table: str, environment: str, columns: set[str]) -> dict[str, int]:
+def _status_counts(
+    conn: sqlite3.Connection,
+    table: str,
+    environment: str,
+    columns: set[str],
+    *,
+    environment_scoped: bool = True,
+) -> dict[str, int]:
     if "status" not in columns:
         return {}
     where = []
     params: list[Any] = []
-    if "environment" in columns:
+    if environment_scoped and "environment" in columns:
         where.append("environment = ?")
         params.append(environment)
     sql = f"select status, count(*) as total from {_safe_ident(table)}"
@@ -477,6 +502,7 @@ def _collect_table(
         return item
 
     columns = _load_columns(conn, name)
+    environment_scoped = bool(config.get("environment_scoped", True))
     estimated_rows = row_estimates.get(name)
     exact_rows, row_source = _exact_count_if_small(conn, name, estimated_rows)
     if exact_rows is not None:
@@ -501,6 +527,7 @@ def _collect_table(
                 environment,
                 columns,
                 descending=True,
+                environment_scoped=environment_scoped,
             )
             query_elapsed += elapsed_ms
             if error:
@@ -514,6 +541,7 @@ def _collect_table(
                     environment,
                     columns,
                     descending=False,
+                    environment_scoped=environment_scoped,
                 )
                 query_elapsed += elapsed_ms
                 if error:
@@ -522,27 +550,81 @@ def _collect_table(
         item["oldest_ms"] = oldest_ms
         item["latest_us"] = _format_us_ms(latest_ms)
         item["oldest_us"] = _format_us_ms(oldest_ms)
-    elif str(config.get("date_field") or "") in columns:
-        field = str(config.get("date_field") or "")
-        latest_text, elapsed_ms, error = _edge_text_time(conn, name, field, environment, columns, descending=True)
+    elif str(config.get("time_field") or "") in columns:
+        field = str(config.get("time_field") or "")
+        latest_ms, elapsed_ms, error = _edge_numeric_time(
+            conn,
+            name,
+            field,
+            environment,
+            columns,
+            descending=True,
+            environment_scoped=environment_scoped,
+        )
         query_elapsed += elapsed_ms
         if error:
             query_errors.append(f"latest:{error}")
-        oldest_text, elapsed_ms, error = _edge_text_time(conn, name, field, environment, columns, descending=False)
+        oldest_ms, elapsed_ms, error = _edge_numeric_time(
+            conn,
+            name,
+            field,
+            environment,
+            columns,
+            descending=False,
+            environment_scoped=environment_scoped,
+        )
+        query_elapsed += elapsed_ms
+        if error:
+            query_errors.append(f"oldest:{error}")
+        item["latest_ms"] = latest_ms
+        item["oldest_ms"] = oldest_ms
+        item["latest_us"] = _format_us_ms(latest_ms)
+        item["oldest_us"] = _format_us_ms(oldest_ms)
+    elif str(config.get("date_field") or "") in columns:
+        field = str(config.get("date_field") or "")
+        latest_text, elapsed_ms, error = _edge_text_time(
+            conn,
+            name,
+            field,
+            environment,
+            columns,
+            descending=True,
+            environment_scoped=environment_scoped,
+        )
+        query_elapsed += elapsed_ms
+        if error:
+            query_errors.append(f"latest:{error}")
+        oldest_text, elapsed_ms, error = _edge_text_time(
+            conn,
+            name,
+            field,
+            environment,
+            columns,
+            descending=False,
+            environment_scoped=environment_scoped,
+        )
         query_elapsed += elapsed_ms
         if error:
             query_errors.append(f"oldest:{error}")
         item["latest_text"] = latest_text
         item["oldest_text"] = oldest_text
     elif "created" in columns:
-        latest_text, elapsed_ms, error = _edge_text_time(conn, name, "created", environment, columns, descending=True)
+        latest_text, elapsed_ms, error = _edge_text_time(
+            conn,
+            name,
+            "created",
+            environment,
+            columns,
+            descending=True,
+            environment_scoped=environment_scoped,
+        )
         query_elapsed += elapsed_ms
         if error:
             query_errors.append(f"latest:{error}")
         item["latest_text"] = latest_text
 
     if bool(config.get("status_counts")):
-        item["status_counts"] = _status_counts(conn, name, environment, columns)
+        item["status_counts"] = _status_counts(conn, name, environment, columns, environment_scoped=environment_scoped)
     if query_errors:
         item["query_errors"] = query_errors[:4]
     item["query_elapsed_ms"] = round(query_elapsed, 2)
@@ -632,6 +714,15 @@ def _build_db_files(db_path: Path, conn: sqlite3.Connection | None = None) -> di
         "data_path": disk_snapshot.get("data_path") or str(db_path.parent),
         "data_size_bytes": _to_int(disk_snapshot.get("data_size_bytes")),
         "data_size_label": format_bytes(disk_snapshot.get("data_size_bytes")),
+        "auxiliary_db_path": disk_snapshot.get("auxiliary_db_path") or str(db_path.parent / "auxiliary.db"),
+        "auxiliary_db_size_bytes": _to_int(disk_snapshot.get("auxiliary_db_size_bytes")),
+        "auxiliary_db_size_label": format_bytes(disk_snapshot.get("auxiliary_db_size_bytes")),
+        "auxiliary_wal_size_bytes": _to_int(disk_snapshot.get("auxiliary_wal_size_bytes")),
+        "auxiliary_wal_size_label": format_bytes(disk_snapshot.get("auxiliary_wal_size_bytes")),
+        "auxiliary_shm_size_bytes": _to_int(disk_snapshot.get("auxiliary_shm_size_bytes")),
+        "auxiliary_shm_size_label": format_bytes(disk_snapshot.get("auxiliary_shm_size_bytes")),
+        "auxiliary_total_size_bytes": _to_int(disk_snapshot.get("auxiliary_total_size_bytes")),
+        "auxiliary_total_size_label": format_bytes(disk_snapshot.get("auxiliary_total_size_bytes")),
         **pragmas,
     }
 
@@ -724,6 +815,17 @@ def _collect_storage_health_uncached(
                     f"WAL {format_bytes(wal_size)} / DB {format_bytes(data_size)} "
                     f"({round(wal_ratio * 100, 1)}%)"
                 ),
+            )
+        )
+
+    auxiliary_total = _to_int(db_files.get("auxiliary_total_size_bytes"))
+    if auxiliary_total >= AUXILIARY_WARNING_BYTES:
+        flags.append(
+            _flag(
+                "warning",
+                "pb_auxiliary_db_high",
+                "PocketBase auxiliary log DB high",
+                f"auxiliary.db* {format_bytes(auxiliary_total)}; clear only during PocketBase maintenance if it contains _logs only",
             )
         )
 

@@ -429,6 +429,12 @@
             gap: 12px;
         }
 
+        #positionsArea {
+            max-height: none;
+            overflow: visible;
+            scrollbar-gutter: auto;
+        }
+
         .position-grid,
         .order-grid {
             display: grid;
@@ -445,6 +451,18 @@
         .flat-position-section {
             border-color: rgba(160,174,192,0.16);
             background: linear-gradient(135deg, rgba(15, 23, 42, 0.96), rgba(12, 18, 30, 0.88));
+        }
+
+        .flat-position-pagination {
+            margin: 10px 0 12px;
+        }
+
+        .record-head + .flat-position-pagination {
+            margin-top: 0;
+        }
+
+        .flat-position-list + .flat-position-pagination {
+            margin: 12px 0 0;
         }
 
         .flat-position-row {
