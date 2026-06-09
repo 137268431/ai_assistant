@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 import traceback
 
 from ibkr_compute.api.shared.service_status import get_service_status_snapshot
@@ -26,6 +27,20 @@ def _ibkr_runtime_control_default(environment: str) -> dict:
         "last_restore_trigger_login": False,
         "updated_at": "",
     }
+
+
+def _runtime_timestamp_text(timestamps: dict | None) -> str:
+    data = timestamps if isinstance(timestamps, dict) else {}
+    return str(data.get("computed_at_us") or data.get("us") or "").strip()
+
+
+def _runtime_timestamp_ms(timestamps: dict | None) -> int:
+    data = timestamps if isinstance(timestamps, dict) else {}
+    try:
+        value = int(float(data.get("computed_at_ms") or data.get("ms") or 0))
+    except Exception:
+        value = 0
+    return value if value > 0 else int(time.time() * 1000)
 
 
 def get_ibkr_runtime_control(environment: str) -> dict:
@@ -64,6 +79,7 @@ def set_ibkr_runtime_control(
     api_app = _api_app()
     runtime_environment = str(environment or "live").strip().lower() or "live"
     timestamps = api_app.build_runtime_timestamps()
+    timestamp_text = _runtime_timestamp_text(timestamps)
     current = get_ibkr_runtime_control(runtime_environment)
     patch = {
         **current,
@@ -71,14 +87,41 @@ def set_ibkr_runtime_control(
         "desired_running": bool(desired_running),
         "last_source": str(source or "").strip(),
         "last_reason": str(reason or "").strip(),
-        "updated_at": timestamps.get("us", ""),
+        "updated_at": timestamp_text,
     }
     if desired_running:
-        patch["last_start_request_at"] = timestamps.get("us", "")
+        patch["last_start_request_at"] = timestamp_text
     else:
-        patch["last_stop_request_at"] = timestamps.get("us", "")
+        patch["last_stop_request_at"] = timestamp_text
     if isinstance(extra, dict):
         patch.update(extra)
+    try:
+        return api_app.pb.upsert_state(
+            api_app.IBKR_RUNTIME_CONTROL_STATE_KEY,
+            runtime_environment,
+            patch,
+            date=api_app.IBKR_RUNTIME_CONTROL_STATE_DATE,
+        )
+    except Exception:
+        traceback.print_exc()
+        return {"data": patch}
+
+
+def patch_ibkr_runtime_control(
+    environment: str,
+    extra: dict,
+) -> dict:
+    api_app = _api_app()
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    timestamps = api_app.build_runtime_timestamps()
+    current = get_ibkr_runtime_control(runtime_environment)
+    patch = {
+        **current,
+        **(extra if isinstance(extra, dict) else {}),
+        "environment": runtime_environment,
+        "updated_at": _runtime_timestamp_text(timestamps),
+        "updated_at_ms": _runtime_timestamp_ms(timestamps),
+    }
     try:
         return api_app.pb.upsert_state(
             api_app.IBKR_RUNTIME_CONTROL_STATE_KEY,
