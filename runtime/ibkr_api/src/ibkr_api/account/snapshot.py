@@ -711,9 +711,7 @@ def build_account_snapshot_response(
     if include_pnl is not None:
         params.append(("include_pnl", include_pnl))
     for cache_key in (
-        "cache_bust",
-        "cache",
-        "_",
+        "broker_force",
         "orders_fast",
         "fast_orders",
         "snapshot_profile",

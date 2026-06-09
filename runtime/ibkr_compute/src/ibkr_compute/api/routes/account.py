@@ -12,7 +12,7 @@ from ibkr_compute.api.account.views import (
     _build_ibkr_order_history,
     _build_ibkr_place_order_response,
 )
-from ibkr_compute.api.route_request import coerce_request_bool, get_query_arg_bool, get_query_arg_int
+from ibkr_compute.api.route_request import get_query_arg_bool, get_query_arg_int
 from ibkr_compute.api.route_response import build_json_request_response, json_response
 from ibkr_compute.api.route_runtime import require_ibkr_service
 from ibkr_compute.api.runtime_proxy import register_runtime_proxy_route, should_proxy_runtime_requests
@@ -32,14 +32,10 @@ def _build_account_action_response(builder):
     return build_json_request_response(lambda payload: builder(service, payload))
 
 
-def _account_snapshot_cache_bypass() -> bool:
-    if get_query_arg_bool("cache_bust", False):
-        return True
-    if request.args.get("_"):
-        return True
-    if "cache" in request.args and not coerce_request_bool(request.args.get("cache"), True):
-        return True
-    return False
+def _account_snapshot_broker_force() -> bool:
+    # UI cache-busting should only bypass browser/API caches. Broker refreshes
+    # need an explicit diagnostic opt-in so account-data pacing stays intact.
+    return get_query_arg_bool("broker_force", False)
 
 
 def _account_snapshot_orders_fast(default: bool = False) -> bool:
@@ -80,13 +76,13 @@ def register_account_routes(app):
         if unavailable:
             return unavailable
         try:
-            bypass_cache = _account_snapshot_cache_bypass()
+            broker_force = _account_snapshot_broker_force()
             return jsonify(
                 _build_ibkr_account_snapshot(
                     service,
                     include_pnl=get_query_arg_bool("include_pnl", True),
-                    force_refresh=bypass_cache,
-                    allow_stale=not bypass_cache,
+                    force_refresh=broker_force,
+                    allow_stale=not broker_force,
                     orders_fast=_account_snapshot_orders_fast(),
                     orders_fast_open_only=_account_snapshot_open_orders_only(),
                 )
@@ -99,12 +95,12 @@ def register_account_routes(app):
         service, unavailable = _resolve_account_service()
         if unavailable:
             return unavailable
-        bypass_cache = _account_snapshot_cache_bypass()
+        broker_force = _account_snapshot_broker_force()
         snapshot = _build_ibkr_account_snapshot(
             service,
             include_pnl=False,
-            force_refresh=bypass_cache,
-            allow_stale=not bypass_cache,
+            force_refresh=broker_force,
+            allow_stale=not broker_force,
             orders_fast=_account_snapshot_orders_fast(),
             orders_fast_open_only=_account_snapshot_open_orders_only(),
         )
@@ -124,12 +120,12 @@ def register_account_routes(app):
         service, unavailable = _resolve_account_service()
         if unavailable:
             return unavailable
-        bypass_cache = _account_snapshot_cache_bypass()
+        broker_force = _account_snapshot_broker_force()
         snapshot = _build_ibkr_account_snapshot(
             service,
             include_pnl=False,
-            force_refresh=bypass_cache,
-            allow_stale=not bypass_cache,
+            force_refresh=broker_force,
+            allow_stale=not broker_force,
             orders_fast=_account_snapshot_orders_fast(default=True),
         )
         return jsonify(

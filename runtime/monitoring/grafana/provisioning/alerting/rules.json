@@ -782,6 +782,92 @@
           "isPaused": false
         },
         {
+          "uid": "account_summary_pacing_violation",
+          "title": "AccountSummaryPacingViolation",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "sum by (service, environment, client_role) (increase(ibkr_broker_error_total{ib_error_code=\"322\", request_kind=\"account_summary\"}[10m])) > 0",
+                "hide": false,
+                "instant": true,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": false,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0.5
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "A"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "hide": false,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B",
+                "type": "classic_conditions"
+              }
+            }
+          ],
+          "dashboardUid": "quant-monitoring-overview",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "0m",
+          "annotations": {
+            "summary": "Account summary pacing violation detected",
+            "description": "IBKR 返回 account summary pacing code=322，说明仍有请求频率过高或重复订阅。"
+          },
+          "labels": {
+            "severity": "warning",
+            "alert_source": "grafana"
+          },
+          "isPaused": false
+        },
+        {
           "uid": "broker_pending_high",
           "title": "BrokerPendingRequestsHigh",
           "condition": "B",
@@ -1478,7 +1564,7 @@
               "refId": "A",
               "queryType": "",
               "relativeTimeRange": {
-                "from": 300,
+                "from": 600,
                 "to": 0
               },
               "datasourceUid": "prometheus",
@@ -1488,7 +1574,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "max by (service, environment, source) (ibkr_account_buying_power_guard_state{source=\"account_snapshot\", state=\"unavailable\"}) > bool 0",
+                "expr": "max by (service, environment) (max_over_time(ibkr_account_buying_power_guard_state{source=~\"account_snapshot|account_summary\", state=~\"ok|warning|blocked\"}[5m])) == bool 0",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -1544,10 +1630,96 @@
           "dashboardUid": "quant-monitoring-overview",
           "noDataState": "OK",
           "execErrState": "Error",
-          "for": "2m",
+          "for": "5m",
           "annotations": {
             "summary": "账户购买力风控不可用",
-            "description": "账户购买力风控不可用，自动开仓会暂停。"
+            "description": "account_snapshot 和 account_summary 在 5 分钟内都没有可用 buying-power guard，自动开仓会暂停。"
+          },
+          "labels": {
+            "severity": "critical",
+            "alert_source": "grafana"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "account_summary_pacing_storm",
+          "title": "AccountSummaryPacingStorm",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "sum by (service, environment, client_role) (increase(ibkr_broker_error_total{ib_error_code=\"322\", request_kind=\"account_summary\"}[10m])) >= 3",
+                "hide": false,
+                "instant": true,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": false,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0.5
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "A"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "hide": false,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B",
+                "type": "classic_conditions"
+              }
+            }
+          ],
+          "dashboardUid": "quant-monitoring-overview",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "0m",
+          "annotations": {
+            "summary": "Account summary pacing storm detected",
+            "description": "IBKR account summary pacing code=322 在 10 分钟内出现 >=3 次；应继续使用缓存/冷却，避免继续重试。"
           },
           "labels": {
             "severity": "critical",
@@ -1736,7 +1908,7 @@
               "refId": "A",
               "queryType": "",
               "relativeTimeRange": {
-                "from": 300,
+                "from": 900,
                 "to": 0
               },
               "datasourceUid": "prometheus",
@@ -1746,7 +1918,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "max by (service, environment, source) (ibkr_account_snapshot_available{source=\"account_snapshot\"}) == bool 0",
+                "expr": "max by (service, environment) (max_over_time(ibkr_account_snapshot_available{source=~\"account_snapshot|account_summary\"}[10m])) == bool 0",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -1802,10 +1974,10 @@
           "dashboardUid": "quant-monitoring-overview",
           "noDataState": "OK",
           "execErrState": "Error",
-          "for": "2m",
+          "for": "5m",
           "annotations": {
             "summary": "账户快照不可用",
-            "description": "账户快照不可用，购买力、NetLiq 或保证金信息可能不可信。"
+            "description": "account_snapshot/account_summary 在 10 分钟内都不可用，购买力、NetLiq 或保证金信息可能不可信。"
           },
           "labels": {
             "severity": "warning",

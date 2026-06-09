@@ -184,11 +184,11 @@ def build_constant_bundle() -> dict:
         ),
         "IBKR_ACCOUNT_SNAPSHOT_TTL_SECONDS": max(
             1.0,
-            float(os.environ.get("IBKR_ACCOUNT_SNAPSHOT_TTL_SECONDS", "15.0")),
+            float(os.environ.get("IBKR_ACCOUNT_SNAPSHOT_TTL_SECONDS", "180.0")),
         ),
         "IBKR_ACCOUNT_SNAPSHOT_STALE_SECONDS": max(
             5.0,
-            float(os.environ.get("IBKR_ACCOUNT_SNAPSHOT_STALE_SECONDS", "180.0")),
+            float(os.environ.get("IBKR_ACCOUNT_SNAPSHOT_STALE_SECONDS", "900.0")),
         ),
         "COMPUTE_CURSOR_STATE_KEY": "compute_cursors",
         "COMPUTE_CURSOR_STATE_DATE": "global",

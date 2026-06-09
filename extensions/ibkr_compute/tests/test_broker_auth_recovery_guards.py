@@ -10,7 +10,7 @@ SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "s
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from ibkr_compute.broker.ib_gateway import _IBGatewayApp
+from ibkr_compute.broker.ib_gateway import _IBGatewayApp, _PendingRequest
 from ibkr_compute.orchestration.auth_recovery import TradingServiceAuthRecoveryMixin
 
 
@@ -211,6 +211,39 @@ class BrokerReadyGuardTest(unittest.TestCase):
         self.assertEqual([{"ticker": "AAPL", "position": 3}], positions)
         app.reqPositions.assert_not_called()
         app.cancelPositions.assert_not_called()
+
+    def test_account_summary_pacing_cooldown_uses_stale_cache(self):
+        app = _IBGatewayApp("127.0.0.1", 4001, 31)
+        app._ensure_ready = mock.Mock(return_value={"ready": True})
+        app.reqAccountSummary = mock.Mock()
+        app.cancelAccountSummary = mock.Mock()
+        app._account_cache_store(("account_summary",), {"BuyingPower": {"value": "50000"}}, ttl_seconds=0.01)
+        time.sleep(0.02)
+        app._mark_account_request_cooldown("account_summary", "account_summary_request_limit", 60.0)
+
+        summary = app.request_account_summary(timeout=1)
+
+        self.assertIn("BuyingPower", summary)
+        app.reqAccountSummary.assert_not_called()
+        app.cancelAccountSummary.assert_not_called()
+        pacing = app.status()["account_data_pacing"]["by_kind"]["account_summary"]
+        self.assertTrue(pacing["blocked"])
+        self.assertEqual("account_summary_request_limit", pacing["blocked_reason"])
+
+    def test_account_summary_322_sets_pacing_cooldown(self):
+        app = _IBGatewayApp("127.0.0.1", 4001, 31)
+        app._pending_requests[1001] = _PendingRequest(kind="account_summary")
+
+        app.error(
+            1001,
+            322,
+            "Error processing request.-'Q' : cause - Maximum number of account summary requests exceeded; "
+            "desubscribe to previous request first",
+        )
+
+        pacing = app.status()["account_data_pacing"]["by_kind"]["account_summary"]
+        self.assertTrue(pacing["cooldown_active"])
+        self.assertEqual("account_summary_request_limit", pacing["cooldown_reason"])
 
 
 class _DummyStaleBrokerService(TradingServiceAuthRecoveryMixin):

@@ -55,6 +55,26 @@ def _fast_account_data_circuit_status(client) -> dict:
     }
 
 
+def _fast_account_data_pacing_status(client) -> dict:
+    snapshotter = getattr(client, "_account_request_pacing_snapshot_locked", None)
+    state_lock = getattr(client, "_state_lock", None)
+    if not callable(snapshotter):
+        return {}
+    try:
+        if state_lock is not None:
+            with state_lock:
+                snapshot = snapshotter(time.time())
+        else:
+            snapshot = snapshotter(time.time())
+    except Exception:
+        return {}
+    if not isinstance(snapshot, dict):
+        return {}
+    payload = dict(snapshot)
+    payload.setdefault("source", "fast_runtime_state")
+    return payload
+
+
 def _fast_gateway_status(service) -> dict:
     broker = getattr(service, "broker", None)
     client = getattr(broker, "client", None)
@@ -73,6 +93,7 @@ def _fast_gateway_status(service) -> dict:
         ready = bool(getattr(client, "_ready", False) or event_ready)
         status_code = _to_int(getattr(client, "_status_code", 0), 0)
         circuit = _fast_account_data_circuit_status(client)
+        pacing = _fast_account_data_pacing_status(client)
         return {
             "running": bool(connected or ready or getattr(service, "is_running", False)),
             "reachable": bool(connected or ready or status_code not in {0, 502, 503}),
@@ -84,9 +105,11 @@ def _fast_gateway_status(service) -> dict:
                 "ready": ready,
                 "status_code": status_code,
                 "account_data_circuit": circuit,
+                "account_data_pacing": pacing,
                 "source": "fast_runtime_state",
             },
             "account_data_circuit": circuit,
+            "account_data_pacing": pacing,
             "source": "fast_runtime_state",
         }
 
@@ -109,6 +132,7 @@ def _fast_gateway_status(service) -> dict:
         "status_code": status_code,
         "broker": broker_status,
         "account_data_circuit": broker_status.get("account_data_circuit") if isinstance(broker_status.get("account_data_circuit"), dict) else {},
+        "account_data_pacing": broker_status.get("account_data_pacing") if isinstance(broker_status.get("account_data_pacing"), dict) else {},
         "source": "fast_runtime_state",
     }
 

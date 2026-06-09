@@ -51,7 +51,7 @@ ORDER_ROLE_LABELS = {
     "sl": "止损",
     "close": "平仓",
     "manual_close": "手动平仓",
-    "market_close": "市价平仓",
+    "market_close": "手动平仓",
     "close_order": "平仓",
     "reverse_close": "反向平仓",
 }

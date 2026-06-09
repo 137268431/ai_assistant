@@ -2496,15 +2496,17 @@
             const protectionOrderIds = group ? collectGroupProtectionOrderIds(group) : [];
             const confirmed = await confirmOrdersAction({
                 kicker: 'Close Group',
-                title: `确认对 ${closeSymbol || symbol} 发起真实市价平仓？`,
-                message: '这会提交真实 IBKR 市价平仓；提交成功后撤掉匹配到的 TP / SL 括号保护单，并同步关闭本地交易组。',
+                title: `确认对 ${closeSymbol || symbol} 发起真实限价平仓？`,
+                message: '这会提交真实 IBKR 限价平仓，并按当前盘前 / 盘中 / 盘后 / 夜盘自动生成限价和路由；提交成功后撤掉匹配到的 TP / SL 括号保护单，并同步关闭本地交易组。',
                 details: [
                     { label: '数量', value: quantity ? formatQty(quantity) : '-' },
                     { label: '方向', value: direction ? direction.toUpperCase() : '-' },
+                    { label: '订单类型', value: 'LMT 限价' },
+                    { label: '执行策略', value: '自动时段限价' },
                     { label: '保护单', value: protectionOrderIds.length ? `${protectionOrderIds.length} 个待撤` : '未匹配到' },
                     { label: '交易组', value: group?.trade_group_id || decodeURIComponent(uniqueId || '') || '-' },
                 ],
-                confirmText: '市价平仓',
+                confirmText: '限价平仓',
                 tone: 'danger',
             }, `确认平仓 ${closeSymbol || symbol} 的整组订单？`);
             if (!confirmed) return;
@@ -2520,12 +2522,15 @@
                     entry_order_unique_id: primary.entry_order_unique_id || '',
                     cancel_order_ids: protectionOrderIds,
                     cancel_bracket_after_close: true,
+                    order_type: 'LMT',
+                    execution_profile: 'auto_session_limit',
+                    allow_market: false,
                     source: 'orders_page_close_group',
                 });
                 try {
                     await requestOrderAction('/api/custom/ibkr/orders/close_group', uniqueId, {
                         source: 'orders_page_close_group',
-                        reason: '页面真实市价平仓后关闭交易组',
+                        reason: '页面真实限价平仓后关闭交易组',
                     });
                 } catch (syncError) {
                     console.warn('[Orders] 本地交易组状态同步失败:', syncError);

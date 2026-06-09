@@ -62,6 +62,7 @@ from ibkr_compute.observability.prometheus import (
     record_broker_disconnect,
     record_broker_error,
     record_broker_request,
+    record_broker_request_suppressed,
     record_gateway_order_serial_event,
     record_order_event,
     set_broker_pending,
@@ -205,12 +206,30 @@ def _env_bool(name: str, default: bool) -> bool:
 
 CANCEL_ALL_GLOBAL_CANCEL_ENABLED = _env_bool("IBKR_CANCEL_ALL_GLOBAL_CANCEL_ENABLED", True)
 CANCEL_ALL_GLOBAL_CANCEL_GRACE_SECONDS = _env_float("IBKR_CANCEL_ALL_GLOBAL_CANCEL_GRACE_SEC", 0.25, minimum=0.0)
-ACCOUNT_SUMMARY_CACHE_TTL_SECONDS = _env_float("IBKR_ACCOUNT_SUMMARY_CACHE_TTL_SEC", 15.0, minimum=0.0)
-POSITIONS_CACHE_TTL_SECONDS = _env_float("IBKR_POSITIONS_CACHE_TTL_SEC", 10.0, minimum=0.0)
-OPEN_ORDERS_CACHE_TTL_SECONDS = _env_float("IBKR_OPEN_ORDERS_CACHE_TTL_SEC", 3.0, minimum=0.0)
+ACCOUNT_SUMMARY_CACHE_TTL_SECONDS = _env_float("IBKR_ACCOUNT_SUMMARY_CACHE_TTL_SEC", 180.0, minimum=0.0)
+POSITIONS_CACHE_TTL_SECONDS = _env_float("IBKR_POSITIONS_CACHE_TTL_SEC", 60.0, minimum=0.0)
+OPEN_ORDERS_CACHE_TTL_SECONDS = _env_float("IBKR_OPEN_ORDERS_CACHE_TTL_SEC", 30.0, minimum=0.0)
 EXECUTIONS_CACHE_TTL_SECONDS = _env_float("IBKR_EXECUTIONS_CACHE_TTL_SEC", 3.0, minimum=0.0)
-ACCOUNT_DATA_STALE_CACHE_TTL_SECONDS = _env_float("IBKR_ACCOUNT_DATA_STALE_CACHE_TTL_SEC", 300.0, minimum=0.0)
+ACCOUNT_DATA_STALE_CACHE_TTL_SECONDS = _env_float("IBKR_ACCOUNT_DATA_STALE_CACHE_TTL_SEC", 900.0, minimum=0.0)
 ACCOUNT_DATA_SERIAL_TIMEOUT_SECONDS = _env_float("IBKR_ACCOUNT_DATA_SERIAL_TIMEOUT_SEC", 30.0, minimum=0.1)
+ACCOUNT_DATA_PACING_COOLDOWN_SECONDS = _env_float("IBKR_ACCOUNT_DATA_PACING_COOLDOWN_SEC", 180.0, minimum=5.0)
+ACCOUNT_SUMMARY_MIN_INTERVAL_SECONDS = _env_float(
+    "IBKR_ACCOUNT_SUMMARY_MIN_INTERVAL_SEC",
+    ACCOUNT_SUMMARY_CACHE_TTL_SECONDS or 180.0,
+    minimum=0.0,
+)
+POSITIONS_MIN_INTERVAL_SECONDS = _env_float(
+    "IBKR_POSITIONS_MIN_INTERVAL_SEC",
+    POSITIONS_CACHE_TTL_SECONDS or 60.0,
+    minimum=0.0,
+)
+OPEN_ORDERS_MIN_INTERVAL_SECONDS = _env_float(
+    "IBKR_OPEN_ORDERS_MIN_INTERVAL_SEC",
+    OPEN_ORDERS_CACHE_TTL_SECONDS or 30.0,
+    minimum=0.0,
+)
+ACCOUNT_UPDATES_MIN_INTERVAL_SECONDS = _env_float("IBKR_ACCOUNT_UPDATES_MIN_INTERVAL_SEC", 180.0, minimum=0.0)
+ACCOUNT_PNL_MIN_INTERVAL_SECONDS = _env_float("IBKR_ACCOUNT_PNL_MIN_INTERVAL_SEC", 180.0, minimum=0.0)
 ORDER_CONID_FAST_CONTRACT_ENABLED = _env_bool("IBKR_ORDER_CONID_FAST_CONTRACT_ENABLED", True)
 BRACKET_ORDER_ID_OPEN_SCAN_ENABLED = _env_bool("IBKR_BRACKET_ORDER_ID_OPEN_SCAN_ENABLED", False)
 ORDER_CONFIRM_OPEN_ORDERS_FALLBACK_DELAY_SECONDS = _env_float(
@@ -264,6 +283,10 @@ class _IBGatewayApp(EWrapper, EClient):
         self._account_data_request_owner_kind = ""
         self._account_data_request_owner_since = 0.0
         self._account_data_request_queue_timeouts = 0
+        self._account_request_last_started_at: Dict[str, float] = {}
+        self._account_request_cooldown_until: Dict[str, float] = {}
+        self._account_request_cooldown_reason: Dict[str, str] = {}
+        self._account_request_suppressed_counts: Dict[str, int] = {}
         self._account_updates_expected_unsubscribe_until = 0.0
         self._request_seq = 1000
         self._ticker_seq = 50_000
@@ -536,6 +559,144 @@ class _IBGatewayApp(EWrapper, EClient):
             stale_ttl_seconds=ACCOUNT_DATA_STALE_CACHE_TTL_SECONDS,
         )
 
+    @staticmethod
+    def _account_request_min_interval(kind: str) -> float:
+        normalized_kind = str(kind or "").strip().lower()
+        if normalized_kind == "account_summary":
+            return ACCOUNT_SUMMARY_MIN_INTERVAL_SECONDS
+        if normalized_kind == "positions":
+            return POSITIONS_MIN_INTERVAL_SECONDS
+        if normalized_kind in {"open_orders", "open_orders_all"}:
+            return OPEN_ORDERS_MIN_INTERVAL_SECONDS
+        if normalized_kind == "account_updates":
+            return ACCOUNT_UPDATES_MIN_INTERVAL_SECONDS
+        if normalized_kind == "account_pnl":
+            return ACCOUNT_PNL_MIN_INTERVAL_SECONDS
+        return 0.0
+
+    def _ensure_account_pacing_state_locked(self) -> None:
+        if not hasattr(self, "_account_request_last_started_at"):
+            self._account_request_last_started_at = {}
+        if not hasattr(self, "_account_request_cooldown_until"):
+            self._account_request_cooldown_until = {}
+        if not hasattr(self, "_account_request_cooldown_reason"):
+            self._account_request_cooldown_reason = {}
+        if not hasattr(self, "_account_request_suppressed_counts"):
+            self._account_request_suppressed_counts = {}
+
+    def _account_request_pacing_block_locked(self, kind: str, now: float | None = None) -> dict[str, Any]:
+        self._ensure_account_pacing_state_locked()
+        current = float(now or time.time())
+        normalized_kind = str(kind or "").strip().lower()
+        cooldown_until = float(self._account_request_cooldown_until.get(normalized_kind, 0.0) or 0.0)
+        if cooldown_until > current:
+            return {
+                "blocked": True,
+                "kind": normalized_kind,
+                "reason": self._account_request_cooldown_reason.get(normalized_kind) or "cooldown",
+                "retry_after_s": round(cooldown_until - current, 1),
+                "source": "cooldown",
+            }
+        min_interval = self._account_request_min_interval(normalized_kind)
+        last_started = float(self._account_request_last_started_at.get(normalized_kind, 0.0) or 0.0)
+        if min_interval > 0 and last_started > 0:
+            retry_after = min_interval - (current - last_started)
+            if retry_after > 0:
+                return {
+                    "blocked": True,
+                    "kind": normalized_kind,
+                    "reason": "min_interval",
+                    "retry_after_s": round(retry_after, 1),
+                    "source": "min_interval",
+                }
+        return {"blocked": False, "kind": normalized_kind, "reason": "", "retry_after_s": 0.0, "source": ""}
+
+    def _record_account_request_suppressed(self, kind: str, reason: str) -> None:
+        normalized_kind = str(kind or "").strip().lower() or "account_data"
+        normalized_reason = str(reason or "pacing").strip().lower() or "pacing"
+        with self._state_lock:
+            self._ensure_account_pacing_state_locked()
+            key = f"{normalized_kind}:{normalized_reason}"
+            self._account_request_suppressed_counts[key] = int(self._account_request_suppressed_counts.get(key) or 0) + 1
+        record_broker_request_suppressed(self, request_kind=normalized_kind, reason_code=normalized_reason)
+
+    def _account_pacing_stale_or_raise(self, kind: str, cache_key: tuple) -> Any:
+        normalized_kind = str(kind or "").strip().lower()
+        with self._state_lock:
+            block = self._account_request_pacing_block_locked(normalized_kind)
+        if not bool(block.get("blocked")):
+            return None
+        reason = str(block.get("reason") or "pacing")
+        self._record_account_request_suppressed(normalized_kind, reason)
+        stale = self._account_cache_get(
+            cache_key,
+            allow_stale=True,
+            stale_ttl_seconds=ACCOUNT_DATA_STALE_CACHE_TTL_SECONDS,
+        )
+        if stale is not None:
+            return stale
+        retry_after_s = float(block.get("retry_after_s") or 0.0)
+        raise TimeoutError(
+            f"account_data_pacing_cooldown:{normalized_kind}:reason={reason}:retry_after_s={round(retry_after_s, 1)}"
+        )
+
+    def _mark_account_request_started(self, kind: str) -> None:
+        normalized_kind = str(kind or "").strip().lower()
+        if not normalized_kind:
+            return
+        with self._state_lock:
+            self._ensure_account_pacing_state_locked()
+            self._account_request_last_started_at[normalized_kind] = time.time()
+
+    def _mark_account_request_cooldown(self, kind: str, reason: str, seconds: float | None = None) -> None:
+        normalized_kind = str(kind or "").strip().lower()
+        if not normalized_kind:
+            return
+        duration = max(0.0, float(ACCOUNT_DATA_PACING_COOLDOWN_SECONDS if seconds is None else seconds))
+        if duration <= 0:
+            return
+        with self._state_lock:
+            self._ensure_account_pacing_state_locked()
+            self._account_request_cooldown_until[normalized_kind] = max(
+                float(self._account_request_cooldown_until.get(normalized_kind, 0.0) or 0.0),
+                time.time() + duration,
+            )
+            self._account_request_cooldown_reason[normalized_kind] = str(reason or "cooldown").strip() or "cooldown"
+
+    def _account_request_pacing_snapshot_locked(self, now: float | None = None) -> dict[str, Any]:
+        self._ensure_account_pacing_state_locked()
+        current = float(now or time.time())
+        kinds = sorted(
+            set(ACCOUNT_DATA_REQUEST_KINDS)
+            | set(self._account_request_last_started_at)
+            | set(self._account_request_cooldown_until)
+        )
+        by_kind: dict[str, Any] = {}
+        for kind in kinds:
+            block = self._account_request_pacing_block_locked(kind, current)
+            cooldown_until = float(self._account_request_cooldown_until.get(kind, 0.0) or 0.0)
+            by_kind[kind] = {
+                "min_interval_s": self._account_request_min_interval(kind),
+                "last_started_age_s": (
+                    round(max(0.0, current - float(self._account_request_last_started_at.get(kind, 0.0) or 0.0)), 1)
+                    if self._account_request_last_started_at.get(kind)
+                    else None
+                ),
+                "cooldown_active": cooldown_until > current,
+                "cooldown_remaining_s": round(max(0.0, cooldown_until - current), 1),
+                "cooldown_reason": self._account_request_cooldown_reason.get(kind, ""),
+                "blocked": bool(block.get("blocked")),
+                "blocked_reason": str(block.get("reason") or ""),
+                "retry_after_s": float(block.get("retry_after_s") or 0.0),
+            }
+        return {
+            "enabled": True,
+            "cooldown_default_s": ACCOUNT_DATA_PACING_COOLDOWN_SECONDS,
+            "stale_cache_ttl_s": ACCOUNT_DATA_STALE_CACHE_TTL_SECONDS,
+            "by_kind": by_kind,
+            "suppressed_counts": dict(self._account_request_suppressed_counts),
+        }
+
     def _mark_expected_account_updates_unsubscribe(self) -> None:
         with self._state_lock:
             self._account_updates_expected_unsubscribe_until = max(
@@ -650,9 +811,15 @@ class _IBGatewayApp(EWrapper, EClient):
         pending_ctx = self._pending_requests.get(int(reqId or 0))
         account_summary_request_limit = bool(
             normalized_error_code == 322
-            and pending_ctx
-            and pending_ctx.kind == "account_summary"
+            and (pending_ctx is None or pending_ctx.kind == "account_summary")
             and _account_summary_request_limit_message(str(errorString or ""))
+        )
+        error_request_kind = (
+            pending_ctx.kind
+            if pending_ctx
+            else "account_summary"
+            if account_summary_request_limit
+            else "unknown"
         )
         severity = (
             "benign"
@@ -668,7 +835,7 @@ class _IBGatewayApp(EWrapper, EClient):
         record_broker_error(
             self,
             ib_error_code=normalized_error_code,
-            request_kind=pending_ctx.kind if pending_ctx else "unknown",
+            request_kind=error_request_kind,
             severity=severity,
         )
         with self._state_lock:
@@ -701,6 +868,11 @@ class _IBGatewayApp(EWrapper, EClient):
                 if normalized_error_code in ACCOUNT_DATA_UNSUBSCRIBED_CODES:
                     self._record_account_data_issue("account_updates", str(errorString or "account_data_unsubscribed"))
             elif account_summary_request_limit:
+                self._mark_account_request_cooldown(
+                    "account_summary",
+                    "account_summary_request_limit",
+                    ACCOUNT_DATA_PACING_COOLDOWN_SECONDS,
+                )
                 logger.info("IB account summary request limit hit; using cache/backoff reqId=%s code=%s", reqId, errorCode)
             elif order_warning:
                 logger.info("Ignoring non-fatal IB order submission warning reqId=%s code=%s", reqId, errorCode)
@@ -1796,6 +1968,10 @@ class _IBGatewayApp(EWrapper, EClient):
             stale = self._account_cache_get_if_circuit_open(kind, cache_key)
             if stale is not None:
                 return list(stale or [])
+            if not force:
+                paced = self._account_pacing_stale_or_raise(kind, cache_key)
+                if paced is not None:
+                    return list(paced or [])
             with self._account_data_request_gate(kind, timeout):
                 if not force:
                     cached = self._account_cache_get(cache_key)
@@ -1804,8 +1980,13 @@ class _IBGatewayApp(EWrapper, EClient):
                 stale = self._account_cache_get_if_circuit_open(kind, cache_key)
                 if stale is not None:
                     return list(stale or [])
+                if not force:
+                    paced = self._account_pacing_stale_or_raise(kind, cache_key)
+                    if paced is not None:
+                        return list(paced or [])
                 self._raise_if_account_data_circuit_open(kind)
                 req_id, ctx = self._next_request(kind)
+                self._mark_account_request_started(kind)
                 if include_all:
                     self.reqAllOpenOrders()
                 else:
@@ -1861,6 +2042,9 @@ class _IBGatewayApp(EWrapper, EClient):
             stale = self._account_cache_get_if_circuit_open("positions", cache_key)
             if stale is not None:
                 return list(stale or [])
+            paced = self._account_pacing_stale_or_raise("positions", cache_key)
+            if paced is not None:
+                return list(paced or [])
             with self._account_data_request_gate("positions", timeout):
                 cached = self._account_cache_get(cache_key)
                 if cached is not None:
@@ -1868,8 +2052,12 @@ class _IBGatewayApp(EWrapper, EClient):
                 stale = self._account_cache_get_if_circuit_open("positions", cache_key)
                 if stale is not None:
                     return list(stale or [])
+                paced = self._account_pacing_stale_or_raise("positions", cache_key)
+                if paced is not None:
+                    return list(paced or [])
                 self._raise_if_account_data_circuit_open("positions")
                 req_id, ctx = self._next_request("positions")
+                self._mark_account_request_started("positions")
                 self._positions = {}
                 try:
                     self.reqPositions()
@@ -1895,6 +2083,9 @@ class _IBGatewayApp(EWrapper, EClient):
             stale = self._account_cache_get_if_circuit_open("account_summary", cache_key)
             if stale is not None:
                 return dict(stale or {})
+            paced = self._account_pacing_stale_or_raise("account_summary", cache_key)
+            if paced is not None:
+                return dict(paced or {})
             with self._account_data_request_gate("account_summary", timeout):
                 cached = self._account_cache_get(cache_key)
                 if cached is not None:
@@ -1902,14 +2093,23 @@ class _IBGatewayApp(EWrapper, EClient):
                 stale = self._account_cache_get_if_circuit_open("account_summary", cache_key)
                 if stale is not None:
                     return dict(stale or {})
+                paced = self._account_pacing_stale_or_raise("account_summary", cache_key)
+                if paced is not None:
+                    return dict(paced or {})
                 self._raise_if_account_data_circuit_open("account_summary")
                 req_id, ctx = self._next_request("account_summary")
+                self._mark_account_request_started("account_summary")
                 try:
                     self.reqAccountSummary(req_id, "All", "NetLiquidation,BuyingPower,AvailableFunds,ExcessLiquidity")
                     try:
                         items = self._await(req_id, ctx, timeout)
                     except Exception as exc:
                         if _account_summary_request_limit_message(str(exc)):
+                            self._mark_account_request_cooldown(
+                                "account_summary",
+                                "account_summary_request_limit",
+                                ACCOUNT_DATA_PACING_COOLDOWN_SECONDS,
+                            )
                             stale = self._account_cache_get(
                                 cache_key,
                                 allow_stale=True,
@@ -1937,30 +2137,64 @@ class _IBGatewayApp(EWrapper, EClient):
         account: str = "",
         timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS,
     ) -> Dict[str, Any]:
+        requested_account = str(account or "").strip()
+        if not requested_account and self._managed_accounts:
+            requested_account = self._managed_accounts.split(",", 1)[0].strip()
+        cache_key = ("account_updates", requested_account or str(account or "").strip())
+        cached = self._account_cache_get(cache_key)
+        if cached is not None:
+            return dict(cached or {})
         with self._account_updates_request_lock:
+            if requested_account:
+                cache_key = ("account_updates", requested_account)
+            cached = self._account_cache_get(cache_key)
+            if cached is not None:
+                return dict(cached or {})
             self._ensure_ready(timeout, "request_account_updates")
+            if not requested_account and self._managed_accounts:
+                requested_account = self._managed_accounts.split(",", 1)[0].strip()
+                cache_key = ("account_updates", requested_account)
+            cached = self._account_cache_get(cache_key)
+            if cached is not None:
+                return dict(cached or {})
+            stale = self._account_cache_get_if_circuit_open("account_updates", cache_key)
+            if stale is not None:
+                return dict(stale or {})
+            paced = self._account_pacing_stale_or_raise("account_updates", cache_key)
+            if paced is not None:
+                return dict(paced or {})
             with self._account_data_request_gate("account_updates", timeout):
+                cached = self._account_cache_get(cache_key)
+                if cached is not None:
+                    return dict(cached or {})
+                stale = self._account_cache_get_if_circuit_open("account_updates", cache_key)
+                if stale is not None:
+                    return dict(stale or {})
+                paced = self._account_pacing_stale_or_raise("account_updates", cache_key)
+                if paced is not None:
+                    return dict(paced or {})
                 self._raise_if_account_data_circuit_open("account_updates")
-                requested_account = str(account or "").strip()
-                if not requested_account and self._managed_accounts:
-                    requested_account = self._managed_accounts.split(",", 1)[0].strip()
                 if not requested_account:
                     raise RuntimeError("missing_managed_account")
+                cache_key = ("account_updates", requested_account)
 
                 capture = _AccountUpdatesCapture(account=requested_account)
                 with self._account_updates_lock:
                     self._account_updates_capture = capture
+                self._mark_account_request_started("account_updates")
                 try:
                     self.reqAccountUpdates(True, requested_account)
                     if not capture.event.wait(timeout=max(1, int(timeout))):
                         self._record_account_data_issue("account_updates", "account_updates_timeout")
                         raise TimeoutError("account_updates_timeout")
                     self._record_account_data_success("account_updates")
-                    return {
+                    payload = {
                         "account": requested_account,
                         "summary": dict(capture.summary),
                         "positions": [dict(item) for item in capture.positions.values()],
                     }
+                    self._account_cache_store(cache_key, payload, ACCOUNT_SUMMARY_CACHE_TTL_SECONDS)
+                    return payload
                 finally:
                     try:
                         self._mark_expected_account_updates_unsubscribe()
@@ -1978,37 +2212,72 @@ class _IBGatewayApp(EWrapper, EClient):
         model_code: str = "",
         timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS,
     ) -> Dict[str, Any]:
-        self._ensure_ready(timeout, "request_account_pnl")
-        with self._account_data_request_gate("account_pnl", timeout):
-            self._raise_if_account_data_circuit_open("account_pnl")
+        requested_account = str(account or "").strip()
+        if not requested_account and self._managed_accounts:
+            requested_account = self._managed_accounts.split(",", 1)[0].strip()
+        model_code_text = str(model_code or "")
+        cache_key = ("account_pnl", requested_account or str(account or "").strip(), model_code_text)
+        cached = self._account_cache_get(cache_key)
+        if cached is not None:
+            return dict(cached or {})
+        with self._account_request_lock("account_pnl"):
+            if requested_account:
+                cache_key = ("account_pnl", requested_account, model_code_text)
+            cached = self._account_cache_get(cache_key)
+            if cached is not None:
+                return dict(cached or {})
+            self._ensure_ready(timeout, "request_account_pnl")
             requested_account = str(account or "").strip()
             if not requested_account and self._managed_accounts:
                 requested_account = self._managed_accounts.split(",", 1)[0].strip()
             if not requested_account:
                 raise RuntimeError("missing_managed_account")
+            cache_key = ("account_pnl", requested_account, model_code_text)
+            cached = self._account_cache_get(cache_key)
+            if cached is not None:
+                return dict(cached or {})
+            stale = self._account_cache_get_if_circuit_open("account_pnl", cache_key)
+            if stale is not None:
+                return dict(stale or {})
+            paced = self._account_pacing_stale_or_raise("account_pnl", cache_key)
+            if paced is not None:
+                return dict(paced or {})
             if not callable(getattr(self, "reqPnL", None)):
                 raise RuntimeError("req_pnl_unavailable")
 
-            req_id, ctx = self._next_request("account_pnl")
-            subscribed = False
-            try:
-                self.reqPnL(req_id, requested_account, str(model_code or ""))
-                subscribed = True
-                items = self._await(req_id, ctx, timeout)
-                payload = dict(items[0] or {}) if items else {}
-                if not payload:
-                    return {}
-                payload.setdefault("source", "reqPnL")
-                payload["account"] = requested_account
-                payload["model_code"] = str(model_code or "")
-                return payload
-            finally:
-                self._pending_requests.pop(req_id, None)
-                if subscribed:
-                    try:
-                        self.cancelPnL(req_id)
-                    except Exception:
-                        logger.debug("cancelPnL failed for req_id=%s account=%s", req_id, requested_account, exc_info=True)
+            with self._account_data_request_gate("account_pnl", timeout):
+                cached = self._account_cache_get(cache_key)
+                if cached is not None:
+                    return dict(cached or {})
+                stale = self._account_cache_get_if_circuit_open("account_pnl", cache_key)
+                if stale is not None:
+                    return dict(stale or {})
+                paced = self._account_pacing_stale_or_raise("account_pnl", cache_key)
+                if paced is not None:
+                    return dict(paced or {})
+                self._raise_if_account_data_circuit_open("account_pnl")
+                req_id, ctx = self._next_request("account_pnl")
+                self._mark_account_request_started("account_pnl")
+                subscribed = False
+                try:
+                    self.reqPnL(req_id, requested_account, model_code_text)
+                    subscribed = True
+                    items = self._await(req_id, ctx, timeout)
+                    payload = dict(items[0] or {}) if items else {}
+                    if not payload:
+                        return {}
+                    payload.setdefault("source", "reqPnL")
+                    payload["account"] = requested_account
+                    payload["model_code"] = model_code_text
+                    self._account_cache_store(cache_key, payload, ACCOUNT_PNL_MIN_INTERVAL_SECONDS)
+                    return payload
+                finally:
+                    self._pending_requests.pop(req_id, None)
+                    if subscribed:
+                        try:
+                            self.cancelPnL(req_id)
+                        except Exception:
+                            logger.debug("cancelPnL failed for req_id=%s account=%s", req_id, requested_account, exc_info=True)
 
     def request_executions(
         self,
@@ -2505,6 +2774,7 @@ class _IBGatewayApp(EWrapper, EClient):
                 "status_code": int(self._status_code or 0),
                 "account_data_circuit": self._account_data_circuit_snapshot_locked(now),
                 "account_data_request_gate": self._account_data_gate_snapshot_locked(now),
+                "account_data_pacing": self._account_request_pacing_snapshot_locked(now),
                 "last_connect_at": (
                     datetime.fromtimestamp(self._last_connect_at, ET).isoformat()
                     if self._last_connect_at else ""

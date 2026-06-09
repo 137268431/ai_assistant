@@ -600,6 +600,11 @@ if _client_available():
         "IB API synchronous request counts.",
         ("service", "environment", "client_role", "request_kind", "result", "error_class"),
     )
+    BROKER_REQUEST_SUPPRESSED = Counter(
+        "ibkr_broker_request_suppressed_total",
+        "IB API requests suppressed by local pacing/cooldown guards.",
+        ("service", "environment", "client_role", "request_kind", "reason_code"),
+    )
     BROKER_REQUEST_DURATION = Histogram(
         "ibkr_broker_request_duration_seconds",
         "IB API synchronous request duration.",
@@ -713,7 +718,7 @@ else:  # pragma: no cover
     POSITION_CURRENT_COUNT = ORDER_CURRENT_COUNT = SIGNAL_CURRENT_COUNT = None
     RUNTIME_CONFIG_SWITCH_ENABLED = None
     BROKER_CONNECTS = BROKER_CONNECT_DURATION = BROKER_READY = BROKER_CONNECTED = BROKER_DISCONNECTS = BROKER_ERRORS = None
-    BROKER_REQUESTS = BROKER_REQUEST_DURATION = BROKER_PENDING_REQUESTS = None
+    BROKER_REQUESTS = BROKER_REQUEST_SUPPRESSED = BROKER_REQUEST_DURATION = BROKER_PENDING_REQUESTS = None
     HISTORY_EVENTS = HISTORY_DURATION = HISTORY_ACTIVE = HISTORY_ROWS = None
     ORDER_EVENTS = ORDER_DURATION = ORDER_SERIAL_QUEUE_WAIT = ORDER_SERIAL_TIMEOUTS = None
     ORDER_SYMBOL_QUEUE_WAIT = ORDER_SYMBOL_QUEUE_ACTIVE = ORDER_SYMBOL_QUEUE_ACTIVE_SYMBOLS = None
@@ -1483,6 +1488,18 @@ def record_broker_request(obj: Any = None, *, request_kind: str, result: str, du
         BROKER_REQUEST_DURATION.labels(labels[0], labels[1], labels[2], labels[3], labels[4]).observe(max(0.0, float(duration_s or 0.0)))
 
 
+def record_broker_request_suppressed(obj: Any = None, *, request_kind: str, reason_code: str = "pacing") -> None:
+    if not _client_available() or BROKER_REQUEST_SUPPRESSED is None:
+        return
+    BROKER_REQUEST_SUPPRESSED.labels(
+        resolve_source_service(),
+        _env_from_obj(obj),
+        _client_role(obj),
+        _sanitize_label(request_kind),
+        _sanitize_reason_code(reason_code or "pacing", "pacing"),
+    ).inc()
+
+
 def set_broker_pending(obj: Any = None, *, request_kind: str, value: Any) -> None:
     if BROKER_PENDING_REQUESTS is None:
         return
@@ -1677,6 +1694,7 @@ __all__ = [
     "record_broker_disconnect",
     "record_broker_error",
     "record_broker_request",
+    "record_broker_request_suppressed",
     "record_gateway_service_action",
     "record_gateway_socket_probe",
     "record_history_event",

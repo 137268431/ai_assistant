@@ -37,10 +37,10 @@ class TradingServiceAccountSnapshotRefreshMixin:
 
     def _account_snapshot_refresh_interval_sec(self, *, active: bool = False, error: bool = False) -> float:
         if error:
-            return _env_float("IBKR_ACCOUNT_SNAPSHOT_ERROR_BACKOFF_SEC", 60.0)
+            return _env_float("IBKR_ACCOUNT_SNAPSHOT_ERROR_BACKOFF_SEC", 180.0)
         if active:
-            return _env_float("IBKR_ACCOUNT_SNAPSHOT_ACTIVE_REFRESH_INTERVAL_SEC", 10.0)
-        return _env_float("IBKR_ACCOUNT_SNAPSHOT_REFRESH_INTERVAL_SEC", 30.0)
+            return _env_float("IBKR_ACCOUNT_SNAPSHOT_ACTIVE_REFRESH_INTERVAL_SEC", 60.0)
+        return _env_float("IBKR_ACCOUNT_SNAPSHOT_REFRESH_INTERVAL_SEC", 180.0)
 
     def _account_snapshot_refresh_orders_fast_needed(self) -> tuple[bool, dict]:
         details = {

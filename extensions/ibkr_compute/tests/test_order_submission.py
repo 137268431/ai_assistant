@@ -4,6 +4,7 @@ import threading
 import time
 import unittest
 from unittest import mock
+from datetime import datetime, timezone
 from pathlib import Path
 
 SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "src"
@@ -574,10 +575,12 @@ class FakeSignalService(TradingServiceSignalsMixin):
         self.config = config or FakeConfig()
         self.realtime_quote_book = quote_book or FakeQuoteBook({})
         self.ws_client = ws_client
-        self.account_snapshot_provider = lambda: dict(account_snapshot or {
+        snapshot_payload = dict(account_snapshot or {
             "ok": True,
             "summary": {"buying_power": 100000, "net_liquidation": 120000},
         })
+        snapshot_payload.setdefault("fetched_at", datetime.now(timezone.utc).isoformat())
+        self.account_snapshot_provider = lambda: dict(snapshot_payload)
 
     def _now_iso(self):
         return "2026-05-13T10:00:00-04:00"
@@ -3235,13 +3238,14 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         signal["shares"] = 50
         pb = FakeSignalStatePBClient({"id": "row-aapl", "extra": {"source": "ibkr_compute"}})
         store = BuyingPowerReservationStore(pb, environment="paper")
+        fetched_at = datetime.now(timezone.utc).isoformat()
         store.update_baseline_from_snapshot(
             {
                 "ok": True,
                 "environment": "paper",
                 "summary": {"buying_power": 20000.0, "net_liquidation": 100000.0},
                 "buying_power_guard": {"available": True, "state": "ok", "source": "account_summary"},
-                "fetched_at": "2026-06-08T14:00:00+00:00",
+                "fetched_at": fetched_at,
                 "source": "account_summary",
             }
         )
@@ -3263,7 +3267,52 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         self.assertEqual("local_baseline", ack_extra["buying_power_guard"]["source"])
         self.assertEqual(20000.0, ack_extra["buying_power_remaining"])
         self.assertEqual(15000.0, ack_extra["buying_power_remaining_after"])
-        self.assertEqual("2026-06-08T14:00:00+00:00", ack_extra["buying_power_baseline_fetched_at"])
+        self.assertEqual(fetched_at, ack_extra["buying_power_baseline_fetched_at"])
+
+    def test_buying_power_guard_rejects_stale_local_baseline(self):
+        signal = self._signal("AAPL")
+        signal["shares"] = 50
+        pb = FakeSignalStatePBClient({"id": "row-aapl", "extra": {"source": "ibkr_compute"}})
+        store = BuyingPowerReservationStore(pb, environment="paper")
+        store.update_baseline_from_snapshot(
+            {
+                "ok": True,
+                "environment": "paper",
+                "summary": {"buying_power": 20000.0, "net_liquidation": 100000.0},
+                "buying_power_guard": {"available": True, "state": "ok", "source": "account_summary"},
+                "fetched_at": "2026-01-01T00:00:00+00:00",
+                "source": "account_summary",
+            }
+        )
+        service = FakeSignalService(
+            signal,
+            lifecycle=FakeLifecycle(),
+            pb=pb,
+            config=FakeConfig({"entry_pre_submit_guard_enabled": "false"}),
+            account_snapshot={
+                "ok": False,
+                "summary": {},
+                "buying_power_guard": {
+                    "state": "unavailable",
+                    "reason": "account_data_circuit_open",
+                    "available": False,
+                    "source": "account_data_circuit",
+                },
+            },
+        )
+        service.buying_power_reservations = store
+
+        service._process_signals()
+
+        self.assertEqual([], service.signal_router.processed)
+        self.assertEqual(["sig-aapl"], service.signal_router.released)
+        self.assertEqual([], service.order_placer.calls)
+        patch = pb.updates[-1][2]
+        guard = patch["extra"]["buying_power_guard"]
+        self.assertEqual("unavailable", guard["state"])
+        self.assertEqual("buying_power_snapshot_stale", guard["reason"])
+        self.assertFalse(guard["snapshot_fresh"])
+        self.assertEqual(180.0, guard["snapshot_max_age_s"])
 
     def test_buying_power_guard_blocks_without_initial_baseline_when_snapshot_unavailable(self):
         signal = self._signal("AAPL")
@@ -3326,7 +3375,7 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
                 "environment": "paper",
                 "summary": {"buying_power": 30000.0, "net_liquidation": 100000.0},
                 "buying_power_guard": {"available": True, "state": "ok", "source": "account_summary"},
-                "fetched_at": "2026-06-08T14:00:00+00:00",
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
                 "source": "account_summary",
             }
         )

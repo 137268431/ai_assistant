@@ -2018,7 +2018,7 @@
                     <div class="record-head">
                         <div>
                             <div class="section-title">今日已闭合 / FLAT</div>
-                            <div class="section-note">这些是 Gateway 返回的 quantity=0 记录：代表今天订单组已经闭合，不是当前 IBKR live open order，也不提供市价平仓。</div>
+                            <div class="section-note">这些是 Gateway 返回的 quantity=0 记录：代表今天订单组已经闭合，不是当前 IBKR live open order，也不提供平仓操作。</div>
                         </div>
                         <div class="badge-row">
                             <span class="badge neutral">${escapeHtml(String(sortedFlat.length))} FLAT ROWS</span>
@@ -2082,7 +2082,7 @@
                         <div class="record-actions">
                             ${position?.relation?.signal_id ? `<button class="action-btn view" type="button" onclick="viewSignal(${escapeHtml(toJsStringLiteral(position.relation.signal_id))})">信号页</button>` : ''}
                             ${position?.relation?.trade_group_id ? `<button class="action-btn view" type="button" onclick="viewTradeGroup(${escapeHtml(toJsStringLiteral(position.relation.trade_group_id))}, ${escapeHtml(toJsStringLiteral(position?.relation?.signal_id || ''))})">订单页</button>` : ''}
-                            <button class="action-btn close" type="button" onclick='closePosition(${JSON.stringify({ symbol: position.symbol, conid: position.conid, quantity: position.quantity, direction: position.direction, avg_cost: position.avg_cost, avg_price: position.avg_price, market_price: position.market_price, market_value: position.market_value, unrealized_pnl: position.unrealized_pnl, realized_pnl: position.realized_pnl, account: position.account, currency: position.currency, asset_class: position.asset_class, relation: position.relation || {} }).replace(/'/g, "&#39;")})'>市价平仓</button>
+                            <button class="action-btn close" type="button" onclick='closePosition(${JSON.stringify({ symbol: position.symbol, conid: position.conid, quantity: position.quantity, direction: position.direction, avg_cost: position.avg_cost, avg_price: position.avg_price, market_price: position.market_price, market_value: position.market_value, unrealized_pnl: position.unrealized_pnl, realized_pnl: position.realized_pnl, account: position.account, currency: position.currency, asset_class: position.asset_class, relation: position.relation || {} }).replace(/'/g, "&#39;")})'>限价平仓</button>
                         </div>
                     </div>
                 `).join('')}</div>`
@@ -2898,18 +2898,20 @@
             const relation = position.relation || {};
             const localCloseGroupId = String(relation.entry_order_unique_id || relation.trade_group_id || '').trim();
             const confirmed = await confirmAccountAction({
-                kicker: 'Market Close',
-                title: `确认对 ${position.symbol} 发起真实市价平仓？`,
-                message: '系统会先提交真实市价平仓请求；提交成功后自动撤掉匹配到的 TP / SL 括号保护单，并关闭本地交易组状态。',
+                kicker: 'Limit Close',
+                title: `确认对 ${position.symbol} 发起真实限价平仓？`,
+                message: '系统会提交真实 IBKR 限价平仓请求，并按当前盘前 / 盘中 / 盘后 / 夜盘自动生成限价和路由；提交成功后自动撤掉匹配到的 TP / SL 括号保护单，并关闭本地交易组状态。',
                 details: [
                     { label: '数量', value: formatQty(Math.abs(qty)) },
                     { label: '方向', value: String(position.direction || (qty > 0 ? 'long' : 'short')).toUpperCase() },
+                    { label: '订单类型', value: 'LMT 限价' },
+                    { label: '执行策略', value: '自动时段限价' },
                     { label: '保护单', value: protectionOrderIds.length ? `${protectionOrderIds.length} 个待撤` : '未匹配到' },
                     { label: '交易组', value: relation.trade_group_id || relation.entry_order_unique_id || 'EXTERNAL' },
                 ],
-                confirmText: '市价平仓',
+                confirmText: '限价平仓',
                 tone: 'danger',
-            }, `确认对 ${position.symbol} 发起真实市价平仓？\n数量: ${formatQty(Math.abs(qty))}`);
+            }, `确认对 ${position.symbol} 发起真实限价平仓？\n数量: ${formatQty(Math.abs(qty))}`);
             if (!confirmed) return;
             const actionPayload = await runAction(
                 '平仓',
@@ -2929,6 +2931,10 @@
                     account: position.account,
                     currency: position.currency,
                     asset_class: position.asset_class,
+                    order_type: 'LMT',
+                    execution_profile: 'auto_session_limit',
+                    allow_market: false,
+                    source: 'account_limit_close',
                     trade_group_id: relation.trade_group_id || '',
                     entry_order_unique_id: relation.entry_order_unique_id || '',
                     cancel_order_ids: protectionOrderIds,
@@ -2945,14 +2951,14 @@
             );
             if (!actionPayload || !localCloseGroupId) return;
             try {
-	                await requestAccountJson('/api/custom/ibkr/orders/close_group', {
-	                    method: 'POST',
-	                    body: buildModePayload({
-	                        id: localCloseGroupId,
-	                        source: 'account_market_close',
-	                        reason: '账户页真实市价平仓后关闭交易组',
-	                    }, { brokerMode: currentEnvironment, dataEnvironment: getSharedDataEnvironment() }),
-	                });
+                await requestAccountJson('/api/custom/ibkr/orders/close_group', {
+                    method: 'POST',
+                    body: buildModePayload({
+                        id: localCloseGroupId,
+                        source: 'account_limit_close',
+                        reason: '账户页真实限价平仓后关闭交易组',
+                    }, { brokerMode: currentEnvironment, dataEnvironment: getSharedDataEnvironment() }),
+                });
                 showToast(`${position.symbol} 本地交易组已关闭`);
                 setTimeout(() => loadAccountSnapshot(false), 800);
             } catch (error) {

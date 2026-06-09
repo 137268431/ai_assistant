@@ -50,15 +50,25 @@ groups:
       description: instance={{ $labels.instance }} mountpoint={{ $labels.mountpoint
         }}.
   - alert: AccountBuyingPowerGuardUnavailable
-    expr: max by (service, environment, source) (ibkr_account_buying_power_guard_state{source="account_snapshot",
-      state="unavailable"}) > 0
-    for: 2m
+    expr: max by (service, environment) (max_over_time(ibkr_account_buying_power_guard_state{source=~"account_snapshot|account_summary",
+      state=~"ok|warning|blocked"}[5m])) == 0
+    for: 5m
     labels:
       severity: critical
     annotations:
       summary: Account buying-power guard is unavailable
       description: 账户购买力风控不可用，自动开仓会暂停。service={{ $labels.service }} environment={{
         $labels.environment }}.
+  - alert: AccountSummaryPacingStorm
+    expr: sum by (service, environment, client_role) (increase(ibkr_broker_error_total{ib_error_code="322",
+      request_kind="account_summary"}[10m])) >= 3
+    for: 0m
+    labels:
+      severity: critical
+    annotations:
+      summary: Account summary pacing storm detected
+      description: IBKR account summary request pacing hit >=3 times in 10m. 自动开仓应继续使用缓存/冷却，不应继续重试。service={{ $labels.service }} environment={{
+        $labels.environment }} client_role={{ $labels.client_role }}.
   - alert: AccountBuyingPowerRemainingCritical
     expr: (max by (service, environment, source) (ibkr_account_buying_power_remaining_usd{source="account_snapshot"})
       < max by (service, environment, source) (ibkr_account_buying_power_block_floor_usd{source="account_snapshot"}))
@@ -138,6 +148,16 @@ groups:
       description: client_role={{ $labels.client_role }} ib_error_code={{ $labels.ib_error_code
         }} ib_error={{ $labels.ib_error_cn }} action={{ $labels.ib_error_action_cn
         }} severity={{ $labels.severity }}.
+  - alert: AccountSummaryPacingViolation
+    expr: sum by (service, environment, client_role) (increase(ibkr_broker_error_total{ib_error_code="322",
+      request_kind="account_summary"}[10m])) > 0
+    for: 0m
+    labels:
+      severity: warning
+    annotations:
+      summary: Account summary pacing violation detected
+      description: IBKR 返回 account summary pacing code=322，说明仍有请求频率过高或重复订阅。service={{ $labels.service }} environment={{
+        $labels.environment }} client_role={{ $labels.client_role }}.
   - alert: BrokerPendingRequestsHigh
     expr: sum by (service, environment, client_role, request_kind) (ibkr_broker_pending_requests)
       > 20
@@ -215,15 +235,15 @@ groups:
       summary: Account buying power is near the block floor
       description: 账户剩余购买力低于预警阈值但尚未低于禁止阈值。remaining={{ $value }}.
   - alert: AccountSnapshotUnavailable
-    expr: max by (service, environment, source) (ibkr_account_snapshot_available{source="account_snapshot"})
+    expr: max by (service, environment) (max_over_time(ibkr_account_snapshot_available{source=~"account_snapshot|account_summary"}[10m]))
       == 0
-    for: 2m
+    for: 5m
     labels:
       severity: warning
     annotations:
       summary: Account snapshot is unavailable
-      description: 账户快照不可用，购买力、NetLiq 或保证金信息可能不可信。source={{ $labels.source
-        }}.
+      description: 账户快照不可用，购买力、NetLiq 或保证金信息可能不可信。service={{ $labels.service }} environment={{
+        $labels.environment }}.
   - alert: AccountDataCircuitActive
     expr: ibkr_account_data_circuit_active == 1
     for: 2m

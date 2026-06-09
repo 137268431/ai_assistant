@@ -47,7 +47,7 @@ def canonical_cache_key(namespace: str, payload: dict[str, Any] | None, *, extra
     filtered = {
         str(key): value
         for key, value in data.items()
-        if str(key) not in {"cache_bust", "cache", "_"}
+        if str(key) not in {"cache_bust", "broker_force", "cache", "_"}
     }
     return (
         namespace,

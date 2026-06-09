@@ -11,6 +11,7 @@ for src_root in SERVICE_SRC_ROOTS:
     if str(src_root) not in sys.path:
         sys.path.insert(0, str(src_root))
 
+_FLASK_STUB_INSTALLED = False
 if "flask" not in sys.modules:
     import types
 
@@ -29,10 +30,14 @@ if "flask" not in sys.modules:
     flask_stub.jsonify = lambda payload: payload
     flask_stub.request = types.SimpleNamespace(args={}, headers={}, method="GET", get_json=lambda silent=True: {})
     sys.modules["flask"] = flask_stub
+    _FLASK_STUB_INSTALLED = True
 
 from ibkr_api.account.snapshot import build_account_snapshot_response, enrich_account_snapshot
 from ibkr_api.account.routes import _account_snapshot_upstream_timeout, _prefers_stale_orders_fast
 from ibkr_api.account.snapshot_relations import build_relation_context
+
+if _FLASK_STUB_INSTALLED:
+    sys.modules.pop("flask", None)
 
 
 class _FakePB:
@@ -151,7 +156,7 @@ class AccountSnapshotRoutesTest(unittest.TestCase):
             calls[0]["params"],
         )
 
-    def test_build_account_snapshot_response_forwards_cache_bust_to_runtime(self):
+    def test_build_account_snapshot_response_does_not_forward_cache_bust_to_runtime(self):
         calls = []
 
         def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
@@ -188,7 +193,44 @@ class AccountSnapshotRoutesTest(unittest.TestCase):
         self.assertEqual(200, status_code)
         self.assertTrue(payload["ok"])
         self.assertEqual(
-            [("broker_mode", "paper"), ("environment", "paper"), ("cache_bust", "123"), ("cache", "0")],
+            [("broker_mode", "paper"), ("environment", "paper")],
+            calls[0],
+        )
+
+    def test_build_account_snapshot_response_forwards_explicit_broker_force(self):
+        calls = []
+
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            calls.append(list(params or []))
+            return {
+                "ok": True,
+                "status_code": 200,
+                "payload": {
+                    "ok": True,
+                    "environment": "paper",
+                    "summary": {},
+                    "positions": [],
+                    "orders": [],
+                    "live_open_orders": [],
+                    "counts": {},
+                },
+                "target_url": "http://runtime/ibkr/account",
+                "elapsed_ms": 1.0,
+                "timeout_s": timeout,
+            }
+
+        payload, status_code = build_account_snapshot_response(
+            _FakePB(rows={"orders": [], "ibkr_signals": []}),
+            payload={"broker_mode": "paper", "environment": "paper", "broker_force": "1", "cache_bust": "123"},
+            normalize_environment=lambda value, default="live": value or default,
+            request_json_request=request_json_request,
+            runtime_base_url="http://runtime",
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(
+            [("broker_mode", "paper"), ("environment", "paper"), ("broker_force", "1")],
             calls[0],
         )
 

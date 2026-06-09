@@ -247,6 +247,20 @@ def _account_data_circuit_status(service_status: dict) -> dict:
     return dict(circuit) if circuit else {}
 
 
+def _account_data_pacing_status(service_status: dict) -> dict:
+    status = service_status if isinstance(service_status, dict) else {}
+    pacing = status.get("account_data_pacing") if isinstance(status.get("account_data_pacing"), dict) else {}
+    if pacing:
+        return dict(pacing)
+    gateway = status.get("gateway") if isinstance(status.get("gateway"), dict) else {}
+    pacing = gateway.get("account_data_pacing") if isinstance(gateway.get("account_data_pacing"), dict) else {}
+    if pacing:
+        return dict(pacing)
+    broker = gateway.get("broker") if isinstance(gateway.get("broker"), dict) else {}
+    pacing = broker.get("account_data_pacing") if isinstance(broker.get("account_data_pacing"), dict) else {}
+    return dict(pacing) if pacing else {}
+
+
 def _summary_snapshot_available(summary: dict) -> bool:
     if not isinstance(summary, dict) or not summary:
         return False
@@ -447,6 +461,7 @@ def _build_buying_power_payload_from_full_snapshot(full_snapshot: dict, context:
             "fetched_at": payload.get("fetched_at") or datetime.now(timezone.utc).isoformat(),
             "source": "account_snapshot",
             "snapshot_source": payload.get("source") or "account_snapshot",
+            "account_data_pacing": dict(payload.get("account_data_pacing") or _account_data_pacing_status(context["service_status"])),
         }
     )
 
@@ -485,6 +500,7 @@ def _build_buying_power_payload_from_summary_raw(service, context: dict, summary
         "errors": {"summary": summary_error},
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "source": "account_summary",
+        "account_data_pacing": _account_data_pacing_status(context["service_status"]),
     }
     return _decorate_account_snapshot_health(payload)
 
@@ -533,6 +549,7 @@ def _build_account_data_circuit_buying_power_snapshot(service, context: dict, ci
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "source": "account_data_circuit",
         "account_data_circuit": dict(circuit or {}),
+        "account_data_pacing": _account_data_pacing_status(context["service_status"]),
         "retry_after_s": retry_after_s,
     }
     return _decorate_account_snapshot_health(payload, reason=reason)
@@ -673,6 +690,7 @@ def _account_snapshot_error_payload(context: dict, error: str) -> dict:
         "cache_state": "empty_error",
         "stale": False,
         "refresh_error": message,
+        "account_data_pacing": _account_data_pacing_status(service_status),
     }, reason=message)
 
 
@@ -755,6 +773,7 @@ def _build_fresh_ibkr_account_snapshot_payload(service, context: dict) -> dict:
         "errors": snapshot_sources["errors"],
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "source": "account_snapshot",
+        "account_data_pacing": _account_data_pacing_status(context["service_status"]),
     }
     return _decorate_account_snapshot_health(payload)
 
@@ -956,6 +975,7 @@ def _build_orders_fast_ibkr_account_snapshot_payload(
         },
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "source": "account_snapshot_orders_fast",
+        "account_data_pacing": _account_data_pacing_status(context["service_status"]),
         "snapshot_profile": "orders_fast",
         "orders_fast": True,
         "orders_fast_open_orders_only": bool(open_orders_only),

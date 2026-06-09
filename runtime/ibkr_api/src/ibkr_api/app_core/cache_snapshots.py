@@ -11,7 +11,7 @@ from typing import Any, Callable
 SnapshotBuilder = Callable[[], tuple[dict[str, Any], int]]
 
 COLLECTION = "ibkr_cache_snapshots"
-_SKIP_KEY_FIELDS = {"_", "cache", "cache_bust", "force", "refresh"}
+_SKIP_KEY_FIELDS = {"_", "cache", "cache_bust", "broker_force", "force", "refresh"}
 _REFRESH_LOCK = threading.RLock()
 _REFRESH_IN_FLIGHT: set[str] = set()
 
@@ -396,7 +396,12 @@ def cached_snapshot_response(
 
 def request_force_refresh(payload: dict[str, Any] | None) -> bool:
     data = payload if isinstance(payload, dict) else {}
-    return _truthy(data.get("cache_bust")) or _truthy(data.get("refresh")) or _disabled(data.get("cache"))
+    return (
+        _truthy(data.get("cache_bust"))
+        or _truthy(data.get("refresh"))
+        or _truthy(data.get("broker_force"))
+        or _disabled(data.get("cache"))
+    )
 
 
 __all__ = [

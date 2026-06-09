@@ -2547,6 +2547,9 @@ class TradingServiceSignalsMixin:
             "buying_power_baseline_available": guard.get("baseline_available"),
             "buying_power_baseline_source": guard.get("baseline_source"),
             "buying_power_baseline_fetched_at": guard.get("baseline_fetched_at"),
+            "buying_power_snapshot_age_s": guard.get("snapshot_age_s"),
+            "buying_power_snapshot_max_age_s": guard.get("snapshot_max_age_s"),
+            "buying_power_snapshot_fresh": guard.get("snapshot_fresh"),
         }
 
     def _merge_buying_power_snapshot_guard(self, guard: dict, snapshot_guard: dict | None) -> dict:
@@ -2685,6 +2688,46 @@ class TradingServiceSignalsMixin:
         except Exception as exc:
             _service_mod().logger.warning("Buying-power recovery notification failed: %s", exc)
 
+    def _buying_power_max_snapshot_age_sec(self) -> float:
+        return max(1.0, self._config_float("ibkr_buying_power_max_snapshot_age_sec", 180.0))
+
+    @staticmethod
+    def _parse_snapshot_timestamp(value) -> float:
+        if value in (None, ""):
+            return 0.0
+        try:
+            number = float(value)
+            if number > 0:
+                return number / 1000.0 if number > 10_000_000_000 else number
+        except (TypeError, ValueError):
+            pass
+        try:
+            text = str(value or "").strip()
+            if not text:
+                return 0.0
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
+        except Exception:
+            return 0.0
+
+    @classmethod
+    def _buying_power_payload_age_s(cls, payload: dict | None) -> float | None:
+        data = payload if isinstance(payload, dict) else {}
+        guard = data.get("buying_power_guard") if isinstance(data.get("buying_power_guard"), dict) else {}
+        for value in (
+            data.get("fetched_at"),
+            data.get("snapshot_fetched_at"),
+            data.get("baseline_fetched_at"),
+            guard.get("snapshot_fetched_at"),
+            guard.get("baseline_fetched_at"),
+        ):
+            epoch = cls._parse_snapshot_timestamp(value)
+            if epoch > 0:
+                return max(0.0, time.time() - epoch)
+        return None
+
     def _account_buying_power_snapshot(self) -> dict:
         provider = getattr(self, "account_snapshot_provider", None)
         if callable(provider):
@@ -2725,26 +2768,63 @@ class TradingServiceSignalsMixin:
                 service_mod.logger.warning("Buying-power baseline load failed: %s", exc)
                 baseline = {}
 
+        max_snapshot_age_s = self._buying_power_max_snapshot_age_sec()
         baseline_available = bool(baseline.get("available"))
+        baseline_age_s = self._buying_power_payload_age_s(baseline) if baseline_available else None
+        baseline_fresh = bool(
+            baseline_available
+            and baseline_age_s is not None
+            and baseline_age_s <= max_snapshot_age_s
+        )
         snapshot = {}
         snapshot_guard = {}
-        if baseline_available:
+        snapshot_age_s = None
+        snapshot_fresh = False
+        freshness_block_reason = ""
+        if baseline_fresh:
             account_summary = dict(baseline.get("summary") or {})
             guard_source = "local_baseline"
         else:
             snapshot = self._account_buying_power_snapshot()
             snapshot_guard = (snapshot or {}).get("buying_power_guard")
-            baseline_updater = getattr(reservation_store, "update_baseline_from_snapshot", None)
-            if callable(baseline_updater):
-                try:
-                    baseline_result = baseline_updater(snapshot)
-                    if baseline_result.get("ok") and isinstance(baseline_result.get("baseline"), dict):
-                        baseline = dict(baseline_result.get("baseline") or {})
-                        baseline_available = True
-                except Exception as exc:
-                    service_mod.logger.warning("Buying-power baseline update failed: %s", exc)
-            account_summary = dict((snapshot or {}).get("summary") or {})
-            guard_source = ""
+            snapshot_age_s = self._buying_power_payload_age_s(snapshot)
+            snapshot_summary = dict((snapshot or {}).get("summary") or {})
+            snapshot_guard_available = (
+                not isinstance(snapshot_guard, dict)
+                or snapshot_guard.get("available") is not False
+                or str(snapshot_guard.get("state") or "").strip().lower() in {"ok", "warning", "blocked"}
+            )
+            snapshot_fresh = bool(
+                snapshot_summary
+                and snapshot_guard_available
+                and snapshot_age_s is not None
+                and snapshot_age_s <= max_snapshot_age_s
+            )
+            if snapshot_fresh:
+                baseline_updater = getattr(reservation_store, "update_baseline_from_snapshot", None)
+                if callable(baseline_updater):
+                    try:
+                        baseline_result = baseline_updater(snapshot)
+                        if baseline_result.get("ok") and isinstance(baseline_result.get("baseline"), dict):
+                            baseline = dict(baseline_result.get("baseline") or {})
+                            baseline_available = True
+                            baseline_age_s = self._buying_power_payload_age_s(baseline)
+                            baseline_fresh = bool(
+                                baseline_age_s is not None and baseline_age_s <= max_snapshot_age_s
+                            )
+                    except Exception as exc:
+                        service_mod.logger.warning("Buying-power baseline update failed: %s", exc)
+                account_summary = snapshot_summary
+                guard_source = ""
+            else:
+                account_summary = snapshot_summary or dict(baseline.get("summary") or {})
+                guard_source = ""
+                if account_summary and (baseline_available or snapshot_guard_available):
+                    freshness_block_reason = (
+                        "buying_power_snapshot_missing_timestamp"
+                        if snapshot_age_s is None and baseline_age_s is None
+                        else "buying_power_snapshot_stale"
+                    )
 
         summary = apply_reservations_to_buying_power_summary(
             account_summary,
@@ -2780,6 +2860,9 @@ class TradingServiceSignalsMixin:
             guard["baseline_fetched_at"] = str(baseline.get("fetched_at") or "")
             guard["baseline_stored_at"] = str(baseline.get("stored_at") or "")
             guard["baseline_cache_state"] = str(baseline.get("cache_state") or "")
+            if baseline_age_s is not None:
+                guard["baseline_age_s"] = round(float(baseline_age_s), 1)
+            guard["baseline_fresh"] = bool(baseline_fresh)
             for key in self.BUYING_POWER_SNAPSHOT_META_KEYS:
                 if key.startswith("risk_model") and baseline.get(key) not in (None, ""):
                     guard[key] = baseline.get(key)
@@ -2790,7 +2873,16 @@ class TradingServiceSignalsMixin:
             or baseline.get("fetched_at")
             or ""
         )
-        if exposure <= 0 and guard.get("enabled"):
+        if snapshot_age_s is not None:
+            guard["snapshot_age_s"] = round(float(snapshot_age_s), 1)
+        guard["snapshot_max_age_s"] = round(float(max_snapshot_age_s), 1)
+        guard["snapshot_fresh"] = bool(snapshot_fresh or baseline_fresh)
+        if freshness_block_reason and guard.get("enabled"):
+            guard["available"] = False
+            guard["state"] = "unavailable"
+            guard["reason"] = freshness_block_reason
+            guard["snapshot_error"] = freshness_block_reason
+        if not freshness_block_reason and exposure <= 0 and guard.get("enabled"):
             guard["state"] = "blocked"
             guard["reason"] = "buying_power_price_unavailable"
         self._recompute_buying_power_guard_capacity(guard)

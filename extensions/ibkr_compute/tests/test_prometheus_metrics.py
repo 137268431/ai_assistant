@@ -435,6 +435,19 @@ class ComputePrometheusMetricsTest(unittest.TestCase):
         self.assertEqual({"service", "environment", "direction", "state"}, signal_current_labels)
         self.assertEqual({"service", "environment"}, gateway_labels)
 
+    def test_broker_request_suppressed_metric_uses_low_cardinality_labels(self):
+        module = _observability_or_skip(
+            self,
+            requiring=("record_broker_request_suppressed",),
+        )
+        label_names = set(getattr(getattr(module, "BROKER_REQUEST_SUPPRESSED", None), "_labelnames", None) or ())
+        if not label_names:
+            self.skipTest("prometheus_client label schemas are unavailable in this environment")
+
+        denied = _get_denylist(module)
+        self.assertFalse(denied.intersection(label_names), label_names)
+        self.assertEqual({"service", "environment", "client_role", "request_kind", "reason_code"}, label_names)
+
     def test_market_data_subscription_metric_helpers_use_low_cardinality_labels(self):
         module = _observability_or_skip(
             self,
