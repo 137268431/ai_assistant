@@ -162,9 +162,14 @@ class FakePBClient:
 class FakeOrderPBClient:
     def __init__(self):
         self.upserts = []
+        self.system_events = []
 
     def upsert_order(self, data):
         self.upserts.append(dict(data))
+        return {"success": True}
+
+    def notify_system_event(self, **kwargs):
+        self.system_events.append(dict(kwargs))
         return {"success": True}
 
 
@@ -2440,6 +2445,9 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertEqual([], pb_client.upserts)
+        self.assertEqual(1, len(pb_client.system_events))
+        self.assertEqual("平仓未执行：券商拒绝或提交失败", pb_client.system_events[0]["title"])
+        self.assertEqual("broker_rejected_order", pb_client.system_events[0]["detail"]["错误"])
 
     def test_pb_upserts_use_canonical_bracket_trade_group_and_oco_metadata(self):
         pb_client = FakeOrderPBClient()

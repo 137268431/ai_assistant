@@ -1269,6 +1269,27 @@ class OrderPlacer:
         ).strip()
         submission_error = str(result.get("error") or "")
         submission_unconfirmed = bool(order_ids and close_coid and "order_submission_unconfirmed" in submission_error.lower())
+        if not (result.get("ok") or result.get("submitted") or submission_unconfirmed):
+            self._notify_close_execution_event(
+                "平仓未执行：券商拒绝或提交失败",
+                {
+                    "Broker模式": self.environment,
+                    "标的": symbol,
+                    "方向": direction,
+                    "数量": int(quantity or 0),
+                    "订单类型": order_type,
+                    "限价": limit_price,
+                    "时段": close_plan.get("session"),
+                    "路由": exchange,
+                    "includeOvernight": include_overnight,
+                    "错误": submission_error or "broker_close_submission_failed",
+                    "Broker结果": result,
+                    "平仓计划": close_plan,
+                    "处理建议": "确认 IBKR/Gateway 是否接受当前路由；系统不会把限价单静默改成市价单。",
+                },
+                level="error",
+                message_id=f"ibkr_close_submission_failed:{self.environment}:{symbol}:{submission_error or 'unknown'}",
+            )
         if result.get("ok") or result.get("submitted") or submission_unconfirmed:
             self._log_close_order_to_pb(
                 symbol=symbol,
