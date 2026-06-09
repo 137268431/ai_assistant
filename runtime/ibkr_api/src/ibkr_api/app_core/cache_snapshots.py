@@ -152,9 +152,24 @@ def get_cached_snapshot(pb: Any, cache_key: str) -> dict[str, Any] | None:
     return None
 
 
+def _needs_invalidation(record: dict[str, Any], current_ms: int) -> bool:
+    if _to_text(record.get("error")).lower() == "invalidated":
+        return False
+    if _to_text(record.get("status")).lower() in {"stale", "expired"}:
+        return False
+    try:
+        fresh_until = int(float(record.get("fresh_until_ms") or 0))
+    except Exception:
+        fresh_until = 0
+    return fresh_until > current_ms
+
+
 def _delete_or_expire_record(pb: Any, record: dict[str, Any]) -> bool:
     record_id = _to_text(record.get("id"))
     if not record_id:
+        return False
+    current_ms = now_ms()
+    if not _needs_invalidation(record, current_ms):
         return False
     grace_ms = max(0, int(_float_env("IBKR_PB_SNAPSHOT_INVALIDATION_STALE_SEC", 30.0) * 1000))
     update_record = getattr(pb, "update_record", None)
@@ -168,7 +183,7 @@ def _delete_or_expire_record(pb: Any, record: dict[str, Any]) -> bool:
                 "payload": record.get("payload") if isinstance(record.get("payload"), dict) else {},
                 "computed_at_ms": int(float(record.get("computed_at_ms") or 0)),
                 "fresh_until_ms": 1,
-                "stale_until_ms": now_ms() + grace_ms if grace_ms > 0 else 1,
+                "stale_until_ms": current_ms + grace_ms if grace_ms > 0 else 1,
                 "status": "stale",
                 "error": "invalidated",
             }

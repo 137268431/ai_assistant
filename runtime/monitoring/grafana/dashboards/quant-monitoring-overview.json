@@ -10,7 +10,7 @@
         "enable": true,
         "hide": true,
         "iconColor": "rgba(0, 211, 255, 1)",
-        "name": "Annotations & Alerts",
+        "name": "注释与告警 / Annotations & Alerts",
         "target": {
           "limit": 100,
           "matchAny": false,
@@ -68,7 +68,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_broker_ready{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "broker ready",
+          "legendFormat": "券商就绪 / broker ready",
           "range": true,
           "refId": "A"
         },
@@ -79,7 +79,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_gateway_session_authenticated{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "session auth",
+          "legendFormat": "登录会话认证 / session auth",
           "range": true,
           "refId": "B"
         },
@@ -90,7 +90,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_gateway_websocket_ready{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "market ws ready",
+          "legendFormat": "行情 WS 就绪 / market ws ready",
           "range": true,
           "refId": "C"
         },
@@ -101,7 +101,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_gateway_reachable{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "gateway reachable",
+          "legendFormat": "Gateway 可达 / gateway reachable",
           "range": true,
           "refId": "D"
         }
@@ -164,7 +164,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_market_universe_symbols_count{service=~\"$service\", environment=~\"$environment\", kind=\"pool\"})",
-          "legendFormat": "pool",
+          "legendFormat": "监控池 / pool",
           "range": true,
           "refId": "A"
         },
@@ -175,7 +175,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_market_universe_symbols_count{service=~\"$service\", environment=~\"$environment\", kind=\"trade_watchlist\"})",
-          "legendFormat": "trade watchlist",
+          "legendFormat": "交易观察池 / trade watchlist",
           "range": true,
           "refId": "B"
         },
@@ -186,7 +186,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_market_universe_symbols_count{service=~\"$service\", environment=~\"$environment\", kind=\"context_ws\"})",
-          "legendFormat": "context ws",
+          "legendFormat": "上下文 WS / context ws",
           "range": true,
           "refId": "C"
         },
@@ -197,7 +197,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_market_universe_symbols_count{service=~\"$service\", environment=~\"$environment\", kind=\"active_subscription\"})",
-          "legendFormat": "active sub",
+          "legendFormat": "活跃订阅 / active sub",
           "range": true,
           "refId": "D"
         }
@@ -256,7 +256,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_market_data_websocket_last_message_age_seconds{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "ws message age",
+          "legendFormat": "WS 消息延迟 / ws message age",
           "range": true,
           "refId": "A"
         },
@@ -267,7 +267,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_market_data_websocket_last_tic_age_seconds{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "ws tic age",
+          "legendFormat": "WS tick 延迟 / ws tic age",
           "range": true,
           "refId": "B"
         },
@@ -278,7 +278,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_market_data_bar_lag_seconds{service=~\"$service\", environment=~\"$environment\", interval=\"5m\"})",
-          "legendFormat": "5m bar lag",
+          "legendFormat": "5m Bar 延迟 / 5m bar lag",
           "range": true,
           "refId": "C"
         }
@@ -345,7 +345,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_account_data_circuit_active{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "account circuit active",
+          "legendFormat": "账户熔断开启 / account circuit active",
           "range": true,
           "refId": "A"
         },
@@ -356,7 +356,7 @@
           },
           "editorMode": "code",
           "expr": "sum(increase(ibkr_broker_request_total{service=~\"$service\", environment=~\"$environment\", request_kind=\"account_pnl\", result=\"timeout\"}[5m]))",
-          "legendFormat": "account pnl timeout 5m",
+          "legendFormat": "账户 PnL 超时 5m / account pnl timeout 5m",
           "range": true,
           "refId": "B"
         },
@@ -367,7 +367,7 @@
           },
           "editorMode": "code",
           "expr": "sum(increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", result!~\"ok|synced|seen\"}[5m]))",
-          "legendFormat": "order failures 5m",
+          "legendFormat": "订单失败 5m / order failures 5m",
           "range": true,
           "refId": "C"
         },
@@ -378,7 +378,7 @@
           },
           "editorMode": "code",
           "expr": "sum(increase(ibkr_broker_error_total{service=~\"$service\", environment=~\"$environment\", severity!=\"benign\"}[5m]))",
-          "legendFormat": "non-benign IB 5m",
+          "legendFormat": "非良性 IB 5m / non-benign IB 5m",
           "range": true,
           "refId": "D"
         },
@@ -400,7 +400,7 @@
           },
           "editorMode": "code",
           "expr": "sum(increase(ibkr_signal_events_total{service=~\"$service\", environment=~\"$environment\", result=~\"error|rejected|blocked|deferred|unauthenticated\"}[5m]))",
-          "legendFormat": "signal attention 5m",
+          "legendFormat": "信号需关注 5m / signal attention 5m",
           "range": true,
           "refId": "F"
         }
@@ -463,7 +463,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (direction) (ibkr_signal_current_count{service=~\"$service\", environment=~\"$environment\", state=\"active\", direction=\"long\"})",
-          "legendFormat": "active long",
+          "legendFormat": "活跃多头 / active long",
           "range": true,
           "refId": "A"
         },
@@ -474,7 +474,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (direction) (ibkr_signal_current_count{service=~\"$service\", environment=~\"$environment\", state=\"active\", direction=\"short\"})",
-          "legendFormat": "active short",
+          "legendFormat": "活跃空头 / active short",
           "range": true,
           "refId": "B"
         }
@@ -533,7 +533,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_order_current_count{service=~\"$service\", environment=~\"$environment\", kind=\"open_legs\"})",
-          "legendFormat": "open legs",
+          "legendFormat": "未结订单腿 / open legs",
           "range": true,
           "refId": "A"
         },
@@ -544,7 +544,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_order_current_count{service=~\"$service\", environment=~\"$environment\", kind=\"open_groups\"})",
-          "legendFormat": "open groups",
+          "legendFormat": "未结订单组 / open groups",
           "range": true,
           "refId": "B"
         },
@@ -555,7 +555,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_order_current_count{service=~\"$service\", environment=~\"$environment\", kind=\"cancelable\"})",
-          "legendFormat": "cancelable",
+          "legendFormat": "可撤单 / cancelable",
           "range": true,
           "refId": "C"
         },
@@ -566,7 +566,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_order_current_count{service=~\"$service\", environment=~\"$environment\", kind=\"editable\"})",
-          "legendFormat": "editable",
+          "legendFormat": "可改单 / editable",
           "range": true,
           "refId": "D"
         }
@@ -625,7 +625,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_position_current_count{service=~\"$service\", environment=~\"$environment\", direction=\"total\"})",
-          "legendFormat": "total",
+          "legendFormat": "总计 / total",
           "range": true,
           "refId": "A"
         },
@@ -636,7 +636,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_position_current_count{service=~\"$service\", environment=~\"$environment\", direction=\"long\"})",
-          "legendFormat": "long",
+          "legendFormat": "多头 / long",
           "range": true,
           "refId": "B"
         },
@@ -647,7 +647,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_position_current_count{service=~\"$service\", environment=~\"$environment\", direction=\"short\"})",
-          "legendFormat": "short",
+          "legendFormat": "空头 / short",
           "range": true,
           "refId": "C"
         }
@@ -706,7 +706,7 @@
           },
           "editorMode": "code",
           "expr": "max by (source) (ibkr_account_buying_power_remaining_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
-          "legendFormat": "remaining BP {{source}}",
+          "legendFormat": "剩余购买力 / remaining BP {{source}}",
           "range": true,
           "refId": "A"
         },
@@ -717,7 +717,7 @@
           },
           "editorMode": "code",
           "expr": "max by (source) (ibkr_account_available_funds_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
-          "legendFormat": "available funds {{source}}",
+          "legendFormat": "可用资金 / available funds {{source}}",
           "range": true,
           "refId": "B"
         },
@@ -728,7 +728,7 @@
           },
           "editorMode": "code",
           "expr": "max by (source) (ibkr_account_total_cash_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
-          "legendFormat": "cash {{source}}",
+          "legendFormat": "现金 / cash {{source}}",
           "range": true,
           "refId": "C"
         }
@@ -787,7 +787,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, environment, client_role, ib_error_code, severity) (increase(ibkr_broker_error_total{service=~\"$service\", environment=~\"$environment\", severity!=\"benign\"}[5m])) > 0",
-          "legendFormat": "IB {{client_role}} {{ib_error_code}} {{severity}}",
+          "legendFormat": "IB 错误 / IB {{client_role}} {{ib_error_code}} {{severity}}",
           "range": true,
           "refId": "A"
         },
@@ -798,7 +798,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, route, status_class) (increase(ibkr_http_server_requests_total{service=~\"$service\", status_class=\"5xx\", route!~\"/health|/status|/ibkr/status|/api/custom/ibkr/statusz|/api/custom/system/summaryz|/api/custom/system/monitorz|/api/custom/system/storagez\"}[5m])) > 0",
-          "legendFormat": "HTTP 5xx {{service}} {{route}}",
+          "legendFormat": "HTTP 5xx 错误 / HTTP 5xx {{service}} {{route}}",
           "range": true,
           "refId": "B"
         },
@@ -820,7 +820,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (operation, order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", result!~\"ok|synced|seen\"}[5m])) > 0",
-          "legendFormat": "order {{operation}} {{result}} {{reason_code}}",
+          "legendFormat": "订单 / order {{operation}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "D"
         }
@@ -887,7 +887,7 @@
           },
           "editorMode": "code",
           "expr": "sum(up{stack=\"ibkr\", service=~\"$service\"})",
-          "legendFormat": "ibkr up",
+          "legendFormat": "IBKR 在线 / ibkr up",
           "range": true,
           "refId": "A"
         },
@@ -898,7 +898,7 @@
           },
           "editorMode": "code",
           "expr": "count(up{stack=\"ibkr\", service=~\"$service\"})",
-          "legendFormat": "ibkr targets",
+          "legendFormat": "IBKR 抓取目标 / ibkr targets",
           "range": true,
           "refId": "B"
         },
@@ -909,7 +909,7 @@
           },
           "editorMode": "code",
           "expr": "sum(up{stack=\"monitoring\"})",
-          "legendFormat": "monitoring up",
+          "legendFormat": "监控在线 / monitoring up",
           "range": true,
           "refId": "C"
         },
@@ -920,7 +920,7 @@
           },
           "editorMode": "code",
           "expr": "count(up{stack=\"monitoring\"})",
-          "legendFormat": "monitoring targets",
+          "legendFormat": "监控抓取目标 / monitoring targets",
           "range": true,
           "refId": "D"
         },
@@ -931,7 +931,7 @@
           },
           "editorMode": "code",
           "expr": "max by (service, environment, component, version, status) (ibkr_component_version_info{service=~\"$service\", environment=~\"$environment\", component=~\"ibapi|gateway\"})",
-          "legendFormat": "version {{service}} {{component}} {{version}} {{status}}",
+          "legendFormat": "版本 / version {{service}} {{component}} {{version}} {{status}}",
           "range": true,
           "refId": "E"
         }
@@ -994,7 +994,7 @@
           },
           "editorMode": "code",
           "expr": "100 - (avg(rate(node_cpu_seconds_total{mode=\"idle\"}[$__rate_interval])) * 100)",
-          "legendFormat": "cpu",
+          "legendFormat": "CPU 使用率 / cpu",
           "range": true,
           "refId": "A"
         },
@@ -1005,7 +1005,7 @@
           },
           "editorMode": "code",
           "expr": "100 * (1 - (sum(node_memory_MemAvailable_bytes) / sum(node_memory_MemTotal_bytes)))",
-          "legendFormat": "memory",
+          "legendFormat": "内存使用率 / memory",
           "range": true,
           "refId": "B"
         },
@@ -1016,7 +1016,7 @@
           },
           "editorMode": "code",
           "expr": "min(100 * node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay\", mountpoint=~\"/|/var|/opt\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|overlay\", mountpoint=~\"/|/var|/opt\"})",
-          "legendFormat": "fs free min",
+          "legendFormat": "文件系统最小剩余 / fs free min",
           "range": true,
           "refId": "C"
         }
@@ -1100,7 +1100,7 @@
           },
           "editorMode": "code",
           "expr": "sum(1 - max by (environment, runtime_environment, key, mode_scope, importance) (ibkr_runtime_config_switch_enabled{service=~\"$service\", environment=~\"$environment\", importance=~\"critical|guard\"}))",
-          "legendFormat": "required off",
+          "legendFormat": "必要开关关闭 / required off",
           "range": true,
           "refId": "A"
         },
@@ -1111,7 +1111,7 @@
           },
           "editorMode": "code",
           "expr": "sum(1 - max by (environment, runtime_environment, key, mode_scope, importance) (ibkr_runtime_config_switch_enabled{service=~\"$service\", environment=~\"$environment\", importance=\"critical\"}))",
-          "legendFormat": "critical off",
+          "legendFormat": "关键关闭 / critical off",
           "range": true,
           "refId": "B"
         },
@@ -1122,7 +1122,7 @@
           },
           "editorMode": "code",
           "expr": "sum(1 - max by (environment, runtime_environment, key, mode_scope, importance) (ibkr_runtime_config_switch_enabled{service=~\"$service\", environment=~\"$environment\", importance=\"guard\"}))",
-          "legendFormat": "guard off",
+          "legendFormat": "保护关闭 / guard off",
           "range": true,
           "refId": "C"
         }
@@ -1185,7 +1185,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_runtime_config_switch_enabled{service=~\"$service\", environment=~\"$environment\", key=\"ibkr_trading_enabled\"})",
-          "legendFormat": "trading enabled",
+          "legendFormat": "交易启用 / trading enabled",
           "range": true,
           "refId": "A"
         },
@@ -1196,7 +1196,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_runtime_config_switch_enabled{service=~\"$service\", environment=~\"$environment\", key=\"tv_webhook_ingest_enabled\"})",
-          "legendFormat": "tv webhook ingest",
+          "legendFormat": "TV Webhook 接入 / tv webhook ingest",
           "range": true,
           "refId": "B"
         },
@@ -1207,7 +1207,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_runtime_config_switch_enabled{service=~\"$service\", environment=~\"$environment\", key=\"ibkr_account_snapshot_refresh_enabled\"})",
-          "legendFormat": "account snapshot",
+          "legendFormat": "账户快照 / account snapshot",
           "range": true,
           "refId": "C"
         },
@@ -1218,7 +1218,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_runtime_config_switch_enabled{service=~\"$service\", environment=~\"$environment\", key=\"ibkr_buying_power_guard_enabled\"})",
-          "legendFormat": "buying-power guard",
+          "legendFormat": "购买力保护 / buying-power guard",
           "range": true,
           "refId": "D"
         }
@@ -1281,7 +1281,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_runtime_config_switch_enabled{service=~\"$service\", environment=~\"$environment\", key=\"ibkr_compute_enabled\"})",
-          "legendFormat": "compute scan",
+          "legendFormat": "计算扫描 / compute scan",
           "range": true,
           "refId": "A"
         },
@@ -1292,7 +1292,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_runtime_config_switch_enabled{service=~\"$service\", environment=~\"$environment\", key=\"pb_scheduler_enabled\"})",
-          "legendFormat": "pb scheduler",
+          "legendFormat": "PB 调度器 / pb scheduler",
           "range": true,
           "refId": "B"
         },
@@ -1303,7 +1303,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_runtime_config_switch_enabled{service=~\"$service\", environment=~\"$environment\", key=\"ibkr_bar_publish_enabled\"})",
-          "legendFormat": "bar publish",
+          "legendFormat": "Bar 发布 / bar publish",
           "range": true,
           "refId": "C"
         },
@@ -1314,7 +1314,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_runtime_config_switch_enabled{service=~\"$service\", environment=~\"$environment\", key=\"ibkr_market_ws_enabled\"})",
-          "legendFormat": "market ws",
+          "legendFormat": "行情 WS / market ws",
           "range": true,
           "refId": "D"
         }
@@ -1377,7 +1377,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_runtime_config_switch_enabled{service=~\"$service\", environment=~\"$environment\", key=\"ibkr_gateway_order_serial_enabled\"})",
-          "legendFormat": "gateway serial",
+          "legendFormat": "Gateway 串行 / gateway serial",
           "range": true,
           "refId": "A"
         },
@@ -1388,7 +1388,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_runtime_config_switch_enabled{service=~\"$service\", environment=~\"$environment\", key=\"ibkr_order_question_suppress_enabled\"})",
-          "legendFormat": "question suppress",
+          "legendFormat": "问题抑制 / question suppress",
           "range": true,
           "refId": "B"
         },
@@ -1399,7 +1399,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_runtime_config_switch_enabled{service=~\"$service\", environment=~\"$environment\", key=\"ibkr_order_flow_enabled\"})",
-          "legendFormat": "order flow",
+          "legendFormat": "订单流 / order flow",
           "range": true,
           "refId": "C"
         },
@@ -1410,7 +1410,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_runtime_config_switch_enabled{service=~\"$service\", environment=~\"$environment\", key=\"ibkr_order_flow_auto_entry_enabled\"})",
-          "legendFormat": "order flow entry",
+          "legendFormat": "订单流入场 / order flow entry",
           "range": true,
           "refId": "D"
         },
@@ -1421,7 +1421,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_runtime_config_switch_enabled{service=~\"$service\", environment=~\"$environment\", key=\"ibkr_order_flow_auto_exit_enabled\"})",
-          "legendFormat": "order flow exit",
+          "legendFormat": "订单流出场 / order flow exit",
           "range": true,
           "refId": "E"
         },
@@ -1432,7 +1432,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_runtime_config_switch_enabled{service=~\"$service\", environment=~\"$environment\", key=\"ibkr_order_flow_stop_tighten_enabled\"})",
-          "legendFormat": "stop tighten",
+          "legendFormat": "止损收紧 / stop tighten",
           "range": true,
           "refId": "F"
         }
@@ -1491,7 +1491,7 @@
           },
           "editorMode": "code",
           "expr": "(1 - max by (environment, runtime_environment, key, mode_scope, importance) (ibkr_runtime_config_switch_enabled{service=~\"$service\", environment=~\"$environment\", importance=~\"critical|guard\"})) > 0",
-          "legendFormat": "{{environment}} {{runtime_environment}} {{importance}} {{key}}",
+          "legendFormat": "环境/运行环境/重要性/开关 / {{environment}} {{runtime_environment}} {{importance}} {{key}}",
           "range": true,
           "refId": "A"
         }
@@ -1558,7 +1558,7 @@
           },
           "editorMode": "code",
           "expr": "max by (environment, runtime_environment, key, mode_scope, importance) (ibkr_runtime_config_switch_enabled{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "{{environment}} {{runtime_environment}} {{mode_scope}} {{importance}} {{key}}",
+          "legendFormat": "环境/运行环境/范围/重要性/开关 / {{environment}} {{runtime_environment}} {{mode_scope}} {{importance}} {{key}}",
           "range": true,
           "refId": "A"
         }
@@ -1638,7 +1638,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_market_universe_symbols_count{service=~\"$service\", environment=~\"$environment\", kind=\"pool\"})",
-          "legendFormat": "pool",
+          "legendFormat": "监控池 / pool",
           "range": true,
           "refId": "A"
         },
@@ -1649,7 +1649,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_market_universe_symbols_count{service=~\"$service\", environment=~\"$environment\", kind=\"trade_watchlist\"})",
-          "legendFormat": "trade watchlist",
+          "legendFormat": "交易观察池 / trade watchlist",
           "range": true,
           "refId": "B"
         },
@@ -1660,7 +1660,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_market_universe_symbols_count{service=~\"$service\", environment=~\"$environment\", kind=\"context_ws\"})",
-          "legendFormat": "context ws",
+          "legendFormat": "上下文 WS / context ws",
           "range": true,
           "refId": "C"
         },
@@ -1671,7 +1671,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_market_universe_symbols_count{service=~\"$service\", environment=~\"$environment\", kind=\"active_trade\"})",
-          "legendFormat": "active trade",
+          "legendFormat": "活跃交易标的 / active trade",
           "range": true,
           "refId": "D"
         },
@@ -1682,7 +1682,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_market_universe_symbols_count{service=~\"$service\", environment=~\"$environment\", kind=\"active_subscription\"})",
-          "legendFormat": "active sub",
+          "legendFormat": "活跃订阅 / active sub",
           "range": true,
           "refId": "E"
         }
@@ -1771,7 +1771,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_market_data_subscription_active_count{service=~\"$service\", environment=~\"$environment\", kind=\"total\"})",
-          "legendFormat": "total active",
+          "legendFormat": "总活跃 / total active",
           "range": true,
           "refId": "A"
         },
@@ -1782,7 +1782,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_market_data_subscription_limit{service=~\"$service\", environment=~\"$environment\", kind=\"total\"})",
-          "legendFormat": "total limit",
+          "legendFormat": "总上限 / total limit",
           "range": true,
           "refId": "B"
         },
@@ -1793,7 +1793,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_market_data_subscription_active_count{service=~\"$service\", environment=~\"$environment\", kind=\"trade\"})",
-          "legendFormat": "trade active",
+          "legendFormat": "交易活跃 / trade active",
           "range": true,
           "refId": "C"
         },
@@ -1804,7 +1804,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_market_data_subscription_limit{service=~\"$service\", environment=~\"$environment\", kind=\"trade\"})",
-          "legendFormat": "trade limit",
+          "legendFormat": "交易上限 / trade limit",
           "range": true,
           "refId": "D"
         },
@@ -1815,7 +1815,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_market_data_subscription_active_count{service=~\"$service\", environment=~\"$environment\", kind=\"monitor\"})",
-          "legendFormat": "context ws active",
+          "legendFormat": "上下文 WS 活跃 / context ws active",
           "range": true,
           "refId": "E"
         },
@@ -1826,7 +1826,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_market_data_subscription_limit{service=~\"$service\", environment=~\"$environment\", kind=\"monitor\"})",
-          "legendFormat": "context ws limit",
+          "legendFormat": "上下文 WS 上限 / context ws limit",
           "range": true,
           "refId": "F"
         },
@@ -1837,7 +1837,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_market_data_subscription_pending_count{service=~\"$service\", environment=~\"$environment\", kind=\"total\"})",
-          "legendFormat": "pending total",
+          "legendFormat": "待处理总数 / pending total",
           "range": true,
           "refId": "G"
         }
@@ -1930,7 +1930,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_market_data_subscription_utilization_pct{service=~\"$service\", environment=~\"$environment\", kind=\"total\"})",
-          "legendFormat": "total",
+          "legendFormat": "总计 / total",
           "range": true,
           "refId": "A"
         },
@@ -1941,7 +1941,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_market_data_subscription_utilization_pct{service=~\"$service\", environment=~\"$environment\", kind=\"trade\"})",
-          "legendFormat": "trade",
+          "legendFormat": "交易 / trade",
           "range": true,
           "refId": "B"
         },
@@ -1952,7 +1952,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_market_data_subscription_utilization_pct{service=~\"$service\", environment=~\"$environment\", kind=\"websocket\"})",
-          "legendFormat": "websocket",
+          "legendFormat": "行情 WebSocket / websocket",
           "range": true,
           "refId": "C"
         }
@@ -2049,7 +2049,7 @@
           },
           "editorMode": "code",
           "expr": "max by (environment) (ibkr_market_data_websocket_last_message_age_seconds{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "ws message age {{environment}}",
+          "legendFormat": "WS 消息延迟 / ws message age {{environment}}",
           "range": true,
           "refId": "A"
         },
@@ -2060,7 +2060,7 @@
           },
           "editorMode": "code",
           "expr": "max by (environment) (ibkr_market_data_websocket_last_tic_age_seconds{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "ws tic age {{environment}}",
+          "legendFormat": "WS tick 延迟 / ws tic age {{environment}}",
           "range": true,
           "refId": "B"
         },
@@ -2071,7 +2071,7 @@
           },
           "editorMode": "code",
           "expr": "max by (environment, interval) (ibkr_market_data_bar_lag_seconds{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "bar lag {{interval}} {{environment}}",
+          "legendFormat": "Bar 延迟 / bar lag {{interval}} {{environment}}",
           "range": true,
           "refId": "C"
         }
@@ -2150,7 +2150,7 @@
     {
       "id": 25,
       "type": "timeseries",
-      "title": "Bar Pending Symbols / Bar Pending Symbols",
+      "title": "Bar 待处理标的 / Bar Pending Symbols",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -2170,7 +2170,7 @@
           },
           "editorMode": "code",
           "expr": "max by (environment, interval) (ibkr_market_data_bar_pending_symbols_count{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "pending symbols {{interval}} {{environment}}",
+          "legendFormat": "待处理标的 / pending symbols {{interval}} {{environment}}",
           "range": true,
           "refId": "A"
         }
@@ -2280,7 +2280,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_gateway_reachable{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "reachable",
+          "legendFormat": "可达 / reachable",
           "range": true,
           "refId": "A"
         },
@@ -2291,7 +2291,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_gateway_session_authenticated{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "authenticated",
+          "legendFormat": "已认证 / authenticated",
           "range": true,
           "refId": "B"
         },
@@ -2302,7 +2302,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_gateway_websocket_ready{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "market ws ready",
+          "legendFormat": "行情 WS 就绪 / market ws ready",
           "range": true,
           "refId": "C"
         },
@@ -2313,7 +2313,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_broker_ready{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "broker ready",
+          "legendFormat": "券商就绪 / broker ready",
           "range": true,
           "refId": "D"
         },
@@ -2324,7 +2324,7 @@
           },
           "editorMode": "code",
           "expr": "max(ibkr_gateway_socket_listening{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "socket listening",
+          "legendFormat": "Socket 监听 / socket listening",
           "range": true,
           "refId": "E"
         }
@@ -2387,7 +2387,7 @@
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.95, sum by (le, request_kind) (rate(ibkr_broker_request_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", request_kind!=\"account_pnl\"}[$__rate_interval])))",
-          "legendFormat": "{{request_kind}}",
+          "legendFormat": "请求类型 / {{request_kind}}",
           "range": true,
           "refId": "A"
         }
@@ -2480,7 +2480,7 @@
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.95, sum by (le, result) (rate(ibkr_broker_request_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\", request_kind=\"account_pnl\"}[$__rate_interval])))",
-          "legendFormat": "account_pnl p95 {{result}}",
+          "legendFormat": "账户 PnL p95 / account_pnl p95 {{result}}",
           "range": true,
           "refId": "A"
         },
@@ -2491,7 +2491,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (result, error_class) (increase(ibkr_broker_request_total{service=~\"$service\", environment=~\"$environment\", request_kind=\"account_pnl\"}[5m]))",
-          "legendFormat": "account_pnl 5m {{result}} {{error_class}}",
+          "legendFormat": "账户 PnL 5m / account_pnl 5m {{result}} {{error_class}}",
           "range": true,
           "refId": "B"
         }
@@ -2588,7 +2588,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (client_role, request_kind, result) (rate(ibkr_broker_request_total{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval]))",
-          "legendFormat": "{{client_role}} {{request_kind}} {{result}}",
+          "legendFormat": "客户端/请求/结果 / {{client_role}} {{request_kind}} {{result}}",
           "range": true,
           "refId": "A"
         }
@@ -2681,7 +2681,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (client_role, ib_error_code, request_kind, severity) (rate(ibkr_broker_error_total{service=~\"$service\", environment=~\"$environment\", severity!=\"benign\"}[$__rate_interval]))",
-          "legendFormat": "{{client_role}} {{ib_error_code}} {{request_kind}} {{severity}}",
+          "legendFormat": "客户端/错误/请求/级别 / {{client_role}} {{ib_error_code}} {{request_kind}} {{severity}}",
           "range": true,
           "refId": "A"
         }
@@ -2774,7 +2774,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (client_role, request_kind) (ibkr_broker_pending_requests{service=~\"$service\", environment=~\"$environment\"})",
-          "legendFormat": "{{client_role}} {{request_kind}}",
+          "legendFormat": "客户端/请求 / {{client_role}} {{request_kind}}",
           "range": true,
           "refId": "A"
         }
@@ -2884,7 +2884,7 @@
           },
           "editorMode": "code",
           "expr": "sum(increase(ibkr_signal_events_total{service=~\"$service\", environment=~\"$environment\", stage=\"loop\", result=\"ok\"}[5m]))",
-          "legendFormat": "loop ok 5m",
+          "legendFormat": "循环正常 5m / loop ok 5m",
           "range": true,
           "refId": "A"
         },
@@ -2895,7 +2895,7 @@
           },
           "editorMode": "code",
           "expr": "sum(increase(ibkr_signal_events_total{service=~\"$service\", environment=~\"$environment\", stage=\"poll\", reason_code=\"pending_found\"}[5m]))",
-          "legendFormat": "pending found 5m",
+          "legendFormat": "发现待处理 5m / pending found 5m",
           "range": true,
           "refId": "B"
         },
@@ -2906,7 +2906,7 @@
           },
           "editorMode": "code",
           "expr": "sum(increase(ibkr_signal_events_total{service=~\"$service\", environment=~\"$environment\", stage=\"validation\", result=\"accepted\"}[5m]))",
-          "legendFormat": "validation accepted 5m",
+          "legendFormat": "校验通过 5m / validation accepted 5m",
           "range": true,
           "refId": "C"
         },
@@ -2917,7 +2917,7 @@
           },
           "editorMode": "code",
           "expr": "sum(increase(ibkr_signal_events_total{service=~\"$service\", environment=~\"$environment\", stage=\"order_submission\", result=\"ok\"}[5m]))",
-          "legendFormat": "order submitted 5m",
+          "legendFormat": "订单提交 5m / order submitted 5m",
           "range": true,
           "refId": "D"
         },
@@ -2928,7 +2928,7 @@
           },
           "editorMode": "code",
           "expr": "sum(increase(ibkr_signal_events_total{service=~\"$service\", environment=~\"$environment\", result=~\"error|rejected|blocked|deferred|unauthenticated\"}[5m]))",
-          "legendFormat": "attention 5m",
+          "legendFormat": "需关注 5m / attention 5m",
           "range": true,
           "refId": "E"
         },
@@ -2939,7 +2939,7 @@
           },
           "editorMode": "code",
           "expr": "sum(increase(ibkr_signal_records_total{service=~\"$service\", environment=~\"$environment\"}[24h]))",
-          "legendFormat": "signals created 24h",
+          "legendFormat": "创建信号 24h / signals created 24h",
           "range": true,
           "refId": "F"
         }
@@ -3002,7 +3002,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (stage, result) (increase(ibkr_signal_events_total{service=~\"$service\", environment=~\"$environment\", reason_code!=\"empty\"}[5m]))",
-          "legendFormat": "{{stage}} {{result}}",
+          "legendFormat": "阶段/结果 / {{stage}} {{result}}",
           "range": true,
           "refId": "A"
         }
@@ -3095,7 +3095,7 @@
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.95, sum by (le, stage, result) (rate(ibkr_signal_stage_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval])))",
-          "legendFormat": "{{stage}} {{result}}",
+          "legendFormat": "阶段/结果 / {{stage}} {{result}}",
           "range": true,
           "refId": "A"
         }
@@ -3188,7 +3188,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (stage, result, reason_code) (increase(ibkr_signal_events_total{service=~\"$service\", environment=~\"$environment\", result=~\"error|rejected|blocked|deferred|unauthenticated\"}[5m]))",
-          "legendFormat": "{{stage}} {{result}} {{reason_code}}",
+          "legendFormat": "阶段/结果/原因 / {{stage}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "A"
         }
@@ -3282,7 +3282,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (stage, signal_source, result, reason_code) (increase(ibkr_signal_events_total{service=~\"$service\", environment=~\"$environment\"}[$__range]))",
-          "legendFormat": "{{stage}} {{signal_source}} {{result}} {{reason_code}}",
+          "legendFormat": "阶段/来源/结果/原因 / {{stage}} {{signal_source}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "A"
         }
@@ -3349,7 +3349,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (direction) (increase(ibkr_signal_records_total{service=~\"$service\", environment=~\"$environment\"}[1d]))",
-          "legendFormat": "{{direction}}",
+          "legendFormat": "方向 / {{direction}}",
           "range": true,
           "refId": "A"
         }
@@ -3444,7 +3444,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (signal_source, direction, initial_status) (increase(ibkr_signal_records_total{service=~\"$service\", environment=~\"$environment\"}[$__range]))",
-          "legendFormat": "{{signal_source}} {{direction}} {{initial_status}}",
+          "legendFormat": "信号来源/方向/初始状态 / {{signal_source}} {{direction}} {{initial_status}}",
           "range": true,
           "refId": "A"
         }
@@ -5194,7 +5194,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, route) (rate(ibkr_http_server_requests_total{service=~\"$service\", status_class=\"5xx\", route!~\"/health|/status|/ibkr/status|/api/custom/ibkr/statusz|/api/custom/system/summaryz|/api/custom/system/monitorz|/api/custom/system/storagez\"}[$__rate_interval]))",
-          "legendFormat": "inbound 5xx {{service}} {{route}}",
+          "legendFormat": "入站 5xx / inbound 5xx {{service}} {{route}}",
           "range": true,
           "refId": "A"
         },
@@ -5205,7 +5205,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, target_service, route, exception_class) (rate(ibkr_http_client_exceptions_total{service=~\"$service\", target_service=~\"$target_service\", route!~\"/health|/status|/ibkr/status|/api/custom/ibkr/statusz|/api/custom/system/summaryz|/api/custom/system/monitorz|/api/custom/system/storagez\"}[$__rate_interval]))",
-          "legendFormat": "outbound {{service}} -> {{target_service}} {{route}} {{exception_class}}",
+          "legendFormat": "出站异常 / outbound {{service}} -> {{target_service}} {{route}} {{exception_class}}",
           "range": true,
           "refId": "B"
         }
@@ -5298,7 +5298,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, target_service, route, exception_class) (rate(ibkr_http_client_exceptions_total{service=~\"$service\", target_service=~\"$target_service\", route=~\"/ibkr/status|/api/custom/ibkr/statusz|/api/custom/system/summaryz|/api/custom/system/monitorz|/api/custom/system/storagez\", exception_class=~\"ReadTimeout|Timeout\"}[$__rate_interval]))",
-          "legendFormat": "{{service}} -> {{target_service}} {{route}} {{exception_class}}",
+          "legendFormat": "服务到目标异常 / {{service}} -> {{target_service}} {{route}} {{exception_class}}",
           "range": true,
           "refId": "A"
         }
@@ -5391,7 +5391,7 @@
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.95, sum by (le, service, route) (rate(ibkr_http_server_request_duration_seconds_bucket{service=~\"$service\", route!~\"/health|/status|/ibkr/status|/api/custom/ibkr/statusz|/api/custom/system/summaryz|/api/custom/system/monitorz|/api/custom/system/storagez\"}[$__rate_interval])))",
-          "legendFormat": "inbound {{service}} {{route}}",
+          "legendFormat": "入站 / inbound {{service}} {{route}}",
           "range": true,
           "refId": "A"
         },
@@ -5402,7 +5402,7 @@
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.95, sum by (le, service, target_service, route) (rate(ibkr_http_client_request_duration_seconds_bucket{service=~\"$service\", target_service=~\"$target_service\", route!~\"/health|/status|/ibkr/status|/api/custom/ibkr/statusz|/api/custom/system/summaryz|/api/custom/system/monitorz|/api/custom/system/storagez\"}[$__rate_interval])))",
-          "legendFormat": "outbound {{service}} -> {{target_service}} {{route}}",
+          "legendFormat": "出站 / outbound {{service}} -> {{target_service}} {{route}}",
           "range": true,
           "refId": "B"
         }
@@ -5495,7 +5495,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, route, status_class) (rate(ibkr_http_server_requests_total{service=~\"$service\", route!~\"/health|/status|/ibkr/status|/api/custom/ibkr/statusz|/api/custom/system/summaryz|/api/custom/system/monitorz|/api/custom/system/storagez\"}[$__rate_interval]))",
-          "legendFormat": "{{service}} {{route}} {{status_class}}",
+          "legendFormat": "服务路由状态 / {{service}} {{route}} {{status_class}}",
           "range": true,
           "refId": "A"
         }
@@ -5589,7 +5589,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, target_service, route, outcome) (rate(ibkr_http_client_requests_total{service=~\"$service\", target_service=~\"$target_service\", route!~\"/health|/status|/ibkr/status|/api/custom/ibkr/statusz|/api/custom/system/summaryz|/api/custom/system/monitorz|/api/custom/system/storagez\"}[$__rate_interval]))",
-          "legendFormat": "{{service}} -> {{target_service}} {{route}} {{outcome}}",
+          "legendFormat": "服务到目标结果 / {{service}} -> {{target_service}} {{route}} {{outcome}}",
           "range": true,
           "refId": "A"
         }
@@ -5792,7 +5792,7 @@
           },
           "editorMode": "code",
           "expr": "max by (environment, source) (ibkr_account_gross_position_value_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
-          "legendFormat": "gross position {{environment}} {{source}}",
+          "legendFormat": "总持仓市值 / gross position {{environment}} {{source}}",
           "range": true,
           "refId": "A"
         },
@@ -5803,7 +5803,7 @@
           },
           "editorMode": "code",
           "expr": "max by (environment, source) (ibkr_account_buying_power_used_exposure_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
-          "legendFormat": "used exposure {{environment}} {{source}}",
+          "legendFormat": "已用敞口 / used exposure {{environment}} {{source}}",
           "range": true,
           "refId": "B"
         },
@@ -5814,7 +5814,7 @@
           },
           "editorMode": "code",
           "expr": "max by (environment, source) (ibkr_account_initial_margin_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
-          "legendFormat": "initial margin {{environment}} {{source}}",
+          "legendFormat": "初始保证金 / initial margin {{environment}} {{source}}",
           "range": true,
           "refId": "C"
         },
@@ -5825,7 +5825,7 @@
           },
           "editorMode": "code",
           "expr": "max by (environment, source) (ibkr_account_maintenance_margin_usd{service=~\"$service\", environment=~\"$environment\", source=~\"account_snapshot|account_summary\"})",
-          "legendFormat": "maintenance margin {{environment}} {{source}}",
+          "legendFormat": "维持保证金 / maintenance margin {{environment}} {{source}}",
           "range": true,
           "refId": "D"
         }
@@ -5918,7 +5918,7 @@
           },
           "editorMode": "code",
           "expr": "100 - (avg by(instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[$__rate_interval])) * 100)",
-          "legendFormat": "cpu {{instance}}",
+          "legendFormat": "CPU 使用率 / cpu {{instance}}",
           "range": true,
           "refId": "A"
         },
@@ -5929,7 +5929,7 @@
           },
           "editorMode": "code",
           "expr": "(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100",
-          "legendFormat": "memory {{instance}}",
+          "legendFormat": "内存使用率 / memory {{instance}}",
           "range": true,
           "refId": "B"
         },
@@ -5940,7 +5940,7 @@
           },
           "editorMode": "code",
           "expr": "100 * node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay\", mountpoint=~\"/|/var|/opt\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|overlay\", mountpoint=~\"/|/var|/opt\"}",
-          "legendFormat": "fs free {{instance}} {{mountpoint}}",
+          "legendFormat": "文件系统剩余 / fs free {{instance}} {{mountpoint}}",
           "range": true,
           "refId": "C"
         }
@@ -6204,7 +6204,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (source, interval, operation, result) (rate(ibkr_history_events_total{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval]))",
-          "legendFormat": "{{source}} {{interval}} {{operation}} {{result}}",
+          "legendFormat": "来源/周期/操作/结果 / {{source}} {{interval}} {{operation}} {{result}}",
           "range": true,
           "refId": "A"
         },
@@ -6215,7 +6215,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (source, interval, operation) (rate(ibkr_history_rows_total{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval]))",
-          "legendFormat": "rows {{source}} {{interval}} {{operation}}",
+          "legendFormat": "行数 / rows {{source}} {{interval}} {{operation}}",
           "range": true,
           "refId": "B"
         }
@@ -6451,7 +6451,7 @@
     {
       "id": 64,
       "type": "timeseries",
-      "title": "Gateway Probe p95 / Gateway Probe p95",
+      "title": "Gateway 探测 p95 / Gateway Probe p95",
       "description": "Gateway socket 探测延迟，保留在诊断区，避免与 Gateway 状态重复。",
       "datasource": {
         "type": "prometheus",
@@ -6471,7 +6471,7 @@
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.95, sum by (le, source, result) (rate(ibkr_gateway_socket_probe_duration_seconds_bucket{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval])))",
-          "legendFormat": "{{source}} {{result}}",
+          "legendFormat": "来源/结果 / {{source}} {{result}}",
           "range": true,
           "refId": "A"
         }
@@ -6564,7 +6564,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, target_service, route, exception_class) (increase(ibkr_http_client_exceptions_total{service=~\"$service\", target_service=~\"$target_service\", route=~\"/ibkr/status|/api/custom/ibkr/statusz|/api/custom/system/summaryz|/api/custom/system/monitorz|/api/custom/system/storagez\"}[5m])) > 0",
-          "legendFormat": "{{service}} -> {{target_service}} {{route}} {{exception_class}}",
+          "legendFormat": "服务到目标异常 / {{service}} -> {{target_service}} {{route}} {{exception_class}}",
           "range": true,
           "refId": "A"
         }
@@ -6631,7 +6631,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (service, environment, client_role, ib_error_code, severity) (increase(ibkr_broker_error_total{service=~\"$service\", environment=~\"$environment\", severity!=\"benign\"}[5m])) > 0",
-          "legendFormat": "IB {{client_role}} {{ib_error_code}} {{severity}}",
+          "legendFormat": "IB 错误 / IB {{client_role}} {{ib_error_code}} {{severity}}",
           "range": true,
           "refId": "A"
         },
@@ -6642,7 +6642,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (operation, order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", result!~\"ok|synced|seen\"}[5m])) > 0",
-          "legendFormat": "order {{operation}} {{result}} {{reason_code}}",
+          "legendFormat": "订单 / order {{operation}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "B"
         }
@@ -6726,7 +6726,7 @@
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.95, sum by (le, operation, result) (rate(ibkr_gateway_order_serial_queue_wait_seconds_bucket{service=~\"$service\", environment=~\"$environment\"}[$__rate_interval])))",
-          "legendFormat": "{{operation}} {{result}}",
+          "legendFormat": "操作/结果 / {{operation}} {{result}}",
           "range": true,
           "refId": "A"
         }
@@ -6820,7 +6820,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (operation) (increase(ibkr_gateway_order_serial_timeouts_total{service=~\"$service\", environment=~\"$environment\"}[$__range]))",
-          "legendFormat": "{{operation}}",
+          "legendFormat": "操作 / {{operation}}",
           "range": true,
           "refId": "A"
         }
@@ -6931,7 +6931,7 @@
           },
           "editorMode": "code",
           "expr": "sum(increase(ibkr_signal_records_total{service=~\"$service\", environment=~\"$environment\"}[30d]))",
-          "legendFormat": "signals 30d",
+          "legendFormat": "信号 30d / signals 30d",
           "range": true,
           "refId": "A"
         },
@@ -6942,7 +6942,7 @@
           },
           "editorMode": "code",
           "expr": "sum(increase(ibkr_signal_events_total{service=~\"$service\", environment=~\"$environment\", stage=\"validation\", result=\"accepted\"}[30d]))",
-          "legendFormat": "accepted 30d",
+          "legendFormat": "已接受 30d / accepted 30d",
           "range": true,
           "refId": "B"
         },
@@ -6953,7 +6953,7 @@
           },
           "editorMode": "code",
           "expr": "sum(increase(ibkr_signal_events_total{service=~\"$service\", environment=~\"$environment\", result=~\"error|rejected|blocked|deferred|unauthenticated\"}[30d]))",
-          "legendFormat": "attention 30d",
+          "legendFormat": "需关注 30d / attention 30d",
           "range": true,
           "refId": "C"
         },
@@ -6964,7 +6964,7 @@
           },
           "editorMode": "code",
           "expr": "sum(increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=~\"place_bracket|place_entry|place_bracket_order\", result=~\"ok|synced|seen|incomplete\"}[30d]))",
-          "legendFormat": "entries 30d",
+          "legendFormat": "开仓 30d / entries 30d",
           "range": true,
           "refId": "D"
         },
@@ -6975,7 +6975,7 @@
           },
           "editorMode": "code",
           "expr": "sum(increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=~\"place_bracket|place_entry|place_take_profit|place_stop_loss|place_bracket_order|place_market_close|adjust_stop_loss|adjust_take_profit|cancel_order|cancel_all_orders|cancel_entry|cancel_take_profit|cancel_stop_loss|modify_manual|modify_order|ibapi_place|ibapi_cancel|modify|cancel\", result!~\"ok|synced|seen\"}[30d]))",
-          "legendFormat": "order attention 30d",
+          "legendFormat": "订单需关注 30d / order attention 30d",
           "range": true,
           "refId": "E"
         },
@@ -6986,7 +6986,7 @@
           },
           "editorMode": "code",
           "expr": "sum(ibkr_signal_current_count{service=~\"$service\", environment=~\"$environment\", state=\"active\"})",
-          "legendFormat": "active signals",
+          "legendFormat": "活跃信号 / active signals",
           "range": true,
           "refId": "F"
         },
@@ -6997,7 +6997,7 @@
           },
           "editorMode": "code",
           "expr": "sum(ibkr_order_current_count{service=~\"$service\", environment=~\"$environment\", kind=\"open_groups\"})",
-          "legendFormat": "open groups",
+          "legendFormat": "未结订单组 / open groups",
           "range": true,
           "refId": "G"
         }
@@ -7057,7 +7057,7 @@
           },
           "editorMode": "code",
           "expr": "sum(increase(ibkr_signal_records_total{service=~\"$service\", environment=~\"$environment\"}[1d]))",
-          "legendFormat": "signals rolling 1d",
+          "legendFormat": "信号 1d 滚动 / signals rolling 1d",
           "range": true,
           "refId": "A"
         },
@@ -7068,7 +7068,7 @@
           },
           "editorMode": "code",
           "expr": "sum(increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=~\"place_bracket|place_entry|place_bracket_order\", result=~\"ok|synced|seen|incomplete\"}[1d]))",
-          "legendFormat": "successful entries rolling 1d",
+          "legendFormat": "成功开仓 1d 滚动 / successful entries rolling 1d",
           "range": true,
           "refId": "B"
         }
@@ -7164,7 +7164,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (stage, result) (increase(ibkr_signal_events_total{service=~\"$service\", environment=~\"$environment\", reason_code!=\"empty\"}[1d]))",
-          "legendFormat": "{{stage}} {{result}} rolling 1d",
+          "legendFormat": "阶段/结果 1d 滚动 / {{stage}} {{result}} rolling 1d",
           "range": true,
           "refId": "A"
         }
@@ -7259,7 +7259,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (operation, result) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=~\"place_bracket|place_entry|place_take_profit|place_stop_loss|place_bracket_order|place_market_close|adjust_stop_loss|adjust_take_profit|cancel_order|cancel_all_orders|cancel_entry|cancel_take_profit|cancel_stop_loss|modify_manual|modify_order|ibapi_place|ibapi_cancel|modify|cancel\"}[1d]))",
-          "legendFormat": "{{operation}} {{result}} rolling 1d",
+          "legendFormat": "操作/结果 1d 滚动 / {{operation}} {{result}} rolling 1d",
           "range": true,
           "refId": "A"
         }
@@ -7354,7 +7354,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (stage, signal_source, result, reason_code) (increase(ibkr_signal_events_total{service=~\"$service\", environment=~\"$environment\", reason_code!=\"empty\"}[30d]))",
-          "legendFormat": "{{stage}} {{signal_source}} {{result}} {{reason_code}}",
+          "legendFormat": "阶段/来源/结果/原因 / {{stage}} {{signal_source}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "A"
         }
@@ -7422,7 +7422,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (operation, order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=~\"place_bracket|place_entry|place_take_profit|place_stop_loss|place_bracket_order|place_market_close|adjust_stop_loss|adjust_take_profit|cancel_order|cancel_all_orders|cancel_entry|cancel_take_profit|cancel_stop_loss|modify_manual|modify_order|ibapi_place|ibapi_cancel|modify|cancel\"}[30d]))",
-          "legendFormat": "{{operation}} {{order_family_type}} {{result}} {{reason_code}}",
+          "legendFormat": "操作/订单类型/结果/原因 / {{operation}} {{order_family_type}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "A"
         }
@@ -7577,6 +7577,6 @@
   "timezone": "browser",
   "title": "量化监控 - 分阶段请求链路 / Quant Monitoring - Phased Request Flow",
   "uid": "quant-monitoring-overview",
-  "version": 5,
+  "version": 6,
   "weekStart": ""
 }

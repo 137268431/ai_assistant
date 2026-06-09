@@ -363,6 +363,28 @@ class SnapshotCacheHelperTest(unittest.TestCase):
         self.assertEqual({"value": "drop"}, update_payload["payload"])
         self.assertEqual("keep", get_cached_snapshot(pb, keep_key)["payload"]["value"])
 
+        second_invalidated = clear_cached_snapshots(pb, scopes=("home.dashboard",))
+        self.assertEqual(0, second_invalidated)
+        self.assertEqual(1, len(pb.updated))
+
+    def test_clear_cached_snapshots_skips_already_stale_records(self):
+        pb = _FakePB()
+        cache_key = "home.dashboard:already-stale"
+        _seed_snapshot(
+            pb,
+            cache_key,
+            payload={"value": "stale"},
+            computed_at_ms=_now_ms() - 90_000,
+            fresh_for_ms=1_000,
+            stale_for_ms=300_000,
+        )
+
+        invalidated = clear_cached_snapshots(pb, scopes=("home.dashboard",))
+
+        self.assertEqual(0, invalidated)
+        self.assertEqual([], pb.updated)
+        self.assertEqual("stale", get_cached_snapshot(pb, cache_key)["payload"]["value"])
+
 
 if __name__ == "__main__":
     unittest.main()
