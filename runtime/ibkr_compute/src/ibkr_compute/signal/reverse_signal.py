@@ -1335,6 +1335,7 @@ class ReverseSignalHandler:
             signal_id=origin_signal_id,
             source="reverse_signal_close",
             close_reason=close_reason,
+            position_snapshot=self._position_snapshot_for_symbol(symbol, positions),
         )
         detail["close_old_position"] = "submitted" if result.get("ok") else "failed"
         detail["close_result"] = dict(result or {})
@@ -3951,6 +3952,16 @@ class ReverseSignalHandler:
                 continue
             return self._coerce_float(pos.get("position", pos.get("quantity", 0)), 0.0)
         return 0.0
+
+    def _position_snapshot_for_symbol(self, symbol: str, positions: List[Dict[str, Any]]) -> Dict[str, Any]:
+        target = str(symbol or "").upper()
+        for pos in positions or []:
+            if not isinstance(pos, dict):
+                continue
+            pos_symbol = str(pos.get("ticker") or pos.get("symbol") or pos.get("contractDesc") or "").upper()
+            if pos_symbol == target:
+                return dict(pos)
+        return {}
 
     def _confirm_flat(self, symbol: str) -> Tuple[bool, Dict[str, Any]]:
         last_qty = 0.0

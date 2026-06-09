@@ -54,12 +54,24 @@ class FakeConidResolver:
         return self.conid
 
 
+class FakeLifecycle:
+    def __init__(self, positions=None, result=None):
+        self.positions = list(positions or [])
+        self.result = result
+
+    def get_positions_result(self):
+        if self.result is not None:
+            return dict(self.result)
+        return {"ok": True, "positions": list(self.positions)}
+
+
 class FakeService:
-    def __init__(self, *, orders=None, conid=123):
+    def __init__(self, *, orders=None, conid=123, positions=None):
         self.order_placer = FakeOrderPlacer()
         self.order_modifier = FakeOrderModifier()
         self.order_tracker = FakeOrderTracker(orders or [])
         self.conid_resolver = FakeConidResolver(conid)
+        self.order_lifecycle = FakeLifecycle(positions or [])
 
 
 class ClosePositionActionTest(unittest.TestCase):
@@ -179,6 +191,58 @@ class ClosePositionActionTest(unittest.TestCase):
         self.assertTrue(call["outside_rth"])
         self.assertEqual("DAY", call["tif"])
 
+    def test_close_position_defaults_to_auto_session_limit(self):
+        service = FakeService(orders=[])
+
+        payload, status_code = positions_mod._build_ibkr_close_position_response(
+            service,
+            {
+                "symbol": "NVDA",
+                "conid": 123,
+                "quantity": 3,
+                "direction": "short",
+                "market_price": 500.12,
+            },
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        call = service.order_placer.calls[0]
+        self.assertEqual("LMT", call["order_type"])
+        self.assertEqual("auto_session_limit", call["execution_profile"])
+        self.assertEqual(500.12, call["position_snapshot"]["market_price"])
+        self.assertIsNone(call["outside_rth"])
+
+    def test_close_position_cancels_existing_close_order_before_submit(self):
+        service = FakeService(
+            orders=[
+                {
+                    "orderId": "301",
+                    "ticker": "NVDA",
+                    "side": "SELL",
+                    "status": "Submitted",
+                    "orderType": "LMT",
+                    "cOID": "close_NVDA_20260608_100000",
+                }
+            ]
+        )
+
+        payload, status_code = positions_mod._build_ibkr_close_position_response(
+            service,
+            {
+                "symbol": "NVDA",
+                "conid": 123,
+                "quantity": 3,
+                "direction": "long",
+                "market_price": 500.12,
+            },
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(["301"], service.order_modifier.cancelled)
+        self.assertEqual(["301"], payload["result"]["existing_close_cancel"]["cancelled_order_ids"])
+
     def test_market_close_uses_explicit_protection_order_ids(self):
         service = FakeService(orders=[])
 
@@ -196,6 +260,27 @@ class ClosePositionActionTest(unittest.TestCase):
         self.assertEqual(200, status_code)
         self.assertTrue(payload["ok"])
         self.assertEqual(["102", "103"], service.order_modifier.cancelled)
+
+    def test_close_all_positions_submits_limit_closes_for_each_position(self):
+        service = FakeService(
+            positions=[
+                {"ticker": "MSTR", "conid": 272110, "position": -39, "mktPrice": 127.5},
+                {"ticker": "NVDA", "conid": 4815747, "position": 23, "mktPrice": 145.2},
+                {"ticker": "BOXX", "conid": 1, "position": 2, "mktPrice": 108.0},
+            ]
+        )
+
+        payload, status_code = positions_mod._build_ibkr_close_all_positions_response(
+            service,
+            {"keep_symbols": "BOXX"},
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(2, payload["closed"])
+        self.assertEqual(2, len(service.order_placer.calls))
+        self.assertEqual(["MSTR", "NVDA"], [call["symbol"] for call in service.order_placer.calls])
+        self.assertEqual(["LMT", "LMT"], [call["order_type"] for call in service.order_placer.calls])
 
 
 if __name__ == "__main__":

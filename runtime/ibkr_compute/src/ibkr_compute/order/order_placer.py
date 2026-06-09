@@ -20,6 +20,7 @@ from ibkr_compute.order.buying_power_reservations import (
     BuyingPowerReservationStore,
     merge_reservation_snapshot_into_guard,
 )
+from ibkr_compute.order.close_execution import build_close_execution_plan, infer_close_session, quote_from_sources
 from ibkr_compute.order.gateway_serial import GatewayOrderMutationGate, GatewayOrderMutationTimeout
 from ibkr_compute.order.symbol_queue import SymbolOrderCommandScheduler
 
@@ -182,6 +183,156 @@ class OrderPlacer:
         if number != number:
             return default
         return float(number)
+
+    def _config_float(self, key: str, default: float) -> float:
+        if not self.config:
+            return float(default)
+        getter = getattr(self.config, "get_float_for_environment", None)
+        if callable(getter):
+            try:
+                return float(getter(key, self.environment, default))
+            except Exception:
+                return float(default)
+        getter = getattr(self.config, "get_for_environment", None)
+        if callable(getter):
+            try:
+                return float(getter(key, self.environment, str(default)))
+            except Exception:
+                return float(default)
+        return float(default)
+
+    def _config_bool(self, key: str, default: bool) -> bool:
+        if not self.config:
+            return bool(default)
+        getter = getattr(self.config, "get_bool_for_environment", None)
+        if callable(getter):
+            try:
+                return bool(getter(key, self.environment, default))
+            except Exception:
+                return bool(default)
+        getter = getattr(self.config, "get_for_environment", None)
+        if callable(getter):
+            try:
+                return self._coerce_bool(getter(key, self.environment, str(default).lower()), default)
+            except Exception:
+                return bool(default)
+        return bool(default)
+
+    def _close_limit_bps_for_session(self, session_name: str, explicit_bps: Any = None) -> float:
+        explicit = self._safe_float(explicit_bps, -1.0)
+        if explicit >= 0:
+            return explicit
+        normalized = str(session_name or "").strip().lower()
+        if normalized == "regular":
+            return self._config_float("ibkr_close_regular_limit_bps", 15.0)
+        if normalized == "overnight":
+            return self._config_float("ibkr_close_overnight_limit_bps", 100.0)
+        return self._config_float("ibkr_close_extended_limit_bps", 50.0)
+
+    def _request_close_quote(self, *, conid: int, symbol: str, exchange: str = "SMART") -> Dict[str, Any]:
+        requester = getattr(self.broker, "request_market_data_snapshot", None)
+        if not callable(requester):
+            return {"ok": False, "error": "market_data_snapshot_unavailable", "quote": {}}
+        try:
+            return dict(
+                requester(
+                    conid=int(conid or 0),
+                    symbol=str(symbol or "").upper(),
+                    exchange=str(exchange or "SMART") or "SMART",
+                    timeout=max(0.5, self._config_float("ibkr_close_quote_timeout_sec", 3.0)),
+                )
+                or {}
+            )
+        except TypeError:
+            try:
+                return dict(requester(conid=int(conid or 0), symbol=str(symbol or "").upper()) or {})
+            except Exception as exc:
+                return {"ok": False, "error": str(exc), "quote": {}}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "quote": {}}
+
+    def _notify_close_execution_event(self, title: str, detail: Dict[str, Any], *, level: str = "error", message_id: str = "") -> None:
+        notifier = getattr(self.pb_client, "notify_system_event", None) if self.pb_client else None
+        if not callable(notifier):
+            return
+        try:
+            notifier(
+                title=title,
+                level=level,
+                environment=self.environment,
+                detail=detail,
+                source="ibkr_order_placer",
+                category="ibkr_close_execution",
+                dedupe_key=message_id,
+                message_id=message_id,
+            )
+        except Exception as exc:
+            logger.debug("Close execution notification failed: %s", exc)
+
+    def _build_close_execution_plan(
+        self,
+        *,
+        conid: int,
+        symbol: str,
+        direction: str,
+        order_type: str,
+        limit_price: float,
+        outside_rth: Any,
+        tif: str,
+        position_snapshot: Dict[str, Any] | None,
+        execution_profile: str = "",
+        session_override: str = "",
+        limit_bps: Any = None,
+        allow_market: Any = None,
+        exchange: str = "",
+        include_overnight: Any = None,
+        quote: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        profile = str(execution_profile or "").strip().lower()
+        if profile in {"legacy", "raw"}:
+            return {
+                "ok": True,
+                "legacy": True,
+                "order_type": str(order_type or "MKT").strip().upper() or "MKT",
+                "limit_price": float(limit_price or 0.0),
+                "outside_rth": self._coerce_bool(outside_rth, False),
+                "tif": str(tif or "DAY").strip().upper() or "DAY",
+                "exchange": str(exchange or "").strip().upper(),
+                "include_overnight": self._coerce_bool(include_overnight, False),
+            }
+        session = infer_close_session(session_override=session_override)
+        resolved_quote = quote_from_sources(quote, position_snapshot)
+        explicit_limit = self._safe_float(limit_price, 0.0)
+        if explicit_limit <= 0 and not resolved_quote:
+            quote_result = self._request_close_quote(conid=conid, symbol=symbol, exchange="SMART")
+            resolved_quote = quote_from_sources(quote_result.get("quote"), quote_result, position_snapshot)
+        selected_bps = self._close_limit_bps_for_session(session.name, limit_bps)
+        resolved_allow_market = self._coerce_bool(
+            allow_market,
+            self._config_bool("ibkr_close_allow_market", False),
+        )
+        resolved_include_overnight = (
+            include_overnight
+            if include_overnight not in (None, "")
+            else bool(session.include_overnight and self._config_bool("ibkr_close_include_overnight_enabled", True))
+        )
+        plan = build_close_execution_plan(
+            symbol=symbol,
+            direction=direction,
+            quote=resolved_quote,
+            session_override=session_override,
+            limit_bps=selected_bps,
+            stale_quote_seconds=self._config_float("ibkr_close_quote_stale_sec", 120.0),
+            explicit_limit_price=explicit_limit,
+            allow_market=resolved_allow_market,
+            requested_order_type=order_type or "LMT",
+            requested_tif=tif,
+            requested_outside_rth=outside_rth,
+            requested_exchange=exchange,
+            requested_include_overnight=resolved_include_overnight,
+        )
+        plan["execution_profile"] = profile or "auto_session_limit"
+        return plan
 
     def _signal_lookup_environments(self) -> List[str]:
         candidates: List[str] = []
@@ -639,7 +790,7 @@ class OrderPlacer:
         entry_adaptive_priority: str = "",
         buying_power_pre_reservation: Dict[str, Any] | None = None,
         confirmation_mode: str = "",
-        outside_rth: bool = False,
+        outside_rth: Any = None,
         tif: str = "DAY",
     ) -> Dict[str, Any]:
         started = time.perf_counter()
@@ -844,7 +995,7 @@ class OrderPlacer:
         settings: Dict[str, Any] | None = None,
         entry_order_type: str = "LMT",
         buying_power_guard: Dict[str, Any] | None = None,
-        outside_rth: bool = False,
+        outside_rth: Any = None,
     ) -> Dict[str, Any]:
         from ibkr_compute.core.intraday_harvest import (
             INTRADAY_VOLATILITY_HARVEST_PROFILE,
@@ -963,11 +1114,22 @@ class OrderPlacer:
             payload["symbol"] = str(payload.get("symbol") or "").upper()
         if "direction" in payload:
             payload["direction"] = str(payload.get("direction") or "").lower()
-        for name in ("signal_id", "trade_group_id", "entry_order_unique_id", "close_reason", "order_type"):
+        for name in (
+            "signal_id",
+            "trade_group_id",
+            "entry_order_unique_id",
+            "close_reason",
+            "order_type",
+            "execution_profile",
+            "session_override",
+            "exchange",
+        ):
             if kwargs.get(name):
                 payload[name] = kwargs.get(name)
         if kwargs.get("limit_price") not in (None, ""):
             payload["limit_price"] = kwargs.get("limit_price")
+        if kwargs.get("limit_bps") not in (None, ""):
+            payload["limit_bps"] = kwargs.get("limit_bps")
         return payload
 
     def _place_market_close_unlocked(
@@ -982,10 +1144,17 @@ class OrderPlacer:
         signal_id: str = "",
         origin_signal_id: str = "",
         source: str = "",
-        order_type: str = "MKT",
+        order_type: str = "LMT",
         limit_price: float = 0.0,
         outside_rth: bool = False,
         tif: str = "DAY",
+        execution_profile: str = "auto_session_limit",
+        session_override: str = "",
+        limit_bps: Any = None,
+        allow_market: Any = None,
+        exchange: str = "",
+        include_overnight: Any = None,
+        quote: Dict[str, Any] | None = None,
         position_snapshot: Dict[str, Any] | None = None,
         wait_for_fill: bool = False,
         fill_timeout: float = 5.0,
@@ -1005,13 +1174,63 @@ class OrderPlacer:
         resolved_trade_group_id = linkage.get("trade_group_id") or trade_group_id
         resolved_entry_order_unique_id = linkage.get("entry_order_unique_id") or entry_order_unique_id
         resolved_signal_id = linkage.get("signal_id") or signal_id
+        close_plan = self._build_close_execution_plan(
+            conid=int(conid or 0),
+            symbol=symbol,
+            direction=direction,
+            order_type=order_type,
+            limit_price=limit_price,
+            outside_rth=outside_rth,
+            tif=tif,
+            position_snapshot=position_snapshot,
+            execution_profile=execution_profile,
+            session_override=session_override,
+            limit_bps=limit_bps,
+            allow_market=allow_market,
+            exchange=exchange,
+            include_overnight=include_overnight,
+            quote=quote,
+        )
+        if not close_plan.get("ok"):
+            reason = str(close_plan.get("error") or "close_execution_plan_failed")
+            self._notify_close_execution_event(
+                "平仓未执行：限价计划不可用",
+                {
+                    "Broker模式": self.environment,
+                    "标的": symbol,
+                    "方向": direction,
+                    "数量": int(quantity or 0),
+                    "原因": reason,
+                    "平仓计划": close_plan,
+                    "处理建议": "检查 bid/ask/last 行情、交易时段和未成交平仓单；系统不会自动改成市价单。",
+                },
+                level="error",
+                message_id=f"ibkr_close_plan_unavailable:{self.environment}:{symbol}:{reason}",
+            )
+            return {
+                "ok": False,
+                "error": reason,
+                "submitted": False,
+                "close_execution_plan": close_plan,
+                "order_type": str(close_plan.get("order_type") or "LMT").upper(),
+                "limit_price": float(close_plan.get("limit_price") or 0.0),
+                "outside_rth": bool(close_plan.get("outside_rth", outside_rth)),
+                "tif": str(close_plan.get("tif") or tif or "DAY").upper(),
+            }
+        order_type = str(close_plan.get("order_type") or order_type or "LMT").upper()
+        limit_price = float(close_plan.get("limit_price") or 0.0)
+        outside_rth = bool(close_plan.get("outside_rth", outside_rth))
+        tif = str(close_plan.get("tif") or tif or "DAY").upper()
+        exchange = str(close_plan.get("exchange") or exchange or "").upper()
+        include_overnight = bool(close_plan.get("include_overnight", False))
         logger.info(
-            "Placing market close: %s %s qty=%s order_type=%s limit=%s account=%s",
+            "Placing close: %s %s qty=%s order_type=%s limit=%s session=%s account=%s",
             symbol,
             direction,
             quantity,
             order_type,
             limit_price,
+            close_plan.get("session"),
             acct_id or "-",
         )
         broker_kwargs = {
@@ -1025,12 +1244,16 @@ class OrderPlacer:
             "limit_price": limit_price,
             "outside_rth": outside_rth,
             "tif": tif,
+            "exchange": exchange,
+            "include_overnight": include_overnight,
             "wait_for_fill": wait_for_fill,
             "fill_timeout": fill_timeout,
         }
         if getattr(self.broker, "uses_internal_gateway_write_lock", False):
             broker_kwargs["metric_environment"] = self.environment
         result = self.broker.place_market_close(**broker_kwargs)
+        if isinstance(result, dict):
+            result.setdefault("close_execution_plan", dict(close_plan))
         order_ids: List[str] = []
         for key in ("order_ids", "submitted_order_ids", "broker_order_ids", "submitted_broker_order_ids"):
             value = result.get(key)
@@ -1059,8 +1282,9 @@ class OrderPlacer:
                 signal_id=resolved_signal_id,
                 source=source,
                 account=acct_id,
-                order_type=str(result.get("order_type") or order_type or "MKT").upper(),
+                order_type=str(result.get("order_type") or order_type or "LMT").upper(),
                 limit_price=float(result.get("limit_price") or limit_price or 0.0),
+                close_execution_plan=close_plan,
                 position_snapshot=position_snapshot,
                 status="Filled" if bool(result.get("filled")) else "Submitted",
                 result=result,
@@ -1113,6 +1337,9 @@ class OrderPlacer:
                 "submission_error": str(kwargs.get("submission_error") or ""),
                 "market_close_result": dict(kwargs.get("result") or {}),
             }
+            close_execution_plan = kwargs.get("close_execution_plan")
+            if isinstance(close_execution_plan, dict):
+                extra["close_execution_plan"] = dict(close_execution_plan)
             close_reason = str(kwargs.get("close_reason") or "").strip()
             close_reason_human = str(kwargs.get("close_reason_human") or "").strip()
             if close_reason:
@@ -1135,7 +1362,7 @@ class OrderPlacer:
                 "quantity": kwargs.get("quantity", 0),
                 "limit_price": kwargs.get("limit_price", 0) or 0,
                 "status": str(kwargs.get("status") or "Submitted"),
-                "order_type": str(kwargs.get("order_type") or "MKT").upper(),
+                "order_type": str(kwargs.get("order_type") or "LMT").upper(),
                 "unique_id": close_coid or broker_order_id,
                 "order_id": broker_order_id,
                 "broker_order_id": broker_order_id,

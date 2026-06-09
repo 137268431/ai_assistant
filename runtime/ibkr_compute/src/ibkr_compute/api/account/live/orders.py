@@ -80,7 +80,9 @@ def _normalize_live_order(order: dict) -> dict:
     closed_statuses = {"FILLED", "EXECUTED", "CANCELLED", "CANCELED", "INACTIVE", "REJECTED", "EXPIRED", "API_CANCELLED"}
     normalized_status = status.upper()
     canonical_status = _canonical_order_status(status)
-    if not parent_id:
+    if str(client_order_id or "").strip().lower().startswith("close_"):
+        role = "close"
+    elif not parent_id:
         role = "entry"
     elif "STP" in order_type or "STOP" in order_type:
         role = "stop_loss"

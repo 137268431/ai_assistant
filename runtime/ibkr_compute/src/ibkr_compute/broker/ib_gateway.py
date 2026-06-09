@@ -4413,24 +4413,30 @@ class BrokerAdapter:
         quantity: int,
         account_id: str = "",
         order_ref: str = "",
-        order_type: str = "MKT",
+        order_type: str = "LMT",
         limit_price: float = 0.0,
         outside_rth: bool = False,
         tif: str = "DAY",
+        exchange: str = "",
+        include_overnight: bool = False,
         wait_for_fill: bool = False,
         fill_timeout: float = 5.0,
         metric_environment: str = "",
     ) -> dict:
-        contract_info = self.resolve_contract(symbol=symbol, conid=conid)
+        normalized_exchange = str(exchange or "").strip().upper()
+        resolve_exchange = "" if normalized_exchange in {"OVERNIGHT"} else normalized_exchange
+        contract_info = self.resolve_contract(symbol=symbol, conid=conid, exchange=resolve_exchange)
         if not contract_info:
             return {"ok": False, "error": "contract_not_found"}
         contract = self._build_order_contract(contract_info, conid=conid, symbol=symbol)
+        if normalized_exchange and normalized_exchange != "SMART":
+            contract.exchange = normalized_exchange
         order_id = self.client.next_order_ids(1)[0]
         side = "SELL" if str(direction).lower() == "long" else "BUY"
         order = Order()
         order.orderId = int(order_id)
         order.action = side
-        normalized_order_type = str(order_type or "MKT").strip().upper()
+        normalized_order_type = str(order_type or "LMT").strip().upper()
         wants_limit = normalized_order_type in {"LMT", "LIMIT", "MARKETABLE_LIMIT"}
         normalized_limit_price = self._normalize_order_price(limit_price) if wants_limit else 0.0
         price_normalization = self._price_normalization_details(limit_price=limit_price) if wants_limit else {}
@@ -4453,6 +4459,13 @@ class BrokerAdapter:
         order.totalQuantity = float(quantity)
         order.tif = str(tif or "DAY").strip().upper() or "DAY"
         order.outsideRth = outside_rth_enabled
+        include_overnight_enabled = bool(include_overnight)
+        include_overnight_supported = hasattr(order, "includeOvernight")
+        if include_overnight_enabled and include_overnight_supported:
+            try:
+                order.includeOvernight = True
+            except Exception:
+                include_overnight_supported = False
         order_ref = str(order_ref or "").strip()
         order.orderRef = order_ref or f"close_{contract.symbol}_{datetime.now(ET).strftime('%Y%m%d_%H%M%S')}"
         account_id = str(account_id or "").strip()
@@ -4493,6 +4506,9 @@ class BrokerAdapter:
             "limit_price": float(normalized_limit_price) if use_limit else 0.0,
             "outside_rth": outside_rth_enabled,
             "tif": order.tif,
+            "exchange": str(getattr(contract, "exchange", "") or ""),
+            "include_overnight": include_overnight_enabled,
+            "include_overnight_supported": include_overnight_supported,
             "price_normalization": price_normalization,
         }
         if wait_for_fill:

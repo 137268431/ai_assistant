@@ -93,6 +93,9 @@ def _order_role(order: dict[str, Any]) -> str:
     role = _lower(_order_value(order, "role", "leg_role"))
     if role:
         return role
+    client_order_id = _lower(_client_order_id(order))
+    if client_order_id.startswith("close_"):
+        return "close"
     order_type = _upper(_order_value(order, "order_type", "orderType", "orderDesc"))
     if _parent_order_id(order) and ("STP" in order_type or "STOP" in order_type):
         return "stop_loss"
@@ -122,6 +125,12 @@ def _is_protection_order(order: dict[str, Any]) -> bool:
         or client_order_id.startswith("tp_")
         or client_order_id.startswith("sl_")
     )
+
+
+def _is_close_order(order: dict[str, Any]) -> bool:
+    role = _order_role(order)
+    client_order_id = _lower(_client_order_id(order))
+    return role in {"close", "manual_close", "market_close", "reverse_close"} or client_order_id.startswith("close_")
 
 
 def _close_side_for_direction(direction: str) -> str:
@@ -238,7 +247,28 @@ def _collect_protection_cancel_order_ids(
     return ids
 
 
-def _cancel_protection_orders(service: Any, order_ids: list[str]) -> dict[str, Any]:
+def _collect_existing_close_order_ids(
+    service: Any,
+    *,
+    symbol: str,
+    direction: str,
+) -> list[str]:
+    ids: list[str] = []
+    for order in _load_live_orders(service):
+        order_id = _order_id(order)
+        if not order_id or order_id in ids:
+            continue
+        if not _is_open_order(order) or not _is_close_order(order):
+            continue
+        if symbol and _order_symbol(order) and _order_symbol(order) != symbol:
+            continue
+        if not _order_matches_close_side(order, direction):
+            continue
+        ids.append(order_id)
+    return ids
+
+
+def _cancel_order_ids(service: Any, order_ids: list[str], *, reason: str) -> dict[str, Any]:
     order_modifier = getattr(service, "order_modifier", None)
     result = {
         "ok": True,
@@ -250,7 +280,7 @@ def _cancel_protection_orders(service: Any, order_ids: list[str]) -> dict[str, A
     }
     if not order_ids:
         result["skipped"] = True
-        result["reason"] = "no_matching_protection_orders"
+        result["reason"] = f"no_matching_{reason}"
         return result
     if not order_modifier or not hasattr(order_modifier, "cancel_order"):
         result["ok"] = False
@@ -269,8 +299,32 @@ def _cancel_protection_orders(service: Any, order_ids: list[str]) -> dict[str, A
             result["errors"].append({"order_id": order_id, "error": _text(cancel_result.get("error")) or "cancel_failed"})
     result["ok"] = not result["errors"]
     if not result["ok"]:
-        result["reason"] = "protection_cancel_incomplete"
+        result["reason"] = f"{reason}_cancel_incomplete"
     return result
+
+
+def _cancel_protection_orders(service: Any, order_ids: list[str]) -> dict[str, Any]:
+    return _cancel_order_ids(service, order_ids, reason="protection")
+
+
+def _notify_system_event(service: Any, title: str, detail: dict[str, Any], *, level: str = "error", message_id: str = "") -> None:
+    pb = getattr(service, "pb_client", None)
+    notifier = getattr(pb, "notify_system_event", None) if pb is not None else None
+    if not callable(notifier):
+        return
+    try:
+        notifier(
+            title=title,
+            level=level,
+            environment=str(getattr(service, "environment", "") or detail.get("environment") or ""),
+            detail=detail,
+            source="ibkr_account_action",
+            category="ibkr_close_execution",
+            dedupe_key=message_id,
+            message_id=message_id,
+        )
+    except Exception:
+        pass
 
 
 def _resolve_conid(service: Any, symbol: str, conid: int) -> int:
@@ -364,12 +418,47 @@ def _build_ibkr_close_position_response(service, payload: dict) -> tuple[dict, i
         position=position_value,
         direction=direction,
     )
-    order_type = _text(payload.get("order_type") or payload.get("close_order_type") or "MKT") or "MKT"
+    cancel_existing_close = _truthy(payload.get("cancel_existing_close_orders"), True)
+    existing_close_order_ids = (
+        _collect_existing_close_order_ids(service, symbol=symbol, direction=direction)
+        if cancel_existing_close
+        else []
+    )
+    existing_close_cancel = _cancel_order_ids(service, existing_close_order_ids, reason="existing_close")
+    if not existing_close_cancel.get("ok"):
+        result = {
+            "ok": False,
+            "error": "existing_close_cancel_incomplete",
+            "existing_close_cancel": existing_close_cancel,
+            "symbol": symbol,
+            "direction": direction,
+            "quantity": quantity,
+        }
+        _notify_system_event(
+            service,
+            "平仓未执行：旧平仓挂单取消失败",
+            {"标的": symbol, "方向": direction, "数量": quantity, "取消结果": existing_close_cancel},
+            level="error",
+            message_id=f"ibkr_existing_close_cancel_failed:{symbol}:{','.join(existing_close_order_ids)}",
+        )
+        return result, 409
+
+    order_type = _text(payload.get("order_type") or payload.get("close_order_type") or "LMT") or "LMT"
     limit_price = float(_app_coerce_float(payload.get("limit_price") or payload.get("close_limit_price"), 0) or 0)
     wait_for_fill = _truthy(payload.get("wait_for_fill"), False)
     fill_timeout = float(_app_coerce_float(payload.get("fill_timeout") or payload.get("fill_timeout_sec"), 5.0) or 5.0)
-    outside_rth = _truthy(payload.get("outside_rth", payload.get("outsideRth")), False)
+    outside_rth = (
+        _truthy(payload.get("outside_rth", payload.get("outsideRth")), False)
+        if payload.get("outside_rth", payload.get("outsideRth")) not in (None, "")
+        else None
+    )
     tif = _text(payload.get("tif")) or "DAY"
+    execution_profile = _text(payload.get("execution_profile")) or "auto_session_limit"
+    limit_bps = _app_coerce_float(payload.get("limit_bps"))
+    session_override = _text(payload.get("session_override"))
+    exchange = _text(payload.get("exchange") or payload.get("routing_exchange"))
+    include_overnight = payload.get("include_overnight", payload.get("includeOvernight"))
+    allow_market = payload.get("allow_market")
     operation_started_at = time.perf_counter()
     result = service.order_placer.place_market_close(
         conid=conid,
@@ -383,6 +472,12 @@ def _build_ibkr_close_position_response(service, payload: dict) -> tuple[dict, i
         fill_timeout=fill_timeout,
         outside_rth=outside_rth,
         tif=tif,
+        execution_profile=execution_profile,
+        limit_bps=limit_bps,
+        session_override=session_override,
+        exchange=exchange,
+        include_overnight=include_overnight,
+        allow_market=allow_market,
         trade_group_id=_text(payload.get("trade_group_id")),
         entry_order_unique_id=_text(payload.get("entry_order_unique_id")),
         signal_id=_text(payload.get("signal_id")),
@@ -411,6 +506,10 @@ def _build_ibkr_close_position_response(service, payload: dict) -> tuple[dict, i
                 "reason": "cancel_bracket_after_close_disabled",
             },
         }
+    result = {
+        **result,
+        "existing_close_cancel": existing_close_cancel,
+    }
     operation_elapsed_s = time.perf_counter() - operation_started_at
     return _build_snapshot_action_response(
         service,
@@ -429,4 +528,109 @@ def _build_ibkr_close_position_response(service, payload: dict) -> tuple[dict, i
     )
 
 
-__all__ = ["_build_ibkr_close_position_response"]
+def _load_positions_for_close_all(service: Any) -> tuple[bool, list[dict[str, Any]], str]:
+    lifecycle = getattr(service, "order_lifecycle", None)
+    if lifecycle and hasattr(lifecycle, "get_positions_result"):
+        try:
+            result = dict(lifecycle.get_positions_result() or {})
+            if result.get("ok"):
+                return True, [dict(item) for item in (result.get("positions") or []) if isinstance(item, dict)], ""
+            return False, [], _text(result.get("error")) or "position_snapshot_unavailable"
+        except Exception as exc:
+            return False, [], str(exc)
+    broker = getattr(getattr(service, "order_placer", None), "broker", None) or getattr(service, "broker", None)
+    requester = getattr(broker, "request_positions", None)
+    if callable(requester):
+        try:
+            return True, [dict(item) for item in (requester() or []) if isinstance(item, dict)], ""
+        except Exception as exc:
+            return False, [], str(exc)
+    return False, [], "position_snapshot_unavailable"
+
+
+def _build_ibkr_close_all_positions_response(service, payload: dict) -> tuple[dict, int]:
+    action_started_at = time.perf_counter()
+    payload = payload or {}
+    ok, positions, error = _load_positions_for_close_all(service)
+    if not ok:
+        result = {"ok": False, "error": error or "position_snapshot_unavailable", "closed": 0, "errors": 1, "items": []}
+        _notify_system_event(
+            service,
+            "全平未执行：持仓快照不可用",
+            {"原因": result["error"]},
+            level="error",
+            message_id="ibkr_close_all_position_snapshot_unavailable",
+        )
+        return result, 503
+
+    keep_symbols = {item.upper() for item in _list_text_values(payload.get("keep_symbols"))}
+    requested_symbols = {item.upper() for item in _list_text_values(payload.get("symbols") or payload.get("symbol"))}
+    items: list[dict[str, Any]] = []
+    closed = 0
+    errors = 0
+    operation_started_at = time.perf_counter()
+    for pos in positions:
+        symbol = _upper(pos.get("ticker") or pos.get("symbol") or pos.get("contractDesc"))
+        if not symbol or symbol in keep_symbols or (requested_symbols and symbol not in requested_symbols):
+            continue
+        position_qty = _app_coerce_float(pos.get("position", pos.get("quantity")), 0) or 0
+        if not position_qty:
+            continue
+        direction = "long" if float(position_qty) > 0 else "short"
+        conid = _resolve_conid(service, symbol, int(_app_coerce_float(pos.get("conid"), 0) or 0))
+        item_payload = {
+            **payload,
+            "symbol": symbol,
+            "conid": conid,
+            "position": float(position_qty),
+            "quantity": abs(float(position_qty)),
+            "direction": direction,
+            "source": _text(payload.get("source")) or "positions_close_all",
+            "close_reason": _text(payload.get("close_reason")) or "positions_close_all",
+            "close_reason_human": _text(payload.get("close_reason_human")) or "全平",
+            "include_snapshot": False,
+        }
+        for src_key, dest_key in (("mktPrice", "market_price"), ("marketPrice", "market_price"), ("avgCost", "avg_cost")):
+            if pos.get(src_key) not in (None, "") and item_payload.get(dest_key) in (None, ""):
+                item_payload[dest_key] = pos.get(src_key)
+        close_payload, status = _build_ibkr_close_position_response(service, item_payload)
+        item = {
+            "symbol": symbol,
+            "status_code": status,
+            "ok": bool(close_payload.get("ok")),
+            "payload": close_payload,
+        }
+        items.append(item)
+        if item["ok"]:
+            closed += 1
+        else:
+            errors += 1
+
+    result = {
+        "ok": errors == 0,
+        "closed": closed,
+        "errors": errors,
+        "positions_seen": len(positions),
+        "items": items,
+    }
+    if result["ok"]:
+        _notify_system_event(
+            service,
+            "全平限价单已提交",
+            {"提交数量": closed, "标的": ",".join(item["symbol"] for item in items)},
+            level="info",
+            message_id=f"ibkr_close_all_submitted:{int(time.time())}",
+        )
+    operation_elapsed_s = time.perf_counter() - operation_started_at
+    return _build_snapshot_action_response(
+        service,
+        "close_all_positions",
+        result,
+        delay_seconds=0.0,
+        extra={"closed": closed, "errors": errors, "positions_seen": len(positions)},
+        action_started_at=action_started_at,
+        operation_elapsed_s=operation_elapsed_s,
+    )
+
+
+__all__ = ["_build_ibkr_close_position_response", "_build_ibkr_close_all_positions_response"]

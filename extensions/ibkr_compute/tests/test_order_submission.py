@@ -20,6 +20,7 @@ from ibkr_compute.core.broker_mode import (
     resolve_market_data_mode,
 )
 from ibkr_compute.order.order_placer import OrderPlacer
+from ibkr_compute.order.close_execution import build_close_execution_plan, infer_close_session
 from ibkr_compute.order.buying_power_reservations import BuyingPowerReservationStore
 from ibkr_compute.orchestration.signals import TradingServiceSignalsMixin
 from ibkr_compute.signal.signal_router import SignalRouter
@@ -33,6 +34,62 @@ class FakeOrder:
 
 class FakeContract:
     pass
+
+
+class CloseExecutionPlannerTest(unittest.TestCase):
+    def test_close_session_classification_supports_all_tradable_sessions(self):
+        from datetime import datetime
+        from ibkr_compute.core.time_utils import ET
+
+        cases = [
+            (datetime(2026, 6, 8, 8, 0, tzinfo=ET), "premarket"),
+            (datetime(2026, 6, 8, 10, 0, tzinfo=ET), "regular"),
+            (datetime(2026, 6, 8, 17, 0, tzinfo=ET), "afterhours"),
+            (datetime(2026, 6, 8, 21, 0, tzinfo=ET), "overnight"),
+        ]
+        for now, expected in cases:
+            with self.subTest(expected=expected):
+                session = infer_close_session(now)
+                self.assertTrue(session.tradable)
+                self.assertEqual(expected, session.name)
+
+    def test_close_limit_plan_uses_bid_for_long_and_ask_for_short(self):
+        from datetime import datetime
+        from ibkr_compute.core.time_utils import ET
+
+        long_plan = build_close_execution_plan(
+            symbol="NVDA",
+            direction="long",
+            quote={"bid": 100.0, "ask": 100.2},
+            now=datetime(2026, 6, 8, 10, 0, tzinfo=ET),
+            limit_bps=10,
+        )
+        short_plan = build_close_execution_plan(
+            symbol="NVDA",
+            direction="short",
+            quote={"bid": 100.0, "ask": 100.2},
+            now=datetime(2026, 6, 8, 10, 0, tzinfo=ET),
+            limit_bps=10,
+        )
+        self.assertTrue(long_plan["ok"])
+        self.assertEqual("SELL", long_plan["close_action"])
+        self.assertEqual(99.9, long_plan["limit_price"])
+        self.assertTrue(short_plan["ok"])
+        self.assertEqual("BUY", short_plan["close_action"])
+        self.assertEqual(100.3, short_plan["limit_price"])
+
+    def test_close_plan_rejects_overnight_premarket_break(self):
+        from datetime import datetime
+        from ibkr_compute.core.time_utils import ET
+
+        plan = build_close_execution_plan(
+            symbol="NVDA",
+            direction="long",
+            quote={"bid": 100.0},
+            now=datetime(2026, 6, 8, 3, 55, tzinfo=ET),
+        )
+        self.assertFalse(plan["ok"])
+        self.assertEqual("overnight_premarket_break", plan["error"])
 
 
 class FakeClient:
@@ -1216,6 +1273,7 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
                 direction="long",
                 quantity=7,
                 account_id="U123456",
+                limit_price=500.12,
             )
         finally:
             ib_gateway.Order = original_order
@@ -1226,7 +1284,8 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
         close_order = adapter.client.placed_orders[0][1]
         self.assertEqual("U123456", close_order.account)
         self.assertEqual("SELL", close_order.action)
-        self.assertEqual("MKT", close_order.orderType)
+        self.assertEqual("LMT", close_order.orderType)
+        self.assertEqual(500.12, close_order.lmtPrice)
 
     def test_place_market_close_smart_routes_us_stock_with_primary_exchange(self):
         adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
@@ -1250,6 +1309,7 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
                 symbol="BWA",
                 direction="long",
                 quantity=66,
+                limit_price=42.25,
             )
         finally:
             ib_gateway.Order = original_order
@@ -1282,6 +1342,7 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
                 symbol="VOD",
                 direction="long",
                 quantity=10,
+                limit_price=88.40,
             )
         finally:
             ib_gateway.Order = original_order
@@ -1369,6 +1430,44 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
         self.assertEqual(101.26, close_order.lmtPrice)
         self.assertEqual(101.26, result["limit_price"])
         self.assertTrue(result["price_normalization"]["limit_price"]["changed"])
+
+    def test_place_market_close_can_route_overnight_limit_order(self):
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeClient({"ok": True})
+        adapter.resolve_contract = lambda **kwargs: {
+            "conid": 123,
+            "symbol": "NFLX",
+            "sec_type": "STK",
+            "exchange": "SMART",
+            "currency": "USD",
+        }
+
+        original_order = ib_gateway.Order
+        original_contract = ib_gateway.Contract
+        try:
+            ib_gateway.Order = FakeOrder
+            ib_gateway.Contract = FakeContract
+            result = ib_gateway.BrokerAdapter.place_market_close(
+                adapter,
+                conid=123,
+                symbol="NFLX",
+                direction="short",
+                quantity=7,
+                order_type="LMT",
+                limit_price=101.25,
+                exchange="OVERNIGHT",
+                include_overnight=True,
+                outside_rth=True,
+            )
+        finally:
+            ib_gateway.Order = original_order
+            ib_gateway.Contract = original_contract
+
+        self.assertTrue(result["ok"])
+        contract = adapter.client.placed_orders[0][0]
+        self.assertEqual("OVERNIGHT", contract.exchange)
+        self.assertTrue(result["include_overnight"])
+        self.assertFalse(result["include_overnight_supported"])
 
     def test_place_market_close_rejects_marketable_limit_without_limit_price(self):
         adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
@@ -2208,7 +2307,7 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        self.assertEqual("marketable_limit", broker.calls[0]["order_type"])
+        self.assertEqual("LMT", broker.calls[0]["order_type"])
         self.assertEqual(101.25, broker.calls[0]["limit_price"])
         close_row = pb_client.upserts[-1]
         self.assertEqual("LMT", close_row["order_type"])
@@ -2251,6 +2350,7 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
             quantity=9,
             signal_id="sig-ba",
             source="reverse_signal_close",
+            position_snapshot={"market_price": 212.0},
         )
 
         self.assertFalse(result["ok"])
@@ -2295,6 +2395,7 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
             quantity=9,
             signal_id="sig-ba",
             source="reverse_signal_close",
+            position_snapshot={"market_price": 212.0},
         )
 
         self.assertFalse(result["ok"])

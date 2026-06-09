@@ -1970,7 +1970,7 @@ class OrderTracker:
                 if not entry_order_unique_id:
                     entry_order_unique_id = canonical_unique_id
                 if not self._normalize_text(order_type):
-                    order_type = "MKT" if role == "close" else "Entry"
+                    order_type = "LMT" if role == "close" else "Entry"
 
                 position_side = self._infer_position_side(
                     side=normalized_side,

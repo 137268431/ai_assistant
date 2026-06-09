@@ -1137,6 +1137,7 @@ class OrderLifecycle:
                 source="eod_force_close",
                 close_reason="force_flat_eod",
                 close_reason_human="EOD 平仓",
+                position_snapshot=pos,
                 wait_for_fill=True,
                 fill_timeout=max(1.0, self._get_config_float("eod_close_fill_timeout_sec", 5.0)),
             )
@@ -2198,7 +2199,7 @@ class OrderLifecycle:
         first_group = groups[0] if groups else {}
         first_entry = first_group.get("entry") or {}
         close_limit_price = self._coerce_float(decision.get("limit_price"), 0.0)
-        close_order_type = str((decision.get("marketable_limit") or {}).get("order_type") or ("marketable_limit" if close_limit_price > 0 else "MKT"))
+        close_order_type = str((decision.get("marketable_limit") or {}).get("order_type") or ("marketable_limit" if close_limit_price > 0 else "LMT"))
         result = self._place_harvest_market_close(
             conid=conid,
             symbol=symbol,
@@ -2209,6 +2210,7 @@ class OrderLifecycle:
             source="order_flow_full_exit",
             order_type=close_order_type,
             limit_price=close_limit_price,
+            position_snapshot=broker_position,
             wait_for_fill=True,
             fill_timeout=max(1.0, self._get_config_float("ibkr_order_flow_close_fill_timeout_sec", 5.0)),
         )
@@ -2743,8 +2745,9 @@ class OrderLifecycle:
         entry_order_unique_id: str,
         source: str,
         signal_id: str = "",
-        order_type: str = "MKT",
+        order_type: str = "LMT",
         limit_price: float = 0.0,
+        position_snapshot: dict | None = None,
         wait_for_fill: bool = False,
         fill_timeout: float = 5.0,
         close_reason: str = "",
@@ -2763,6 +2766,7 @@ class OrderLifecycle:
                 source=source,
                 order_type=order_type,
                 limit_price=limit_price,
+                position_snapshot=position_snapshot,
                 wait_for_fill=wait_for_fill,
                 fill_timeout=fill_timeout,
                 close_reason=close_reason or source,
@@ -3107,8 +3111,9 @@ class OrderLifecycle:
             trade_group_id=str(first_group.get("group_key") or ""),
             entry_order_unique_id=str(first_entry.get("entry_order_unique_id") or first_entry.get("unique_id") or ""),
             source="intraday_harvest_full_exit",
-            order_type=str((decision.get("marketable_limit") or {}).get("order_type") or "MKT"),
+            order_type=str((decision.get("marketable_limit") or {}).get("order_type") or "LMT"),
             limit_price=self._coerce_float(decision.get("limit_price"), 0.0),
+            position_snapshot=broker_position,
         )
         if not result.get("ok"):
             self._freeze_harvest_symbol(symbol, "full_exit_market_close_failed", [row for group in groups for row in group.get("rows") or []])

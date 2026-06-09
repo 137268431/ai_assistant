@@ -6,6 +6,7 @@ from ibkr_compute.api.account.views import (
     _build_ibkr_account_snapshot,
     _build_ibkr_cancel_all_orders_response,
     _build_ibkr_cancel_order_response,
+    _build_ibkr_close_all_positions_response,
     _build_ibkr_close_position_response,
     _build_ibkr_modify_order_response,
     _build_ibkr_order_history,
@@ -70,6 +71,7 @@ def register_account_routes(app):
         register_runtime_proxy_route(app, "ibkr_modify_order", "/ibkr/orders/modify", ["POST"])
         register_runtime_proxy_route(app, "ibkr_place_order", "/ibkr/orders/place", ["POST"])
         register_runtime_proxy_route(app, "ibkr_close_position", "/ibkr/positions/close", ["POST"])
+        register_runtime_proxy_route(app, "ibkr_close_all_positions", "/ibkr/positions/close_all", ["POST"])
         return
 
     @app.route("/ibkr/account", methods=["GET"])
@@ -175,3 +177,7 @@ def register_account_routes(app):
     @app.route("/ibkr/positions/close", methods=["POST"])
     def ibkr_close_position():
         return _build_account_action_response(_build_ibkr_close_position_response)
+
+    @app.route("/ibkr/positions/close_all", methods=["POST"])
+    def ibkr_close_all_positions():
+        return _build_account_action_response(_build_ibkr_close_all_positions_response)
