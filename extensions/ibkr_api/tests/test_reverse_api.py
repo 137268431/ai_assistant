@@ -61,6 +61,11 @@ class _FakePB:
                 if float(record.get(field) or 0) > float(self._parse_literal(value)):
                     return False
                 continue
+            if "<" in part:
+                field, value = [item.strip() for item in part.split("<", 1)]
+                if float(record.get(field) or 0) >= float(self._parse_literal(value)):
+                    return False
+                continue
             field, value = [item.strip() for item in part.split("=", 1)]
             if str(record.get(field) or "") != str(self._parse_literal(value)):
                 return False
@@ -179,13 +184,15 @@ def _reverse_record(
 
 class ReverseQueryTests(unittest.TestCase):
     def test_reverse_list_filters_by_date_symbol_and_status(self):
-        target_day_ms = 1776816000000
+        target_day_ms = 1776744000000
+        next_day_ms = 1776830400000
         pb = _FakePB(
             [
                 _reverse_record("rev-1", bar_time_ms=target_day_ms + 1000),
                 _reverse_record("rev-2", status="cancelled", bar_time_ms=target_day_ms + 2000),
                 _reverse_record("rev-3", symbol="MSFT", bar_time_ms=target_day_ms + 3000),
                 _reverse_record("rev-4", environment="paper", bar_time_ms=target_day_ms + 4000),
+                _reverse_record("rev-5", bar_time_ms=next_day_ms),
             ]
         )
 
@@ -200,10 +207,28 @@ class ReverseQueryTests(unittest.TestCase):
 
         self.assertEqual(status_code, 200)
         self.assertEqual([item["id"] for item in payload["ibkr_signals"]], ["rev-1"])
+        self.assertEqual(len(pb.get_records_calls), 1)
         self.assertIn('environment = "live"', pb.get_records_calls[0]["filter"])
         self.assertIn("bar_time_ms >=", pb.get_records_calls[0]["filter"])
+        self.assertIn("bar_time_ms <", pb.get_records_calls[0]["filter"])
 
-    def test_reverse_list_falls_back_when_date_query_is_empty(self):
+    def test_reverse_list_uses_et_market_date_bounds(self):
+        pb = _FakePB(
+            [
+                _reverse_record("rev-1", bar_time_ms=1776816000000),
+            ]
+        )
+
+        payload, status_code = build_reverse_list_response(
+            pb,
+            environment="live",
+            date_str="2026-04-21",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual([item["id"] for item in payload["ibkr_signals"]], ["rev-1"])
+
+    def test_reverse_list_returns_empty_for_valid_date_without_rows(self):
         pb = _FakePB(
             [
                 _reverse_record("rev-1", bar_time_ms=1776902400000),
@@ -217,9 +242,45 @@ class ReverseQueryTests(unittest.TestCase):
         )
 
         self.assertEqual(status_code, 200)
+        self.assertEqual(payload["ibkr_signals"], [])
+        self.assertEqual(len(pb.get_records_calls), 1)
+        self.assertIn("bar_time_ms >=", pb.get_records_calls[0]["filter"])
+
+    def test_reverse_list_falls_back_when_date_is_missing(self):
+        pb = _FakePB(
+            [
+                _reverse_record("rev-1", bar_time_ms=1776902400000),
+            ]
+        )
+
+        payload, status_code = build_reverse_list_response(
+            pb,
+            environment="live",
+            date_str="",
+        )
+
+        self.assertEqual(status_code, 200)
         self.assertEqual([item["id"] for item in payload["ibkr_signals"]], ["rev-1"])
-        self.assertEqual(len(pb.get_records_calls), 2)
-        self.assertEqual(pb.get_records_calls[1]["filter"], 'environment = "live" && source = "tradingview"')
+        self.assertEqual(len(pb.get_records_calls), 1)
+        self.assertEqual(pb.get_records_calls[0]["filter"], 'environment = "live" && source = "tradingview"')
+
+    def test_reverse_list_falls_back_when_date_is_invalid(self):
+        pb = _FakePB(
+            [
+                _reverse_record("rev-1", bar_time_ms=1776902400000),
+            ]
+        )
+
+        payload, status_code = build_reverse_list_response(
+            pb,
+            environment="live",
+            date_str="not-a-date",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual([item["id"] for item in payload["ibkr_signals"]], ["rev-1"])
+        self.assertEqual(len(pb.get_records_calls), 1)
+        self.assertEqual(pb.get_records_calls[0]["filter"], 'environment = "live" && source = "tradingview"')
 
     def test_reverse_pending_returns_only_pending_rows(self):
         pb = _FakePB(

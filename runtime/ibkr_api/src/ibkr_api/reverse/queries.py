@@ -26,22 +26,22 @@ def _load_reverse_records(
 ) -> list[Any]:
     runtime_environment = normalize_environment_value(environment)
     date_range = build_date_range(date_str)
-    records: list[Any] = []
     if date_range:
-        records = pb.get_records(
-            REVERSE_SIGNALS_COLLECTION,
-            filter=(
-                f'environment = "{escape_filter(runtime_environment)}" && '
-                f'source = "{escape_filter("tradingview")}" && '
-                f'bar_time_ms >= {date_range["start_ms"]} && '
-                f'bar_time_ms <= {date_range["end_ms"]}'
-            ),
-            sort="-created",
-            per_page=per_page,
-            page=1,
-        ) or []
-    if records:
-        return list(records)
+        return list(
+            pb.get_records(
+                REVERSE_SIGNALS_COLLECTION,
+                filter=(
+                    f'environment = "{escape_filter(runtime_environment)}" && '
+                    f'source = "{escape_filter("tradingview")}" && '
+                    f'bar_time_ms >= {date_range["start_ms"]} && '
+                    f'bar_time_ms < {date_range["end_ms"]}'
+                ),
+                sort="-created",
+                per_page=per_page,
+                page=1,
+            )
+            or []
+        )
     return list(
         pb.get_records(
             REVERSE_SIGNALS_COLLECTION,

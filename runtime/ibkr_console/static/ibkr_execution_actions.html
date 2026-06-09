@@ -181,6 +181,9 @@
                 close: '平仓',
                 cancel: '取消',
                 adjust: '调整',
+                adjust_sl: '调止损',
+                adjust_tp: '调止盈',
+                adjust_bracket: '调保护单',
                 other: '其他',
             };
             return map[action] || action || '全部动作';
@@ -190,7 +193,9 @@
             const action = String(actionType || '').trim().toLowerCase();
             if (action === 'close') return 'close';
             if (action === 'cancel') return 'cancel';
-            if (action === 'adjust' || action.startsWith('adjust_')) return 'adjust';
+            if (action === 'adjust_sl') return 'adjust_sl';
+            if (action === 'adjust_tp') return 'adjust_tp';
+            if (action === 'adjust_bracket') return 'adjust_bracket';
             if (!action) return 'other';
             if (action === 'all') return 'all';
             return 'other';
@@ -199,8 +204,9 @@
         function normalizeActionFilter(value) {
             const raw = String(value || '').trim();
             if (!raw) return 'all';
+            if (raw.toLowerCase() === 'adjust') return 'all';
             const group = normalizeActionGroup(raw);
-            return ['all', 'close', 'cancel', 'adjust', 'other'].includes(group) ? group : 'all';
+            return ['all', 'close', 'cancel', 'adjust_sl', 'adjust_tp', 'adjust_bracket', 'other'].includes(group) ? group : 'all';
         }
 
         function normalizeStatusFilter(value) {
@@ -213,7 +219,9 @@
                 ['all', '全部动作'],
                 ['close', '平仓'],
                 ['cancel', '取消'],
-                ['adjust', '调整'],
+                ['adjust_sl', '调止损'],
+                ['adjust_tp', '调止盈'],
+                ['adjust_bracket', '调保护单'],
                 ['other', '其他'],
             ];
             return `
@@ -237,11 +245,21 @@
         }
 
         function formatExecutionActionText(value) {
+            const raw = String(value == null ? '' : value);
+            const actionMap = {
+                close: '平仓',
+                cancel: '取消',
+                adjust_sl: '调止损',
+                adjust_tp: '调止盈',
+                adjust_bracket: '调保护单',
+            };
+            const actionText = actionMap[normalizeMetaToken(raw)];
+            if (actionText) return actionText;
             const flip = '反' + '转';
             const opposite = '反' + '向';
             const inverse = '逆' + '向';
             const legacyEn = 're' + 'verse';
-            return String(value == null ? '' : value)
+            return raw
                 .replace(new RegExp(`信号${flip}`, 'g'), '信号冲突动作')
                 .replace(new RegExp(`指标${flip}`, 'g'), '指标冲突动作')
                 .replace(new RegExp(`${opposite}信号|${flip}信号|${inverse}信号`, 'g'), '执行动作')
@@ -536,10 +554,11 @@
 
         function updateActionCounts() {
             const base = filterSignalsAll({ ignoreAction: true });
-            const counts = { all: base.length, close: 0, cancel: 0, adjust: 0, other: 0 };
+            const counts = { all: base.length, close: 0, cancel: 0, adjust_sl: 0, adjust_tp: 0, adjust_bracket: 0, other: 0 };
             base.forEach((signal) => {
                 const group = normalizeActionGroup(signal.action_type);
-                counts[group === 'all' ? 'other' : group] += 1;
+                const key = Object.prototype.hasOwnProperty.call(counts, group) && group !== 'all' ? group : 'other';
+                counts[key] += 1;
             });
             Object.entries(counts).forEach(([action, count]) => {
                 const node = document.querySelector(`.status-tab .tab-count[data-action="${action}"] .count-value`);

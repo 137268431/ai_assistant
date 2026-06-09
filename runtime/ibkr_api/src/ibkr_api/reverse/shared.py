@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 from ibkr_api.orders.values import escape_filter_string, parse_boolean, parse_integer, to_float, to_int, to_text
 
 
 LIVE_ENVIRONMENT = "live"
+ET = ZoneInfo("America/New_York")
 REVERSE_SIGNALS_COLLECTION = "ibkr_reverse_signals"
 INDICATORS_COLLECTION = "ibkr_indicators"
 ORDERS_COLLECTION = "orders"
@@ -120,10 +122,10 @@ def build_date_range(date_text: Any) -> dict[str, int] | None:
     if not text:
         return None
     try:
-        start = datetime.strptime(text, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        start = datetime.strptime(text, "%Y-%m-%d").replace(tzinfo=ET)
     except ValueError:
         return None
-    end = start.replace(hour=23, minute=59, second=59, microsecond=999000)
+    end = start + timedelta(days=1)
     return {
         "start_ms": int(start.timestamp() * 1000),
         "end_ms": int(end.timestamp() * 1000),
