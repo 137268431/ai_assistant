@@ -1228,6 +1228,64 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
             pb.updated[0][2]["extra"]["feishu_trade_ledger_notified_keys"],
         )
 
+    def test_sync_order_callback_ledger_marks_incomplete_close_cancel_red(self):
+        class _LedgerPB:
+            def __init__(self):
+                self.order = {
+                    "id": "order-close",
+                    "unique_id": "close_AAPL_20260609_100000",
+                    "order_type": "LMT",
+                    "symbol": "AAPL",
+                    "environment": "paper",
+                    "status": "Canceled",
+                    "role": "close",
+                    "broker_order_id": "301",
+                    "order_id": "301",
+                    "direction": "sell",
+                    "quantity": 10,
+                    "filled_qty": 4,
+                    "fill_price": 180.0,
+                    "extra": {
+                        "environment": "paper",
+                        "broker_realtime_callback": True,
+                        "ib_callback_type": "orderStatus",
+                        "broker_callback_received_at": "2026-06-09 10:01:00",
+                    },
+                }
+                self.updated = []
+
+            def get_records(self, collection, **kwargs):
+                return []
+
+            def update_record(self, collection, record_id, patch):
+                self.updated.append((collection, record_id, patch))
+                self.order = {**self.order, **patch}
+                return dict(self.order)
+
+        pb = _LedgerPB()
+        previous = {**pb.order, "status": "Submitted", "extra": {"environment": "paper"}}
+        send_calls = []
+
+        result = sync_order_callback_ledger_notification(
+            pb,
+            pb.order,
+            previous_order=previous,
+            send_interactive=lambda card, chat_id, environment: send_calls.append((card, chat_id, environment))
+            or {"success": True, "message_id": "ledger-msg-close-cancel"},
+            trade_ledger_chat_id="ledger-chat-test",
+            console_base_url="https://console.example.com",
+        )
+
+        self.assertEqual("terminal_status", result["event_type"])
+        self.assertEqual("close_order_cancelled_incomplete", result["reason"])
+        self.assertEqual(1, len(send_calls))
+        card = send_calls[0][0]
+        self.assertEqual("red", card["header"]["template"])
+        self.assertIn("平仓未完成", card["header"]["title"]["content"])
+        self.assertIn("平仓单已取消", card["header"]["title"]["content"])
+        self.assertIn("剩余 6", card["elements"][0]["content"])
+        self.assertEqual("close_order_cancelled_incomplete", pb.updated[0][2]["extra"]["feishu_trade_ledger_last_reason"])
+
     def test_order_callback_ledger_card_hides_ib_unset_double_prices(self):
         card = build_order_callback_ledger_card(
             {

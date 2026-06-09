@@ -360,6 +360,17 @@ class FakeMarketCloseBroker:
         }
 
 
+class FakeQuoteMarketCloseBroker(FakeMarketCloseBroker):
+    def __init__(self, quote_result):
+        super().__init__()
+        self.quote_result = dict(quote_result or {})
+        self.snapshots = []
+
+    def request_market_data_snapshot(self, **kwargs):
+        self.snapshots.append(dict(kwargs))
+        return dict(self.quote_result)
+
+
 class FakeUnconfirmedMarketCloseBroker(FakeMarketCloseBroker):
     def place_market_close(self, **kwargs):
         self.calls.append(dict(kwargs))
@@ -2057,6 +2068,44 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
         self.assertEqual(88.91, adapter.client.order.auxPrice)
         self.assertEqual(88.91, result["price_normalization"]["auxPrice"]["normalized"])
 
+    def test_modify_order_normalizes_overnight_tif_before_resubmit(self):
+        class FakeOvernightModifyClient:
+            def __init__(self):
+                self.contract = FakeContract()
+                self.order = FakeOrder()
+                self.order.orderId = 11292
+                self.order.orderType = "LMT"
+                self.order.tif = "OVERNIGHT + DAY"
+                self.order.includeOvernight = False
+                self.order.outsideRth = False
+                self.placed_orders = []
+
+            def get_order_objects(self, order_id):
+                return self.contract, self.order
+
+            def clear_order_error(self, order_id):
+                return None
+
+            def place_order(self, contract, order):
+                self.placed_orders.append((contract, order))
+
+            def await_order_submission(self, order_id, timeout=3.0, poll_interval=0.2):
+                return {"ok": True, "order": {"orderId": str(order_id), "status": "Submitted"}}
+
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeOvernightModifyClient()
+
+        result = ib_gateway.BrokerAdapter.modify_order(adapter, "11292", {"tif": "OVERNIGHT + DAY"})
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(1, len(adapter.client.placed_orders))
+        modified_order = adapter.client.placed_orders[0][1]
+        self.assertEqual("DAY", modified_order.tif)
+        self.assertTrue(modified_order.includeOvernight)
+        self.assertTrue(modified_order.outsideRth)
+        self.assertEqual("DAY", result["session_flags"]["tif"])
+        self.assertTrue(result["session_flags"]["include_overnight"])
+
     def test_modify_order_refreshes_open_orders_when_object_missing(self):
         class FakeRefreshClient:
             def __init__(self):
@@ -2392,6 +2441,29 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
         self.assertTrue(broker.calls[0]["include_overnight"])
         self.assertTrue(broker.calls[0]["outside_rth"])
         self.assertEqual("SMART", result["close_execution_plan"]["exchange"])
+
+    def test_auto_close_fetches_fresh_side_quote_before_position_price_fallback(self):
+        pb_client = FakeOrderPBClient()
+        broker = FakeQuoteMarketCloseBroker(
+            {"ok": True, "quote": {"bid": 127.70, "ask": 127.80, "last_price": 127.79}}
+        )
+        placer = OrderPlacer(pb_client=pb_client, broker=broker, account_id="DU123")
+
+        result = placer.place_market_close(
+            conid=272110,
+            symbol="MSTR",
+            direction="short",
+            quantity=39,
+            session_override="overnight",
+            position_snapshot={"market_price": 126.20},
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(1, len(broker.snapshots))
+        self.assertEqual("SMART", broker.snapshots[0]["exchange"])
+        self.assertEqual(129.08, broker.calls[0]["limit_price"])
+        self.assertEqual(127.8, result["close_execution_plan"]["reference_price"])
+        self.assertEqual("ask", result["close_execution_plan"]["reference_source"])
 
     def test_unconfirmed_market_close_prewrites_pending_close_mapping(self):
         pb_client = StrictNotifyOrderAndSignalPBClient(

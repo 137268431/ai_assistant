@@ -251,6 +251,16 @@ class OrderPlacer:
         except Exception as exc:
             return {"ok": False, "error": str(exc), "quote": {}}
 
+    def _close_quote_has_side_price(self, quote: Dict[str, Any] | None, direction: str) -> bool:
+        if not isinstance(quote, dict):
+            return False
+        normalized_direction = str(direction or "").strip().lower()
+        if normalized_direction == "short":
+            return self._safe_float(quote.get("ask"), 0.0) > 0
+        if normalized_direction == "long":
+            return self._safe_float(quote.get("bid"), 0.0) > 0
+        return False
+
     def _notify_close_execution_event(self, title: str, detail: Dict[str, Any], *, level: str = "error", message_id: str = "") -> None:
         notifier = getattr(self.pb_client, "notify_system_event", None) if self.pb_client else None
         if not callable(notifier):
@@ -300,11 +310,13 @@ class OrderPlacer:
                 "include_overnight": self._coerce_bool(include_overnight, False),
             }
         session = infer_close_session(session_override=session_override)
-        resolved_quote = quote_from_sources(quote, position_snapshot)
+        resolved_quote = quote_from_sources(quote)
         explicit_limit = self._safe_float(limit_price, 0.0)
-        if explicit_limit <= 0 and not resolved_quote:
+        if explicit_limit <= 0 and not self._close_quote_has_side_price(resolved_quote, direction):
             quote_result = self._request_close_quote(conid=conid, symbol=symbol, exchange="SMART")
-            resolved_quote = quote_from_sources(quote_result.get("quote"), quote_result, position_snapshot)
+            resolved_quote = quote_from_sources(quote_result.get("quote"), quote_result, resolved_quote)
+        if explicit_limit <= 0:
+            resolved_quote = quote_from_sources(resolved_quote, position_snapshot)
         selected_bps = self._close_limit_bps_for_session(session.name, limit_bps)
         resolved_allow_market = self._coerce_bool(
             allow_market,

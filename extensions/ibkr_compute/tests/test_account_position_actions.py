@@ -65,6 +65,35 @@ class FakeLifecycle:
         return {"ok": True, "positions": list(self.positions)}
 
 
+class StrictNotifyPBClient:
+    def __init__(self):
+        self.system_events = []
+
+    def notify_system_event(
+        self,
+        title,
+        detail=None,
+        *,
+        event_type="status_change",
+        level="info",
+        source="ibkr_compute",
+        environment=None,
+        message_id="",
+    ):
+        self.system_events.append(
+            {
+                "title": title,
+                "detail": dict(detail or {}),
+                "event_type": event_type,
+                "level": level,
+                "source": source,
+                "environment": environment,
+                "message_id": message_id,
+            }
+        )
+        return {"ok": True}
+
+
 class FakeService:
     def __init__(self, *, orders=None, conid=123, positions=None):
         self.order_placer = FakeOrderPlacer()
@@ -72,6 +101,8 @@ class FakeService:
         self.order_tracker = FakeOrderTracker(orders or [])
         self.conid_resolver = FakeConidResolver(conid)
         self.order_lifecycle = FakeLifecycle(positions or [])
+        self.environment = "paper"
+        self.pb_client = None
 
 
 class ClosePositionActionTest(unittest.TestCase):
@@ -242,6 +273,42 @@ class ClosePositionActionTest(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(["301"], service.order_modifier.cancelled)
         self.assertEqual(["301"], payload["result"]["existing_close_cancel"]["cancelled_order_ids"])
+
+    def test_existing_close_cancel_failure_notifies_with_supported_signature(self):
+        service = FakeService(
+            orders=[
+                {
+                    "orderId": "301",
+                    "ticker": "NVDA",
+                    "side": "SELL",
+                    "status": "Submitted",
+                    "orderType": "LMT",
+                    "cOID": "close_NVDA_20260608_100000",
+                }
+            ]
+        )
+        service.order_modifier = FakeOrderModifier(failures={"301"})
+        service.pb_client = StrictNotifyPBClient()
+
+        payload, status_code = positions_mod._build_ibkr_close_position_response(
+            service,
+            {
+                "symbol": "NVDA",
+                "conid": 123,
+                "quantity": 3,
+                "direction": "long",
+                "market_price": 500.12,
+            },
+        )
+
+        self.assertEqual(409, status_code)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(1, len(service.pb_client.system_events))
+        event = service.pb_client.system_events[0]
+        self.assertEqual("平仓未执行：旧平仓挂单取消失败", event["title"])
+        self.assertEqual("ibkr_close_execution", event["event_type"])
+        self.assertEqual("ibkr_account_action", event["source"])
+        self.assertNotIn("category", event)
 
     def test_market_close_uses_explicit_protection_order_ids(self):
         service = FakeService(orders=[])

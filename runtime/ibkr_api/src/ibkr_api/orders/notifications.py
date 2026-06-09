@@ -112,6 +112,7 @@ PROTECTION_SL_ROLES = {"stop_loss", "repair_sl", "sl"}
 PROTECTION_ROLES = PROTECTION_TP_ROLES | PROTECTION_SL_ROLES
 ACTIVE_CLOSE_ROLES = {"close", "manual_close", "market_close", "close_order", "reverse_close"}
 TERMINAL_ORDER_STATUSES = {"filled", "executed", "canceled", "cancelled", "apicancelled", "closed", "inactive", "rejected", "expired"}
+CANCELLED_ORDER_STATUS_KEYS = {"canceled", "cancelled", "apicancelled", "apicanceled"}
 GENERIC_ENTRY_REASONS = {"order_submitted_by_ibkr_compute", "entry_filled_and_protection_submitted"}
 
 COMMISSION_FIELDS = ("commission", "actual_fill_commission", "ibkr_commission")
@@ -1395,6 +1396,30 @@ def _trade_ledger_order_qty(order_record: Any) -> float:
     return to_float(_record_or_extra_value(order_record, "quantity", "totalSize", "totalQuantity")) or 0.0
 
 
+def _order_status_key(status: Any) -> str:
+    return to_text(status).replace("_", "").lower()
+
+
+def _is_close_order_role(order_record: Any) -> bool:
+    return to_text(_record_or_extra_value(order_record, "role")).lower() in ACTIVE_CLOSE_ROLES
+
+
+def _is_incomplete_close_cancel(
+    order_record: Any,
+    *,
+    status: Any = "",
+    quantity: float | None = None,
+    filled_qty: float | None = None,
+) -> bool:
+    if not _is_close_order_role(order_record):
+        return False
+    if _order_status_key(status or _record_or_extra_value(order_record, "status", "order_status", "current_status")) not in CANCELLED_ORDER_STATUS_KEYS:
+        return False
+    resolved_quantity = _trade_ledger_order_qty(order_record) if quantity is None else float(quantity or 0.0)
+    resolved_filled = _trade_ledger_filled_qty(order_record) if filled_qty is None else float(filled_qty or 0.0)
+    return resolved_quantity <= 0 or resolved_filled + 1e-8 < resolved_quantity
+
+
 def _trade_ledger_fill_price(order_record: Any) -> float | None:
     return _positive_number(
         order_record,
@@ -1516,6 +1541,12 @@ def _trade_ledger_event_model(order_record: dict[str, Any], previous_order: dict
     }
     is_full_fill = quantity > 0 and current_filled + 1e-8 >= quantity
     has_trade_ledger_notification = bool(_trade_ledger_notified_keys(order_record.get("extra")))
+    incomplete_close_cancel = _is_incomplete_close_cancel(
+        order_record,
+        status=current_status,
+        quantity=quantity,
+        filled_qty=current_filled,
+    )
 
     if fill_delta > 0:
         event_type = "fill"
@@ -1539,8 +1570,8 @@ def _trade_ledger_event_model(order_record: dict[str, Any], previous_order: dict
         reason = "full_fill_status_confirmed"
     elif terminal_status and (status_changed or first_realtime_callback):
         event_type = "terminal_status"
-        event_label = _status_text(current_status)
-        reason = "terminal_status"
+        event_label = "平仓单已取消（未完全成交）" if incomplete_close_cancel else _status_text(current_status)
+        reason = "close_order_cancelled_incomplete" if incomplete_close_cancel else "terminal_status"
     elif first_realtime_callback:
         if current_status in TRADE_LEDGER_NON_MATERIAL_CALLBACK_STATUSES and callback_type in {"openOrder", "orderStatus"}:
             return {
@@ -1614,11 +1645,14 @@ def _trade_ledger_event_model(order_record: dict[str, Any], previous_order: dict
         "fill_delta": fill_delta,
         "callback_type": callback_type,
         "exec_id": exec_id,
+        "close_remaining_qty": max(0.0, quantity - current_filled) if incomplete_close_cancel else 0.0,
         "notify_key": f"trade_ledger_callback_v1:{environment}:{current_broker_order_id or unique_id}:{digest}",
     }
 
 
 def _trade_ledger_template(event_model: dict[str, Any], status: str, pnl_value: Any = None) -> str:
+    if event_model.get("reason") == "close_order_cancelled_incomplete":
+        return "red"
     parsed_pnl = to_float(pnl_value)
     if parsed_pnl is not None and parsed_pnl < 0:
         return "red"
@@ -1681,6 +1715,12 @@ def build_order_callback_ledger_card(
         f"**均价 / 最新成交价**: {_format_price(_trade_ledger_fill_price(order_record))} / {_format_price(_record_or_extra_value(order_record, 'last_fill_price', 'lastFillPrice', 'execution_price'))}",
         fill_line,
     ]
+    if event_model.get("reason") == "close_order_cancelled_incomplete":
+        close_remaining_qty = to_float(event_model.get("close_remaining_qty")) or 0.0
+        body_lines.insert(
+            0,
+            f"**⚠️ 平仓未完成**: 平仓单已取消但未完全成交，剩余 {_format_quantity(close_remaining_qty)} 可能仍是持仓，请重新提交限价平仓或改到更容易成交的价格。",
+        )
     if exit_model:
         exit_code = to_text(exit_model.get("code"))
         exit_label = to_text(exit_model.get("label"))
@@ -1699,12 +1739,16 @@ def build_order_callback_ledger_card(
     if buttons:
         elements.extend([{"tag": "hr"}, {"tag": "action", "actions": buttons}])
 
+    title_event_label = event_label
+    if event_model.get("reason") == "close_order_cancelled_incomplete":
+        title_event_label = f"⚠️ 平仓未完成 · {event_label}"
+
     return {
         "config": {"update_multi": True, "wide_screen_mode": True},
         "header": {
             "title": {
                 "tag": "plain_text",
-                "content": f"🧾 订单真实回调 · {broker_badge} · {direction_display} · {display_role_label} · {event_label}{title_pnl} · {symbol}",
+                "content": f"🧾 订单真实回调 · {broker_badge} · {direction_display} · {display_role_label} · {title_event_label}{title_pnl} · {symbol}",
             },
             "template": _trade_ledger_template(event_model, status, pnl_model.get("value") if pnl_model else None),
         },

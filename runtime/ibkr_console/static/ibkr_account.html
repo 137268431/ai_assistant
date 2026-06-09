@@ -886,6 +886,20 @@
             return segments.join(' / ') || '数据缺失';
         }
 
+        function renderOrderExecutionChips(order) {
+            const side = getOrderSideLabel(order);
+            const total = formatQty(order?.total_quantity);
+            const filled = formatQty(order?.filled_quantity);
+            const remaining = formatQty(order?.remaining_quantity);
+            return `
+                <div class="order-execution-chips">
+                    <span class="order-execution-chip strong">挂单价 ${escapeHtml(formatOrderPrice(order))}</span>
+                    <span class="order-execution-chip qty">剩余 ${escapeHtml(remaining)} / 数量 ${escapeHtml(total)} / 已成 ${escapeHtml(filled)}</span>
+                    <span class="order-execution-chip">${escapeHtml(side || '--')} ${escapeHtml(order?.order_type || '--')}</span>
+                </div>
+            `;
+        }
+
         function getOrderCommissionValue(order) {
             const raw = order?.raw || {};
             const pbContext = order?.pb_context || {};
@@ -1051,6 +1065,100 @@
                 return showConfirmDialog(options);
             }
             return window.confirm(fallbackMessage || options.message || options.title || '确认操作？');
+        }
+
+        function showOrderModifyDialog({ orderId, currentPrice = 0, currentQty = 0, currentRemaining = 0, side = '', orderType = '' } = {}) {
+            if (typeof document === 'undefined') return Promise.resolve(null);
+            if (typeof ensureConfirmDialogStyles === 'function') ensureConfirmDialogStyles();
+            return new Promise((resolve) => {
+                const existing = document.getElementById('appOrderModifyDialog');
+                if (existing) existing.remove();
+                const normalizedSide = String(side || '').trim().toUpperCase();
+                const priceValue = Number(currentPrice || 0) > 0 ? String(currentPrice) : '';
+                const qtyValue = Number(currentRemaining || 0) > 0
+                    ? String(currentRemaining)
+                    : (Number(currentQty || 0) > 0 ? String(currentQty) : '');
+                const sideHint = normalizedSide === 'BUY'
+                    ? '买入平空时，限价高于或等于当前 Ask 更容易马上成交；限价只是最差成交上限。'
+                    : normalizedSide === 'SELL'
+                        ? '卖出平多时，限价低于或等于当前 Bid 更容易马上成交；限价只是最差成交下限。'
+                        : '只改需要调整的字段，留空表示该字段不变。';
+                const overlay = document.createElement('div');
+                overlay.id = 'appOrderModifyDialog';
+                overlay.className = 'app-confirm-overlay tone-info';
+                overlay.setAttribute('role', 'dialog');
+                overlay.setAttribute('aria-modal', 'true');
+                overlay.innerHTML = `
+                    <div class="app-confirm-card" role="document">
+                        <div class="app-confirm-head">
+                            <div class="app-confirm-kicker">Modify Order</div>
+                            <div class="app-confirm-title">修改真实挂单 ${escapeHtml(orderId || '-')}</div>
+                        </div>
+                        <div class="app-confirm-body">
+                            <div class="app-confirm-message">提交后会直接发送到 IBKR Gateway。${escapeHtml(sideHint)}</div>
+                            <div class="app-confirm-detail-grid">
+                                <div class="app-confirm-detail"><div class="app-confirm-detail-label">当前价格</div><div class="app-confirm-detail-value">${escapeHtml(formatOptionalMoney(currentPrice, '--'))}</div></div>
+                                <div class="app-confirm-detail"><div class="app-confirm-detail-label">数量 / 剩余</div><div class="app-confirm-detail-value">${escapeHtml(formatQty(currentQty))} / ${escapeHtml(formatQty(currentRemaining || currentQty))}</div></div>
+                                <div class="app-confirm-detail"><div class="app-confirm-detail-label">方向 / 类型</div><div class="app-confirm-detail-value">${escapeHtml(normalizedSide || '--')} / ${escapeHtml(orderType || '--')}</div></div>
+                                <div class="app-confirm-detail"><div class="app-confirm-detail-label">环境</div><div class="app-confirm-detail-value">${escapeHtml(currentEnvironment.toUpperCase())}</div></div>
+                            </div>
+                            <div class="app-order-input-grid">
+                                <label class="app-order-input-field">
+                                    <span class="app-order-input-label">新限价</span>
+                                    <input class="app-order-input" data-modify-price type="number" step="0.01" inputmode="decimal" value="${escapeHtml(priceValue)}" placeholder="留空不改价格">
+                                </label>
+                                <label class="app-order-input-field">
+                                    <span class="app-order-input-label">新数量</span>
+                                    <input class="app-order-input" data-modify-qty type="number" step="1" inputmode="numeric" value="${escapeHtml(qtyValue)}" placeholder="留空不改数量">
+                                </label>
+                            </div>
+                            <div class="app-order-input-hint">如果要让平仓限价单更容易成交：BUY 平仓价通常要高一些，SELL 平仓价通常要低一些。</div>
+                            <div class="app-confirm-actions">
+                                <button class="app-confirm-btn" type="button" data-modify-cancel>取消</button>
+                                <button class="app-confirm-btn primary" type="button" data-modify-ok>提交改单</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                const cleanup = (value) => {
+                    document.removeEventListener('keydown', onKeyDown);
+                    overlay.remove();
+                    resolve(value);
+                };
+                const parseInputs = () => {
+                    const priceText = String(overlay.querySelector('[data-modify-price]')?.value || '').trim();
+                    const qtyText = String(overlay.querySelector('[data-modify-qty]')?.value || '').trim();
+                    const result = {};
+                    if (priceText) result.price = Number(priceText);
+                    if (qtyText) result.quantity = Number(qtyText);
+                    if (result.price === undefined && result.quantity === undefined) {
+                        showToast('没有输入修改项');
+                        return null;
+                    }
+                    if ((result.price !== undefined && (!Number.isFinite(result.price) || result.price <= 0))
+                        || (result.quantity !== undefined && (!Number.isFinite(result.quantity) || result.quantity <= 0))) {
+                        showToast('改单参数无效');
+                        return null;
+                    }
+                    return result;
+                };
+                const submit = () => {
+                    const result = parseInputs();
+                    if (result) cleanup(result);
+                };
+                const onKeyDown = (event) => {
+                    if (event.key === 'Escape') cleanup(null);
+                    if (event.key === 'Enter') submit();
+                };
+                overlay.addEventListener('click', (event) => {
+                    if (event.target === overlay) cleanup(null);
+                });
+                overlay.querySelector('[data-modify-cancel]')?.addEventListener('click', () => cleanup(null));
+                overlay.querySelector('[data-modify-ok]')?.addEventListener('click', submit);
+                document.addEventListener('keydown', onKeyDown);
+                document.body.appendChild(overlay);
+                window.setTimeout(() => overlay.querySelector('[data-modify-price]')?.focus(), 0);
+            });
         }
 
 
@@ -2121,6 +2229,7 @@
                             ${order?.outside_rth ? '<span class="badge warn">EXT</span>' : '<span class="badge neutral">RTH</span>'}
                         </div>
                     </div>
+                    ${renderOrderExecutionChips(order)}
                     <div class="metric-grid">
                         <div class="metric-item"><div class="metric-label">Type</div><div class="metric-value">${escapeHtml(order?.order_type || '--')}</div></div>
                         <div class="metric-item"><div class="metric-label">Price Plan</div><div class="metric-value">${escapeHtml(formatOrderPrice(order))}</div></div>
@@ -2156,7 +2265,7 @@
                     <div class="record-actions">
                         ${signalId ? `<button class="action-btn view" type="button" onclick="viewSignal(${toJsStringLiteral(signalId)})">信号页</button>` : ''}
                         ${tradeGroupId ? `<button class="action-btn view" type="button" onclick="viewTradeGroup(${toJsStringLiteral(tradeGroupId)}, ${toJsStringLiteral(signalId)})">订单页</button>` : ''}
-                        ${order?.can_modify ? `<button class="action-btn modify" type="button" onclick="modifyOrder(${toJsStringLiteral(order?.order_id || '')}, ${Number(order?.price || 0)}, ${Number(order?.total_quantity || 0)})">改单</button>` : ''}
+                        ${order?.can_modify ? `<button class="action-btn modify" type="button" onclick="modifyOrder(${toJsStringLiteral(order?.order_id || '')}, ${Number(order?.price || 0)}, ${Number(order?.total_quantity || 0)}, ${Number(order?.remaining_quantity || 0)}, ${toJsStringLiteral(sideText || '')}, ${toJsStringLiteral(order?.order_type || '')})">改单</button>` : ''}
                         ${order?.can_cancel ? `<button class="action-btn cancel" type="button" onclick="cancelOrder(${toJsStringLiteral(order?.order_id || '')})">撤单</button>` : ''}
                     </div>
                 </div>
@@ -2294,8 +2403,9 @@
         }
 
         function renderLiveOrderActionButtons(order, signalId, tradeGroupId) {
+            const sideText = getOrderSideLabel(order);
             return renderOrderActionButtons([
-                order?.can_modify ? `<button class="action-btn modify" type="button" onclick="modifyOrder(${toJsStringAttribute(order?.order_id || '')}, ${Number(order?.price || 0)}, ${Number(order?.total_quantity || 0)})">改单</button>` : '',
+                order?.can_modify ? `<button class="action-btn modify" type="button" onclick="modifyOrder(${toJsStringAttribute(order?.order_id || '')}, ${Number(order?.price || 0)}, ${Number(order?.total_quantity || 0)}, ${Number(order?.remaining_quantity || 0)}, ${toJsStringAttribute(sideText || '')}, ${toJsStringAttribute(order?.order_type || '')})">改单</button>` : '',
                 order?.can_cancel ? `<button class="action-btn cancel" type="button" onclick="cancelOrder(${toJsStringAttribute(order?.order_id || '')})">撤单</button>` : '',
                 !order?.can_modify && !order?.can_cancel && tradeGroupId ? `<button class="action-btn view" type="button" onclick="viewTradeGroup(${toJsStringAttribute(tradeGroupId)}, ${toJsStringAttribute(signalId)})">详情</button>` : '',
             ]);
@@ -2442,7 +2552,7 @@
                         </td>
                         <td><span class="${badgeClass(sideText === 'BUY' ? 'long' : sideText === 'SELL' ? 'short' : '')}">${escapeHtml(sideText || '等待数据')}</span></td>
                         <td>${escapeHtml(formatQty(order?.total_quantity))} / ${escapeHtml(formatQty(order?.filled_quantity))}</td>
-                        <td>${escapeHtml(order?.order_type || '--')}<br><span class="order-table-sub">${escapeHtml(formatOrderPrice(order))} · Fee ${escapeHtml(formatOrderCommission(order))}</span></td>
+                        <td>${escapeHtml(order?.order_type || '--')}${renderOrderExecutionChips(order)}<span class="order-table-sub">Fee ${escapeHtml(formatOrderCommission(order))}</span></td>
                         <td><span class="order-table-strong">${escapeHtml(formatQty(order?.remaining_quantity))}</span></td>
                         <td>${renderLiveOrderActionButtons(order, orderSignalId, orderTradeGroupId)}</td>
                     </tr>
@@ -2891,24 +3001,27 @@
             await runAction('撤单', '/api/custom/ibkr/orders/cancel', { order_id: orderId }, `订单 ${orderId} 撤单请求已发送`);
         }
 
-        async function modifyOrder(orderId, currentPrice, currentQty) {
+        async function modifyOrder(orderId, currentPrice, currentQty, currentRemaining = 0, side = '', orderType = '') {
             if (!orderId) return;
-            const priceText = window.prompt(`订单 ${orderId} 的新价格（留空表示不改）`, currentPrice > 0 ? String(currentPrice) : '');
-            if (priceText === null) return;
-            const qtyText = window.prompt(`订单 ${orderId} 的新数量（留空表示不改）`, currentQty > 0 ? String(currentQty) : '');
-            if (qtyText === null) return;
-            const body = { order_id: orderId };
-            if (String(priceText).trim() !== '') body.price = Number(priceText);
-            if (String(qtyText).trim() !== '') body.quantity = Number(qtyText);
-            if (body.price === undefined && body.quantity === undefined) {
-                showToast('没有输入修改项');
-                return;
+            const updates = await showOrderModifyDialog({
+                orderId,
+                currentPrice,
+                currentQty,
+                currentRemaining,
+                side,
+                orderType,
+            });
+            if (!updates) return;
+            const body = { order_id: orderId, ...updates };
+            const payload = await runAction(
+                '改单',
+                '/api/custom/ibkr/orders/modify',
+                body,
+                () => `订单 ${orderId} 改单请求已发送，正在刷新挂单状态`
+            );
+            if (payload !== false) {
+                setTimeout(() => loadAccountSnapshot(false), 900);
             }
-            if ((body.price !== undefined && !Number.isFinite(body.price)) || (body.quantity !== undefined && !Number.isFinite(body.quantity))) {
-                showToast('改单参数无效');
-                return;
-            }
-            await runAction('改单', '/api/custom/ibkr/orders/modify', body, `订单 ${orderId} 改单请求已发送`);
         }
 
         async function closePosition(position) {

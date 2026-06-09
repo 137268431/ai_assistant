@@ -284,9 +284,99 @@
             margin-top: 10px;
         }
 
+        .broker-order-highlight {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin: 9px 0 10px;
+        }
+
+        .broker-order-highlight-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 7px 10px;
+            border-radius: 999px;
+            border: 1px solid rgba(99,179,237,0.18);
+            background: rgba(99,179,237,0.10);
+            color: #D9F2FF;
+            font-size: 11px;
+            line-height: 1.2;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 800;
+            white-space: nowrap;
+        }
+
+        .broker-order-highlight-chip.strong {
+            border-color: rgba(79,209,197,0.34);
+            background: linear-gradient(180deg, rgba(79,209,197,0.22), rgba(79,209,197,0.10));
+            color: #DFFFFB;
+        }
+
+        .broker-order-highlight-chip.qty {
+            border-color: rgba(246,173,85,0.28);
+            background: rgba(246,173,85,0.12);
+            color: #FFE8C2;
+        }
+
+        .broker-live-order-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .broker-live-order-actions .action-btn {
+            flex: 0 0 auto;
+            min-width: 78px;
+        }
+
         .broker-live-note {
             margin-top: 8px;
             color: var(--pending);
+        }
+
+        .app-order-input-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+        }
+
+        .app-order-input-field {
+            display: grid;
+            gap: 6px;
+        }
+
+        .app-order-input-label {
+            color: var(--muted);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .app-order-input {
+            width: 100%;
+            border-radius: 12px;
+            border: 1px solid rgba(147,197,253,0.16);
+            background: rgba(2,8,18,0.9);
+            color: var(--text);
+            padding: 12px 13px;
+            font-family: 'JetBrains Mono', monospace;
+            outline: none;
+        }
+
+        .app-order-input:focus {
+            border-color: rgba(79,209,197,0.50);
+            box-shadow: 0 0 0 3px rgba(79,209,197,0.12);
+        }
+
+        .app-order-input-hint {
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.55;
+            font-family: 'JetBrains Mono', monospace;
         }
 
         .broker-live-detail-btn {
@@ -876,6 +966,10 @@
 
             .broker-live-card-actions {
                 width: 100%;
+            }
+
+            .app-order-input-grid {
+                grid-template-columns: 1fr;
             }
 
             .collapsed-summary-actions .action-btn {

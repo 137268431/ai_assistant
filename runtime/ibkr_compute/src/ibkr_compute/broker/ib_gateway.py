@@ -3103,6 +3103,59 @@ class BrokerAdapter:
             order.firmQuoteOnly = False
 
     @staticmethod
+    def _normalize_tif_and_overnight_flag(tif: Any) -> tuple[str, bool]:
+        text = str(tif or "").strip().upper()
+        include_overnight = "OVERNIGHT" in text
+        if not text:
+            return "DAY", False
+        if not include_overnight:
+            return text, False
+        cleaned = text.replace("OVERNIGHT", " ").replace("+", " ").replace("/", " ")
+        for candidate in cleaned.split():
+            candidate = candidate.strip().upper()
+            if candidate in {"DAY", "GTC", "GTD", "IOC", "FOK", "OPG"}:
+                return candidate, True
+        return "DAY", True
+
+    @staticmethod
+    def _order_attr_truthy(order: Any, attr: str) -> bool:
+        try:
+            value = getattr(order, attr)
+        except Exception:
+            return False
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+        return bool(value)
+
+    def _apply_order_session_flags_for_submit(
+        self,
+        order: Any,
+        *,
+        tif: Any = "",
+        include_overnight: bool = False,
+    ) -> dict[str, Any]:
+        normalized_tif, tif_requests_overnight = self._normalize_tif_and_overnight_flag(tif)
+        order.tif = normalized_tif
+        include_overnight_enabled = bool(include_overnight or tif_requests_overnight)
+        include_overnight_supported = hasattr(order, "includeOvernight")
+        if include_overnight_enabled:
+            if include_overnight_supported:
+                try:
+                    order.includeOvernight = True
+                except Exception:
+                    include_overnight_supported = False
+            if hasattr(order, "outsideRth"):
+                try:
+                    order.outsideRth = True
+                except Exception:
+                    pass
+        return {
+            "tif": normalized_tif,
+            "include_overnight": include_overnight_enabled,
+            "include_overnight_supported": include_overnight_supported,
+        }
+
+    @staticmethod
     def _sanitize_order_ref_group(value: Any, max_length: int = 180) -> str:
         text = str(value or "").strip()
         if not text:
@@ -4727,15 +4780,14 @@ class BrokerAdapter:
         if use_limit:
             order.lmtPrice = float(normalized_limit_price)
         order.totalQuantity = float(quantity)
-        order.tif = str(tif or "DAY").strip().upper() or "DAY"
         order.outsideRth = outside_rth_enabled
-        include_overnight_enabled = bool(include_overnight)
-        include_overnight_supported = hasattr(order, "includeOvernight")
-        if include_overnight_enabled and include_overnight_supported:
-            try:
-                order.includeOvernight = True
-            except Exception:
-                include_overnight_supported = False
+        session_flags = self._apply_order_session_flags_for_submit(
+            order,
+            tif=tif,
+            include_overnight=bool(include_overnight),
+        )
+        include_overnight_enabled = bool(session_flags.get("include_overnight"))
+        include_overnight_supported = bool(session_flags.get("include_overnight_supported"))
         order_ref = str(order_ref or "").strip()
         order.orderRef = order_ref or f"close_{contract.symbol}_{datetime.now(ET).strftime('%Y%m%d_%H%M%S')}"
         account_id = str(account_id or "").strip()
@@ -4840,8 +4892,14 @@ class BrokerAdapter:
             order.lmtPrice = float(normalized_lmt_price)
         if "quantity" in updates and updates["quantity"] is not None:
             order.totalQuantity = float(updates["quantity"])
-        if "tif" in updates and updates["tif"]:
-            order.tif = str(updates["tif"])
+        original_tif = str(getattr(order, "tif", "") or "")
+        requested_tif = updates.get("tif") if updates.get("tif") else original_tif
+        original_include_overnight = self._order_attr_truthy(order, "includeOvernight")
+        session_flags = self._apply_order_session_flags_for_submit(
+            order,
+            tif=requested_tif,
+            include_overnight=original_include_overnight,
+        )
         account_id = str(account_id or "").strip()
         if account_id:
             order.account = account_id
@@ -4919,6 +4977,7 @@ class BrokerAdapter:
                         "confirm": confirm_result,
                         "order_id": str(order_id),
                         "price_normalization": price_normalization,
+                        "session_flags": session_flags,
                     }
                 record_order_event(
                     operation="modify",
@@ -4933,6 +4992,7 @@ class BrokerAdapter:
                     "confirm": confirm_result,
                     "order_id": str(order_id),
                     "price_normalization": price_normalization,
+                    "session_flags": session_flags,
                 }
             record_order_event(operation="modify", result="ok", duration_s=time.perf_counter() - started)
             result = {
@@ -4940,6 +5000,7 @@ class BrokerAdapter:
                 "order_id": str(order_id),
                 "order": confirm_result.get("order") or {},
                 "price_normalization": price_normalization,
+                "session_flags": session_flags,
             }
             if entry_unconfirmed:
                 result["entry_submission_unconfirmed"] = True
@@ -4951,6 +5012,7 @@ class BrokerAdapter:
             "order_id": str(order_id),
             "order": entry_result.get("order") or {},
             "price_normalization": price_normalization,
+            "session_flags": session_flags,
         }
         if entry_unconfirmed:
             result["pending_confirmation"] = True

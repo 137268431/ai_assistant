@@ -319,8 +319,7 @@ def _notify_system_event(service: Any, title: str, detail: dict[str, Any], *, le
             environment=str(getattr(service, "environment", "") or detail.get("environment") or ""),
             detail=detail,
             source="ibkr_account_action",
-            category="ibkr_close_execution",
-            dedupe_key=message_id,
+            event_type="ibkr_close_execution",
             message_id=message_id,
         )
     except Exception:
