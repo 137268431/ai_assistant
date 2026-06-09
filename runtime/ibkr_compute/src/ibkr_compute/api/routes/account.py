@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from flask import jsonify, request
 
 from ibkr_compute.api.account.views import (
@@ -35,6 +37,11 @@ def _build_account_action_response(builder):
 def _account_snapshot_broker_force() -> bool:
     # UI cache-busting should only bypass browser/API caches. Broker refreshes
     # need an explicit diagnostic opt-in so account-data pacing stays intact.
+    if not get_query_arg_bool("diagnostic_broker_refresh", False):
+        return False
+    enabled = str(os.environ.get("IBKR_ACCOUNT_SNAPSHOT_DIAGNOSTIC_BROKER_REFRESH_ENABLED", "") or "").strip().lower()
+    if enabled not in {"1", "true", "yes", "y", "on"}:
+        return False
     return get_query_arg_bool("broker_force", False)
 
 

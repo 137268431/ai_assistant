@@ -499,6 +499,22 @@ class SystemScanSummaryTest(unittest.TestCase):
         self.assertEqual(second["_cache"]["state"], "hit")
         self.assertEqual(bypass["_cache"]["state"], "bypass")
 
+    def test_route_cache_key_ignores_refresh_only_account_params(self):
+        base_key = canonical_cache_key("demo", {"a": "1"})
+        refresh_key = canonical_cache_key(
+            "demo",
+            {
+                "a": "1",
+                "force": "1",
+                "refresh": "1",
+                "_ts": "1780985200",
+                "_verify": "1",
+                "cache_bust": "1",
+            },
+        )
+
+        self.assertEqual(base_key, refresh_key)
+
     def test_route_swr_cache_force_uses_stale_on_refresh_error(self):
         cache = RouteSWRCache("test-route-cache")
         key = canonical_cache_key("demo", {"a": "1", "cache_bust": "1"})

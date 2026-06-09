@@ -1,6 +1,14 @@
 from __future__ import annotations
 
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    text = str(os.environ.get(name, "") or "").strip().lower()
+    if not text:
+        return bool(default)
+    return text in {"1", "true", "yes", "y", "on"}
 
 
 def fetch_snapshot_sources(service, account_id: str, *, include_pnl: bool = True) -> dict:
@@ -87,16 +95,17 @@ def fetch_snapshot_sources(service, account_id: str, *, include_pnl: bool = True
                     orders_raw = value if isinstance(value, list) else []
                     orders_loaded = isinstance(value, list)
 
-    # Fall back to the lightweight socket calls if the richer account download path
-    # yields no usable payload. This preserves the pre-existing behavior while
-    # allowing the account page to show full valuation fields when available.
+    # Keep account_summary as an explicit diagnostic fallback only; repeatedly
+    # falling back here can hit IBKR account-summary pacing.
     if account_snapshot_requested and hasattr(service, "order_lifecycle") and service.order_lifecycle:
-        if not summary_raw:
+        if not summary_raw and _env_bool("IBKR_ACCOUNT_SUMMARY_FALLBACK_ENABLED", False):
             try:
                 summary_raw = service.order_lifecycle.get_account_summary(account_id)
                 summary_error = ""
             except Exception as exc:
                 summary_error = summary_error or str(exc)
+        elif not summary_raw:
+            summary_error = summary_error or "account_summary_fallback_disabled"
         if not positions_loaded:
             try:
                 positions_raw = service.order_lifecycle.get_positions(account_id)

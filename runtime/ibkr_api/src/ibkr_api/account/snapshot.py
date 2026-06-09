@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import threading
 import time
 from typing import Any, Callable
 
@@ -20,6 +22,10 @@ from ibkr_api.account.snapshot_shared import (
 
 NormalizeEnvironment = Callable[[Any, str], str]
 RequestJsonRequest = Callable[..., dict[str, Any]]
+
+_STALE_RECHECK_CACHE_TTL_SECONDS = 20.0
+_STALE_RECHECK_CACHE_LOCK = threading.Lock()
+_STALE_RECHECK_CACHE: dict[tuple[str, str, tuple[str, ...]], dict[str, Any]] = {}
 
 _OPEN_ORDER_STATUS_FILTER_VALUES = (
     "ApiPending",
@@ -638,6 +644,182 @@ def enrich_account_snapshot(pb: Any, payload: dict[str, Any], environment: str) 
     return payload
 
 
+
+def _stale_pb_broker_order_ids(payload: dict[str, Any]) -> list[str]:
+    ids: list[str] = []
+    seen: set[str] = set()
+    for group in payload.get("stale_pb_order_groups") or []:
+        if not isinstance(group, dict):
+            continue
+        candidate_rows = []
+        if isinstance(group.get("orders"), list):
+            candidate_rows.extend(row for row in group.get("orders") or [] if isinstance(row, dict))
+        candidate_rows.append(group)
+        for row in candidate_rows:
+            order_id = to_text(row.get("broker_order_id") or row.get("order_id"))
+            if not order_id or order_id in seen:
+                continue
+            ids.append(order_id)
+            seen.add(order_id)
+    return ids
+
+
+def _set_stale_recheck(payload: dict[str, Any], recheck: dict[str, Any]) -> dict[str, Any]:
+    reconciliation = ensure_object(payload.get("order_reconciliation"))
+    reconciliation["stale_recheck"] = dict(recheck)
+    payload["order_reconciliation"] = reconciliation
+    diagnostics = ensure_object(payload.get("diagnostics"))
+    account_diagnostics = ensure_object(diagnostics.get("account_snapshot"))
+    account_diagnostics["stale_recheck"] = dict(recheck)
+    diagnostics["account_snapshot"] = account_diagnostics
+    payload["diagnostics"] = diagnostics
+    return payload
+
+
+def _stale_recheck_cache_key(runtime_base_url: str, environment: str, order_ids: list[str]) -> tuple[str, str, tuple[str, ...]]:
+    return (runtime_base_url.rstrip("/"), environment, tuple(sorted(order_ids)))
+
+
+def _get_stale_recheck_cache(cache_key: tuple[str, str, tuple[str, ...]]) -> dict[str, Any] | None:
+    now = time.monotonic()
+    with _STALE_RECHECK_CACHE_LOCK:
+        entry = _STALE_RECHECK_CACHE.get(cache_key)
+        if not entry:
+            return None
+        if float(entry.get("expires_at") or 0.0) <= now:
+            _STALE_RECHECK_CACHE.pop(cache_key, None)
+            return None
+        return copy.deepcopy(entry)
+
+
+def _store_stale_recheck_cache(cache_key: tuple[str, str, tuple[str, ...]], payload: dict[str, Any], recheck: dict[str, Any]) -> None:
+    now = time.monotonic()
+    with _STALE_RECHECK_CACHE_LOCK:
+        expired_keys = [key for key, entry in _STALE_RECHECK_CACHE.items() if float(entry.get("expires_at") or 0.0) <= now]
+        for key in expired_keys:
+            _STALE_RECHECK_CACHE.pop(key, None)
+        _STALE_RECHECK_CACHE[cache_key] = {
+            "expires_at": now + _STALE_RECHECK_CACHE_TTL_SECONDS,
+            "payload": copy.deepcopy(payload),
+            "recheck": copy.deepcopy(recheck),
+        }
+
+
+def _with_cached_stale_recheck(entry: dict[str, Any], fallback_payload: dict[str, Any]) -> dict[str, Any]:
+    cached_payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else fallback_payload
+    payload = copy.deepcopy(cached_payload)
+    recheck = ensure_object(entry.get("recheck"))
+    recheck = {**recheck, "performed": False, "cache_hit": True}
+    return _set_stale_recheck(payload, recheck)
+
+
+def _apply_stale_order_recheck(
+    pb: Any,
+    *,
+    enriched: dict[str, Any],
+    environment: str,
+    request_json_request: RequestJsonRequest,
+    runtime_base_url: str,
+    upstream_timeout: float,
+) -> dict[str, Any]:
+    order_ids = _stale_pb_broker_order_ids(enriched)
+    if not order_ids:
+        return enriched
+
+    cache_key = _stale_recheck_cache_key(runtime_base_url, environment, order_ids)
+    cached = _get_stale_recheck_cache(cache_key)
+    if cached is not None:
+        return _with_cached_stale_recheck(cached, enriched)
+
+    recheck_params = [
+        ("broker_mode", environment),
+        ("environment", environment),
+        ("include_pnl", "0"),
+        ("broker_force", "1"),
+    ]
+    recheck: dict[str, Any] = {
+        "performed": True,
+        "cache_hit": False,
+        "result": "recheck_started",
+        "order_ids": list(order_ids),
+        "resolved_order_ids": [],
+        "confirmed_stale_order_ids": [],
+        "error": "",
+    }
+    try:
+        result = request_json_request(
+            "GET",
+            runtime_base_url,
+            "/ibkr/account",
+            params=recheck_params,
+            timeout=upstream_timeout,
+        )
+    except Exception as exc:
+        recheck.update({"result": "recheck_failed", "error": str(exc) or exc.__class__.__name__})
+        payload = _set_stale_recheck(enriched, recheck)
+        _store_stale_recheck_cache(cache_key, payload, recheck)
+        return payload
+
+    status_code = int(result.get("status_code") or 200)
+    upstream_payload = ensure_object(result.get("payload"))
+    selected_upstream = to_text(result.get("target_url")) or f"{runtime_base_url.rstrip('/')}/ibkr/account"
+    recheck.update(
+        {
+            "status_code": status_code,
+            "elapsed_ms": float(result.get("elapsed_ms") or 0.0),
+            "timeout_s": float(result.get("timeout_s") or upstream_timeout or 0.0),
+            "upstream": selected_upstream,
+        }
+    )
+    if not upstream_payload or (status_code >= 400 and not upstream_payload.get("ok")):
+        recheck.update(
+            {
+                "result": "recheck_failed",
+                "error": result.get("error") or upstream_payload.get("error") or f"upstream_status_{status_code}",
+            }
+        )
+        payload = _set_stale_recheck(enriched, recheck)
+        _store_stale_recheck_cache(cache_key, payload, recheck)
+        return payload
+
+    upstream_errors = ensure_object(upstream_payload.get("errors"))
+    orders_error = to_text(upstream_errors.get("orders"))
+    coverage_state = to_text(ensure_object(upstream_payload.get("live_order_coverage")).get("coverage_state")).lower()
+    if orders_error or coverage_state == "degraded":
+        recheck.update(
+            {
+                "result": "recheck_failed",
+                "error": orders_error or "broker_force_coverage_degraded",
+            }
+        )
+        payload = _set_stale_recheck(enriched, recheck)
+        _store_stale_recheck_cache(cache_key, payload, recheck)
+        return payload
+
+    rechecked = enrich_account_snapshot(pb, dict(upstream_payload), environment)
+    remaining_stale_ids = set(_stale_pb_broker_order_ids(rechecked))
+    original_ids = set(order_ids)
+    resolved_ids = [order_id for order_id in order_ids if order_id not in remaining_stale_ids]
+    confirmed_ids = [order_id for order_id in order_ids if order_id in remaining_stale_ids]
+    if resolved_ids and confirmed_ids:
+        result_label = "partially_resolved"
+    elif resolved_ids:
+        result_label = "resolved"
+    else:
+        result_label = "confirmed_stale"
+    recheck.update(
+        {
+            "result": result_label,
+            "resolved_order_ids": resolved_ids,
+            "confirmed_stale_order_ids": confirmed_ids,
+            "new_stale_order_ids": [order_id for order_id in _stale_pb_broker_order_ids(rechecked) if order_id not in original_ids],
+        }
+    )
+    payload = _set_stale_recheck(rechecked, recheck)
+    _store_stale_recheck_cache(cache_key, payload, recheck)
+    return payload
+
+
 def enrich_account_snapshot_orders_fast(payload: dict[str, Any], environment: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return payload
@@ -706,12 +888,15 @@ def build_account_snapshot_response(
             upstream_timeout=upstream_timeout,
         )
     orders_fast = _orders_fast_param(payload)
+    diagnostic_broker_refresh = parse_boolean(payload.get("diagnostic_broker_refresh"), False)
     params = [("broker_mode", environment), ("environment", environment)]
     include_pnl = _include_pnl_param(payload)
     if include_pnl is not None:
         params.append(("include_pnl", include_pnl))
+    if diagnostic_broker_refresh:
+        params.append(("broker_force", "1"))
+        params.append(("diagnostic_broker_refresh", "1"))
     for cache_key in (
-        "broker_force",
         "orders_fast",
         "fast_orders",
         "snapshot_profile",
@@ -774,6 +959,29 @@ def build_account_snapshot_response(
         enriched = enrich_account_snapshot_orders_fast(dict(upstream_payload), environment)
     else:
         enriched = enrich_account_snapshot(pb, dict(upstream_payload), environment)
+        stale_order_ids = _stale_pb_broker_order_ids(enriched)
+        if stale_order_ids and diagnostic_broker_refresh:
+            enriched = _set_stale_recheck(
+                enriched,
+                {
+                    "performed": False,
+                    "cache_hit": False,
+                    "result": "already_forced_confirmed_stale",
+                    "order_ids": stale_order_ids,
+                    "resolved_order_ids": [],
+                    "confirmed_stale_order_ids": stale_order_ids,
+                    "error": "",
+                },
+            )
+        elif stale_order_ids:
+            enriched = _apply_stale_order_recheck(
+                pb,
+                enriched=enriched,
+                environment=environment,
+                request_json_request=request_json_request,
+                runtime_base_url=runtime_base_url,
+                upstream_timeout=upstream_timeout,
+            )
     enrichment_elapsed_ms = round((time.monotonic() - enrich_started) * 1000.0, 1)
     total_elapsed_ms = round((time.monotonic() - started) * 1000.0, 1)
     existing_diagnostics = ensure_object(enriched.get("diagnostics"))

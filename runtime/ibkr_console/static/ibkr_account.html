@@ -1646,6 +1646,7 @@
         function renderCoverageBanner(snapshot, liveOrders) {
             const reconciliation = snapshot?.order_reconciliation || {};
             const coverage = snapshot?.live_order_coverage || {};
+            const staleRecheck = reconciliation?.stale_recheck || {};
             const reconciliationUnresolved = Array.isArray(reconciliation.unresolved_order_ids) ? reconciliation.unresolved_order_ids : [];
             const coverageUnresolved = Array.isArray(coverage.unresolved_order_ids) ? coverage.unresolved_order_ids : [];
             const unresolvedIds = reconciliationUnresolved.length ? reconciliationUnresolved : coverageUnresolved;
@@ -1656,6 +1657,12 @@
                 `ibkr_live_open=${Number(snapshot?.counts?.open_orders || liveOrders.length || 0)} · cancelable=${Number(snapshot?.counts?.cancelable_orders || reconciliation.cancelable_orders || 0)} · editable=${Number(snapshot?.counts?.editable_orders || reconciliation.editable_orders || 0)}`,
             ];
             if (unresolvedIds.length) rows.push(`unresolved ids: ${unresolvedIds.join(', ')}`);
+            if (staleRecheck?.result) {
+                const resolved = Array.isArray(staleRecheck.resolved_order_ids) ? staleRecheck.resolved_order_ids.length : 0;
+                const confirmed = Array.isArray(staleRecheck.confirmed_stale_order_ids) ? staleRecheck.confirmed_stale_order_ids.length : 0;
+                const source = staleRecheck.cache_hit ? 'cached' : staleRecheck.performed ? 'broker_force' : 'local';
+                rows.push(`stale_recheck=${staleRecheck.result} · source=${source} · resolved=${resolved} · confirmed=${confirmed}`);
+            }
             const title = coverageState === 'degraded'
                 ? '当前实时挂单视图可能不完整'
                 : coverageState === 'recovered'
@@ -1695,12 +1702,20 @@
             const statusLine = formatCompactCountMap(statusCounts, (key, count) => `${key}×${count}`) || '--';
             const symbolLine = formatCompactCountMap(symbolCounts, (key, count) => `${key}×${count}`) || '--';
             const rawGroupCount = Number(rawLiveGroupCount ?? liveGroups.length ?? 0);
+            const staleRecheck = reconciliation?.stale_recheck || {};
+            const staleCopy = staleRecheck.result === 'confirmed_stale' || staleRecheck.result === 'already_forced_confirmed_stale'
+                ? '已强制复核仍未被 IBKR 确认，需修复'
+                : staleRecheck.result === 'recheck_failed'
+                    ? '自动 broker 复核失败，需人工确认'
+                    : staleRecheck.result
+                        ? '已自动复核 broker 快照'
+                        : '系统记录仍活跃但 IBKR 未确认，需修复';
             const cards = [
                 ['IBKR 订单腿', String(snapshot?.counts?.open_orders || liveOrders.length || 0), 'IBKR broker 已确认仍 open 的真实订单腿，不是 signal / bracket 组数'],
                 ['Signals / Brackets', `${liveGroups.length || 0} / ${rawGroupCount}`, '按 signal_id 聚合后的展示组 / 原始 bracket 数'],
                 ['Matched Brackets', String(reconciliation.broker_matched_groups || 0), '已关联到系统记录的 bracket 数'],
                 ['Broker Only', String(reconciliation.broker_only_groups || 0), 'broker 有，系统记录未匹配'],
-                ['Stale / Needs Repair', String(reconciliation.stale_pb_order_groups || reconciliation.pb_shadow_groups || pbOnlyGroups.length || 0), '系统记录仍活跃但 IBKR 未确认，需修复'],
+                ['Stale / Needs Repair', String(reconciliation.stale_pb_order_groups || reconciliation.pb_shadow_groups || pbOnlyGroups.length || 0), staleCopy],
                 ['Editable / Cancelable', `${snapshot?.counts?.editable_orders || 0} / ${snapshot?.counts?.cancelable_orders || 0}`, '可改 / 可撤'],
                 ['Outside RTH', String(snapshot?.counts?.outside_rth_orders || 0), '盘前盘后订单数'],
                 ['Remaining Qty', formatQty(computeBracketAwareRemainingQty(liveOrders)), '去重后的剩余待成交数量'],
@@ -2855,9 +2870,18 @@
                 ));
             }
             if (filteredPbOnlyGroups.length) {
+                const staleRecheck = reconciliation?.stale_recheck || {};
+                const staleTitle = staleRecheck.result === 'recheck_failed'
+                    ? 'Stale / Recheck Failed Chains'
+                    : 'Stale / Needs Repair Chains';
+                const staleCopy = staleRecheck.result === 'confirmed_stale' || staleRecheck.result === 'already_forced_confirmed_stale'
+                    ? '这些订单组经过 broker_force 复核后仍未在 IBKR 实时订单腿中确认；它们只作为修复警告，不计入 IBKR 订单腿 / remaining。'
+                    : staleRecheck.result === 'recheck_failed'
+                        ? `系统记录仍认为这些订单组活跃，但自动 broker 复核失败：${staleRecheck.error || '--'}。请人工确认 IBKR 后再修复。`
+                        : '系统记录仍认为这些订单组处于活跃状态，但 IBKR 当前没有确认对应的实时订单腿。它们只作为修复警告，不计入 IBKR 订单腿 / remaining。';
                 sections.push(renderOrdersSection(
-                    'Stale / Needs Repair Chains',
-                    '系统记录仍认为这些订单组处于活跃状态，但 IBKR 当前没有确认对应的实时订单腿。它们只作为修复警告，不计入 IBKR 订单腿 / remaining。',
+                    staleTitle,
+                    staleCopy,
                     filteredPbOnlyGroups,
                     renderPbShadowGroupTableRows,
                 ));
@@ -2894,18 +2918,18 @@
             if (!initAuth()) return;
             const refreshInfo = document.getElementById('refreshInfo');
             refreshInfo.textContent = '刷新中...';
-            const fastSnapshot = !showFeedback;
+            const fastSnapshot = true;
             try {
                 const snapshot = await requestAccountJson('/api/custom/ibkr/account_snapshot', {
                     timeoutMs: fastSnapshot ? 8000 : 20000,
                     timeoutLabel: fastSnapshot ? '账户快速快照' : '账户快照',
                     force: showFeedback,
                     cacheProfile: 'runtimeStatus',
-                    params: fastSnapshot ? {
+                    params: {
                         snapshot_profile: 'orders_fast',
                         orders_fast: '1',
-                        prefer_stale: '1',
-                    } : {},
+                        ...(showFeedback ? { cache_bust: '1', prefer_live_on_force: '1' } : { prefer_stale: '1' }),
+                    },
                 });
                 latestSnapshot = snapshot;
                 renderBlocker(snapshot);
@@ -3246,7 +3270,13 @@
                     copy: '正在同步账户净值、持仓、实时挂单和操作入口状态。',
                 }
             );
-            refreshTimer = setInterval(() => loadAccountSnapshot(false), 20000);
+            refreshTimer = setInterval(() => {
+                if (document.hidden) return;
+                loadAccountSnapshot(false);
+            }, 20000);
+            document.addEventListener('visibilitychange', () => {
+                if (!document.hidden) loadAccountSnapshot(false);
+            });
         });
 
         document.addEventListener('keydown', (event) => {

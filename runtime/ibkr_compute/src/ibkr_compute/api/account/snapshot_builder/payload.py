@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -35,6 +36,25 @@ from ibkr_compute.order.buying_power_reservations import (
     apply_reservations_to_buying_power_summary,
     merge_reservation_snapshot_into_guard,
 )
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    text = str(os.environ.get(name, "") or "").strip().lower()
+    if not text:
+        return bool(default)
+    return text in {"1", "true", "yes", "y", "on"}
+
+
+def _env_float(name: str, default: float, *, minimum: float = 0.0) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)) or default)
+    except Exception:
+        value = float(default)
+    return max(float(minimum), value)
+
+
+def _buying_power_guard_max_stale_seconds() -> float:
+    return _env_float("IBKR_BUYING_POWER_GUARD_MAX_STALE_SEC", 300.0, minimum=0.0)
 
 
 def _filter_orders_for_account(account_id: str, rows: list[dict]) -> list[dict]:
@@ -374,6 +394,7 @@ def _decorate_account_snapshot_health(payload: dict, *, reason: str = "") -> dic
     result = payload if isinstance(payload, dict) else {}
     summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
     guard = result.get("buying_power_guard") if isinstance(result.get("buying_power_guard"), dict) else {}
+    pacing = result.get("account_data_pacing") if isinstance(result.get("account_data_pacing"), dict) else {}
     summary_available = _summary_snapshot_available(summary)
     guard_state = str(guard.get("state") or "").strip().lower()
     health = "ok"
@@ -394,6 +415,17 @@ def _decorate_account_snapshot_health(payload: dict, *, reason: str = "") -> dic
         "cache_state": str(result.get("cache_state") or ""),
         "cache_age_s": result.get("cache_age_s"),
         "retry_after_s": result.get("retry_after_s"),
+    }
+    result["account_data_policy"] = {
+        "profile": str(result.get("snapshot_profile") or result.get("source") or "account_snapshot"),
+        "served_from": str(result.get("source") or result.get("cache_state") or ""),
+        "cache_age_s": result.get("cache_age_s"),
+        "stale": bool(result.get("stale")),
+        "broker_refresh_allowed": False,
+        "pacing_blocked": bool(pacing.get("blocked") or result.get("pacing_blocked")),
+        "retry_after_s": result.get("retry_after_s") or pacing.get("retry_after_s"),
+        "health_state": health,
+        "health_reason": health_reason,
     }
     return result
 
@@ -445,6 +477,14 @@ def _build_buying_power_payload_from_full_snapshot(full_snapshot: dict, context:
     guard = payload.get("buying_power_guard") if isinstance(payload.get("buying_power_guard"), dict) else {}
     guard = dict(guard)
     guard.setdefault("source", "account_snapshot")
+    cache_age_s = payload.get("cache_age_s")
+    stale = bool(payload.get("stale"))
+    if stale and _safe_float(cache_age_s, 0.0) > _buying_power_guard_max_stale_seconds():
+        guard["available"] = False
+        guard["state"] = "unavailable"
+        guard["reason"] = "account_snapshot_stale"
+        guard["snapshot_error"] = "account_snapshot_stale"
+        guard["stale_blocked"] = True
     return _decorate_account_snapshot_health(
         {
             "ok": bool(payload.get("ok", True)),
@@ -461,6 +501,10 @@ def _build_buying_power_payload_from_full_snapshot(full_snapshot: dict, context:
             "fetched_at": payload.get("fetched_at") or datetime.now(timezone.utc).isoformat(),
             "source": "account_snapshot",
             "snapshot_source": payload.get("source") or "account_snapshot",
+            "stale": stale,
+            "cache_state": payload.get("cache_state"),
+            "cache_age_s": cache_age_s,
+            "refresh_error": payload.get("refresh_error"),
             "account_data_pacing": dict(payload.get("account_data_pacing") or _account_data_pacing_status(context["service_status"])),
         }
     )
@@ -624,6 +668,46 @@ def _build_ibkr_account_buying_power_snapshot(service) -> dict:
             if stale_payload:
                 return with_baseline(stale_payload)
             return with_baseline(_build_account_data_circuit_buying_power_snapshot(service, context, circuit))
+
+        full_refreshed = _build_ibkr_account_snapshot(
+            service,
+            include_pnl=False,
+            force_refresh=False,
+            allow_stale=True,
+            fast_status=True,
+            apply_reservation_overlay=False,
+        )
+        full_payload = _build_buying_power_payload_from_full_snapshot(
+            full_refreshed,
+            context,
+            allow_stale=bool((full_refreshed or {}).get("stale")),
+        )
+        if full_payload:
+            if bool((full_refreshed or {}).get("stale")):
+                full_payload["stale"] = True
+                full_payload.setdefault("cache_state", "stale")
+                if not full_payload.get("refresh_error"):
+                    full_payload["refresh_error"] = str((full_refreshed or {}).get("refresh_error") or "stale_full_snapshot")
+                return with_baseline(_decorate_account_snapshot_health(full_payload))
+            store_cached_snapshot(api_app, cache_key, full_payload)
+            return with_baseline(load_cached_snapshot(api_app, cache_key, allow_stale=False) or full_payload)
+
+        if not _env_bool("IBKR_ACCOUNT_SUMMARY_FALLBACK_ENABLED", False):
+            stale_payload = _stale_buying_power_snapshot_after_error(
+                api_app,
+                cache_key,
+                "account_summary_fallback_disabled",
+            )
+            if stale_payload:
+                return with_baseline(stale_payload)
+            payload = _build_buying_power_payload_from_summary_raw(
+                service,
+                context,
+                {},
+                "account_summary_fallback_disabled",
+            )
+            store_cached_snapshot(api_app, cache_key, payload)
+            return with_baseline(load_cached_snapshot(api_app, cache_key, allow_stale=False) or payload)
 
         summary_raw, summary_error = _fetch_account_summary_raw_for_buying_power(service, context)
         payload = _build_buying_power_payload_from_summary_raw(service, context, summary_raw, summary_error)

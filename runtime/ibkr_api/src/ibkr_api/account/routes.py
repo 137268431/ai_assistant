@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from flask import Response, jsonify, request
@@ -64,13 +65,40 @@ def _orders_fast_request(payload: dict[str, Any]) -> bool:
 def _prefers_stale_orders_fast(payload: dict[str, Any]) -> bool:
     if not _orders_fast_request(payload):
         return False
-    # Default to a bounded live refresh; stale-first is explicit so pending
-    # order monitors do not hide a just-submitted bracket behind an old cache.
+    if _truthy_param((payload or {}).get("prefer_live_on_force")):
+        return False
     return _truthy_param(
         (payload or {}).get("prefer_stale")
         or (payload or {}).get("prefer_stale_on_force")
         or (payload or {}).get("stale_first")
+        or "1"
     )
+
+
+def _prefers_stale_account_snapshot(payload: dict[str, Any]) -> bool:
+    if _truthy_param((payload or {}).get("prefer_live_on_force")):
+        return False
+    return True
+
+
+def _diagnostic_broker_refresh_allowed(payload: dict[str, Any]) -> bool:
+    if not _truthy_param((payload or {}).get("diagnostic_broker_refresh")):
+        return False
+    if not _truthy_param(os.environ.get("IBKR_ACCOUNT_SNAPSHOT_DIAGNOSTIC_BROKER_REFRESH_ENABLED")):
+        return False
+    remote_addr = str(getattr(request, "remote_addr", "") or "").strip()
+    return remote_addr in {"127.0.0.1", "::1", "localhost"}
+
+
+def _account_snapshot_payload_for_cache(payload: dict[str, Any]) -> dict[str, Any]:
+    sanitized = dict(payload or {})
+    sanitized.pop("broker_force", None)
+    if _diagnostic_broker_refresh_allowed(payload):
+        sanitized["broker_force"] = "1"
+        sanitized["diagnostic_broker_refresh"] = "1"
+    else:
+        sanitized.pop("diagnostic_broker_refresh", None)
+    return sanitized
 
 
 def _account_snapshot_upstream_timeout(payload: dict[str, Any]) -> float:
@@ -90,7 +118,7 @@ def register_account_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
 
     @app.route("/api/custom/ibkr/account_snapshot", methods=["GET"])
     def custom_ibkr_account_snapshot() -> Response:
-        query_payload = request.args.to_dict(flat=True)
+        query_payload = _account_snapshot_payload_for_cache(request.args.to_dict(flat=True))
         cache_key = canonical_cache_key("account_snapshot", query_payload)
         cached_orders_fast_payload = None
         if _orders_fast_request(query_payload):
@@ -135,7 +163,7 @@ def register_account_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             ttl_seconds=ttl_seconds,
             stale_seconds=stale_seconds,
             force=force_refresh,
-            prefer_stale_on_force=_prefers_stale_orders_fast(query_payload),
+            prefer_stale_on_force=_prefers_stale_account_snapshot(query_payload),
         )
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)

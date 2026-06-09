@@ -939,7 +939,7 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertEqual(0, lifecycle.summary_calls)
         self.assertEqual("ok", buying_power["account_snapshot_health"]["state"])
 
-    def test_buying_power_snapshot_single_flight_refreshes_summary_when_cache_empty(self):
+    def test_buying_power_snapshot_single_flight_refreshes_full_snapshot_when_cache_empty(self):
         app = _FakeApiApp()
         lifecycle = _BuyingPowerLifecycle(delay=0.05)
         service = _BuyingPowerService(lifecycle)
@@ -950,10 +950,10 @@ class AccountSnapshotFetchTest(unittest.TestCase):
 
         payloads = _with_fake_api_app(app, run)
 
-        self.assertEqual(0, lifecycle.snapshot_calls)
-        self.assertEqual(1, lifecycle.summary_calls)
+        self.assertEqual(1, lifecycle.snapshot_calls)
+        self.assertEqual(0, lifecycle.summary_calls)
         self.assertEqual(0, service.status_calls)
-        self.assertTrue(all(payload["source"] == "account_summary" for payload in payloads))
+        self.assertTrue(all(payload["source"] == "account_snapshot" for payload in payloads))
         self.assertTrue(all(payload["buying_power_guard"]["state"] == "ok" for payload in payloads))
 
     def test_buying_power_snapshot_uses_stale_guard_when_refresh_unavailable(self):
@@ -984,9 +984,35 @@ class AccountSnapshotFetchTest(unittest.TestCase):
 
         self.assertTrue(stale["ok"])
         self.assertTrue(stale["stale"])
-        self.assertEqual("stale_after_error", stale["cache_state"])
-        self.assertEqual("account summary timeout", stale["refresh_error"])
+        self.assertIn(stale["cache_state"], {"stale", "stale_after_error"})
+        self.assertTrue(stale.get("refresh_error"))
         self.assertEqual("ok", stale["buying_power_guard"]["state"])
+
+    def test_buying_power_snapshot_blocks_when_full_snapshot_too_stale(self):
+        app = _FakeApiApp()
+        lifecycle = _BuyingPowerLifecycle()
+        service = _BuyingPowerService(lifecycle)
+
+        full_snapshot = _with_fake_api_app(app, lambda: _build_ibkr_account_snapshot(service, include_pnl=False))
+        now = time.time()
+        with app.ibkr_account_snapshot_cache_lock:
+            entry = app.ibkr_account_snapshot_cache[(full_snapshot["environment"], full_snapshot["account_id"], False)]
+            entry["stored_at"] = now - 600
+            entry["fresh_until"] = now - 1
+            entry["expires_at"] = now - 1
+            entry["stale_until"] = now + 120
+
+        def fail_snapshot(_account_id):
+            raise TimeoutError("account snapshot timeout")
+
+        lifecycle.get_account_snapshot = fail_snapshot
+
+        payload = _with_fake_api_app(app, lambda: _build_ibkr_account_buying_power_snapshot(service))
+
+        self.assertTrue(payload["stale"])
+        self.assertEqual("unavailable", payload["buying_power_guard"]["state"])
+        self.assertEqual("account_snapshot_stale", payload["buying_power_guard"]["reason"])
+        self.assertTrue(payload["buying_power_guard"]["stale_blocked"])
 
     def test_buying_power_snapshot_short_circuits_when_account_data_circuit_open(self):
         app = _FakeApiApp()

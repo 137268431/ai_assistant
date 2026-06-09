@@ -32,6 +32,7 @@ if "flask" not in sys.modules:
     sys.modules["flask"] = flask_stub
     _FLASK_STUB_INSTALLED = True
 
+import ibkr_api.account.snapshot as account_snapshot_module
 from ibkr_api.account.snapshot import build_account_snapshot_response, enrich_account_snapshot
 from ibkr_api.account.routes import _account_snapshot_upstream_timeout, _prefers_stale_orders_fast
 from ibkr_api.account.snapshot_relations import build_relation_context
@@ -96,13 +97,17 @@ class _FakePB:
 
 
 class AccountSnapshotRoutesTest(unittest.TestCase):
-    def test_orders_fast_force_refresh_prefers_live_by_default(self):
+    def setUp(self):
+        with account_snapshot_module._STALE_RECHECK_CACHE_LOCK:
+            account_snapshot_module._STALE_RECHECK_CACHE.clear()
+
+    def test_orders_fast_force_refresh_prefers_stale_by_default(self):
         payload = {"orders_fast": "1", "snapshot_profile": "orders_fast", "cache_bust": "123"}
 
-        self.assertFalse(_prefers_stale_orders_fast(payload))
+        self.assertTrue(_prefers_stale_orders_fast(payload))
 
-        explicit_stale = {**payload, "prefer_stale": "1"}
-        self.assertTrue(_prefers_stale_orders_fast(explicit_stale))
+        explicit_live = {**payload, "prefer_live_on_force": "1"}
+        self.assertFalse(_prefers_stale_orders_fast(explicit_live))
 
     def test_orders_fast_route_uses_bounded_upstream_timeout(self):
         with mock.patch.dict("os.environ", {"IBKR_ROUTE_CACHE_ACCOUNT_ORDERS_FAST_UPSTREAM_TIMEOUT_SEC": "3.5"}):
@@ -197,7 +202,7 @@ class AccountSnapshotRoutesTest(unittest.TestCase):
             calls[0],
         )
 
-    def test_build_account_snapshot_response_forwards_explicit_broker_force(self):
+    def test_build_account_snapshot_response_does_not_forward_plain_broker_force(self):
         calls = []
 
         def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
@@ -230,9 +235,342 @@ class AccountSnapshotRoutesTest(unittest.TestCase):
         self.assertEqual(200, status_code)
         self.assertTrue(payload["ok"])
         self.assertEqual(
-            [("broker_mode", "paper"), ("environment", "paper"), ("broker_force", "1")],
+            [("broker_mode", "paper"), ("environment", "paper")],
             calls[0],
         )
+
+    def test_build_account_snapshot_response_forwards_diagnostic_broker_refresh(self):
+        calls = []
+
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            calls.append(list(params or []))
+            return {
+                "ok": True,
+                "status_code": 200,
+                "payload": {
+                    "ok": True,
+                    "environment": "paper",
+                    "summary": {},
+                    "positions": [],
+                    "orders": [],
+                    "live_open_orders": [],
+                    "counts": {},
+                },
+                "target_url": "http://runtime/ibkr/account",
+                "elapsed_ms": 1.0,
+                "timeout_s": timeout,
+            }
+
+        payload, status_code = build_account_snapshot_response(
+            _FakePB(rows={"orders": [], "ibkr_signals": []}),
+            payload={
+                "broker_mode": "paper",
+                "environment": "paper",
+                "broker_force": "1",
+                "diagnostic_broker_refresh": "1",
+            },
+            normalize_environment=lambda value, default="live": value or default,
+            request_json_request=request_json_request,
+            runtime_base_url="http://runtime",
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(
+            [
+                ("broker_mode", "paper"),
+                ("environment", "paper"),
+                ("broker_force", "1"),
+                ("diagnostic_broker_refresh", "1"),
+            ],
+            calls[0],
+        )
+
+    def test_stale_pb_order_recheck_resolves_when_broker_force_finds_order(self):
+        calls = []
+
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            params = list(params or [])
+            calls.append(params)
+            broker_force = ("broker_force", "1") in params
+            live_orders = (
+                [
+                    {
+                        "order_id": "11291",
+                        "client_order_id": "close_MSTR_20260609_015511",
+                        "symbol": "MSTR",
+                        "side": "BUY",
+                        "order_type": "LMT",
+                        "status": "Submitted",
+                        "total_quantity": 39,
+                        "remaining_quantity": 39,
+                        "can_cancel": True,
+                        "can_modify": True,
+                    }
+                ]
+                if broker_force
+                else []
+            )
+            return {
+                "ok": True,
+                "status_code": 200,
+                "payload": {
+                    "ok": True,
+                    "environment": "paper",
+                    "summary": {},
+                    "positions": [],
+                    "orders": live_orders,
+                    "live_open_orders": live_orders,
+                    "counts": {},
+                },
+                "target_url": "http://runtime/ibkr/account",
+                "elapsed_ms": 1.0,
+                "timeout_s": timeout,
+            }
+
+        pb = _FakePB(
+            rows={
+                "orders": [
+                    {
+                        "id": "ord-mstr-close",
+                        "environment": "paper",
+                        "symbol": "MSTR",
+                        "status": "Submitted",
+                        "relation_status": "active",
+                        "role": "close",
+                        "direction": "short",
+                        "position_side": "short",
+                        "quantity": 39,
+                        "filled_qty": 0,
+                        "limit_price": 127.46,
+                        "broker_order_id": "11291",
+                        "order_id": "11291",
+                        "unique_id": "close_MSTR_20260609_015511",
+                        "entry_order_unique_id": "close_MSTR_20260609_015511",
+                        "parent_order_unique_id": "close_MSTR_20260609_015511",
+                        "trade_group_id": "close_MSTR_20260609_015511",
+                        "signal_id": "",
+                        "updated": "2026-06-09 06:05:14.441Z",
+                    }
+                ],
+                "ibkr_signals": [],
+            }
+        )
+
+        payload, status_code = build_account_snapshot_response(
+            pb,
+            payload={"broker_mode": "paper", "environment": "paper"},
+            normalize_environment=lambda value, default="live": value or default,
+            request_json_request=request_json_request,
+            runtime_base_url="http://runtime",
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertEqual(2, len(calls))
+        self.assertIn(("broker_force", "1"), calls[1])
+        self.assertIn(("include_pnl", "0"), calls[1])
+        self.assertEqual(0, payload["counts"]["stale_pb_order_groups"])
+        self.assertEqual(1, payload["counts"]["broker_matched_orders"])
+        self.assertEqual("matched", payload["live_open_orders"][0]["match_state"])
+        recheck = payload["order_reconciliation"]["stale_recheck"]
+        self.assertEqual("resolved", recheck["result"])
+        self.assertEqual(["11291"], recheck["resolved_order_ids"])
+        self.assertEqual([], recheck["confirmed_stale_order_ids"])
+
+    def test_stale_pb_order_recheck_confirms_stale_when_broker_force_still_missing(self):
+        calls = []
+
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            calls.append(list(params or []))
+            return {
+                "ok": True,
+                "status_code": 200,
+                "payload": {
+                    "ok": True,
+                    "environment": "paper",
+                    "summary": {},
+                    "positions": [],
+                    "orders": [],
+                    "live_open_orders": [],
+                    "counts": {},
+                },
+                "target_url": "http://runtime/ibkr/account",
+                "elapsed_ms": 1.0,
+                "timeout_s": timeout,
+            }
+
+        pb = _FakePB(
+            rows={
+                "orders": [
+                    {
+                        "id": "ord-tsla-close",
+                        "environment": "paper",
+                        "symbol": "TSLA",
+                        "status": "Submitted",
+                        "relation_status": "active",
+                        "role": "close",
+                        "direction": "short",
+                        "position_side": "short",
+                        "quantity": 8,
+                        "filled_qty": 0,
+                        "limit_price": 185.25,
+                        "broker_order_id": "22001",
+                        "order_id": "22001",
+                        "unique_id": "close_TSLA_20260609_021500",
+                        "entry_order_unique_id": "close_TSLA_20260609_021500",
+                        "parent_order_unique_id": "close_TSLA_20260609_021500",
+                        "trade_group_id": "close_TSLA_20260609_021500",
+                        "signal_id": "",
+                        "updated": "2026-06-09 06:15:00.000Z",
+                    }
+                ],
+                "ibkr_signals": [],
+            }
+        )
+
+        payload, status_code = build_account_snapshot_response(
+            pb,
+            payload={"broker_mode": "paper", "environment": "paper"},
+            normalize_environment=lambda value, default="live": value or default,
+            request_json_request=request_json_request,
+            runtime_base_url="http://runtime",
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertEqual(2, len(calls))
+        self.assertIn(("broker_force", "1"), calls[1])
+        self.assertEqual(1, payload["counts"]["stale_pb_order_groups"])
+        recheck = payload["order_reconciliation"]["stale_recheck"]
+        self.assertEqual("confirmed_stale", recheck["result"])
+        self.assertEqual([], recheck["resolved_order_ids"])
+        self.assertEqual(["22001"], recheck["confirmed_stale_order_ids"])
+
+    def test_stale_pb_order_recheck_failure_keeps_stale_with_error(self):
+        calls = []
+
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            params = list(params or [])
+            calls.append(params)
+            broker_force = ("broker_force", "1") in params
+            return {
+                "ok": not broker_force,
+                "status_code": 502 if broker_force else 200,
+                "payload": {
+                    "ok": not broker_force,
+                    "environment": "paper",
+                    "summary": {},
+                    "positions": [],
+                    "orders": [],
+                    "live_open_orders": [],
+                    "counts": {},
+                    **({"error": "runtime_timeout"} if broker_force else {}),
+                },
+                "target_url": "http://runtime/ibkr/account",
+                "elapsed_ms": 1.0,
+                "timeout_s": timeout,
+                **({"error": "runtime_timeout"} if broker_force else {}),
+            }
+
+        pb = _FakePB(
+            rows={
+                "orders": [
+                    {
+                        "id": "ord-amzn-close",
+                        "environment": "paper",
+                        "symbol": "AMZN",
+                        "status": "Submitted",
+                        "relation_status": "active",
+                        "role": "close",
+                        "direction": "short",
+                        "position_side": "short",
+                        "quantity": 5,
+                        "filled_qty": 0,
+                        "broker_order_id": "33001",
+                        "order_id": "33001",
+                        "unique_id": "close_AMZN_20260609_023000",
+                        "entry_order_unique_id": "close_AMZN_20260609_023000",
+                        "trade_group_id": "close_AMZN_20260609_023000",
+                        "updated": "2026-06-09 06:30:00.000Z",
+                    }
+                ],
+                "ibkr_signals": [],
+            }
+        )
+
+        payload, status_code = build_account_snapshot_response(
+            pb,
+            payload={"broker_mode": "paper", "environment": "paper"},
+            normalize_environment=lambda value, default="live": value or default,
+            request_json_request=request_json_request,
+            runtime_base_url="http://runtime",
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertEqual(2, len(calls))
+        self.assertEqual(1, payload["counts"]["stale_pb_order_groups"])
+        recheck = payload["order_reconciliation"]["stale_recheck"]
+        self.assertEqual("recheck_failed", recheck["result"])
+        self.assertEqual("runtime_timeout", recheck["error"])
+        self.assertEqual([], recheck["resolved_order_ids"])
+
+    def test_stale_pb_order_without_broker_id_does_not_trigger_recheck(self):
+        calls = []
+
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            calls.append(list(params or []))
+            return {
+                "ok": True,
+                "status_code": 200,
+                "payload": {
+                    "ok": True,
+                    "environment": "paper",
+                    "summary": {},
+                    "positions": [],
+                    "orders": [],
+                    "live_open_orders": [],
+                    "counts": {},
+                },
+                "target_url": "http://runtime/ibkr/account",
+                "elapsed_ms": 1.0,
+                "timeout_s": timeout,
+            }
+
+        pb = _FakePB(
+            rows={
+                "orders": [
+                    {
+                        "id": "ord-no-broker",
+                        "environment": "paper",
+                        "symbol": "NFLX",
+                        "status": "Submitted",
+                        "relation_status": "active",
+                        "role": "close",
+                        "direction": "long",
+                        "position_side": "long",
+                        "quantity": 2,
+                        "filled_qty": 0,
+                        "unique_id": "close_NFLX_20260609_022500",
+                        "entry_order_unique_id": "close_NFLX_20260609_022500",
+                        "trade_group_id": "close_NFLX_20260609_022500",
+                        "updated": "2026-06-09 06:25:00.000Z",
+                    }
+                ],
+                "ibkr_signals": [],
+            }
+        )
+
+        payload, status_code = build_account_snapshot_response(
+            pb,
+            payload={"broker_mode": "paper", "environment": "paper"},
+            normalize_environment=lambda value, default="live": value or default,
+            request_json_request=request_json_request,
+            runtime_base_url="http://runtime",
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertEqual(1, len(calls))
+        self.assertEqual(1, payload["counts"]["stale_pb_order_groups"])
+        self.assertNotIn("stale_recheck", payload["order_reconciliation"])
 
     def test_build_account_snapshot_response_forwards_orders_fast_profile(self):
         calls = []

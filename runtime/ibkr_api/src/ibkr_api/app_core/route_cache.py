@@ -44,10 +44,20 @@ def request_cache_bypass(payload: dict[str, Any] | None) -> bool:
 
 def canonical_cache_key(namespace: str, payload: dict[str, Any] | None, *, extra: tuple[Any, ...] = ()) -> tuple[Any, ...]:
     data = payload if isinstance(payload, dict) else {}
+    skip_fields = {
+        "_",
+        "_ts",
+        "_verify",
+        "cache",
+        "cache_bust",
+        "force",
+        "refresh",
+        "broker_force",
+    }
     filtered = {
         str(key): value
         for key, value in data.items()
-        if str(key) not in {"cache_bust", "broker_force", "cache", "_"}
+        if str(key) not in skip_fields
     }
     return (
         namespace,
