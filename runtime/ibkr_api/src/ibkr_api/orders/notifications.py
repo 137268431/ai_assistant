@@ -1510,6 +1510,22 @@ def _trade_ledger_notified_keys(extra: Any) -> set[str]:
     return {key for key in keys if key}
 
 
+def _trade_ledger_fill_exec_notify_key(
+    *,
+    environment: str,
+    broker_order_id: str,
+    unique_id: str,
+    exec_id: str,
+    event_type: str,
+) -> str:
+    if to_text(event_type) != "fill" or not to_text(exec_id):
+        return ""
+    order_identity = to_text(broker_order_id) or to_text(unique_id)
+    if not order_identity:
+        return ""
+    return f"trade_ledger_callback_v2:{to_text(environment) or 'live'}:{order_identity}:{to_text(exec_id)}:fill"
+
+
 def _trade_ledger_event_model(order_record: dict[str, Any], previous_order: dict[str, Any] | None) -> dict[str, Any]:
     environment = to_text(_record_or_extra_value(order_record, "environment")) or "live"
     if not _trade_ledger_environment_allowed(environment):
@@ -1634,6 +1650,14 @@ def _trade_ledger_event_model(order_record: dict[str, Any], previous_order: dict
         "fill_price": round(_trade_ledger_fill_price(order_record) or 0.0, 8),
     }
     digest = hashlib.sha1(json.dumps(digest_payload, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()[:16]
+    legacy_notify_key = f"trade_ledger_callback_v1:{environment}:{current_broker_order_id or unique_id}:{digest}"
+    notify_key = _trade_ledger_fill_exec_notify_key(
+        environment=environment,
+        broker_order_id=current_broker_order_id,
+        unique_id=unique_id,
+        exec_id=exec_id,
+        event_type=event_type,
+    ) or legacy_notify_key
     display_status = current_status
     if event_type == "fill" and is_full_fill and current_status not in {"Filled", "Closed", "Executed"}:
         display_status = "Filled"
@@ -1651,7 +1675,8 @@ def _trade_ledger_event_model(order_record: dict[str, Any], previous_order: dict
         "callback_type": callback_type,
         "exec_id": exec_id,
         "close_remaining_qty": max(0.0, quantity - current_filled) if incomplete_close_cancel else 0.0,
-        "notify_key": f"trade_ledger_callback_v1:{environment}:{current_broker_order_id or unique_id}:{digest}",
+        "notify_key": notify_key,
+        "legacy_notify_key": legacy_notify_key,
     }
 
 
@@ -1840,6 +1865,9 @@ def _trade_ledger_notification_patch(
         "feishu_trade_ledger_last_reason": to_text(event_model.get("reason")),
         "feishu_trade_ledger_error": "" if success else to_text(result.get("error") or "unknown_error"),
     }
+    exec_id = to_text(event_model.get("exec_id"))
+    if exec_id:
+        patch["feishu_trade_ledger_last_exec_id"] = exec_id
     message_id = to_text(result.get("message_id"))
     if message_id:
         patch["feishu_trade_ledger_message_id"] = message_id
@@ -1872,8 +1900,18 @@ def sync_order_callback_ledger_notification(
 
     current_extra = ensure_object(order_record.get("extra"))
     notify_key = to_text(event_model.get("notify_key"))
-    if notify_key in _trade_ledger_notified_keys(current_extra) and current_extra.get("feishu_trade_ledger_last_result") == "success":
+    notified_keys = _trade_ledger_notified_keys(current_extra)
+    last_result_success = current_extra.get("feishu_trade_ledger_last_result") == "success"
+    if notify_key in notified_keys and last_result_success:
         return {"success": True, "skipped": True, "reason": "already_notified", "notify_key": notify_key}
+    exec_id = to_text(event_model.get("exec_id"))
+    if (
+        to_text(event_model.get("event_type")) == "fill"
+        and exec_id
+        and last_result_success
+        and to_text(current_extra.get("feishu_trade_ledger_last_exec_id")) == exec_id
+    ):
+        return {"success": True, "skipped": True, "reason": "already_notified_exec", "notify_key": notify_key}
     if not callable(send_interactive) or not trade_ledger_chat_id:
         return {"success": False, "skipped": True, "reason": "missing_send_target", "notify_key": notify_key}
 

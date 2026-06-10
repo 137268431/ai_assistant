@@ -14,7 +14,7 @@ from ibkr_compute.api.account.buying_power_guard import (
     estimate_entry_exposure,
 )
 from ibkr_compute.core.time_utils import ET
-from ibkr_compute.observability.prometheus import record_signal_event
+from ibkr_compute.observability.prometheus import record_signal_event, set_buying_power_guard_effective_metrics
 from ibkr_compute.order.buying_power_reservations import (
     apply_reservations_to_buying_power_summary,
     merge_reservation_snapshot_into_guard,
@@ -3183,6 +3183,10 @@ class TradingServiceSignalsMixin:
             guard["state"] = "blocked"
             guard["reason"] = "buying_power_price_unavailable"
         self._recompute_buying_power_guard_capacity(guard)
+        try:
+            set_buying_power_guard_effective_metrics(guard, environment=service_mod.ENVIRONMENT)
+        except Exception:
+            service_mod.logger.debug("Failed to publish effective buying-power guard metrics", exc_info=True)
         return guard
 
     def _buying_power_notify_enabled(self) -> bool:

@@ -56,12 +56,20 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
             "extra": {"close": 181.25, "crsi": 72.1},
         }
 
+        def fake_get_records(collection, **_kwargs):
+            if collection == "ibkr_signals":
+                return signal_rows
+            if collection == "ibkr_cache_snapshots":
+                return []
+            return []
+
         with mock.patch.object(api_app_mod.request, "args", _RequestArgs({"environment": "live", "date": "2026-04-22"})):
-            with mock.patch.object(api_app_mod.pb, "get_records", return_value=signal_rows) as records_mock:
+            with mock.patch.object(api_app_mod.pb, "get_records", side_effect=fake_get_records) as records_mock:
                 with mock.patch.object(api_app_mod.pb, "get_first_record", return_value=indicator_row) as first_mock:
                     payload = api_app_mod.custom_ibkr_signals_pending()
 
-        records_mock.assert_called_once()
+        signal_record_calls = [call for call in records_mock.call_args_list if call.args and call.args[0] == "ibkr_signals"]
+        self.assertEqual(1, len(signal_record_calls), records_mock.call_args_list)
         first_mock.assert_called_once()
         self.assertEqual(len(payload["ibkr_signals"]), 1)
         signal = payload["ibkr_signals"][0]
@@ -1227,6 +1235,152 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
             pb.updated[0][2]["extra"]["feishu_trade_ledger_notify_key"],
             pb.updated[0][2]["extra"]["feishu_trade_ledger_notified_keys"],
         )
+
+    def test_sync_order_callback_ledger_skips_replayed_fill_with_same_exec_id(self):
+        class _LedgerPB:
+            def __init__(self):
+                self.order = {
+                    "id": "order-entry",
+                    "unique_id": "entry_BATS_BE_long_20260610_0946_2_mr_sdLower",
+                    "order_type": "LMT",
+                    "symbol": "BE",
+                    "environment": "paper",
+                    "status": "Submitted",
+                    "role": "entry",
+                    "broker_order_id": "11304",
+                    "order_id": "11304",
+                    "trade_group_id": "BATS_BE_long_20260610_0946_2_mr_sdLower",
+                    "entry_order_unique_id": "entry_BATS_BE_long_20260610_0946_2_mr_sdLower",
+                    "signal_id": "BATS_BE_long_20260610_0946_2_mr_sdLower",
+                    "direction": "long",
+                    "quantity": 19,
+                    "filled_qty": 19,
+                    "fill_price": 258.23,
+                    "last_fill_price": 258.23,
+                    "extra": {
+                        "environment": "paper",
+                        "broker_realtime_callback": True,
+                        "ib_callback_type": "execDetails",
+                        "ib_exec_id": "0000e0d5.6a29f7a8.01.01",
+                        "broker_callback_received_at": "2026-06-10 09:48:30",
+                    },
+                }
+                self.updated = []
+
+            def update_record(self, collection, record_id, patch):
+                self.updated.append((collection, record_id, patch))
+                self.order = {**self.order, **patch}
+                return dict(self.order)
+
+        pb = _LedgerPB()
+        previous = {**pb.order, "filled_qty": 0, "extra": {"environment": "paper"}}
+        send_calls = []
+
+        first = sync_order_callback_ledger_notification(
+            pb,
+            pb.order,
+            previous_order=previous,
+            send_interactive=lambda card, chat_id, environment: send_calls.append((card, chat_id, environment))
+            or {"success": True, "message_id": "ledger-msg-first"},
+            trade_ledger_chat_id="ledger-chat-test",
+        )
+
+        self.assertEqual("ledger-msg-first", first["message_id"])
+        self.assertEqual(1, len(send_calls))
+        self.assertTrue(first["notify_key"].startswith("trade_ledger_callback_v2:paper:11304:0000e0d5.6a29f7a8.01.01:fill"))
+
+        replayed_order = {
+            **pb.order,
+            "status": "Filled",
+            "filled_qty": 19,
+            "extra": {
+                **pb.order["extra"],
+                "broker_realtime_callback": True,
+                "ib_callback_type": "commissionReport",
+                "ib_exec_id": "0000e0d5.6a29f7a8.01.01",
+                "broker_callback_received_at": "2026-06-10 09:51:56",
+            },
+        }
+        stale_previous = {**replayed_order, "status": "Submitted", "filled_qty": 0, "extra": {"environment": "paper"}}
+        second = sync_order_callback_ledger_notification(
+            pb,
+            replayed_order,
+            previous_order=stale_previous,
+            send_interactive=lambda card, chat_id, environment: send_calls.append((card, chat_id, environment))
+            or {"success": True, "message_id": "ledger-msg-duplicate"},
+            trade_ledger_chat_id="ledger-chat-test",
+        )
+
+        self.assertTrue(second["skipped"])
+        self.assertEqual("already_notified", second["reason"])
+        self.assertEqual(1, len(send_calls))
+
+    def test_sync_order_callback_ledger_allows_different_exec_id_fills(self):
+        class _LedgerPB:
+            def __init__(self):
+                self.order = {
+                    "id": "order-entry",
+                    "unique_id": "sig-1_entry",
+                    "order_type": "LMT",
+                    "symbol": "AAPL",
+                    "environment": "paper",
+                    "status": "Submitted",
+                    "role": "entry",
+                    "broker_order_id": "101",
+                    "order_id": "101",
+                    "trade_group_id": "sig-1",
+                    "entry_order_unique_id": "sig-1_entry",
+                    "signal_id": "sig-1",
+                    "direction": "long",
+                    "quantity": 20,
+                    "filled_qty": 10,
+                    "fill_price": 180.0,
+                    "extra": {
+                        "environment": "paper",
+                        "broker_realtime_callback": True,
+                        "ib_callback_type": "execDetails",
+                        "ib_exec_id": "exec-1",
+                    },
+                }
+                self.updated = []
+
+            def update_record(self, collection, record_id, patch):
+                self.updated.append((collection, record_id, patch))
+                self.order = {**self.order, **patch}
+                return dict(self.order)
+
+        pb = _LedgerPB()
+        send_calls = []
+        sync_order_callback_ledger_notification(
+            pb,
+            pb.order,
+            previous_order={**pb.order, "filled_qty": 0, "extra": {"environment": "paper"}},
+            send_interactive=lambda card, chat_id, environment: send_calls.append((card, chat_id, environment))
+            or {"success": True, "message_id": "ledger-msg-1"},
+            trade_ledger_chat_id="ledger-chat-test",
+        )
+
+        second_fill = {
+            **pb.order,
+            "filled_qty": 20,
+            "extra": {
+                **pb.order["extra"],
+                "broker_realtime_callback": True,
+                "ib_callback_type": "execDetails",
+                "ib_exec_id": "exec-2",
+            },
+        }
+        result = sync_order_callback_ledger_notification(
+            pb,
+            second_fill,
+            previous_order={**second_fill, "filled_qty": 10, "extra": {"environment": "paper"}},
+            send_interactive=lambda card, chat_id, environment: send_calls.append((card, chat_id, environment))
+            or {"success": True, "message_id": "ledger-msg-2"},
+            trade_ledger_chat_id="ledger-chat-test",
+        )
+
+        self.assertEqual("ledger-msg-2", result["message_id"])
+        self.assertEqual(2, len(send_calls))
 
     def test_sync_order_callback_ledger_labels_first_exec_details_with_no_new_delta(self):
         class _LedgerPB:

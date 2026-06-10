@@ -166,6 +166,12 @@ def _flask_or_skip(testcase):
         from flask import Flask
     except ModuleNotFoundError:
         testcase.skipTest("Flask is required for /metrics integration coverage")
+    try:
+        app = Flask("compute-prometheus-test-probe")
+    except Exception as exc:
+        testcase.skipTest(f"real Flask app is unavailable: {exc}")
+    if not hasattr(app, "test_client"):
+        testcase.skipTest("real Flask test client is unavailable")
     return Flask
 
 
@@ -263,6 +269,7 @@ def _sanitize_labels(func, labels):
 class ComputePrometheusMetricsTest(unittest.TestCase):
     def test_compute_app_exposes_prometheus_metrics_endpoint(self):
         _observability_or_skip(self, requiring=INSTALL_FUNCTION_NAMES)
+        _flask_or_skip(self)
         self.addCleanup(_restore_requests_metrics_patch)
         with mock.patch.dict(os.environ, {"IBKR_SERVICE_PROFILE": "compute", "IBKR_SCHEDULER_AUTOSTART": "false"}, clear=False):
             with _stub_pb_config_refresh():
@@ -403,6 +410,8 @@ class ComputePrometheusMetricsTest(unittest.TestCase):
         position_current_labels = set(getattr(getattr(module, "POSITION_CURRENT_COUNT", None), "_labelnames", None) or ())
         order_current_labels = set(getattr(getattr(module, "ORDER_CURRENT_COUNT", None), "_labelnames", None) or ())
         signal_current_labels = set(getattr(getattr(module, "SIGNAL_CURRENT_COUNT", None), "_labelnames", None) or ())
+        trade_pnl_labels = set(getattr(getattr(module, "TRADE_REALIZED_PNL_TODAY", None), "_labelnames", None) or ())
+        trade_result_labels = set(getattr(getattr(module, "TRADE_RESULT_COUNT_TODAY", None), "_labelnames", None) or ())
         gateway_labels = set(getattr(getattr(module, "GATEWAY_SESSION_AUTHENTICATED", None), "_labelnames", None) or ())
         if (
             not account_labels
@@ -411,6 +420,8 @@ class ComputePrometheusMetricsTest(unittest.TestCase):
             or not position_current_labels
             or not order_current_labels
             or not signal_current_labels
+            or not trade_pnl_labels
+            or not trade_result_labels
             or not gateway_labels
         ):
             self.skipTest("prometheus_client label schemas are unavailable in this environment")
@@ -423,6 +434,8 @@ class ComputePrometheusMetricsTest(unittest.TestCase):
             position_current_labels,
             order_current_labels,
             signal_current_labels,
+            trade_pnl_labels,
+            trade_result_labels,
             gateway_labels,
         ):
             self.assertFalse(denied.intersection(label_set), label_set)
@@ -433,6 +446,8 @@ class ComputePrometheusMetricsTest(unittest.TestCase):
         self.assertEqual({"service", "environment", "direction"}, position_current_labels)
         self.assertEqual({"service", "environment", "kind"}, order_current_labels)
         self.assertEqual({"service", "environment", "direction", "state"}, signal_current_labels)
+        self.assertEqual({"service", "environment", "basis"}, trade_pnl_labels)
+        self.assertEqual({"service", "environment", "basis", "grain", "result"}, trade_result_labels)
         self.assertEqual({"service", "environment"}, gateway_labels)
 
     def test_broker_request_suppressed_metric_uses_low_cardinality_labels(self):
@@ -664,6 +679,47 @@ class ComputePrometheusMetricsTest(unittest.TestCase):
 
         self.assertRegex(metrics_text, rf'ibkr_signal_current_count\{{(?=[^}}]*service="ibkr-api")(?=[^}}]*environment="{environment}")(?=[^}}]*direction="long")(?=[^}}]*state="active")[^}}]*\}} 2\.0')
         self.assertRegex(metrics_text, rf'ibkr_signal_current_count\{{(?=[^}}]*service="ibkr-api")(?=[^}}]*environment="{environment}")(?=[^}}]*direction="short")(?=[^}}]*state="active")[^}}]*\}} 1\.0')
+
+    def test_effective_buying_power_guard_and_trade_result_metrics_publish(self):
+        module = _observability_or_skip(
+            self,
+            requiring=("set_buying_power_guard_effective_metrics", "set_trade_result_today_metrics"),
+        )
+        generate_latest = getattr(module, "generate_latest", None)
+        if not callable(generate_latest):
+            self.skipTest("prometheus_client generate_latest is unavailable in this environment")
+
+        environment = "metric_effective_guard_test"
+        with mock.patch.dict(
+            os.environ,
+            {"IBKR_SERVICE_PROFILE": "runtime", "IBKR_SERVICE_NAME": "", "IBKR_BROKER_MODE": ""},
+            clear=False,
+        ):
+            module.set_buying_power_guard_effective_metrics(
+                {
+                    "environment": environment,
+                    "state": "ok",
+                    "remaining": 12345.67,
+                    "configured_buying_power": 20000,
+                    "risk_model_used_exposure": 7654.33,
+                },
+                environment=environment,
+            )
+            module.set_trade_result_today_metrics(
+                {
+                    "environment": environment,
+                    "realized_pnl": -267.64,
+                    "result_counts": {"win": 0, "loss": 2, "flat": 5, "unknown": 1},
+                },
+                environment=environment,
+                grain="trade_group",
+            )
+        metrics_text = generate_latest().decode("utf-8", errors="replace")
+
+        self.assertRegex(metrics_text, rf'ibkr_account_buying_power_guard_state\{{(?=[^}}]*service="ibkr-runtime")(?=[^}}]*environment="{environment}")(?=[^}}]*source="effective_guard")(?=[^}}]*state="ok")[^}}]*\}} 1\.0')
+        self.assertRegex(metrics_text, rf'ibkr_account_buying_power_remaining_usd\{{(?=[^}}]*environment="{environment}")(?=[^}}]*source="effective_guard")[^}}]*\}} 12345\.67')
+        self.assertRegex(metrics_text, rf'ibkr_trade_realized_pnl_today_usd\{{(?=[^}}]*environment="{environment}")(?=[^}}]*basis="realized")[^}}]*\}} -267\.64')
+        self.assertRegex(metrics_text, rf'ibkr_trade_result_count_today\{{(?=[^}}]*environment="{environment}")(?=[^}}]*basis="realized")(?=[^}}]*grain="trade_group")(?=[^}}]*result="loss")[^}}]*\}} 2\.0')
 
     def test_runtime_status_metrics_publish_market_data_subscription_values(self):
         module = _observability_or_skip(

@@ -387,12 +387,39 @@ def _build_monitor_flags(runtime_status: dict, api_utilization: dict, host_snaps
 
     pending_subscription_count = int(api_utilization.get("pending_subscription_count", 0) or 0)
     if pending_subscription_count > 0:
+        pending_conids = [
+            str(item)
+            for item in (websocket.get("pending_conids") or [])
+            if str(item or "").strip()
+        ]
+        conid_suffix = f" conid={', '.join(pending_conids[:8])}。" if pending_conids else ""
         _append_monitor_flag(
             flags,
             "warning",
             "pending_subscriptions",
             "Pending subscriptions",
-            f"当前还有 {pending_subscription_count} 个待完成订阅。",
+            f"当前还有 {pending_subscription_count} 个待完成订阅。{conid_suffix}",
+        )
+    recent_subscription_failures = [
+        item for item in (websocket.get("recent_failures") or [])
+        if isinstance(item, dict) and str(item.get("error") or "").strip()
+    ]
+    if recent_subscription_failures:
+        samples = []
+        terminal_count = 0
+        for item in recent_subscription_failures[:5]:
+            if bool(item.get("terminal")):
+                terminal_count += 1
+            conid = str(item.get("conid") or "").strip() or "-"
+            error = str(item.get("error") or "").strip()
+            samples.append(f"{conid}: {error[:120]}")
+        severity = "warning" if terminal_count else "info"
+        _append_monitor_flag(
+            flags,
+            severity,
+            "subscription_failures",
+            "Subscription failures",
+            f"最近有 {len(recent_subscription_failures)} 个行情订阅失败。{'；'.join(samples)}",
         )
 
     if bool(market_universe.get("no_active_targets")) and _should_warn_no_active_targets(runtime_status):

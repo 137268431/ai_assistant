@@ -31,6 +31,16 @@ def _service_config_bool(service, key: str, default: bool) -> bool:
     return bool(default)
 
 
+def _fetch_tracker_live_orders(order_tracker):
+    getter = getattr(order_tracker, "get_live_orders", None)
+    if not callable(getter):
+        return []
+    try:
+        return getter(include_all=True)
+    except TypeError:
+        return getter()
+
+
 def fetch_snapshot_sources(service, account_id: str, *, include_pnl: bool = True) -> dict:
     summary_raw = {}
     pnl_raw = {}
@@ -67,7 +77,7 @@ def fetch_snapshot_sources(service, account_id: str, *, include_pnl: bool = True
         if cached_orders:
             fetchers["orders"] = lambda: cached_orders
         else:
-            fetchers["orders"] = service.order_tracker.get_live_orders
+            fetchers["orders"] = lambda: _fetch_tracker_live_orders(service.order_tracker)
 
     if fetchers:
         with ThreadPoolExecutor(max_workers=len(fetchers), thread_name_prefix="ibkr-account") as executor:

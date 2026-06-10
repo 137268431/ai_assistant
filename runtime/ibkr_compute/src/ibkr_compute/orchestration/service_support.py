@@ -2,9 +2,17 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from datetime import datetime
 
 from ibkr_compute.market.timeframe_utils import interval_to_ms
+from ibkr_compute.observability.trade_result_metrics import (
+    build_trade_result_today_summary,
+    refresh_trade_result_today_metrics,
+    trade_result_group_key,
+    trade_result_metrics_enabled,
+    trade_result_metrics_interval_sec,
+)
 
 
 def _service_mod():
@@ -91,6 +99,7 @@ class TradingServiceSupportMixin:
             ("_account_snapshot_thread", "account-snapshot-refresh", self._account_snapshot_refresh_loop),
             ("_signal_thread", "signal-loop", self._signal_loop),
             ("_subscription_thread", "target-refresh", self._subscription_refresh_loop),
+            ("_trade_result_metrics_thread", "trade-result-metrics", self._trade_result_metrics_loop),
         ]
         if self._runtime_technical_pipeline_enabled():
             specs.extend(
@@ -317,6 +326,39 @@ class TradingServiceSupportMixin:
 
     def _market_date(self) -> str:
         return datetime.now(_service_mod().ET).strftime("%Y-%m-%d")
+
+    def _trade_result_metrics_enabled(self) -> bool:
+        service_mod = _service_mod()
+        return trade_result_metrics_enabled(getattr(self, "config", None), service_mod.ENVIRONMENT, True)
+
+    def _trade_result_metrics_interval_sec(self) -> float:
+        service_mod = _service_mod()
+        return trade_result_metrics_interval_sec(getattr(self, "config", None), service_mod.ENVIRONMENT, 60.0)
+
+    def _trade_result_group_key(self, row: dict) -> str:
+        return trade_result_group_key(row)
+
+    def _build_trade_result_today_summary(self, rows: list[dict]) -> dict:
+        return build_trade_result_today_summary(rows, environment=_service_mod().ENVIRONMENT)
+
+    def refresh_trade_result_today_metrics(self) -> dict:
+        service_mod = _service_mod()
+        return refresh_trade_result_today_metrics(
+            getattr(self, "pb", None),
+            environment=service_mod.ENVIRONMENT,
+        )
+
+    def _trade_result_metrics_loop(self):
+        while getattr(self, "_running", False):
+            if self._trade_result_metrics_enabled():
+                try:
+                    self.refresh_trade_result_today_metrics()
+                except Exception:
+                    _service_mod().logger.debug("Trade result metrics refresh failed", exc_info=True)
+            interval = self._trade_result_metrics_interval_sec()
+            deadline = time.time() + interval
+            while getattr(self, "_running", False) and time.time() < deadline:
+                time.sleep(min(1.0, max(0.0, deadline - time.time())))
 
     def _drain_compute_queue(self) -> int:
         drained = 0

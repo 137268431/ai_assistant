@@ -50,7 +50,7 @@ groups:
       description: instance={{ $labels.instance }} mountpoint={{ $labels.mountpoint
         }}.
   - alert: AccountBuyingPowerGuardUnavailable
-    expr: max by (service, environment) (max_over_time(ibkr_account_buying_power_guard_state{source=~"account_snapshot|account_summary",
+    expr: max by (service, environment) (max_over_time(ibkr_account_buying_power_guard_state{source="effective_guard",
       state=~"ok|warning|blocked"}[5m])) == 0
     for: 5m
     labels:

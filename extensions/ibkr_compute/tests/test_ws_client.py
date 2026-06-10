@@ -41,6 +41,16 @@ class FakeBroker:
         self.unsubscribed_conids.append(int(conid))
 
 
+class FailingBroker(FakeBroker):
+    def __init__(self, error):
+        super().__init__()
+        self.error = error
+
+    def subscribe_market_data(self, conid: int, symbol: str = "", exchange: str = "SMART"):
+        self.subscribed_conids.append(int(conid))
+        raise RuntimeError(self.error)
+
+
 class IBKRWebSocketClientTest(unittest.TestCase):
     def test_start_flush_clears_pending_subscriptions_after_success(self):
         broker = FakeBroker()
@@ -86,6 +96,35 @@ class IBKRWebSocketClientTest(unittest.TestCase):
         self.assertEqual([756733], broker.subscribed_conids)
         self.assertEqual([756733], status["subscribed_conids"])
         self.assertEqual(0, status["pending_count"])
+
+    def test_terminal_subscription_failure_clears_pending_and_records_failure(self):
+        broker = FailingBroker("contract_not_found:8314")
+        client = IBKRWebSocketClient(broker=broker)
+        client.start()
+
+        client.subscribe(8314)
+        status = client.status()
+
+        self.assertEqual(0, status["pending_count"])
+        self.assertEqual([], status["pending_conids"])
+        self.assertEqual([8314], broker.subscribed_conids)
+        self.assertIn("8314", status["subscription_last_errors"])
+        self.assertTrue(status["subscription_last_errors"]["8314"]["terminal"])
+        self.assertEqual(8314, status["recent_failures"][0]["conid"])
+        self.assertIn("contract_not_found", status["recent_failures"][0]["error"])
+
+    def test_transient_subscription_failure_keeps_pending_for_retry(self):
+        broker = FailingBroker("temporary_socket_error")
+        client = IBKRWebSocketClient(broker=broker)
+        client.start()
+
+        client.subscribe(272093)
+        status = client.status()
+
+        self.assertEqual(1, status["pending_count"])
+        self.assertEqual([272093], status["pending_conids"])
+        self.assertIn("272093", status["subscription_last_errors"])
+        self.assertFalse(status["subscription_last_errors"]["272093"]["terminal"])
 
 
 if __name__ == "__main__":

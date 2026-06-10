@@ -540,6 +540,16 @@ if _client_available():
         "Buying-power guard state marker; the active state has value 1.",
         ("service", "environment", "source", "state"),
     )
+    TRADE_REALIZED_PNL_TODAY = Gauge(
+        "ibkr_trade_realized_pnl_today_usd",
+        "Current trading-day realized PnL aggregated from execution fills.",
+        ("service", "environment", "basis"),
+    )
+    TRADE_RESULT_COUNT_TODAY = Gauge(
+        "ibkr_trade_result_count_today",
+        "Current trading-day execution fill counts by realized PnL result bucket.",
+        ("service", "environment", "basis", "grain", "result"),
+    )
     POSITION_CURRENT_COUNT = Gauge(
         "ibkr_position_current_count",
         "Current Gateway position counts by low-cardinality direction bucket.",
@@ -715,6 +725,7 @@ else:  # pragma: no cover
     ACCOUNT_BUYING_POWER_REMAINING = ACCOUNT_BUYING_POWER_USED_EXPOSURE = ACCOUNT_BUYING_POWER_UTILIZATION = None
     ACCOUNT_BUYING_POWER_REMAINING_SLOTS = ACCOUNT_BUYING_POWER_WARN_FLOOR = ACCOUNT_BUYING_POWER_BLOCK_FLOOR = None
     ACCOUNT_BUYING_POWER_GUARD_STATE = None
+    TRADE_REALIZED_PNL_TODAY = TRADE_RESULT_COUNT_TODAY = None
     POSITION_CURRENT_COUNT = ORDER_CURRENT_COUNT = SIGNAL_CURRENT_COUNT = None
     RUNTIME_CONFIG_SWITCH_ENABLED = None
     BROKER_CONNECTS = BROKER_CONNECT_DURATION = BROKER_READY = BROKER_CONNECTED = BROKER_DISCONNECTS = BROKER_ERRORS = None
@@ -1364,6 +1375,73 @@ def _set_account_current_count_metrics(service: str, env: str, payload: dict[str
         _gauge_set(ORDER_CURRENT_COUNT, (service, env, kind), order_counts.get(kind, 0))
 
 
+def set_buying_power_guard_effective_metrics(
+    guard: dict[str, Any] | None = None,
+    *,
+    environment: str = "",
+    service_name: str | None = None,
+) -> None:
+    if not _client_available() or not isinstance(guard, dict):
+        return
+    service = resolve_source_service(service_name)
+    env = _metric_environment(environment or guard.get("environment"))
+    src = "effective_guard"
+
+    configured = _optional_float(guard.get("configured_buying_power"))
+    remaining = _first_number(
+        guard.get("remaining"),
+        guard.get("remaining_after"),
+        guard.get("account_remaining_buying_power"),
+    )
+    used = _first_number(
+        guard.get("risk_model_used_exposure"),
+        guard.get("used_exposure"),
+        guard.get("gross_position_value"),
+    )
+    if used is None and configured is not None and remaining is not None:
+        used = max(0.0, configured - remaining)
+
+    _gauge_set(ACCOUNT_BUYING_POWER_CONFIGURED, (service, env, src), configured)
+    _gauge_set(ACCOUNT_BUYING_POWER_REMAINING, (service, env, src), remaining)
+    _gauge_set(ACCOUNT_BUYING_POWER_USED_EXPOSURE, (service, env, src), used)
+    _gauge_set(ACCOUNT_BUYING_POWER_REMAINING_SLOTS, (service, env, src), guard.get("risk_model_remaining_slots"))
+    _gauge_set(ACCOUNT_BUYING_POWER_WARN_FLOOR, (service, env, src), guard.get("warn_floor"))
+    _gauge_set(ACCOUNT_BUYING_POWER_BLOCK_FLOOR, (service, env, src), guard.get("block_floor"))
+
+    utilization = _optional_float(guard.get("utilization_pct"))
+    if utilization is None and configured is not None and configured > 0 and used is not None:
+        utilization = max(0.0, min(100.0, used / configured * 100.0))
+    _gauge_set(ACCOUNT_BUYING_POWER_UTILIZATION, (service, env, src), utilization)
+
+    state = _sanitize_label(str(guard.get("state") or "unknown").strip().lower() or "unknown")
+    if ACCOUNT_BUYING_POWER_GUARD_STATE is not None:
+        for candidate in ("ok", "warning", "blocked", "unavailable", "disabled", "unknown"):
+            ACCOUNT_BUYING_POWER_GUARD_STATE.labels(service, env, src, candidate).set(1.0 if state == candidate else 0.0)
+
+
+def set_trade_result_today_metrics(
+    summary: dict[str, Any] | None = None,
+    *,
+    environment: str = "",
+    service_name: str | None = None,
+    basis: str = "realized",
+    grain: str = "trade_group",
+) -> None:
+    if not _client_available() or not isinstance(summary, dict):
+        return
+    service = resolve_source_service(service_name)
+    env = _metric_environment(environment or summary.get("environment"))
+    basis_label = _sanitize_label(str(basis or summary.get("basis") or "realized").strip().lower() or "realized")
+    grain_label = _sanitize_label(str(grain or summary.get("grain") or "trade_group").strip().lower() or "trade_group")
+    pnl = _first_number(summary.get("realized_pnl"), summary.get("realized_pnl_sum"), summary.get("net_pnl"), 0.0)
+    _gauge_set(TRADE_REALIZED_PNL_TODAY, (service, env, basis_label), pnl)
+
+    counts = summary.get("result_counts") if isinstance(summary.get("result_counts"), dict) else {}
+    for result in ("win", "loss", "flat", "unknown"):
+        value = _first_number(counts.get(result), summary.get(f"{result}_count"), 0.0)
+        _gauge_set(TRADE_RESULT_COUNT_TODAY, (service, env, basis_label, grain_label, result), value)
+
+
 def set_account_snapshot_metrics(payload: dict[str, Any] | None = None, *, source: str = "", environment: str = "") -> None:
     if not _client_available() or not isinstance(payload, dict):
         return
@@ -1712,10 +1790,12 @@ __all__ = [
     "sanitize_metric_labels",
     "set_account_snapshot_metrics",
     "set_broker_pending",
+    "set_buying_power_guard_effective_metrics",
     "set_current_signal_count_metrics",
     "set_gateway_status",
     "set_history_active",
     "set_runtime_config_switch_metrics",
     "set_runtime_status_metrics",
+    "set_trade_result_today_metrics",
     "setup_prometheus_metrics",
 ]

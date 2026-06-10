@@ -1946,6 +1946,19 @@ class _IBGatewayApp(EWrapper, EClient):
             self._ticker_meta.pop(req_id, None)
             self._ticker_payloads.pop(req_id, None)
 
+    @staticmethod
+    def _filter_open_order_snapshots(rows: Iterable[dict] | None) -> List[dict]:
+        closed_statuses = {"FILLED", "EXECUTED", "CANCELLED", "CANCELED", "INACTIVE", "REJECTED", "EXPIRED", "API_CANCELLED"}
+        result: List[dict] = []
+        for item in rows or []:
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status") or item.get("order_status") or item.get("orderStatus") or "").strip().upper()
+            if status in closed_statuses:
+                continue
+            result.append(dict(item))
+        return result
+
     def request_open_orders(
         self,
         timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS,
@@ -1955,12 +1968,25 @@ class _IBGatewayApp(EWrapper, EClient):
     ) -> List[dict]:
         kind = "open_orders_all" if include_all else "open_orders"
         cache_key = (kind, bool(include_all))
+        all_cache_key = ("open_orders_all", True)
         if not force:
+            if not include_all:
+                cached_all = self._account_cache_get(all_cache_key)
+                if cached_all is not None:
+                    open_orders = self._filter_open_order_snapshots(cached_all)
+                    self._account_cache_store(cache_key, open_orders, OPEN_ORDERS_CACHE_TTL_SECONDS)
+                    return list(open_orders or [])
             cached = self._account_cache_get(cache_key)
             if cached is not None:
                 return list(cached or [])
         with self._account_request_lock(kind):
             if not force:
+                if not include_all:
+                    cached_all = self._account_cache_get(all_cache_key)
+                    if cached_all is not None:
+                        open_orders = self._filter_open_order_snapshots(cached_all)
+                        self._account_cache_store(cache_key, open_orders, OPEN_ORDERS_CACHE_TTL_SECONDS)
+                        return list(open_orders or [])
                 cached = self._account_cache_get(cache_key)
                 if cached is not None:
                     return list(cached or [])
@@ -1993,6 +2019,12 @@ class _IBGatewayApp(EWrapper, EClient):
                     self.reqOpenOrders()
                 orders = self._await(req_id, ctx, timeout)
                 self._account_cache_store(cache_key, orders, OPEN_ORDERS_CACHE_TTL_SECONDS)
+                if include_all:
+                    self._account_cache_store(
+                        ("open_orders", False),
+                        self._filter_open_order_snapshots(orders),
+                        OPEN_ORDERS_CACHE_TTL_SECONDS,
+                    )
                 return orders
 
     def request_open_orders_for_order_confirmation(

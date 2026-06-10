@@ -11,6 +11,13 @@ from ibkr_compute.broker import BrokerAdapter
 
 logger = logging.getLogger(__name__)
 
+TERMINAL_SUBSCRIPTION_ERROR_MARKERS = (
+    "contract_not_found",
+    "invalid_conid",
+    "no_security_definition",
+    "no security definition",
+)
+
 
 class IBKRWebSocketClient:
     def __init__(self, gateway_url: str = None, on_tick: Callable = None, config=None, environment: str = "live", broker: BrokerAdapter | None = None):
@@ -33,6 +40,7 @@ class IBKRWebSocketClient:
         self._tick_pending_subscriptions: Set[int] = set()
         self._tick_subscription_types: Dict[int, str] = {}
         self._tick_last_errors: Dict[int, str] = {}
+        self._subscription_last_errors: Dict[int, Dict[str, Any]] = {}
         self._order_updates_enabled = False
 
     @property
@@ -90,6 +98,7 @@ class IBKRWebSocketClient:
             self._tick_pending_subscriptions.clear()
             self._tick_subscription_types.clear()
             self._tick_last_errors.clear()
+            self._subscription_last_errors.clear()
             self._connected = False
             self._ready = False
         for conid in subscribed:
@@ -130,6 +139,7 @@ class IBKRWebSocketClient:
         with self._state_lock:
             self._pending_subscriptions.discard(normalized)
             self._subscribed_conids.discard(normalized)
+            self._subscription_last_errors.pop(normalized, None)
         try:
             self.broker.unsubscribe_market_data(normalized)
         except Exception:
@@ -212,6 +222,7 @@ class IBKRWebSocketClient:
         with self._state_lock:
             self._pending_subscriptions.discard(normalized)
             self._subscribed_conids.discard(normalized)
+            self._subscription_last_errors.pop(normalized, None)
         try:
             self.broker.unsubscribe_market_data(normalized)
         except Exception:
@@ -225,15 +236,32 @@ class IBKRWebSocketClient:
         with self._state_lock:
             if conid in self._subscribed_conids:
                 self._pending_subscriptions.discard(conid)
+                self._subscription_last_errors.pop(conid, None)
                 return
         try:
             self.broker.subscribe_market_data(conid=conid, symbol="")
         except Exception as exc:
+            terminal = self._is_terminal_subscription_error(exc)
+            with self._state_lock:
+                if terminal:
+                    self._pending_subscriptions.discard(conid)
+                self._subscription_last_errors[conid] = {
+                    "conid": int(conid),
+                    "error": str(exc),
+                    "terminal": bool(terminal),
+                    "at": time.time(),
+                }
             logger.warning("Failed to subscribe conid=%s: %s", conid, exc)
             return
         with self._state_lock:
             self._subscribed_conids.add(conid)
             self._pending_subscriptions.discard(conid)
+            self._subscription_last_errors.pop(conid, None)
+
+    @staticmethod
+    def _is_terminal_subscription_error(exc: Exception) -> bool:
+        text = str(exc or "").strip().lower()
+        return any(marker in text for marker in TERMINAL_SUBSCRIPTION_ERROR_MARKERS)
 
     def _send_tick_subscription(self, conid: int, tick_type: str = "Last"):
         with self._state_lock:
@@ -261,6 +289,17 @@ class IBKRWebSocketClient:
         now_ts = time.time()
         with self._state_lock:
             last_message = self._last_message_time
+            recent_failures = [
+                {
+                    **dict(item),
+                    "at_iso": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(float(item.get("at") or 0))),
+                }
+                for item in sorted(
+                    self._subscription_last_errors.values(),
+                    key=lambda row: float(row.get("at") or 0),
+                    reverse=True,
+                )
+            ][:8]
             return {
                 "connected": bool(self._connected),
                 "ready": bool(self._ready),
@@ -271,6 +310,10 @@ class IBKRWebSocketClient:
                 "subscribed_count": len(self._subscribed_conids),
                 "pending_conids": sorted(self._pending_subscriptions),
                 "subscribed_conids": sorted(self._subscribed_conids),
+                "subscription_last_errors": {
+                    str(conid): dict(error) for conid, error in sorted(self._subscription_last_errors.items())
+                },
+                "recent_failures": recent_failures,
                 "tick_by_tick_pending_count": len(self._tick_pending_subscriptions),
                 "tick_by_tick_subscribed_count": len(self._tick_subscribed_conids),
                 "tick_by_tick_pending_conids": sorted(self._tick_pending_subscriptions),

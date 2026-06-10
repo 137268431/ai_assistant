@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import threading
+import time
+
 from flask import jsonify, request
 
 from ibkr_compute.api.compute.prime import build_multi_timeframe_readiness
@@ -8,6 +11,16 @@ from ibkr_compute.api.route_runtime import get_app_module, get_requested_environ
 from ibkr_compute.api.service_topology import build_service_topology, get_runtime_mode, get_service_profile
 from ibkr_compute.api.shared.route_request import coerce_request_bool
 from ibkr_compute.api.startup_preload import get_compute_startup_preload_state
+from ibkr_compute.observability.trade_result_metrics import (
+    refresh_trade_result_today_metrics,
+    trade_result_metrics_enabled,
+    trade_result_metrics_interval_sec,
+)
+
+
+_TRADE_RESULT_METRICS_LOCK = threading.Lock()
+_TRADE_RESULT_METRICS_LAST_REFRESH: dict[str, float] = {}
+_TRADE_RESULT_METRICS_LAST_SUMMARY: dict[str, dict] = {}
 
 
 def _full_health_requested() -> bool:
@@ -196,9 +209,41 @@ def _safe_backtest_preload_queue(app_mod) -> dict:
         return {"ok": False, "available": True, "error": str(exc), "pending": 0, "inflight": 0, "failed": 0}
 
 
+def _safe_refresh_trade_result_metrics(app_mod, requested_environment: str) -> dict:
+    broker_environment = str(
+        getattr(app_mod, "BROKER_MODE", "")
+        or requested_environment
+        or "paper"
+    ).strip().lower() or "paper"
+    config = getattr(app_mod, "cfg", None)
+    if not trade_result_metrics_enabled(config, broker_environment, True):
+        return {"enabled": False, "environment": broker_environment}
+
+    interval = trade_result_metrics_interval_sec(config, broker_environment, 60.0)
+    now = time.time()
+    with _TRADE_RESULT_METRICS_LOCK:
+        last_refresh = float(_TRADE_RESULT_METRICS_LAST_REFRESH.get(broker_environment) or 0.0)
+        if now - last_refresh < interval:
+            return dict(_TRADE_RESULT_METRICS_LAST_SUMMARY.get(broker_environment) or {})
+        _TRADE_RESULT_METRICS_LAST_REFRESH[broker_environment] = now
+
+    try:
+        summary = refresh_trade_result_today_metrics(
+            getattr(app_mod, "pb", None),
+            environment=broker_environment,
+        )
+    except Exception as exc:
+        summary = {"ok": False, "environment": broker_environment, "error": str(exc)[:240]}
+
+    with _TRADE_RESULT_METRICS_LOCK:
+        _TRADE_RESULT_METRICS_LAST_SUMMARY[broker_environment] = dict(summary or {})
+    return dict(summary or {})
+
+
 def build_health_response():
     app_mod = get_app_module()
     requested_environment = get_requested_environment("live")
+    trade_result_metrics = _safe_refresh_trade_result_metrics(app_mod, requested_environment)
     full_health = _full_health_requested()
     service_profile = get_service_profile()
     requested_symbols = _health_requested_symbols(app_mod, full=full_health)
@@ -228,6 +273,7 @@ def build_health_response():
             "multi_timeframe_readiness": multi_timeframe_readiness,
             "bar_repair_queue": _safe_bar_repair_queue(app_mod),
             "backtest_preload_queue": _safe_backtest_preload_queue(app_mod),
+            "trade_result_metrics": trade_result_metrics,
             **_build_runtime_summary(app_mod),
             "backtest": _safe_service_status(
                 getattr(app_mod, "backtest_service", None),
@@ -255,6 +301,7 @@ def build_health_response():
 def build_status_response():
     app_mod = get_app_module()
     requested_environment = get_requested_environment("live")
+    trade_result_metrics = _safe_refresh_trade_result_metrics(app_mod, requested_environment)
     include_engines = _include_engines_in_status()
     requested_symbols = _requested_status_symbols(app_mod)
     engine_items = _filter_engine_items(_snapshot_engine_items(app_mod, blocking=False), requested_symbols)
@@ -283,6 +330,7 @@ def build_status_response():
             "multi_timeframe_readiness": multi_timeframe_readiness,
             "bar_repair_queue": _safe_bar_repair_queue(app_mod),
             "backtest_preload_queue": _safe_backtest_preload_queue(app_mod),
+            "trade_result_metrics": trade_result_metrics,
             **_build_runtime_summary(app_mod),
             "backtest": app_mod.backtest_service.status(),
             "history_rebuild": app_mod.history_rebuild_manager.status(requested_environment),

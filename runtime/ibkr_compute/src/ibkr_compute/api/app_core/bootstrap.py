@@ -119,6 +119,8 @@ def build_service_bundle(
         "backtest_preload_coordinator": backtest_preload_coordinator,
         "backtest_service": backtest_service,
         "history_rebuild_manager": history_rebuild_manager,
+        "BROKER_MODE": broker_mode,
+        "DATA_ENVIRONMENT": data_environment,
     }
 
 

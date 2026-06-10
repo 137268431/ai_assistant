@@ -366,7 +366,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", result!~\"ok|synced|seen\"}[5m]))",
+          "expr": "sum(increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", result!~\"ok|synced|seen|pending\"}[5m]))",
           "legendFormat": "订单失败 5m / order failures 5m",
           "range": true,
           "refId": "C"
@@ -766,6 +766,191 @@
     },
     {
       "id": 10,
+      "type": "stat",
+      "title": "今日已实现盈亏 / Today Realized PnL",
+      "description": "来自 ibkr_execution_fills.realized_pnl；只统计已实现盈亏，不包含当前持仓浮动盈亏。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 0,
+        "y": 11
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_trade_realized_pnl_today_usd{service=~\"$service\", environment=~\"$environment\", basis=\"realized\"})",
+          "legendFormat": "",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "custom": {},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "今日盈利/亏损单 / Today Win Loss Trades",
+      "description": "按订单/交易组聚合 partial fills；win/loss/flat/unknown 由 realized_pnl_known 与合并后 PnL 决定。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 8,
+        "y": 11
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (result) (ibkr_trade_result_count_today{service=~\"$service\", environment=~\"$environment\", basis=\"realized\", grain=\"trade_group\", result=~\"win|loss|flat|unknown\"})",
+          "legendFormat": "",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "生效购买力保护 / Effective BP Guard",
+      "description": "交易实际使用的购买力保护状态；account snapshot 不可用但 local baseline 生效时这里仍应为 ok/warning/blocked。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 16,
+        "y": 11
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ibkr_account_buying_power_guard_state{service=~\"$service\", environment=~\"$environment\", source=\"effective_guard\", state=~\"ok|warning|blocked\"})",
+          "legendFormat": "",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 13,
       "type": "table",
       "title": "当前异常摘要 / Active Issues",
       "description": "最近 5 分钟只展示真实异常；benign、empty、正常轮询下沉到诊断区。",
@@ -777,7 +962,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 11
+        "y": 16
       },
       "targets": [
         {
@@ -819,7 +1004,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (operation, order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", result!~\"ok|synced|seen\"}[5m])) > 0",
+          "expr": "sum by (operation, order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", result!~\"ok|synced|seen|pending\"}[5m])) > 0",
           "legendFormat": "订单 / order {{operation}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "D"
@@ -865,7 +1050,7 @@
       }
     },
     {
-      "id": 11,
+      "id": 14,
       "type": "stat",
       "title": "服务采集与版本 / Scrape and Version Health",
       "description": "Prometheus 是否能抓到 IBKR 与监控组件；同时展示 ibapi/Gateway 版本标记。",
@@ -877,7 +1062,7 @@
         "h": 7,
         "w": 6,
         "x": 12,
-        "y": 11
+        "y": 16
       },
       "targets": [
         {
@@ -972,7 +1157,7 @@
       }
     },
     {
-      "id": 12,
+      "id": 15,
       "type": "stat",
       "title": "主机核心资源 / Host Core Resource",
       "description": "CPU、内存和关键文件系统剩余百分比。",
@@ -984,7 +1169,7 @@
         "h": 7,
         "w": 6,
         "x": 18,
-        "y": 11
+        "y": 16
       },
       "targets": [
         {
@@ -1061,7 +1246,7 @@
       }
     },
     {
-      "id": 13,
+      "id": 16,
       "type": "row",
       "title": "00A - 交易运行开关 / Trading Runtime Switches",
       "collapsed": false,
@@ -1073,12 +1258,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 18
+        "y": 23
       },
       "panels": []
     },
     {
-      "id": 14,
+      "id": 17,
       "type": "stat",
       "title": "关键开关关闭数 / Disabled Required Switches",
       "description": "只统计会影响自动交易、行情写入、调度与保护链路的 critical/guard 开关；正常应为 0。",
@@ -1090,7 +1275,7 @@
         "h": 5,
         "w": 6,
         "x": 0,
-        "y": 19
+        "y": 24
       },
       "targets": [
         {
@@ -1163,7 +1348,7 @@
       }
     },
     {
-      "id": 15,
+      "id": 18,
       "type": "stat",
       "title": "交易入口开关 / Trading Entry Switches",
       "description": "开仓/信号入站相关的核心开关；PAPER 环境不把 live 二次开关计入 required 关闭数。",
@@ -1175,7 +1360,7 @@
         "h": 5,
         "w": 6,
         "x": 6,
-        "y": 19
+        "y": 24
       },
       "targets": [
         {
@@ -1259,7 +1444,7 @@
       }
     },
     {
-      "id": 16,
+      "id": 19,
       "type": "stat",
       "title": "行情与调度开关 / Market and Scheduler Switches",
       "description": "compute / scheduler / bars / WebSocket 四个行情与扫描总控，任何一个关闭都会造成信号链路缺数据或不执行。",
@@ -1271,7 +1456,7 @@
         "h": 5,
         "w": 6,
         "x": 12,
-        "y": 19
+        "y": 24
       },
       "targets": [
         {
@@ -1355,7 +1540,7 @@
       }
     },
     {
-      "id": 17,
+      "id": 20,
       "type": "stat",
       "title": "执行保护/可选开关 / Guards and Optional Switches",
       "description": "展示下单串行、IB 问题抑制与 Order Flow 等辅助开关；可选开关关闭不直接判定为故障。",
@@ -1367,7 +1552,7 @@
         "h": 5,
         "w": 6,
         "x": 18,
-        "y": 19
+        "y": 24
       },
       "targets": [
         {
@@ -1469,7 +1654,7 @@
       }
     },
     {
-      "id": 18,
+      "id": 21,
       "type": "table",
       "title": "关闭的关键/保护开关 / Disabled Critical and Guard Switches",
       "description": "只列出 critical/guard 且当前为 OFF 的开关；用于快速判断是自锁开关导致，还是 Gateway/账户链路问题。",
@@ -1481,7 +1666,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 24
+        "y": 29
       },
       "targets": [
         {
@@ -1536,7 +1721,7 @@
       }
     },
     {
-      "id": 19,
+      "id": 22,
       "type": "table",
       "title": "全部交易运行开关明细 / All Trading Runtime Switches",
       "description": "按 config environment、runtime environment、scope、importance、key 展示 0/1；key 是固定白名单，避免高基数标签。",
@@ -1548,7 +1733,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 24
+        "y": 29
       },
       "targets": [
         {
@@ -1599,7 +1784,7 @@
       }
     },
     {
-      "id": 20,
+      "id": 23,
       "type": "row",
       "title": "01 - 行情与订阅 / Market Data Details",
       "collapsed": false,
@@ -1611,12 +1796,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 31
+        "y": 36
       },
       "panels": []
     },
     {
-      "id": 21,
+      "id": 24,
       "type": "timeseries",
       "title": "监控池数量 / Universe Symbol Counts",
       "description": "context ws 是固定上下文行情，不代表完整监控池；完整监控池看 pool/trade watchlist。",
@@ -1628,7 +1813,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 32
+        "y": 37
       },
       "targets": [
         {
@@ -1749,7 +1934,7 @@
       }
     },
     {
-      "id": 22,
+      "id": 25,
       "type": "timeseries",
       "title": "订阅容量 / Subscription Capacity",
       "description": "context ws 是固定上下文行情订阅；完整监控池看左侧 Universe。",
@@ -1761,7 +1946,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 32
+        "y": 37
       },
       "targets": [
         {
@@ -1908,7 +2093,7 @@
       }
     },
     {
-      "id": 23,
+      "id": 26,
       "type": "timeseries",
       "title": "订阅利用率 / Subscription Utilization",
       "description": "容量利用率只看 total/trade/websocket；不再把 context ws 的 3/3 显示成 monitor 100%。",
@@ -1920,7 +2105,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 32
+        "y": 37
       },
       "targets": [
         {
@@ -2027,7 +2212,7 @@
       }
     },
     {
-      "id": 24,
+      "id": 27,
       "type": "timeseries",
       "title": "行情延迟趋势 / Market Freshness Trend",
       "description": "",
@@ -2039,7 +2224,7 @@
         "h": 7,
         "w": 16,
         "x": 0,
-        "y": 39
+        "y": 44
       },
       "targets": [
         {
@@ -2148,7 +2333,7 @@
       }
     },
     {
-      "id": 25,
+      "id": 28,
       "type": "timeseries",
       "title": "Bar 待处理标的 / Bar Pending Symbols",
       "description": "",
@@ -2160,7 +2345,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 39
+        "y": 44
       },
       "targets": [
         {
@@ -2241,7 +2426,7 @@
       }
     },
     {
-      "id": 26,
+      "id": 29,
       "type": "row",
       "title": "02 - Gateway 与 IB API / Gateway and IB API",
       "collapsed": false,
@@ -2253,12 +2438,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 46
+        "y": 51
       },
       "panels": []
     },
     {
-      "id": 27,
+      "id": 30,
       "type": "stat",
       "title": "Gateway 状态 / Gateway State",
       "description": "合并 Gateway reachable、登录会话、行情 WS、Broker ready、socket listening，避免分散重复。",
@@ -2270,7 +2455,7 @@
         "h": 5,
         "w": 8,
         "x": 0,
-        "y": 47
+        "y": 52
       },
       "targets": [
         {
@@ -2365,7 +2550,7 @@
       }
     },
     {
-      "id": 28,
+      "id": 31,
       "type": "timeseries",
       "title": "IB API 普通请求 p95 / IB API Normal Request p95",
       "description": "普通 IB 请求延迟，不含 account_pnl；用于判断 Gateway 是否整体变慢。",
@@ -2377,7 +2562,7 @@
         "h": 5,
         "w": 8,
         "x": 8,
-        "y": 47
+        "y": 52
       },
       "targets": [
         {
@@ -2458,7 +2643,7 @@
       }
     },
     {
-      "id": 29,
+      "id": 32,
       "type": "timeseries",
       "title": "账户 PnL 请求 / Account PnL Request",
       "description": "account_pnl 高通常是 IB reqPnL 回调超时，不代表 Gateway 全局变慢；timeout 次数同图展示。",
@@ -2470,7 +2655,7 @@
         "h": 5,
         "w": 8,
         "x": 16,
-        "y": 47
+        "y": 52
       },
       "targets": [
         {
@@ -2566,7 +2751,7 @@
       }
     },
     {
-      "id": 30,
+      "id": 33,
       "type": "timeseries",
       "title": "IB API 请求 QPS / IB API Request QPS",
       "description": "",
@@ -2578,7 +2763,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 52
+        "y": 57
       },
       "targets": [
         {
@@ -2659,7 +2844,7 @@
       }
     },
     {
-      "id": 31,
+      "id": 34,
       "type": "timeseries",
       "title": "IB 非良性错误 / Non-Benign IB Errors",
       "description": "主错误面板只看 severity!=benign；2100/2104/2107/2158 等良性消息在诊断区。",
@@ -2671,7 +2856,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 52
+        "y": 57
       },
       "targets": [
         {
@@ -2752,7 +2937,7 @@
       }
     },
     {
-      "id": 32,
+      "id": 35,
       "type": "timeseries",
       "title": "IB API Pending 请求 / IB API Pending Requests",
       "description": "",
@@ -2764,7 +2949,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 52
+        "y": 57
       },
       "targets": [
         {
@@ -2845,7 +3030,7 @@
       }
     },
     {
-      "id": 33,
+      "id": 36,
       "type": "row",
       "title": "03 - 信号链路 / Signal Pipeline",
       "collapsed": false,
@@ -2857,12 +3042,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 59
+        "y": 64
       },
       "panels": []
     },
     {
-      "id": 34,
+      "id": 37,
       "type": "stat",
       "title": "信号核心个数 / Signal Core Counts",
       "description": "近 5 分钟信号处理个数，加上近 24 小时真实业务信号创建数；正常 empty 轮询下沉诊断。",
@@ -2874,7 +3059,7 @@
         "h": 5,
         "w": 8,
         "x": 0,
-        "y": 60
+        "y": 65
       },
       "targets": [
         {
@@ -2980,7 +3165,7 @@
       }
     },
     {
-      "id": 35,
+      "id": 38,
       "type": "timeseries",
       "title": "信号阶段个数趋势 / Signal Stage Count Trend",
       "description": "按 5 分钟滚动窗口展示信号阶段事件个数；过滤 empty 轮询避免误读。",
@@ -2992,7 +3177,7 @@
         "h": 5,
         "w": 8,
         "x": 8,
-        "y": 60
+        "y": 65
       },
       "targets": [
         {
@@ -3073,7 +3258,7 @@
       }
     },
     {
-      "id": 36,
+      "id": 39,
       "type": "timeseries",
       "title": "信号阶段 p95 延迟 / Signal Stage p95 Latency",
       "description": "",
@@ -3085,7 +3270,7 @@
         "h": 5,
         "w": 8,
         "x": 16,
-        "y": 60
+        "y": 65
       },
       "targets": [
         {
@@ -3166,7 +3351,7 @@
       }
     },
     {
-      "id": 37,
+      "id": 40,
       "type": "timeseries",
       "title": "信号需关注个数趋势 / Signal Attention Count Trend",
       "description": "按 5 分钟滚动窗口展示 rejected、blocked、deferred、unauthenticated、error 等需关注信号事件个数。",
@@ -3178,7 +3363,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 65
+        "y": 70
       },
       "targets": [
         {
@@ -3260,7 +3445,7 @@
       }
     },
     {
-      "id": 38,
+      "id": 41,
       "type": "table",
       "title": "信号处理明细 / Signal Processing Diagnostics",
       "description": "当前 dashboard 时间范围内的信号事件累计个数；例如 reverse_poll reverse ok empty 表示反向轮询正常但无待处理项。",
@@ -3272,7 +3457,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 65
+        "y": 70
       },
       "targets": [
         {
@@ -3327,7 +3512,7 @@
       }
     },
     {
-      "id": 39,
+      "id": 42,
       "type": "timeseries",
       "title": "每日真实信号趋势 / Daily Signal Record Trend",
       "description": "最近 30 天按滚动 1 天窗口统计 ibkr_signals 新创建的真实业务信号；从指标上线后开始累计，不回填历史记录。",
@@ -3339,7 +3524,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 72
+        "y": 77
       },
       "targets": [
         {
@@ -3422,7 +3607,7 @@
       "timeFrom": "30d"
     },
     {
-      "id": 40,
+      "id": 43,
       "type": "table",
       "title": "真实信号来源明细 / Signal Record Source Breakdown",
       "description": "最近 30 天按来源、方向、初始状态聚合真实业务信号创建数；不包含更新、重复、合并或抑制的 follow-up。",
@@ -3434,7 +3619,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 72
+        "y": 77
       },
       "targets": [
         {
@@ -3490,7 +3675,7 @@
       "timeFrom": "30d"
     },
     {
-      "id": 41,
+      "id": 44,
       "type": "row",
       "title": "04 - 订单链路 / Order Pipeline",
       "collapsed": false,
@@ -3502,12 +3687,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 79
+        "y": 84
       },
       "panels": []
     },
     {
-      "id": 42,
+      "id": 45,
       "type": "timeseries",
       "title": "真实订单命令 QPS / Real Order Command QPS",
       "description": "只展示真实下单、改价、撤单、保护单操作；不含 tracker 轮询。短线名为 中文/English；order_family_type 显示 bracket_oco、entry、LMT/STP 等角色或订单类型。",
@@ -3519,7 +3704,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 80
+        "y": 85
       },
       "targets": [
         {
@@ -3798,7 +3983,7 @@
       }
     },
     {
-      "id": 43,
+      "id": 46,
       "type": "table",
       "title": "订单失败 / Order Failures",
       "description": "只显示真实订单命令中 result 非 ok/synced/seen 的可行动失败；不把 tracker skipped/empty 当作下单失败。",
@@ -3810,7 +3995,7 @@
         "h": 6,
         "w": 24,
         "x": 0,
-        "y": 88
+        "y": 93
       },
       "targets": [
         {
@@ -3819,7 +4004,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_bracket\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_bracket\", result!~\"ok|synced|seen|pending\"}[$__range])) > 0",
           "legendFormat": "失败 | Failure 组合单/Bracket {{order_family_type}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "A"
@@ -3830,7 +4015,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_entry\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_entry\", result!~\"ok|synced|seen|pending\"}[$__range])) > 0",
           "legendFormat": "失败 | Failure 入场/Entry {{order_family_type}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "B"
@@ -3841,7 +4026,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_take_profit\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_take_profit\", result!~\"ok|synced|seen|pending\"}[$__range])) > 0",
           "legendFormat": "失败 | Failure 止盈/TP {{order_family_type}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "C"
@@ -3852,7 +4037,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_stop_loss\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_stop_loss\", result!~\"ok|synced|seen|pending\"}[$__range])) > 0",
           "legendFormat": "失败 | Failure 止损/SL {{order_family_type}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "D"
@@ -3863,7 +4048,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_bracket_order\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_bracket_order\", result!~\"ok|synced|seen|pending\"}[$__range])) > 0",
           "legendFormat": "失败 | Failure 括号入口/Submit {{order_family_type}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "E"
@@ -3874,7 +4059,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_market_close\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"place_market_close\", result!~\"ok|synced|seen|pending\"}[$__range])) > 0",
           "legendFormat": "失败 | Failure 平仓/Close {{order_family_type}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "F"
@@ -3885,7 +4070,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"adjust_stop_loss\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"adjust_stop_loss\", result!~\"ok|synced|seen|pending\"}[$__range])) > 0",
           "legendFormat": "失败 | Failure 调止损/Adj SL {{order_family_type}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "G"
@@ -3896,7 +4081,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"adjust_take_profit\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"adjust_take_profit\", result!~\"ok|synced|seen|pending\"}[$__range])) > 0",
           "legendFormat": "失败 | Failure 调止盈/Adj TP {{order_family_type}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "H"
@@ -3907,7 +4092,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_order\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_order\", result!~\"ok|synced|seen|pending\"}[$__range])) > 0",
           "legendFormat": "失败 | Failure 撤单/Cancel req {{order_family_type}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "I"
@@ -3918,7 +4103,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_all_orders\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_all_orders\", result!~\"ok|synced|seen|pending\"}[$__range])) > 0",
           "legendFormat": "失败 | Failure 撤全部/Cancel all {{order_family_type}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "J"
@@ -3929,7 +4114,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_entry\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_entry\", result!~\"ok|synced|seen|pending\"}[$__range])) > 0",
           "legendFormat": "失败 | Failure 撤入场/Cancel entry {{order_family_type}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "K"
@@ -3940,7 +4125,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_take_profit\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_take_profit\", result!~\"ok|synced|seen|pending\"}[$__range])) > 0",
           "legendFormat": "失败 | Failure 撤止盈/Cancel TP {{order_family_type}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "L"
@@ -3951,7 +4136,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_stop_loss\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel_stop_loss\", result!~\"ok|synced|seen|pending\"}[$__range])) > 0",
           "legendFormat": "失败 | Failure 撤止损/Cancel SL {{order_family_type}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "M"
@@ -3962,7 +4147,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"modify_manual\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"modify_manual\", result!~\"ok|synced|seen|pending\"}[$__range])) > 0",
           "legendFormat": "失败 | Failure 手动改单/Manual mod {{order_family_type}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "N"
@@ -3973,7 +4158,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"modify_order\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"modify_order\", result!~\"ok|synced|seen|pending\"}[$__range])) > 0",
           "legendFormat": "失败 | Failure 改单请求/Modify req {{order_family_type}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "O"
@@ -3984,7 +4169,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"ibapi_place\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"ibapi_place\", result!~\"ok|synced|seen|pending\"}[$__range])) > 0",
           "legendFormat": "失败 | Failure IB下单/IB place {{order_family_type}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "P"
@@ -3995,7 +4180,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"ibapi_cancel\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"ibapi_cancel\", result!~\"ok|synced|seen|pending\"}[$__range])) > 0",
           "legendFormat": "失败 | Failure IB撤单/IB cancel {{order_family_type}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "Q"
@@ -4006,7 +4191,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"modify\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"modify\", result!~\"ok|synced|seen|pending\"}[$__range])) > 0",
           "legendFormat": "失败 | Failure IB改单/IB modify {{order_family_type}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "R"
@@ -4017,7 +4202,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel\", result!~\"ok|synced|seen\"}[$__range])) > 0",
+          "expr": "sum by (order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=\"cancel\", result!~\"ok|synced|seen|pending\"}[$__range])) > 0",
           "legendFormat": "失败 | Failure IB撤单确认/IB cancel ok {{order_family_type}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "S"
@@ -4063,7 +4248,7 @@
       }
     },
     {
-      "id": 44,
+      "id": 47,
       "type": "timeseries",
       "title": "真实订单操作耗时 / Real Order Operation Latency",
       "description": "真实订单操作耗时；每个操作同时显示 p95 和 平均/avg。avg 看常态速度，p95 看慢尾；tracker 轮询耗时单独放右下诊断。",
@@ -4075,7 +4260,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 94
+        "y": 99
       },
       "targets": [
         {
@@ -4563,7 +4748,7 @@
       }
     },
     {
-      "id": 45,
+      "id": 48,
       "type": "table",
       "title": "真实订单命令累计 / Real Order Command Counts",
       "description": "当前时间范围内的下单/改价/撤单类命令累计；tracker_live_orders_fetch 不放入订单命令。",
@@ -4575,7 +4760,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 104
+        "y": 109
       },
       "targets": [
         {
@@ -4828,7 +5013,7 @@
       }
     },
     {
-      "id": 46,
+      "id": 49,
       "type": "table",
       "title": "订单追踪轮询 / Order Tracker Polling",
       "description": "轮询/同步不是下单数量；empty 表示正常但无待处理订单。",
@@ -4840,7 +5025,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 104
+        "y": 109
       },
       "targets": [
         {
@@ -4939,7 +5124,7 @@
       }
     },
     {
-      "id": 47,
+      "id": 50,
       "type": "timeseries",
       "title": "订单追踪耗时 / Order Tracker Latency",
       "description": "订单追踪/同步相关耗时；每个操作同时显示 p95 和 平均/avg。tracker 慢用于诊断追踪链路，不作为真实下单慢的结论。",
@@ -4951,7 +5136,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 112
+        "y": 117
       },
       "targets": [
         {
@@ -5131,7 +5316,7 @@
       }
     },
     {
-      "id": 48,
+      "id": 51,
       "type": "text",
       "title": "订单线名词典 / Order Line Guide",
       "description": "解释订单链路面板中每条中英文线名的作用，以及 avg 与 p95 的判读方式。",
@@ -5143,7 +5328,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 122
+        "y": 127
       },
       "fieldConfig": {
         "defaults": {},
@@ -5155,7 +5340,7 @@
       }
     },
     {
-      "id": 49,
+      "id": 52,
       "type": "row",
       "title": "05 - HTTP 与依赖 / HTTP and Dependencies",
       "collapsed": false,
@@ -5167,12 +5352,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 132
+        "y": 137
       },
       "panels": []
     },
     {
-      "id": 50,
+      "id": 53,
       "type": "timeseries",
       "title": "业务 HTTP 错误 / Business HTTP Errors",
       "description": "真实业务 HTTP 错误；健康检查和状态接口单独拆出去。",
@@ -5184,7 +5369,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 133
+        "y": 138
       },
       "targets": [
         {
@@ -5276,7 +5461,7 @@
       }
     },
     {
-      "id": 51,
+      "id": 54,
       "type": "timeseries",
       "title": "状态接口超时 / Status Endpoint Timeouts",
       "description": "/ibkr/status ReadTimeout 是服务间状态接口读取超时；修复后用于确认是否仍有状态构建慢、回环或依赖阻塞。",
@@ -5288,7 +5473,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 133
+        "y": 138
       },
       "targets": [
         {
@@ -5369,7 +5554,7 @@
       }
     },
     {
-      "id": 52,
+      "id": 55,
       "type": "timeseries",
       "title": "HTTP p95 延迟 / HTTP p95 Latency",
       "description": "",
@@ -5381,7 +5566,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 133
+        "y": 138
       },
       "targets": [
         {
@@ -5473,7 +5658,7 @@
       }
     },
     {
-      "id": 53,
+      "id": 56,
       "type": "timeseries",
       "title": "入口 QPS / Inbound Request QPS",
       "description": "",
@@ -5485,7 +5670,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 140
+        "y": 145
       },
       "targets": [
         {
@@ -5567,7 +5752,7 @@
       }
     },
     {
-      "id": 54,
+      "id": 57,
       "type": "timeseries",
       "title": "出站 QPS / Outbound Request QPS",
       "description": "",
@@ -5579,7 +5764,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 140
+        "y": 145
       },
       "targets": [
         {
@@ -5661,7 +5846,7 @@
       }
     },
     {
-      "id": 55,
+      "id": 58,
       "type": "row",
       "title": "06 - 账户、历史与主机 / Account History and Host",
       "collapsed": false,
@@ -5673,12 +5858,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 147
+        "y": 152
       },
       "panels": []
     },
     {
-      "id": 56,
+      "id": 59,
       "type": "stat",
       "title": "账户资金 / Account Capital",
       "description": "当前账户资金来自 IBKR account_snapshot；金额大小不代表红绿告警。",
@@ -5690,7 +5875,7 @@
         "h": 6,
         "w": 8,
         "x": 0,
-        "y": 148
+        "y": 153
       },
       "targets": [
         {
@@ -5770,7 +5955,7 @@
       }
     },
     {
-      "id": 57,
+      "id": 60,
       "type": "timeseries",
       "title": "保证金与敞口 / Margin and Exposure",
       "description": "",
@@ -5782,7 +5967,7 @@
         "h": 6,
         "w": 8,
         "x": 8,
-        "y": 148
+        "y": 153
       },
       "targets": [
         {
@@ -5896,7 +6081,7 @@
       }
     },
     {
-      "id": 58,
+      "id": 61,
       "type": "timeseries",
       "title": "主机资源 / Host Resource",
       "description": "",
@@ -5908,7 +6093,7 @@
         "h": 6,
         "w": 8,
         "x": 16,
-        "y": 148
+        "y": 153
       },
       "targets": [
         {
@@ -6015,7 +6200,7 @@
       }
     },
     {
-      "id": 59,
+      "id": 62,
       "type": "timeseries",
       "title": "账户资金趋势 / Account Capital Trend",
       "description": "趋势保留 account_snapshot/summary 对照；主资金卡片只显示快照当前值。",
@@ -6027,7 +6212,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 154
+        "y": 159
       },
       "targets": [
         {
@@ -6182,7 +6367,7 @@
       }
     },
     {
-      "id": 60,
+      "id": 63,
       "type": "timeseries",
       "title": "历史数据与回补 / History and Backfill",
       "description": "",
@@ -6194,7 +6379,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 154
+        "y": 159
       },
       "targets": [
         {
@@ -6287,7 +6472,7 @@
       }
     },
     {
-      "id": 61,
+      "id": 64,
       "type": "row",
       "title": "99 - 诊断明细 / Diagnostics",
       "collapsed": false,
@@ -6299,12 +6484,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 161
+        "y": 166
       },
       "panels": []
     },
     {
-      "id": 62,
+      "id": 65,
       "type": "table",
       "title": "良性 IB 消息 / Benign IB Messages",
       "description": "例如 2100 benign 通常是账户数据订阅取消/切换；不放主错误趋势。",
@@ -6316,7 +6501,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 162
+        "y": 167
       },
       "targets": [
         {
@@ -6371,7 +6556,7 @@
       }
     },
     {
-      "id": 63,
+      "id": 66,
       "type": "table",
       "title": "空轮询与后台任务 / Empty Polling and Background Jobs",
       "description": "empty 表示正常后台轮询但没有待处理项，用于排障，不作为业务结果。",
@@ -6383,7 +6568,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 162
+        "y": 167
       },
       "targets": [
         {
@@ -6449,7 +6634,7 @@
       }
     },
     {
-      "id": 64,
+      "id": 67,
       "type": "timeseries",
       "title": "Gateway 探测 p95 / Gateway Probe p95",
       "description": "Gateway socket 探测延迟，保留在诊断区，避免与 Gateway 状态重复。",
@@ -6461,7 +6646,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 162
+        "y": 167
       },
       "targets": [
         {
@@ -6542,7 +6727,7 @@
       }
     },
     {
-      "id": 65,
+      "id": 68,
       "type": "table",
       "title": "状态接口影响规模 / Status Endpoint Impact",
       "description": "状态页/监控拉取超时的最近 5m 影响规模，和业务 HTTP 错误分开。",
@@ -6554,7 +6739,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 170
+        "y": 175
       },
       "targets": [
         {
@@ -6609,7 +6794,7 @@
       }
     },
     {
-      "id": 66,
+      "id": 69,
       "type": "table",
       "title": "最近 5m 真实错误影响 / Real Error Impact 5m",
       "description": "只统计真实错误影响；benign 和 empty 已下沉到诊断明细。",
@@ -6621,7 +6806,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 170
+        "y": 175
       },
       "targets": [
         {
@@ -6641,7 +6826,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (operation, order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", result!~\"ok|synced|seen\"}[5m])) > 0",
+          "expr": "sum by (operation, order_family_type, result, reason_code) (increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", result!~\"ok|synced|seen|pending\"}[5m])) > 0",
           "legendFormat": "订单 / order {{operation}} {{result}} {{reason_code}}",
           "range": true,
           "refId": "B"
@@ -6687,7 +6872,7 @@
       }
     },
     {
-      "id": 67,
+      "id": 70,
       "type": "row",
       "title": "12 - Gateway 订单串行队列 / Gateway Order Serial Queue",
       "collapsed": false,
@@ -6699,12 +6884,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 177
+        "y": 182
       },
       "panels": []
     },
     {
-      "id": 68,
+      "id": 71,
       "type": "timeseries",
       "title": "Gateway 串行队列等待 p95 / Gateway Serial Queue Wait p95",
       "description": "IB Gateway 下单/改单/撤单串行 gate 的排队等待 p95；持续升高表示订单突发或锁竞争。",
@@ -6716,7 +6901,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 178
+        "y": 183
       },
       "targets": [
         {
@@ -6798,7 +6983,7 @@
       }
     },
     {
-      "id": 69,
+      "id": 72,
       "type": "timeseries",
       "title": "Gateway 串行队列超时 / Gateway Serial Queue Timeouts",
       "description": "选定时间范围内等待 Gateway order serial gate 超时的次数；任何非 0 都需要排查。",
@@ -6810,7 +6995,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 178
+        "y": 183
       },
       "targets": [
         {
@@ -6892,7 +7077,7 @@
       }
     },
     {
-      "id": 70,
+      "id": 73,
       "type": "row",
       "title": "13 - 信号到订单流转 / Signal-to-Order Flow",
       "collapsed": false,
@@ -6904,12 +7089,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 185
+        "y": 190
       },
       "panels": []
     },
     {
-      "id": 71,
+      "id": 74,
       "type": "stat",
       "title": "流转漏斗 30d / Flow Funnel 30d",
       "description": "近 30 天从业务信号、校验、需关注事件、成功开仓到当前活跃状态的总览。",
@@ -6921,7 +7106,7 @@
         "h": 6,
         "w": 8,
         "x": 0,
-        "y": 186
+        "y": 191
       },
       "targets": [
         {
@@ -6974,7 +7159,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=~\"place_bracket|place_entry|place_take_profit|place_stop_loss|place_bracket_order|place_market_close|adjust_stop_loss|adjust_take_profit|cancel_order|cancel_all_orders|cancel_entry|cancel_take_profit|cancel_stop_loss|modify_manual|modify_order|ibapi_place|ibapi_cancel|modify|cancel\", result!~\"ok|synced|seen\"}[30d]))",
+          "expr": "sum(increase(ibkr_order_events_total{service=~\"$service\", environment=~\"$environment\", operation=~\"place_bracket|place_entry|place_take_profit|place_stop_loss|place_bracket_order|place_market_close|adjust_stop_loss|adjust_take_profit|cancel_order|cancel_all_orders|cancel_entry|cancel_take_profit|cancel_stop_loss|modify_manual|modify_order|ibapi_place|ibapi_cancel|modify|cancel\", result!~\"ok|synced|seen|pending\"}[30d]))",
           "legendFormat": "订单需关注 30d / order attention 30d",
           "range": true,
           "refId": "E"
@@ -7035,7 +7220,7 @@
       "timeFrom": "30d"
     },
     {
-      "id": 72,
+      "id": 75,
       "type": "timeseries",
       "title": "每日信号 vs 成功开仓 / Daily Signals vs Successful Entries",
       "description": "最近 30 天滚动 1 天业务信号数与成功/已接受开仓命令对比；保护单、平仓和 tracker 轮询不计入开仓。",
@@ -7047,7 +7232,7 @@
         "h": 6,
         "w": 16,
         "x": 8,
-        "y": 186
+        "y": 191
       },
       "targets": [
         {
@@ -7142,7 +7327,7 @@
       "timeFrom": "30d"
     },
     {
-      "id": 73,
+      "id": 76,
       "type": "timeseries",
       "title": "所有信号变化 / All Signal Changes",
       "description": "最近 30 天所有非 empty 信号阶段事件变化，用于观察信号处理链路整体运转。",
@@ -7154,7 +7339,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 192
+        "y": 197
       },
       "targets": [
         {
@@ -7237,7 +7422,7 @@
       "timeFrom": "30d"
     },
     {
-      "id": 74,
+      "id": 77,
       "type": "timeseries",
       "title": "所有真实订单变化 / All Real Order Changes",
       "description": "最近 30 天真实订单命令按 operation/result 的滚动 1 天变化；不包含 tracker 轮询。",
@@ -7249,7 +7434,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 192
+        "y": 197
       },
       "targets": [
         {
@@ -7332,7 +7517,7 @@
       "timeFrom": "30d"
     },
     {
-      "id": 75,
+      "id": 78,
       "type": "table",
       "title": "信号流转明细 30d / Signal Flow Diagnostics 30d",
       "description": "最近 30 天信号阶段、来源、结果与原因码聚合明细，用于定位信号为何没有进入开仓。",
@@ -7344,7 +7529,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 199
+        "y": 204
       },
       "targets": [
         {
@@ -7400,7 +7585,7 @@
       "timeFrom": "30d"
     },
     {
-      "id": 76,
+      "id": 79,
       "type": "table",
       "title": "订单流转明细 30d / Order Flow Diagnostics 30d",
       "description": "最近 30 天真实订单命令聚合明细，配合每日趋势查看开仓、保护单、改单、撤单的变化。",
@@ -7412,7 +7597,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 199
+        "y": 204
       },
       "targets": [
         {
