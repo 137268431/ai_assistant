@@ -1542,6 +1542,118 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertEqual(reverse["extra"]["risk_update_seq"], 5)
         self.assertEqual(reverse["extra"]["new_sl"], 190.50)
 
+    def test_cancel_unfilled_entry_routes_to_cancel_reverse_signal(self):
+        pb = _FakePB()
+        wakeup_calls = []
+        pb.create_record(
+            "orders",
+            {
+                "signal_id": "tv-entry-cancel-1",
+                "trade_group_id": "tv-entry-cancel-1",
+                "environment": "paper",
+                "role": "entry",
+                "status": "Submitted",
+                "broker_order_id": "entry-100",
+            },
+        )
+
+        response, status = _process(
+            pb,
+            {
+                "source": "tv",
+                "event_type": "cancel",
+                "event_id": "tv-cancel-unfilled-1",
+                "symbol": "AAPL",
+                "position_side": "long",
+                "signal_id": "tv-entry-cancel-1",
+                "trade_group_id": "tv-entry-cancel-1",
+                "entry_order_unique_id": "entry-tv-entry-cancel-1",
+                "cancel_reason": "entry_ttl_expired",
+                "cancel_scope": "trade_intent",
+                "cancel_policy": "cancel_unfilled_or_close_filled",
+                "environment": "paper",
+                "market_data_mode": "live",
+                "bar_time_ms": 1770001200000,
+            },
+            runtime_wakeup=lambda payload: wakeup_calls.append(dict(payload)) or {"ok": True, "woke": True},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(response["ok"])
+        self.assertEqual("cancel", response["cancel_action_type"])
+        self.assertEqual(1, len(wakeup_calls))
+        self.assertEqual("cancel", wakeup_calls[0]["event_type"])
+        reverse = pb.records["ibkr_reverse_signals"][0]
+        self.assertEqual(reverse["action_type"], "cancel")
+        self.assertEqual(reverse["status"], "pending")
+        self.assertEqual(reverse["reason"], "entry_ttl_expired")
+        self.assertEqual(reverse["extra"]["reverse_kind"], "tv_cancel")
+        self.assertEqual(reverse["extra"]["target_state"], "pending_entry")
+        self.assertEqual(reverse["extra"]["origin_signal_id"], "tv-entry-cancel-1")
+        self.assertEqual(reverse["extra"]["trade_group_id"], "tv-entry-cancel-1")
+        self.assertEqual(reverse["extra"]["cancel_scope"], "trade_intent")
+        self.assertEqual(reverse["extra"]["active_order_ids"], ["entry-100"])
+        self.assertFalse(reverse["extra"]["gateway_request_blocked"])
+
+    def test_cancel_filled_entry_routes_to_close_reverse_signal(self):
+        pb = _FakePB()
+        _create_origin_signal(pb, "tv-entry-cancel-filled-1", status="filled")
+
+        response, status = _process(
+            pb,
+            {
+                "source": "tv",
+                "event_type": "cancel",
+                "event_id": "tv-cancel-filled-1",
+                "symbol": "AAPL",
+                "position_side": "long",
+                "signal_id": "tv-entry-cancel-filled-1",
+                "trade_group_id": "tv-entry-cancel-filled-1",
+                "cancel_reason": "opposite_signal_or_conflict",
+                "environment": "paper",
+                "market_data_mode": "live",
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(response["ok"])
+        self.assertEqual("close", response["cancel_action_type"])
+        reverse = pb.records["ibkr_reverse_signals"][0]
+        self.assertEqual(reverse["action_type"], "close")
+        self.assertEqual(reverse["status"], "pending")
+        self.assertEqual(reverse["extra"]["reverse_kind"], "tv_cancel")
+        self.assertEqual(reverse["extra"]["target_state"], "filled_position")
+        self.assertTrue(reverse["extra"]["execution_preflight"]["filled_order_or_position_confirmed"])
+
+    def test_cancel_unknown_state_is_recorded_without_blind_close(self):
+        pb = _FakePB()
+
+        response, status = _process(
+            pb,
+            {
+                "source": "tv",
+                "event_type": "cancel",
+                "event_id": "tv-cancel-unknown-1",
+                "symbol": "AAPL",
+                "position_side": "long",
+                "signal_id": "tv-entry-cancel-unknown-1",
+                "trade_group_id": "tv-entry-cancel-unknown-1",
+                "cancel_reason": "entry_anchor_invalidated",
+                "environment": "paper",
+                "market_data_mode": "live",
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(response["ok"])
+        self.assertEqual("cancel", response["cancel_action_type"])
+        reverse = pb.records["ibkr_reverse_signals"][0]
+        self.assertEqual(reverse["action_type"], "cancel")
+        self.assertEqual(reverse["status"], "cancelled")
+        self.assertEqual(reverse["extra"]["target_state"], "state_unknown")
+        self.assertEqual(reverse["extra"]["execution_blocked_reason"], "cancel_pending_state_unknown")
+        self.assertTrue(reverse["extra"]["gateway_request_blocked"])
+
     def test_exit_routes_to_close_reverse_signal(self):
         pb = _FakePB()
         _create_origin_signal(pb, "tv-entry-1", status="filled")

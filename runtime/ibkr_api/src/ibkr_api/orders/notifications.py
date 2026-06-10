@@ -1580,9 +1580,14 @@ def _trade_ledger_event_model(order_record: dict[str, Any], previous_order: dict
                 "environment": environment,
                 "status": current_status,
             }
-        event_type = "first_callback"
-        event_label = "首次真实回调"
-        reason = "first_realtime_callback"
+        if callback_type == "execDetails" and current_filled > 0:
+            event_type = "fill"
+            event_label = "成交明细首次入流水"
+            reason = "first_exec_details_callback"
+        else:
+            event_type = "first_callback"
+            event_label = "首次入交易流水"
+            reason = "first_realtime_callback"
     elif broker_order_id_appeared:
         if current_status in TRADE_LEDGER_NON_MATERIAL_CALLBACK_STATUSES and callback_type in {"openOrder", "orderStatus"}:
             return {
@@ -1650,6 +1655,55 @@ def _trade_ledger_event_model(order_record: dict[str, Any], previous_order: dict
     }
 
 
+def _trade_ledger_decision_line(order_record: dict[str, Any], event_model: dict[str, Any]) -> str:
+    reason = to_text(event_model.get("reason"))
+    callback_type = to_text(event_model.get("callback_type")) or _trade_ledger_callback_type(order_record)
+    status = to_text(event_model.get("status") or _record_or_extra_value(order_record, "status", "order_status", "current_status"))
+    previous_status = to_text(event_model.get("previous_status"))
+    filled_qty = to_float(event_model.get("filled_qty"))
+    previous_filled_qty = to_float(event_model.get("previous_filled_qty"))
+    fill_delta = to_float(event_model.get("fill_delta")) or 0.0
+    quantity = _trade_ledger_order_qty(order_record)
+    broker_order_id = to_text(_record_or_extra_value(order_record, "broker_order_id", "order_id", "orderId"))
+
+    if reason == "fill_quantity_increased":
+        return (
+            f"成交数量增加：前次 {_format_quantity(previous_filled_qty)} -> 本次 {_format_quantity(filled_qty)}"
+            f"（+{_format_quantity(fill_delta)}）。"
+        )
+    if reason == "first_exec_details_callback":
+        qty_label = (
+            f"{_format_quantity(filled_qty)}/{_format_quantity(quantity)}"
+            if quantity > 0
+            else _format_quantity(filled_qty)
+        )
+        return (
+            f"上一条记录无 broker 实时回调标记；当前是 IB {callback_type} 成交明细，"
+            f"已成交 {qty_label}，成交增量 {_format_quantity(fill_delta)}。"
+        )
+    if reason == "full_fill_status_confirmed":
+        return "本地已记录满成交；当前 Broker 状态确认已成交，且交易流水此前未成功发送。"
+    if reason == "close_order_cancelled_incomplete":
+        return (
+            f"平仓单状态变为 {_status_text(status)}，但已成交 {_format_quantity(filled_qty)}/"
+            f"{_format_quantity(quantity)}，仍有未成交数量。"
+        )
+    if reason == "terminal_status":
+        prefix = (
+            f"状态变化：{_status_text(previous_status)} -> {_status_text(status)}"
+            if previous_status
+            else f"首次回调即为终态：{_status_text(status)}"
+        )
+        return f"{prefix}。"
+    if reason == "first_realtime_callback":
+        return f"上一条记录无 broker 实时回调标记；当前回调类型 {callback_type}，状态 {_status_text(status)}。"
+    if reason == "broker_order_id_appeared":
+        return f"本次首次拿到 Broker 订单 ID：{broker_order_id or '-'}。"
+    if reason == "status_changed":
+        return f"状态变化：{_status_text(previous_status)} -> {_status_text(status)}。"
+    return ""
+
+
 def _trade_ledger_template(event_model: dict[str, Any], status: str, pnl_value: Any = None) -> str:
     if event_model.get("reason") == "close_order_cancelled_incomplete":
         return "red"
@@ -1704,17 +1758,24 @@ def build_order_callback_ledger_card(
 
     body_lines = [
         f"**回调判定**: {event_label}",
-        f"**回调类型**: {callback_type}",
-        f"**状态**: {status_text}",
-        f"**Symbol / Broker**: {symbol} / {broker_badge}",
-        f"**交易方向**: {direction_display}",
-        f"**Broker订单ID**: {broker_order_id or '-'}",
-        f"**信号ID / 交易组**: {signal_id or '-'} / {trade_group_id or '-'}",
-        f"**角色 / 类型**: {display_role_label} / {order_type or '-'}",
-        f"**数量 / 已成交**: {_format_quantity(_record_or_extra_value(order_record, 'quantity'))} / {_format_quantity(filled_qty)}",
-        f"**均价 / 最新成交价**: {_format_price(_trade_ledger_fill_price(order_record))} / {_format_price(_record_or_extra_value(order_record, 'last_fill_price', 'lastFillPrice', 'execution_price'))}",
-        fill_line,
     ]
+    decision_line = _trade_ledger_decision_line(order_record, event_model)
+    if decision_line:
+        body_lines.append(f"**判定依据**: {decision_line}")
+    body_lines.extend(
+        [
+            f"**回调类型**: {callback_type}",
+            f"**状态**: {status_text}",
+            f"**Symbol / Broker**: {symbol} / {broker_badge}",
+            f"**交易方向**: {direction_display}",
+            f"**Broker订单ID**: {broker_order_id or '-'}",
+            f"**信号ID / 交易组**: {signal_id or '-'} / {trade_group_id or '-'}",
+            f"**角色 / 类型**: {display_role_label} / {order_type or '-'}",
+            f"**数量 / 已成交**: {_format_quantity(_record_or_extra_value(order_record, 'quantity'))} / {_format_quantity(filled_qty)}",
+            f"**均价 / 最新成交价**: {_format_price(_trade_ledger_fill_price(order_record))} / {_format_price(_record_or_extra_value(order_record, 'last_fill_price', 'lastFillPrice', 'execution_price'))}",
+            fill_line,
+        ]
+    )
     if event_model.get("reason") == "close_order_cancelled_incomplete":
         close_remaining_qty = to_float(event_model.get("close_remaining_qty")) or 0.0
         body_lines.insert(

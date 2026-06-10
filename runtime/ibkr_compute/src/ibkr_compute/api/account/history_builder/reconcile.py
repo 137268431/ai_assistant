@@ -114,6 +114,7 @@ def _build_broker_order_reconciliation(service, environment: str, broker_orders:
         "market_date": market_date,
         "pb_error": pb_error,
         "pb_today_count": len(pb_today_rows),
+        "pb_today_rows": pb_today_rows,
         "broker_today_count": len(broker_orders),
         "matched_count": matched_count,
         "broker_only_count": len(broker_only_ids),

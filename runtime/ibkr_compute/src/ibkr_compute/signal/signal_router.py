@@ -6,6 +6,7 @@
 
 import json
 import logging
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from ibkr_compute.core.time_utils import ET
@@ -25,6 +26,7 @@ class SignalRouter:
         self._processed_ids = set()
         self._inflight_ids = set()
         self._last_poll: Optional[float] = None
+        self._lock = threading.RLock()
 
     @property
     def signal_source(self) -> str:
@@ -99,12 +101,9 @@ class SignalRouter:
         seen_signal_ids = set()
         for row in rows:
             signal_id = row.get("signal_id", row.get("id", ""))
-            if (
-                not signal_id
-                or signal_id in seen_signal_ids
-                or signal_id in self._processed_ids
-                or signal_id in self._inflight_ids
-            ):
+            with self._lock:
+                already_seen = signal_id in self._processed_ids or signal_id in self._inflight_ids
+            if not signal_id or signal_id in seen_signal_ids or already_seen:
                 continue
             seen_signal_ids.add(signal_id)
 
@@ -176,8 +175,9 @@ class SignalRouter:
         text = str(signal_id or "").strip()
         if not text:
             return
-        self._inflight_ids.discard(text)
-        self._processed_ids.add(text)
+        with self._lock:
+            self._inflight_ids.discard(text)
+            self._processed_ids.add(text)
         record_signal_event(
             environment=self.environment,
             stage="mark_processed",
@@ -189,7 +189,11 @@ class SignalRouter:
     def claim_signal(self, signal_id: str) -> bool:
         started = time.perf_counter()
         text = str(signal_id or "").strip()
-        if not text or text in self._processed_ids or text in self._inflight_ids:
+        with self._lock:
+            already_seen = not text or text in self._processed_ids or text in self._inflight_ids
+            if not already_seen:
+                self._inflight_ids.add(text)
+        if already_seen:
             record_signal_event(
                 environment=self.environment,
                 stage="claim",
@@ -198,7 +202,6 @@ class SignalRouter:
                 duration_s=time.perf_counter() - started,
             )
             return False
-        self._inflight_ids.add(text)
         record_signal_event(
             environment=self.environment,
             stage="claim",
@@ -212,7 +215,8 @@ class SignalRouter:
         started = time.perf_counter()
         text = str(signal_id or "").strip()
         if text:
-            self._inflight_ids.discard(text)
+            with self._lock:
+                self._inflight_ids.discard(text)
             record_signal_event(
                 environment=self.environment,
                 stage="release",
@@ -225,22 +229,27 @@ class SignalRouter:
         for signal_id in (signal_ids or []):
             text = str(signal_id or "").strip()
             if text:
-                self._processed_ids.discard(text)
-                self._inflight_ids.discard(text)
+                with self._lock:
+                    self._processed_ids.discard(text)
+                    self._inflight_ids.discard(text)
 
     def daily_reset(self):
-        self._processed_ids.clear()
-        self._inflight_ids.clear()
+        with self._lock:
+            self._processed_ids.clear()
+            self._inflight_ids.clear()
         logger.info("Signal router daily reset")
 
     def status(self) -> dict:
+        with self._lock:
+            processed_count = len(self._processed_ids)
+            inflight_count = len(self._inflight_ids)
         return {
             "signal_source": self.signal_source,
             "environment": self.environment,
             "broker_mode": self.broker_mode,
             "data_environment": self.environment,
-            "processed_count": len(self._processed_ids),
-            "inflight_count": len(self._inflight_ids),
+            "processed_count": processed_count,
+            "inflight_count": inflight_count,
             "last_poll": datetime.fromtimestamp(self._last_poll, timezone.utc).isoformat()
             if self._last_poll else None,
         }

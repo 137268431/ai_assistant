@@ -118,12 +118,21 @@ def _runtime_account_request(
     def fake_request(method, base_url, path, params=None, timeout=0, **kwargs):
         position_rows = list(positions or [])
         live_rows = list(live_open_orders or [])
+        long_positions = len([item for item in position_rows if float(item.get("quantity", 0) or 0) > 0])
+        short_positions = len([item for item in position_rows if float(item.get("quantity", 0) or 0) < 0])
+        flat_positions = len([item for item in position_rows if float(item.get("quantity", 0) or 0) == 0])
+        extra_counts = (payload_extra or {}).get("counts") if isinstance((payload_extra or {}).get("counts"), dict) else {}
         resolved_counts = {
             "open_positions": len([item for item in position_rows if float(item.get("quantity", 0) or 0) != 0]),
+            "long_positions": long_positions,
+            "short_positions": short_positions,
+            "flat_positions": flat_positions,
+            "position_rows": len(position_rows),
             "open_orders": len(live_rows),
             "cancelable_orders": len([item for item in live_rows if item.get("can_cancel")]),
             "editable_orders": len([item for item in live_rows if item.get("can_modify")]),
             **(counts or {}),
+            **extra_counts,
         }
         return {
             "ok": (status_code < 400) if ok is None else bool(ok),
@@ -406,6 +415,8 @@ class HomeOverviewApiTest(unittest.TestCase):
                 "short": 1,
                 "total": 2,
                 "available": True,
+                "detail_available": True,
+                "count_available": True,
                 "empty_confirmed": False,
                 "source": "runtime_account",
                 "flat_count": 1,
@@ -497,6 +508,68 @@ class HomeOverviewApiTest(unittest.TestCase):
         self.assertEqual(payload["summary"]["live_orders"]["leg_total"], 1)
         self.assertEqual(payload["summary"]["live_orders"]["total_groups"], 1)
         self.assertEqual(payload["summary"]["live_orders"]["entry"], 1)
+
+    def test_dashboard_does_not_treat_omitted_fast_positions_as_confirmed_flat(self):
+        payload, status = build_home_dashboard_response(
+            _HomePB({"ibkr_signals": [], "ibkr_reverse_signals": [], "orders": [], "ibkr_execution_fills": []}),
+            payload={"broker_mode": "paper", "market_data_mode": "live", "market_date": "2026-04-23"},
+            time_strings=lambda: {"date": "2026-04-23"},
+            request_json_request=_runtime_account_request(
+                positions=[],
+                live_open_orders=[],
+                payload_extra={
+                    "positions_detail_available": False,
+                    "positions_count_available": False,
+                    "positions_source": "omitted_open_orders_only",
+                    "orders_fast_diagnostics": {"positions_omitted": True},
+                    "counts": {"open_orders": 0},
+                },
+            ),
+            runtime_base_url="http://runtime.local",
+        )
+
+        self.assertEqual(status, 200)
+        positions = payload["summary"]["positions"]
+        self.assertFalse(positions["available"])
+        self.assertFalse(positions["empty_confirmed"])
+        self.assertEqual("runtime_account_positions_omitted", positions["error"])
+
+    def test_dashboard_uses_cached_position_counts_when_fast_positions_are_omitted(self):
+        payload, status = build_home_dashboard_response(
+            _HomePB({"ibkr_signals": [], "ibkr_reverse_signals": [], "orders": [], "ibkr_execution_fills": []}),
+            payload={"broker_mode": "paper", "market_data_mode": "live", "market_date": "2026-04-23"},
+            time_strings=lambda: {"date": "2026-04-23"},
+            request_json_request=_runtime_account_request(
+                positions=[],
+                live_open_orders=[],
+                payload_extra={
+                    "positions_detail_available": False,
+                    "positions_count_available": True,
+                    "positions_source": "omitted_open_orders_only",
+                    "orders_fast_diagnostics": {"positions_omitted": True},
+                    "counts": {
+                        "open_positions": 1,
+                        "long_positions": 1,
+                        "short_positions": 0,
+                        "flat_positions": 4,
+                        "position_rows": 5,
+                        "open_orders": 0,
+                    },
+                },
+            ),
+            runtime_base_url="http://runtime.local",
+        )
+
+        self.assertEqual(status, 200)
+        positions = payload["summary"]["positions"]
+        self.assertTrue(positions["available"])
+        self.assertFalse(positions["detail_available"])
+        self.assertTrue(positions["count_available"])
+        self.assertFalse(positions["empty_confirmed"])
+        self.assertEqual(1, positions["long"])
+        self.assertEqual(0, positions["short"])
+        self.assertEqual(1, positions["total"])
+        self.assertEqual(5, positions["position_rows"])
 
     def test_dashboard_accepts_nested_runtime_account_payload(self):
         payload, status = build_home_dashboard_response(

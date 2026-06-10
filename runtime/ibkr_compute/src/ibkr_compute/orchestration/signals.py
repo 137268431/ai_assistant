@@ -3,7 +3,10 @@ from __future__ import annotations
 import copy
 import json
 import math
+import queue
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 from ibkr_compute.api.account.buying_power_guard import (
@@ -270,6 +273,9 @@ class TradingServiceSignalsMixin:
             self._signal_wakeup.wait(timeout=signal_poll_interval)
             self._signal_wakeup.clear()
 
+    def _signal_submit_max_concurrency(self) -> int:
+        return max(1, int(self._config_float("ibkr_signal_submit_max_concurrency", 12.0)))
+
     def _process_signals(self):
         service_mod = _service_mod()
         if not self.session_keeper.is_authenticated:
@@ -277,6 +283,42 @@ class TradingServiceSignalsMixin:
             return
 
         pending_signals = self.signal_router.fetch_pending_signals()
+        if not pending_signals:
+            return
+
+        signals_by_symbol: dict[str, list[dict]] = {}
+        for sig in pending_signals:
+            symbol = str((sig or {}).get("symbol") or "").strip().upper()
+            signal_id = str((sig or {}).get("signal_id") or "").strip()
+            key = symbol or signal_id or "_unknown"
+            signals_by_symbol.setdefault(key, []).append(sig)
+
+        signal_batches = list(signals_by_symbol.values())
+        max_workers = min(len(signal_batches), self._signal_submit_max_concurrency())
+        if max_workers <= 1 or not self._fast_order_accept_enabled() or not getattr(self, "_running", False):
+            self._process_signal_batch_serial(pending_signals)
+            return
+
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="signal-submit") as executor:
+            futures = [executor.submit(self._process_signal_batch_serial, batch) for batch in signal_batches]
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as exc:
+                    service_mod.logger.error("Signal submit worker failed: %s", exc)
+                    record_signal_event(
+                        environment=service_mod.ENVIRONMENT,
+                        stage="signal_submit_fanout",
+                        signal_source="runtime_loop",
+                        result="error",
+                        reason_code=exc.__class__.__name__,
+                    )
+
+    def _process_signal_batch_serial(self, pending_signals: list[dict]):
+        service_mod = _service_mod()
+        if not self.session_keeper.is_authenticated:
+            service_mod.logger.info("Skip signal processing while session is unauthenticated")
+            return
 
         for sig in pending_signals:
             signal_id = str(sig.get("signal_id") or "").strip()
@@ -664,6 +706,7 @@ class TradingServiceSignalsMixin:
                             trade_group_id=trade_group_id,
                             settings=harvest_settings,
                             buying_power_guard=buying_power_guard,
+                            confirmation_mode="background",
                             outside_rth=bool(extra.get("outside_rth")),
                         )
 
@@ -718,7 +761,7 @@ class TradingServiceSignalsMixin:
                     except Exception as track_err:
                         service_mod.logger.error("Order tracker register failed: %s", track_err)
                     try:
-                        self._ack_signal_after_order_submission(sig, result)
+                        self._submit_signal_ack_after_order_submission(sig, result)
                     except Exception as ack_err:
                         service_mod.logger.error(
                             "Signal ack failed after order placement: %s signal_id=%s",
@@ -774,6 +817,122 @@ class TradingServiceSignalsMixin:
                     duration_s=time.perf_counter() - signal_process_started,
                 )
 
+    def _fast_order_accept_enabled(self) -> bool:
+        return self._config_bool("ibkr_order_place_fast_accept_enabled", True)
+
+    def _signal_ack_queue_maxsize(self) -> int:
+        return max(1, int(self._config_float("ibkr_signal_ack_queue_maxsize", 1000.0)))
+
+    def _signal_ack_retry_attempts(self) -> int:
+        return max(1, int(self._config_float("ibkr_signal_ack_retry_attempts", 5.0)))
+
+    def _signal_ack_retry_base_delay_sec(self) -> float:
+        return max(0.1, self._config_float("ibkr_signal_ack_retry_base_delay_sec", 0.5))
+
+    def _ensure_signal_ack_worker(self) -> queue.Queue:
+        ack_queue = getattr(self, "_signal_ack_queue", None)
+        if not isinstance(ack_queue, queue.Queue):
+            ack_queue = queue.Queue(maxsize=self._signal_ack_queue_maxsize())
+            setattr(self, "_signal_ack_queue", ack_queue)
+        worker = getattr(self, "_signal_ack_worker_thread", None)
+        if not worker or not worker.is_alive():
+            worker = threading.Thread(
+                target=self._signal_ack_worker_loop,
+                daemon=True,
+                name="signal-ack-worker",
+            )
+            setattr(self, "_signal_ack_worker_thread", worker)
+            worker.start()
+        return ack_queue
+
+    def _submit_signal_ack_after_order_submission(self, sig: dict, result: dict) -> None:
+        if not self._fast_order_accept_enabled() or not getattr(self, "_running", False):
+            self._ack_signal_after_order_submission(sig, result)
+            return
+        ack_queue = self._ensure_signal_ack_worker()
+        try:
+            ack_queue.put_nowait(
+                {
+                    "sig": copy.deepcopy(sig),
+                    "result": copy.deepcopy(result),
+                    "attempt": 1,
+                    "queued_at": time.time(),
+                }
+            )
+        except queue.Full:
+            _service_mod().logger.error(
+                "Signal ack queue full; falling back to synchronous ack: signal_id=%s",
+                sig.get("signal_id"),
+            )
+            self._ack_signal_after_order_submission(sig, result)
+
+    def _signal_ack_worker_loop(self) -> None:
+        service_mod = _service_mod()
+        ack_queue = getattr(self, "_signal_ack_queue", None)
+        if not isinstance(ack_queue, queue.Queue):
+            return
+        while getattr(self, "_running", False) or not ack_queue.empty():
+            try:
+                item = ack_queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            try:
+                self._run_signal_ack_queue_item(item)
+            finally:
+                ack_queue.task_done()
+        service_mod.logger.info("Signal ack worker stopped")
+
+    def _run_signal_ack_queue_item(self, item: dict) -> None:
+        service_mod = _service_mod()
+        sig = item.get("sig") if isinstance(item, dict) else {}
+        result = item.get("result") if isinstance(item, dict) else {}
+        attempt = max(1, int((item or {}).get("attempt") or 1))
+        signal_id = str((sig or {}).get("signal_id") or "").strip()
+        try:
+            self._ack_signal_after_order_submission(sig if isinstance(sig, dict) else {}, result if isinstance(result, dict) else {})
+            return
+        except Exception as exc:
+            max_attempts = self._signal_ack_retry_attempts()
+            if attempt >= max_attempts:
+                service_mod.logger.error(
+                    "Signal ack failed after retries: signal_id=%s attempts=%s error=%s",
+                    signal_id,
+                    attempt,
+                    exc,
+                )
+                return
+            delay = min(30.0, self._signal_ack_retry_base_delay_sec() * (2 ** (attempt - 1)))
+            service_mod.logger.warning(
+                "Signal ack retry scheduled: signal_id=%s attempt=%s/%s delay=%.1fs error=%s",
+                signal_id,
+                attempt + 1,
+                max_attempts,
+                delay,
+                exc,
+            )
+            time.sleep(delay)
+            ack_queue = getattr(self, "_signal_ack_queue", None)
+            if isinstance(ack_queue, queue.Queue):
+                try:
+                    retry_item = dict(item or {})
+                    retry_item["attempt"] = attempt + 1
+                    ack_queue.put_nowait(retry_item)
+                except queue.Full:
+                    service_mod.logger.error(
+                        "Signal ack queue full during retry: signal_id=%s attempt=%s",
+                        signal_id,
+                        attempt + 1,
+                    )
+
+    def signal_ack_queue_status(self) -> dict:
+        ack_queue = getattr(self, "_signal_ack_queue", None)
+        worker = getattr(self, "_signal_ack_worker_thread", None)
+        return {
+            "enabled": self._fast_order_accept_enabled(),
+            "depth": ack_queue.qsize() if isinstance(ack_queue, queue.Queue) else 0,
+            "worker_alive": bool(worker and worker.is_alive()),
+        }
+
     @staticmethod
     def _safe_float(value, default: float = 0.0) -> float:
         try:
@@ -821,6 +980,51 @@ class TradingServiceSignalsMixin:
         if str(direction or "").strip().lower() == "short":
             return math.floor(price * 100.0 + 1e-9) / 100.0
         return math.ceil(price * 100.0 - 1e-9) / 100.0
+
+    @staticmethod
+    def _structural_price_plan(sig: dict) -> str:
+        extra = sig.get("extra") if isinstance(sig.get("extra"), dict) else {}
+        raw = sig.get("raw") if isinstance(sig.get("raw"), dict) else {}
+        for source in (sig, extra, raw):
+            plan = str((source or {}).get("entry_price_plan") or "").strip().lower()
+            intent = str((source or {}).get("entry_limit_intent") or "").strip().lower()
+            mode = str((source or {}).get("entry_anchor_mode") or "").strip().lower()
+            if plan == "structural_anchor_limit" or intent == "structural_anchor" or mode == "setup_structural":
+                return "structural_anchor_limit"
+        return ""
+
+    @classmethod
+    def _is_structural_anchor_entry(cls, sig: dict) -> bool:
+        return cls._structural_price_plan(sig) == "structural_anchor_limit"
+
+    @classmethod
+    def _planned_entry_price(cls, sig: dict) -> float:
+        extra = sig.get("extra") if isinstance(sig.get("extra"), dict) else {}
+        raw = sig.get("raw") if isinstance(sig.get("raw"), dict) else {}
+        for source in (sig, extra, raw):
+            for key in ("planned_entry_price", "submitted_entry_limit_price", "entry"):
+                value = cls._safe_float((source or {}).get(key), 0.0)
+                if value > 0:
+                    return value
+        return 0.0
+
+    @classmethod
+    def _reference_entry_price(cls, sig: dict, default: float = 0.0) -> float:
+        extra = sig.get("extra") if isinstance(sig.get("extra"), dict) else {}
+        raw = sig.get("raw") if isinstance(sig.get("raw"), dict) else {}
+        for source in (sig, extra, raw):
+            for key in ("reference_entry", "signal_reference_price", "tv_reference_entry", "original_entry"):
+                value = cls._safe_float((source or {}).get(key), 0.0)
+                if value > 0:
+                    return value
+        return default
+
+    @staticmethod
+    def _price_worse_than_planned(direction: str, candidate_price: float, planned_price: float) -> bool:
+        if candidate_price <= 0 or planned_price <= 0:
+            return False
+        normalized_direction = str(direction or "").strip().lower()
+        return candidate_price > planned_price if normalized_direction == "long" else candidate_price < planned_price
 
     @classmethod
     def _timestamp_from_epoch_value(cls, value):
@@ -915,11 +1119,16 @@ class TradingServiceSignalsMixin:
         return True
 
     def _prepare_tv_direct_entry_signal(self, sig: dict) -> tuple[bool, dict, str]:
-        reference_entry = self._safe_float(sig.get("entry"), 0.0)
+        extra = self._signal_extra(sig)
+        structural_anchor_entry = self._is_structural_anchor_entry(sig)
+        signal_entry = self._safe_float(sig.get("entry"), 0.0)
+        planned_entry = self._planned_entry_price(sig) if structural_anchor_entry else 0.0
+        entry = planned_entry if structural_anchor_entry and planned_entry > 0 else signal_entry
+        reference_entry = self._reference_entry_price(sig, entry) if structural_anchor_entry else entry
         reference_stop = self._safe_float(sig.get("stop_loss"), 0.0)
         reference_target = self._safe_float(sig.get("take_profit"), 0.0)
         direction = str(sig.get("direction") or "").strip().lower()
-        if reference_entry <= 0 or reference_stop <= 0 or reference_target <= 0 or direction not in {"long", "short"}:
+        if entry <= 0 or reference_entry <= 0 or reference_stop <= 0 or reference_target <= 0 or direction not in {"long", "short"}:
             return False, sig, "invalid_prices"
 
         max_age_s = max(1.0, self._config_float("tv_entry_freshness_sec", 120.0))
@@ -927,7 +1136,6 @@ class TradingServiceSignalsMixin:
         signal_dt, signal_time_source, raw_signal_time = self._tv_signal_timestamp(sig)
         now_utc = datetime.now(timezone.utc)
         if signal_dt is None:
-            extra = self._signal_extra(sig)
             sig["extra"] = {
                 **extra,
                 "tv_direct_entry": True,
@@ -949,7 +1157,6 @@ class TradingServiceSignalsMixin:
             "signal_clock_skew_threshold_s": clock_skew_s,
         }
         if signal_age_s < -clock_skew_s:
-            extra = self._signal_extra(sig)
             sig["extra"] = {
                 **extra,
                 **freshness_fields,
@@ -959,7 +1166,6 @@ class TradingServiceSignalsMixin:
             }
             return False, sig, "signal_clock_skew"
         if signal_age_s > max_age_s:
-            extra = self._signal_extra(sig)
             sig["extra"] = {
                 **extra,
                 **freshness_fields,
@@ -969,7 +1175,6 @@ class TradingServiceSignalsMixin:
             }
             return False, sig, "stale_signal"
 
-        extra = self._signal_extra(sig)
         cap_bps = self._config_float("tv_entry_limit_cap_bps", 15.0)
         for source in (sig, extra):
             for key in ("submitted_limit_cap_bps", "tv_entry_limit_cap_bps", "entry_limit_cap_bps", "limit_cap_bps"):
@@ -980,12 +1185,23 @@ class TradingServiceSignalsMixin:
                 continue
             break
         cap_bps = max(0.0, cap_bps)
-        raw_limit = (
-            reference_entry * (1.0 - cap_bps / 10000.0)
-            if direction == "short"
-            else reference_entry * (1.0 + cap_bps / 10000.0)
-        )
-        submitted_limit = self._round_tv_entry_limit(raw_limit, direction)
+        if structural_anchor_entry:
+            submitted_limit = self._round_price(entry)
+            entry_limit_intent = "structural_anchor"
+            entry_price_plan = "structural_anchor_limit"
+            submitted_limit_cap_applied = False
+            validation_policy = "freshness_then_structural_anchor_guard"
+        else:
+            raw_limit = (
+                reference_entry * (1.0 - cap_bps / 10000.0)
+                if direction == "short"
+                else reference_entry * (1.0 + cap_bps / 10000.0)
+            )
+            submitted_limit = self._round_tv_entry_limit(raw_limit, direction)
+            entry_limit_intent = "bounded_marketable"
+            entry_price_plan = "tv_direct_bounded_limit"
+            submitted_limit_cap_applied = True
+            validation_policy = "freshness_only_then_hard_safety"
         adaptive_enabled = self._config_bool("tv_entry_adaptive_enabled", True)
         adaptive_priority = self._config_text("tv_entry_adaptive_priority", "Normal").strip() or "Normal"
         adjusted_sig = copy.deepcopy(sig)
@@ -1000,6 +1216,7 @@ class TradingServiceSignalsMixin:
             "tv_reference_stop_loss": reference_stop,
             "tv_reference_take_profit": reference_target,
             "reference_entry": reference_entry,
+            "planned_entry_price": submitted_limit,
             "reference_stop_loss": reference_stop,
             "reference_take_profit": reference_target,
             "reference_protection_only": True,
@@ -1007,18 +1224,18 @@ class TradingServiceSignalsMixin:
             "submitted_entry_limit_price": submitted_limit,
             "submitted_limit_cap_price": submitted_limit,
             "submitted_limit_cap_bps": cap_bps,
-            "submitted_limit_cap_applied": True,
+            "submitted_limit_cap_applied": submitted_limit_cap_applied,
             "tv_entry_limit_cap_bps": cap_bps,
             "tv_entry_adaptive_enabled": adaptive_enabled,
             "tv_entry_adaptive_priority": adaptive_priority,
             "adaptive_priority": adaptive_priority if adaptive_enabled else "",
             "entry_order_type": "LMT",
-            "entry_limit_intent": "bounded_marketable",
-            "entry_price_plan": "tv_direct_bounded_limit",
-            "entry_repriced": submitted_limit != self._round_price(reference_entry),
-            "tv_direct_validation_policy": "freshness_only_then_hard_safety",
+            "entry_limit_intent": entry_limit_intent,
+            "entry_price_plan": entry_price_plan,
+            "entry_repriced": submitted_limit != self._round_price(signal_entry),
+            "tv_direct_validation_policy": validation_policy,
             "tv_direct_signal_processor_validation_skipped": True,
-            "original_entry": reference_entry,
+            "original_entry": signal_entry,
             "original_stop_loss": reference_stop,
             "original_take_profit": reference_target,
             "status_reason": "tv_direct_ready",
@@ -2395,6 +2612,17 @@ class TradingServiceSignalsMixin:
             "entry_price_plan": "passive_limit",
             "entry_repriced": False,
         }
+        structural_anchor_entry = self._is_structural_anchor_entry(sig)
+        planned_entry = self._planned_entry_price(sig) if structural_anchor_entry else 0.0
+        if structural_anchor_entry:
+            diagnostics.update(
+                {
+                    "structural_anchor_guard": True,
+                    "planned_entry_price": planned_entry or entry,
+                    "entry_limit_intent": "structural_anchor",
+                    "entry_price_plan": "structural_anchor_limit",
+                }
+            )
 
         if live_environment and not fresh_quote:
             status_reason = guard_reason or "entry_guard_no_fresh_quote"
@@ -2404,6 +2632,45 @@ class TradingServiceSignalsMixin:
         if not fresh_quote:
             sig["extra"] = {**extra, **diagnostics}
             return True, sig, ""
+
+        if structural_anchor_entry:
+            planned_entry = planned_entry or entry
+            executable_price = self._quote_price(quote, "ask" if direction == "long" else "bid")
+            executable_source = "ask" if direction == "long" else "bid"
+            if executable_price <= 0:
+                executable_price = reference_price
+                executable_source = reference_source
+            diagnostics.update(
+                {
+                    "structural_anchor_reference_price": round(executable_price, 4) if executable_price > 0 else None,
+                    "structural_anchor_reference_source": executable_source,
+                    "structural_anchor_price_reached": not self._price_worse_than_planned(
+                        direction,
+                        executable_price,
+                        planned_entry,
+                    ),
+                    "reprice_source": "structural_anchor_guard",
+                }
+            )
+            if direction == "long" and executable_price > 0 and executable_price <= stop_loss:
+                sig["extra"] = {**extra, **diagnostics, "status_reason": "entry_guard_stop_already_crossed"}
+                return False, sig, "entry_guard_stop_already_crossed"
+            if direction == "short" and executable_price > 0 and executable_price >= stop_loss:
+                sig["extra"] = {**extra, **diagnostics, "status_reason": "entry_guard_stop_already_crossed"}
+                return False, sig, "entry_guard_stop_already_crossed"
+            if self._price_worse_than_planned(direction, executable_price, planned_entry):
+                status_reason = "entry_structural_price_not_reached"
+                sig["extra"] = {**extra, **diagnostics, "status_reason": status_reason}
+                return False, sig, status_reason
+            adjusted_sig = copy.deepcopy(sig)
+            adjusted_sig["entry"] = self._round_price(planned_entry)
+            adjusted_sig["extra"] = {
+                **extra,
+                **diagnostics,
+                "entry_repriced": adjusted_sig["entry"] != self._round_price(entry),
+                "status_reason": "entry_structural_price_ready",
+            }
+            return True, adjusted_sig, ""
 
         if direction == "long":
             if reference_price <= stop_loss:
@@ -2472,17 +2739,38 @@ class TradingServiceSignalsMixin:
         entry_price = self._safe_float(marketable.get("price"), 0.0)
         if entry_price <= 0:
             return sig
-        adjusted_sig = copy.deepcopy(sig)
         original_entry = self._safe_float(sig.get("entry"), 0.0)
         original_stop = self._safe_float(sig.get("stop_loss"), 0.0)
         original_target = self._safe_float(sig.get("take_profit"), 0.0)
+        extra = self._signal_extra(sig)
+        if self._is_structural_anchor_entry(sig):
+            planned_entry = self._planned_entry_price(sig) or original_entry
+            direction = str(sig.get("direction") or "").strip().lower()
+            if self._price_worse_than_planned(direction, entry_price, planned_entry):
+                preserved_sig = copy.deepcopy(sig)
+                preserved_sig["extra"] = {
+                    **extra,
+                    "order_flow": decision,
+                    "order_flow_shadow": decision,
+                    "order_flow_enforced": bool(decision.get("enforced")),
+                    "order_flow_entry_confirmed": False,
+                    "order_flow_reprice_blocked": True,
+                    "order_flow_reprice_block_reason": "structural_anchor_worse_than_planned",
+                    "order_flow_market_limit_price": entry_price,
+                    "planned_entry_price": planned_entry,
+                    "entry_order_type": "LMT",
+                    "entry_limit_intent": "structural_anchor",
+                    "entry_price_plan": "structural_anchor_limit",
+                    "entry_repriced": False,
+                }
+                return preserved_sig
+        adjusted_sig = copy.deepcopy(sig)
         adjusted_sig["entry"] = self._round_price(entry_price)
         delta = adjusted_sig["entry"] - self._round_price(original_entry)
         if original_stop > 0:
             adjusted_sig["stop_loss"] = self._round_price(original_stop + delta)
         if original_target > 0:
             adjusted_sig["take_profit"] = self._round_price(original_target + delta)
-        extra = self._signal_extra(sig)
         adjusted_sig["extra"] = {
             **extra,
             "order_flow": decision,
@@ -2691,6 +2979,12 @@ class TradingServiceSignalsMixin:
     def _buying_power_max_snapshot_age_sec(self) -> float:
         return max(1.0, self._config_float("ibkr_buying_power_max_snapshot_age_sec", 180.0))
 
+    def _buying_power_stale_baseline_max_age_sec(self) -> float:
+        return max(
+            self._buying_power_max_snapshot_age_sec(),
+            self._config_float("ibkr_buying_power_stale_baseline_max_age_sec", 1800.0),
+        )
+
     @staticmethod
     def _parse_snapshot_timestamp(value) -> float:
         if value in (None, ""):
@@ -2769,12 +3063,13 @@ class TradingServiceSignalsMixin:
                 baseline = {}
 
         max_snapshot_age_s = self._buying_power_max_snapshot_age_sec()
+        baseline_max_age_s = self._buying_power_stale_baseline_max_age_sec()
         baseline_available = bool(baseline.get("available"))
         baseline_age_s = self._buying_power_payload_age_s(baseline) if baseline_available else None
         baseline_fresh = bool(
             baseline_available
             and baseline_age_s is not None
-            and baseline_age_s <= max_snapshot_age_s
+            and baseline_age_s <= baseline_max_age_s
         )
         snapshot = {}
         snapshot_guard = {}
@@ -2810,7 +3105,7 @@ class TradingServiceSignalsMixin:
                             baseline_available = True
                             baseline_age_s = self._buying_power_payload_age_s(baseline)
                             baseline_fresh = bool(
-                                baseline_age_s is not None and baseline_age_s <= max_snapshot_age_s
+                                baseline_age_s is not None and baseline_age_s <= baseline_max_age_s
                             )
                     except Exception as exc:
                         service_mod.logger.warning("Buying-power baseline update failed: %s", exc)
@@ -2862,6 +3157,7 @@ class TradingServiceSignalsMixin:
             guard["baseline_cache_state"] = str(baseline.get("cache_state") or "")
             if baseline_age_s is not None:
                 guard["baseline_age_s"] = round(float(baseline_age_s), 1)
+            guard["baseline_max_age_s"] = round(float(baseline_max_age_s), 1)
             guard["baseline_fresh"] = bool(baseline_fresh)
             for key in self.BUYING_POWER_SNAPSHOT_META_KEYS:
                 if key.startswith("risk_model") and baseline.get(key) not in (None, ""):
@@ -2876,6 +3172,7 @@ class TradingServiceSignalsMixin:
         if snapshot_age_s is not None:
             guard["snapshot_age_s"] = round(float(snapshot_age_s), 1)
         guard["snapshot_max_age_s"] = round(float(max_snapshot_age_s), 1)
+        guard["baseline_max_age_s"] = round(float(baseline_max_age_s), 1)
         guard["snapshot_fresh"] = bool(snapshot_fresh or baseline_fresh)
         if freshness_block_reason and guard.get("enabled"):
             guard["available"] = False
@@ -3748,6 +4045,12 @@ class TradingServiceSignalsMixin:
                 "price_drift_r",
                 "price_drift_threshold_r",
                 "price_drift_exceeds_threshold",
+                "structural_anchor_guard",
+                "planned_entry_price",
+                "structural_anchor_reference_price",
+                "structural_anchor_reference_source",
+                "structural_anchor_price_reached",
+                "reprice_source",
                 "original_entry",
                 "original_stop_loss",
                 "original_take_profit",

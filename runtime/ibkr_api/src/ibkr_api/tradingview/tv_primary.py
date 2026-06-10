@@ -19,11 +19,11 @@ try:
 except Exception:  # pragma: no cover - imported in tests without compute sometimes
     ET = None  # type: ignore[assignment]
 
-TV_EVENT_TYPES = {"pre_alert", "entry", "risk_update", "exit", "heartbeat"}
+TV_EVENT_TYPES = {"pre_alert", "entry", "risk_update", "exit", "cancel", "heartbeat"}
 TV_EVENT_COLLECTION = "tv_webhook_events"
 TRADINGVIEW_SOURCE = "tradingview"
 TV_WEBHOOK_SPOOL_DIR_ENV = "IBKR_TV_WEBHOOK_SPOOL_DIR"
-TV_RUNTIME_WAKEUP_EVENT_TYPES = {"entry", "risk_update", "exit"}
+TV_RUNTIME_WAKEUP_EVENT_TYPES = {"entry", "risk_update", "exit", "cancel"}
 TV_RUNTIME_WAKEUP_TARGETS = {"ibkr_signals", "ibkr_reverse_signals"}
 TV_PREMARKET_VALIDATION_MODES = {"premarket_linkage", "tv_premarket_linkage"}
 TV_PREMARKET_VALIDATION_REJECTED_REASON = "premarket_validation_not_authorized"
@@ -918,6 +918,27 @@ def _base_extra(
         "min_target_atr_multiple_for_entry",
         "estimated_round_trip_fee",
         "estimated_slippage_per_share_per_side",
+        "reference_entry",
+        "planned_entry_price",
+        "submitted_entry_limit_price",
+        "submitted_limit_cap_price",
+        "submitted_limit_cap_bps",
+        "submitted_limit_cap_applied",
+        "entry_anchor_mode",
+        "entry_anchor_source",
+        "entry_anchor_reason",
+        "entry_anchor_distance_atr",
+        "entry_anchor_distance_bps",
+        "entry_order_ttl_bars",
+        "entry_order_expires_bar_index",
+        "entry_limit_intent",
+        "entry_price_plan",
+        "risk_model",
+        "signal_reference_price",
+        "cancel_reason",
+        "cancel_scope",
+        "cancel_policy",
+        "tv_position_filled",
     ):
         value = _payload_first(payload, key)
         if value not in (None, "", []):
@@ -925,7 +946,7 @@ def _base_extra(
     if link_trade_group_id:
         base["trade_group_id"] = link_trade_group_id
         base["bracket_group"] = link_trade_group_id
-    if link_origin_signal_id and event_type in {"risk_update", "exit"}:
+    if link_origin_signal_id and event_type in {"risk_update", "exit", "cancel"}:
         base["origin_signal_id"] = link_origin_signal_id
     for key, aliases in {
         "entry_order_unique_id": ("entry_order_unique_id", "entryOrderUniqueId", "entry_coid", "entryCoid"),
@@ -1825,6 +1846,200 @@ def _preflight_invalidated_extra(preflight: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _cancel_execution_plan(
+    pb: Any,
+    payload: dict[str, Any],
+    *,
+    signal_id: str,
+    trade_group_id: str,
+    environment: str,
+    broker_mode: str,
+    extra: dict[str, Any],
+    escape_filter: Callable[[Any], str],
+) -> dict[str, Any]:
+    origin = _origin_signal_record(
+        pb,
+        signal_id=signal_id,
+        environment=environment,
+        broker_mode=broker_mode,
+        escape_filter=escape_filter,
+    )
+    execution_payload, execution_mode = _origin_execution_payload(origin, environment=environment, broker_mode=broker_mode)
+    origin_status = _origin_status_key(origin, execution_payload)
+    related_orders = _fetch_tv_related_orders(
+        pb,
+        signal_id=signal_id,
+        trade_group_id=trade_group_id,
+        environment=broker_mode,
+        escape_filter=escape_filter,
+    )
+    real_active_orders = [row for row in related_orders if _order_status_key(row) in TV_REAL_ACTIVE_ORDER_STATUSES]
+    real_filled_orders = [row for row in related_orders if _order_status_key(row) in TV_REAL_FILLED_ORDER_STATUSES]
+    real_terminal_orders = [row for row in related_orders if _order_status_key(row) in TV_TERMINAL_ORDER_STATUSES]
+    origin_active = origin_status in TV_REAL_ACTIVE_ORDER_STATUSES
+    origin_filled = origin_status in TV_REAL_FILLED_ORDER_STATUSES
+    origin_terminal = origin_status in TV_TERMINAL_ORDER_STATUSES
+    order_ids = _unique_text([_active_order_id(row) for row in related_orders])
+    active_order_ids = _unique_text([_active_order_id(row) for row in real_active_orders])
+    filled_order_ids = _unique_text([_active_order_id(row) for row in real_filled_orders])
+    has_filled_state = bool(origin_filled or real_filled_orders)
+    has_active_state = bool(origin_active or real_active_orders)
+    status = "pending"
+    action_type = ""
+    target_state = ""
+    reason = "ok"
+    if has_filled_state:
+        action_type = "close"
+        target_state = "filled_position"
+        reason = "cancel_after_filled_close_position"
+    elif has_active_state:
+        action_type = "cancel"
+        target_state = "pending_entry"
+        reason = "cancel_unfilled_entry"
+    elif origin_terminal or real_terminal_orders:
+        action_type = "cancel"
+        target_state = "terminal"
+        status = "cancelled"
+        reason = "cancel_ignored_terminal"
+    else:
+        action_type = "cancel"
+        target_state = "state_unknown"
+        status = "cancelled"
+        reason = "cancel_pending_state_unknown"
+
+    return {
+        "ok": status == "pending",
+        "action": action_type,
+        "status": status,
+        "target_state": target_state,
+        "reason": reason,
+        "gateway_request_blocked": status != "pending",
+        "real_order_required": True,
+        "real_order_confirmed": bool(has_active_state or has_filled_state),
+        "filled_order_or_position_confirmed": has_filled_state,
+        "broker_mode": broker_mode,
+        "data_environment": environment,
+        "origin_signal_id": signal_id,
+        "origin_signal_found": bool(origin),
+        "origin_execution_mode": execution_mode,
+        "origin_execution_status": origin_status,
+        "origin_execution_terminal": origin_terminal,
+        "trade_group_id": trade_group_id,
+        "order_ids": order_ids,
+        "active_order_ids": active_order_ids,
+        "filled_order_ids": filled_order_ids,
+        "pb_order_count": len(related_orders),
+        "pb_order_statuses": sorted({_order_status_key(row).upper() for row in related_orders if _order_status_key(row)}),
+        "resolved_child_order_ids": _resolve_child_orders(
+            pb,
+            signal_id=signal_id,
+            trade_group_id=trade_group_id,
+            environment=broker_mode,
+            escape_filter=escape_filter,
+        ),
+        "cancel_reason": _text(_payload_first(payload, "cancel_reason", "reason", default="")),
+        "cancel_scope": _text(_payload_first(payload, "cancel_scope", default="trade_intent")),
+        "cancel_policy": _text(_payload_first(payload, "cancel_policy", default="cancel_unfilled_or_close_filled")),
+        "entry_order_unique_id": _text(extra.get("entry_order_unique_id") or payload.get("entry_order_unique_id")),
+    }
+
+
+def _route_cancel(
+    pb: Any,
+    payload: dict[str, Any],
+    *,
+    event_id: str,
+    event_type: str,
+    environment: str,
+    broker_mode: str,
+    escape_filter: Callable[[Any], str],
+) -> tuple[dict[str, Any], int]:
+    symbol = _symbol(payload)
+    if not symbol:
+        raise TvPrimaryError("missing_symbol")
+    side = _lower(payload.get("position_side") or payload.get("direction"))
+    if side not in {"long", "short"}:
+        raise TvPrimaryError("invalid_position_side")
+    signal_id = _origin_signal_id(payload)
+    trade_group_id = _trade_group_id(payload, default=signal_id)
+    cancel_reason = _text(_payload_first(payload, "cancel_reason", "reason", default="tv_cancel"))
+    extra = {
+        **_base_extra(payload, event_id, event_type),
+        "origin_signal_id": signal_id,
+        "position_id": _text(payload.get("position_id")),
+        "cancel_reason": cancel_reason,
+        "cancel_scope": _text(_payload_first(payload, "cancel_scope", default="trade_intent")) or "trade_intent",
+        "cancel_policy": _text(_payload_first(payload, "cancel_policy", default="cancel_unfilled_or_close_filled"))
+        or "cancel_unfilled_or_close_filled",
+    }
+    if trade_group_id:
+        extra["trade_group_id"] = trade_group_id
+        extra["bracket_group"] = trade_group_id
+    plan = _cancel_execution_plan(
+        pb,
+        payload,
+        signal_id=signal_id,
+        trade_group_id=trade_group_id,
+        environment=environment,
+        broker_mode=broker_mode,
+        extra=extra,
+        escape_filter=escape_filter,
+    )
+    action_type = _text(plan.get("action") or "cancel")
+    reverse_status = _text(plan.get("status") or "cancelled")
+    extra.update(
+        {
+            **(plan.get("resolved_child_order_ids") if isinstance(plan.get("resolved_child_order_ids"), dict) else {}),
+            "execution_preflight": dict(plan),
+            "action_type": action_type,
+            "reverse_kind": "tv_cancel",
+            "target_state": _text(plan.get("target_state")),
+            "target_order_status": _text(plan.get("origin_execution_status")),
+            "result_status": "pending" if reverse_status == "pending" else _text(plan.get("reason")),
+            "gateway_request_blocked": bool(plan.get("gateway_request_blocked")),
+            "execution_readiness": "executable" if reverse_status == "pending" else "not_executable",
+            "execution_blocked_reason": "" if reverse_status == "pending" else _text(plan.get("reason")),
+            "order_ids": list(plan.get("order_ids") or []),
+            "active_order_ids": list(plan.get("active_order_ids") or []),
+            "filled_order_ids": list(plan.get("filled_order_ids") or []),
+        }
+    )
+    reverse_payload = {
+        "symbol": symbol,
+        "broker_mode": broker_mode,
+        "environment": broker_mode,
+        "data_environment": environment,
+        "direction": side,
+        "source": TRADINGVIEW_SOURCE,
+        "priority": 9,
+        "strength": "strong",
+        "score": _float(payload.get("quality_score"), 100.0),
+        "triggered_signals": [item for item in (signal_id, trade_group_id, _text(payload.get("position_id")), event_id) if item],
+        "action_type": action_type,
+        "status": reverse_status,
+        "reason": cancel_reason or _text(plan.get("reason")),
+        "bar_time_ms": _int(payload.get("bar_time_ms"), 0),
+        "us_time": _text(payload.get("us_time")),
+        "cn_time": _text(payload.get("cn_time")),
+        "extra": extra,
+        "dedupe": True,
+    }
+    result = upsert_reverse_record(pb, reverse_payload, escape_filter=escape_filter)
+    record = dict(result.get("record") or {}) if isinstance(result, dict) else {}
+    return {
+        "ok": True,
+        "target": "ibkr_reverse_signals",
+        "id": _text(record.get("id")),
+        "action": "created" if result.get("created") else "updated",
+        "status": _text(record.get("status") or reverse_status),
+        "event_type": event_type,
+        "signal_id": signal_id,
+        "trade_group_id": trade_group_id,
+        "cancel_action_type": action_type,
+        "cancel_plan": plan,
+    }, 200
+
+
 def _route_reverse(
     pb: Any,
     payload: dict[str, Any],
@@ -2148,6 +2363,16 @@ def _route_persisted_tv_event(
                 signal_chat_id_fn=signal_chat_id_fn,
                 console_base_url=console_base_url,
                 strategy_capacity_getter=strategy_capacity_getter,
+            )
+        elif event_type == "cancel":
+            route_payload, status_code = _route_cancel(
+                pb,
+                data,
+                event_id=event_id,
+                event_type=event_type,
+                environment=environment,
+                broker_mode=broker_mode,
+                escape_filter=escape_filter_string,
             )
         else:
             route_payload, status_code = _route_reverse(

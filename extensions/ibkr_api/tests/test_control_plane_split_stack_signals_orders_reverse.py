@@ -1228,6 +1228,89 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
             pb.updated[0][2]["extra"]["feishu_trade_ledger_notified_keys"],
         )
 
+    def test_sync_order_callback_ledger_labels_first_exec_details_with_no_new_delta(self):
+        class _LedgerPB:
+            def __init__(self):
+                self.entry = {
+                    "id": "order-entry",
+                    "unique_id": "BATS_NXPI_short_20260609_0946_2_mr_sdUpper_entry",
+                    "order_type": "Entry",
+                    "symbol": "NXPI",
+                    "environment": "paper",
+                    "status": "Closed",
+                    "role": "entry",
+                    "broker_order_id": "11290",
+                    "order_id": "11290",
+                    "trade_group_id": "BATS_NXPI_short_20260609_0946_2_mr_sdUpper",
+                    "entry_order_unique_id": "BATS_NXPI_short_20260609_0946_2_mr_sdUpper",
+                    "signal_id": "BATS_NXPI_short_20260609_0946_2_mr_sdUpper",
+                    "direction": "short",
+                    "quantity": 16,
+                    "filled_qty": 16,
+                    "fill_price": 304.0,
+                }
+                self.order = {
+                    "id": "order-tp",
+                    "unique_id": "BATS_NXPI_short_20260609_0946_2_mr_sdUpper_tp",
+                    "order_type": "LMT",
+                    "symbol": "NXPI",
+                    "environment": "paper",
+                    "status": "Submitted",
+                    "role": "take_profit",
+                    "broker_order_id": "11298",
+                    "order_id": "11298",
+                    "trade_group_id": "BATS_NXPI_short_20260609_0946_2_mr_sdUpper",
+                    "entry_order_unique_id": "BATS_NXPI_short_20260609_0946_2_mr_sdUpper",
+                    "signal_id": "BATS_NXPI_short_20260609_0946_2_mr_sdUpper",
+                    "direction": "short",
+                    "quantity": 16,
+                    "filled_qty": 16,
+                    "fill_price": 302.05,
+                    "last_fill_price": 302.05,
+                    "extra": {
+                        "environment": "paper",
+                        "broker_realtime_callback": True,
+                        "ib_callback_type": "execDetails",
+                        "exec_id": "00025b45.6a2c6f4c.01.01",
+                        "broker_callback_received_at": "2026-06-09 10:31:48",
+                    },
+                }
+                self.updated = []
+
+            def get_records(self, collection, **kwargs):
+                return [self.entry, self.order] if collection == "orders" else []
+
+            def update_record(self, collection, record_id, patch):
+                self.updated.append((collection, record_id, patch))
+                self.order = {**self.order, **patch}
+                return dict(self.order)
+
+        pb = _LedgerPB()
+        previous = {**pb.order, "extra": {"environment": "paper"}}
+        send_calls = []
+
+        result = sync_order_callback_ledger_notification(
+            pb,
+            pb.order,
+            previous_order=previous,
+            send_interactive=lambda card, chat_id, environment: send_calls.append((card, chat_id, environment))
+            or {"success": True, "message_id": "ledger-msg-first-exec"},
+            trade_ledger_chat_id="ledger-chat-test",
+            console_base_url="https://console.example.com",
+        )
+
+        self.assertEqual("fill", result["event_type"])
+        self.assertEqual("first_exec_details_callback", result["reason"])
+        self.assertEqual(1, len(send_calls))
+        card = send_calls[0][0]
+        content = card["elements"][0]["content"]
+        self.assertIn("**回调判定**: 成交明细首次入流水", content)
+        self.assertIn("**判定依据**: 上一条记录无 broker 实时回调标记；当前是 IB execDetails 成交明细，已成交 16/16，成交增量 0。", content)
+        self.assertIn("**状态**: 已成交", content)
+        self.assertIn("**成交数量**: 16", content)
+        self.assertIn("盈利 +$31.20", card["header"]["title"]["content"])
+        self.assertNotIn("首次真实回调", content)
+
     def test_sync_order_callback_ledger_marks_incomplete_close_cancel_red(self):
         class _LedgerPB:
             def __init__(self):

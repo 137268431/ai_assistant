@@ -16,6 +16,8 @@ from ibkr_compute.api.account.snapshot_builder.payload import (
     _build_ibkr_account_snapshot,
     refresh_account_snapshot_cache,
 )
+from ibkr_compute.api.account.history_builder import _build_ibkr_order_history
+from ibkr_compute.orchestration.account_snapshot_refresh import TradingServiceAccountSnapshotRefreshMixin
 
 
 class _Lifecycle:
@@ -93,6 +95,9 @@ class _FakeApiApp:
             return float(value)
         except (TypeError, ValueError):
             return default
+
+    def current_market_date(self):
+        return "2026-06-09"
 
 
 class _SnapshotOrderPlacer:
@@ -175,6 +180,9 @@ class _FastOrderTracker:
 
 
 class _DefaultConfig:
+    def refresh(self):
+        return None
+
     def get_for_environment(self, key, _environment, default=None):
         return default
 
@@ -193,6 +201,25 @@ class _StatusComponent:
     def status(self):
         self.calls += 1
         return dict(self.payload)
+
+
+class _RefreshService(TradingServiceAccountSnapshotRefreshMixin):
+    _running = True
+    config = _DefaultConfig()
+
+    def __init__(self, *, circuit: dict | None = None):
+        self.order_placer = _SnapshotOrderPlacer()
+        self.order_lifecycle = _SnapshotLifecycle()
+        self.order_tracker = _FastOrderTracker([])
+        self.buying_power_reservations = _ReservationStore()
+        payload = {
+            "connected": True,
+            "ready": True,
+            "status_code": 200,
+            "account_data_circuit": dict(circuit or {}),
+        }
+        self.broker = _StatusComponent(payload)
+        self.gateway_manager = _StatusComponent({"running": True, "broker": payload})
 
 
 class _BuyingPowerLifecycle:
@@ -267,6 +294,8 @@ class _BuyingPowerService(_SnapshotService):
 
 def _with_fake_api_app(app, fn):
     with (
+        mock.patch("ibkr_compute.api.account.history_builder.payload._api_app", return_value=app),
+        mock.patch("ibkr_compute.api.account.history_builder.reconcile._api_app", return_value=app),
         mock.patch("ibkr_compute.api.account.snapshot_builder.context._api_app", return_value=app),
         mock.patch("ibkr_compute.api.account.live.runtime._api_app", return_value=app),
     ):
@@ -291,6 +320,121 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertEqual([], payload["positions_raw"])
         self.assertEqual(0, service.order_lifecycle.positions_calls)
         self.assertEqual("", payload["errors"]["positions"])
+
+    def test_positions_fallback_can_be_enabled_explicitly(self):
+        class _MissingPositionsLifecycle:
+            environment = "paper"
+
+            def __init__(self):
+                self.positions_calls = 0
+
+            def get_account_snapshot(self, _account_id):
+                return {"summary": {"NetLiquidation": {"value": "1000000", "currency": "USD"}}}
+
+            def get_positions(self, _account_id):
+                self.positions_calls += 1
+                return [{"symbol": "AAPL", "position": 5}]
+
+        class _EnabledConfig(_DefaultConfig):
+            def get_bool_for_environment(self, key, _environment, default=False):
+                if key == "ibkr_account_snapshot_positions_fallback_enabled":
+                    return True
+                return default
+
+        service = _Service()
+        service.order_lifecycle = _MissingPositionsLifecycle()
+        service.config = _EnabledConfig()
+
+        payload = fetch_snapshot_sources(service, "U123", include_pnl=False)
+
+        self.assertEqual([{"symbol": "AAPL", "position": 5}], payload["positions_raw"])
+        self.assertEqual(1, service.order_lifecycle.positions_calls)
+        self.assertEqual("", payload["errors"]["positions"])
+
+    def test_account_snapshot_refresh_uses_orders_fast_when_account_data_circuit_open(self):
+        service = _RefreshService(circuit={"active": True, "reason": "positions_timeout", "remaining_s": 42.0})
+
+        needed, details = service._account_snapshot_refresh_orders_fast_needed()
+
+        self.assertTrue(needed)
+        self.assertTrue(details["account_data_guard_active"])
+        self.assertTrue(details["account_data_circuit_active"])
+        self.assertEqual("positions_timeout", details["account_data_circuit_reason"])
+        self.assertEqual(42.0, details["account_data_circuit_remaining_s"])
+
+    def test_account_snapshot_refresh_uses_orders_fast_when_lifecycle_backoff_active(self):
+        service = _RefreshService()
+        service.order_lifecycle._account_data_backoff_reason = "account_data_circuit_open:account_summary"
+        service.order_lifecycle._account_data_backoff_remaining = lambda: 31.4
+
+        needed, details = service._account_snapshot_refresh_orders_fast_needed()
+
+        self.assertTrue(needed)
+        self.assertTrue(details["account_data_guard_active"])
+        self.assertEqual(31.4, details["account_lifecycle_backoff_remaining_s"])
+        self.assertEqual("account_data_circuit_open:account_summary", details["account_lifecycle_backoff_reason"])
+
+    def test_order_history_defaults_to_cached_broker_and_pb_today_rows(self):
+        class _HistoryTracker:
+            def __init__(self):
+                self.calls = []
+
+            def get_broker_order_history(self, **kwargs):
+                self.calls.append(dict(kwargs))
+                return {
+                    "ok": True,
+                    "effective_days": 1,
+                    "current_day_only": False,
+                    "orders": [],
+                    "raw": {},
+                    "executions_requested": bool(kwargs.get("include_executions")),
+                }
+
+        class _HistoryService:
+            is_running = True
+
+            def __init__(self):
+                self.order_tracker = _HistoryTracker()
+                self.order_placer = _SnapshotOrderPlacer()
+                self.pb = _RowsPB(
+                    [
+                        {
+                            "id": "pb-order-1",
+                            "broker_order_id": "1001",
+                            "order_id": "1001",
+                            "symbol": "AAPL",
+                            "status": "Submitted",
+                            "direction": "long",
+                            "quantity": 5,
+                            "limit_price": 123.45,
+                            "role": "entry",
+                            "environment": "paper",
+                            "updated": "2026-06-09T10:00:00-04:00",
+                        }
+                    ]
+                )
+
+            def status(self):
+                return {"session": {"authenticated": True}, "gateway": {"running": True}}
+
+        app = _FakeApiApp()
+        service = _HistoryService()
+
+        payload = _with_fake_api_app(app, lambda: _build_ibkr_order_history(service, requested_days=1))
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual("ibkr_cached_order_history", payload["source"])
+        self.assertFalse(payload["broker_force"])
+        self.assertFalse(payload["executions_requested"])
+        self.assertEqual(
+            [{"days": 1, "force": False, "include_executions": False}],
+            service.order_tracker.calls,
+        )
+        self.assertEqual(1, payload["counts"]["total"])
+        self.assertEqual("pb_cache", payload["items"][0]["source"])
+        self.assertEqual("1001", payload["items"][0]["broker_order_id"])
+        self.assertEqual("pb_cache_only", payload["items"][0]["diagnostic_state"])
+        self.assertEqual(1, payload["reconciliation"]["pb_today_count"])
 
     def test_account_snapshot_preserves_already_normalized_positions(self):
         class _NormalizedPositionLifecycle(_SnapshotLifecycle):
@@ -624,6 +768,46 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertEqual("snapshot_cache", fast["orders_fast_diagnostics"]["summary_source"])
         self.assertEqual(1, lifecycle.snapshot_calls)
 
+    def test_orders_fast_open_only_preserves_cached_position_counts(self):
+        class _PositionLifecycle(_SnapshotLifecycle):
+            def get_account_snapshot(self, _account_id):
+                self.snapshot_calls += 1
+                return {
+                    "summary": {"AccountCode": {"value": "DU123"}, "NetLiquidation": {"value": "1000000"}},
+                    "positions": [
+                        {"symbol": "INTU", "conid": 270662, "quantity": 16, "mktPrice": 293.19, "avgCost": 307.33},
+                        {"symbol": "FLAT", "conid": 123, "quantity": 0, "mktPrice": 10, "avgCost": 0},
+                    ],
+                }
+
+        app = _FakeApiApp()
+        lifecycle = _PositionLifecycle()
+        service = _SnapshotService(lifecycle)
+        service.order_tracker = _FastOrderTracker([])
+
+        full = _with_fake_api_app(app, lambda: _build_ibkr_account_snapshot(service, include_pnl=False))
+        fast = _with_fake_api_app(
+            app,
+            lambda: _build_ibkr_account_snapshot(
+                service,
+                include_pnl=False,
+                force_refresh=True,
+                orders_fast=True,
+                orders_fast_open_only=True,
+            ),
+        )
+
+        self.assertEqual(1, full["counts"]["open_positions"])
+        self.assertEqual([], fast["positions"])
+        self.assertFalse(fast["positions_detail_available"])
+        self.assertTrue(fast["positions_count_available"])
+        self.assertEqual("omitted_open_orders_only", fast["positions_source"])
+        self.assertEqual(1, fast["counts"]["open_positions"])
+        self.assertEqual(1, fast["counts"]["long_positions"])
+        self.assertEqual(0, fast["counts"]["short_positions"])
+        self.assertEqual(1, fast["counts"]["flat_positions"])
+        self.assertEqual(2, fast["counts"]["position_rows"])
+
     def test_orders_fast_snapshot_reuses_stale_full_summary(self):
         app = _FakeApiApp()
         lifecycle = _SnapshotLifecycle()
@@ -820,7 +1004,7 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertEqual("stale_after_error", refreshed["cache_state"])
         self.assertEqual(50000.0, refreshed["summary"]["buying_power"])
 
-    def test_orders_fast_open_only_omits_cached_full_positions(self):
+    def test_orders_fast_open_only_omits_cached_full_position_rows_but_keeps_counts(self):
         class _PositionLifecycle(_SnapshotLifecycle):
             def get_account_snapshot(self, _account_id):
                 self.snapshot_calls += 1
@@ -855,8 +1039,12 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         )
 
         self.assertEqual(1, full["counts"]["positions"])
-        self.assertEqual(0, fast["counts"]["positions"])
+        self.assertEqual(1, fast["counts"]["positions"])
+        self.assertEqual(1, fast["counts"]["open_positions"])
+        self.assertEqual(1, fast["counts"]["long_positions"])
         self.assertEqual([], fast["positions"])
+        self.assertFalse(fast["positions_detail_available"])
+        self.assertTrue(fast["positions_count_available"])
         self.assertEqual("omitted_open_orders_only", fast["orders_fast_diagnostics"]["positions_source"])
         self.assertTrue(fast["orders_fast_diagnostics"]["positions_omitted"])
         self.assertIn("runtime_elapsed_ms", fast["diagnostics"]["account_snapshot"])

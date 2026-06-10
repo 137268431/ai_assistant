@@ -22,6 +22,34 @@ def _env_float(name: str, default: float) -> float:
         return max(1.0, float(default))
 
 
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _component_status(component) -> dict:
+    status_fn = getattr(component, "status", None)
+    if not callable(status_fn):
+        return {}
+    try:
+        payload = status_fn()
+    except Exception:
+        return {}
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _account_data_circuit_from_status(status: dict) -> dict:
+    payload = status if isinstance(status, dict) else {}
+    circuit = payload.get("account_data_circuit") if isinstance(payload.get("account_data_circuit"), dict) else {}
+    if circuit:
+        return dict(circuit)
+    broker = payload.get("broker") if isinstance(payload.get("broker"), dict) else {}
+    circuit = broker.get("account_data_circuit") if isinstance(broker.get("account_data_circuit"), dict) else {}
+    return dict(circuit) if circuit else {}
+
+
 class TradingServiceAccountSnapshotRefreshMixin:
     def _account_snapshot_refresh_enabled(self) -> bool:
         service_mod = _service_mod()
@@ -42,6 +70,53 @@ class TradingServiceAccountSnapshotRefreshMixin:
             return _env_float("IBKR_ACCOUNT_SNAPSHOT_ACTIVE_REFRESH_INTERVAL_SEC", 60.0)
         return _env_float("IBKR_ACCOUNT_SNAPSHOT_REFRESH_INTERVAL_SEC", 180.0)
 
+    def _account_snapshot_refresh_account_data_guard(self) -> dict:
+        details = {
+            "account_data_circuit_active": False,
+            "account_data_circuit_remaining_s": 0.0,
+            "account_data_circuit_reason": "",
+            "account_lifecycle_backoff_remaining_s": 0.0,
+            "account_lifecycle_backoff_reason": "",
+            "order_tracker_backoff_remaining_s": 0.0,
+            "order_tracker_backoff_reason": "",
+        }
+
+        for component_name in ("broker", "gateway_manager"):
+            circuit = _account_data_circuit_from_status(_component_status(getattr(self, component_name, None)))
+            if not circuit:
+                continue
+            remaining_s = _safe_float(circuit.get("remaining_s"), 0.0)
+            if bool(circuit.get("active")) or remaining_s > 0:
+                details["account_data_circuit_active"] = True
+                details["account_data_circuit_remaining_s"] = max(
+                    details["account_data_circuit_remaining_s"],
+                    remaining_s,
+                )
+                if not details["account_data_circuit_reason"]:
+                    details["account_data_circuit_reason"] = str(circuit.get("reason") or component_name)
+
+        for attr_name, detail_prefix in (
+            ("order_lifecycle", "account_lifecycle"),
+            ("order_tracker", "order_tracker"),
+        ):
+            component = getattr(self, attr_name, None)
+            remaining_fn = getattr(component, "_account_data_backoff_remaining", None)
+            try:
+                remaining_s = float(remaining_fn()) if callable(remaining_fn) else 0.0
+            except Exception:
+                remaining_s = 0.0
+            remaining_s = max(0.0, remaining_s)
+            reason = str(getattr(component, "_account_data_backoff_reason", "") or "")
+            details[f"{detail_prefix}_backoff_remaining_s"] = round(remaining_s, 1)
+            details[f"{detail_prefix}_backoff_reason"] = reason
+
+        details["account_data_guard_active"] = bool(
+            details["account_data_circuit_active"]
+            or details["account_lifecycle_backoff_remaining_s"] > 0
+            or details["order_tracker_backoff_remaining_s"] > 0
+        )
+        return details
+
     def _account_snapshot_refresh_orders_fast_needed(self) -> tuple[bool, dict]:
         details = {
             "symbol_queue_active": 0,
@@ -49,6 +124,7 @@ class TradingServiceAccountSnapshotRefreshMixin:
             "cached_open_orders": 0,
             "buying_power_reservations": 0,
         }
+        details.update(self._account_snapshot_refresh_account_data_guard())
         scheduler = getattr(getattr(self, "order_placer", None), "symbol_scheduler", None)
         status_fn = getattr(scheduler, "status", None)
         if callable(status_fn):
@@ -85,7 +161,16 @@ class TradingServiceAccountSnapshotRefreshMixin:
             except Exception:
                 details["buying_power_reservations"] = 0
 
-        needed = any(int(value or 0) > 0 for value in details.values())
+        needed = bool(details.get("account_data_guard_active")) or any(
+            int(value or 0) > 0
+            for key, value in details.items()
+            if key in {
+                "symbol_queue_active",
+                "symbol_queue_queued",
+                "cached_open_orders",
+                "buying_power_reservations",
+            }
+        )
         return needed, details
 
     def _refresh_account_snapshot_once(self, *, reason: str = "loop") -> dict:

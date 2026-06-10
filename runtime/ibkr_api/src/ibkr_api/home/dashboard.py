@@ -447,6 +447,8 @@ def _summarize_gateway_positions(payload: dict[str, Any], error: str = "") -> di
         "short": 0,
         "total": 0,
         "available": False,
+        "detail_available": False,
+        "count_available": False,
         "empty_confirmed": False,
         "source": "runtime_account",
     }
@@ -457,6 +459,53 @@ def _summarize_gateway_positions(payload: dict[str, Any], error: str = "") -> di
     positions = payload.get("positions")
     if not isinstance(positions, list):
         summary["error"] = "runtime_account_positions_unavailable"
+        return _attach_runtime_account_meta(summary, payload)
+
+    counts = payload.get("counts") if isinstance(payload.get("counts"), dict) else {}
+    detail_available = payload.get("positions_detail_available")
+    fast_diagnostics = payload.get("orders_fast_diagnostics") if isinstance(payload.get("orders_fast_diagnostics"), dict) else {}
+    positions_source = to_text(payload.get("positions_source") or fast_diagnostics.get("positions_source"))
+    positions_omitted = bool(
+        detail_available is False
+        or positions_source == "omitted_open_orders_only"
+        or bool(fast_diagnostics.get("positions_omitted"))
+    )
+
+    count_values_present = any(key in counts for key in ("long_positions", "short_positions", "open_positions", "position_rows", "positions"))
+    if positions_omitted:
+        if count_values_present and payload.get("positions_count_available") is not False:
+            long_count = to_int(counts.get("long_positions"), 0)
+            short_count = to_int(counts.get("short_positions"), 0)
+            open_count = to_int(counts.get("open_positions"), long_count + short_count)
+            if open_count > long_count + short_count and long_count == 0 and short_count == 0:
+                long_count = open_count
+            flat_count = to_int(counts.get("flat_positions"), 0)
+            position_rows = to_int(counts.get("position_rows", counts.get("positions")), open_count + flat_count)
+            summary.update(
+                {
+                    "long": long_count,
+                    "short": short_count,
+                    "total": long_count + short_count,
+                    "available": True,
+                    "detail_available": False,
+                    "count_available": True,
+                    "empty_confirmed": open_count == 0,
+                    "flat_count": flat_count,
+                    "position_rows": position_rows,
+                    "account_id": to_text(payload.get("account_id") or payload.get("account")),
+                    "source": "runtime_account_position_counts",
+                    "positions_source": positions_source or "counts",
+                    "positions_omitted": True,
+                }
+            )
+            return _attach_runtime_account_meta(summary, payload)
+        summary.update(
+            {
+                "error": "runtime_account_positions_omitted",
+                "positions_source": positions_source or "omitted",
+                "positions_omitted": True,
+            }
+        )
         return _attach_runtime_account_meta(summary, payload)
 
     flat_count = 0
@@ -473,6 +522,8 @@ def _summarize_gateway_positions(payload: dict[str, Any], error: str = "") -> di
 
     summary["total"] = summary["long"] + summary["short"]
     summary["available"] = True
+    summary["detail_available"] = True
+    summary["count_available"] = True
     summary["empty_confirmed"] = summary["total"] == 0
     summary["flat_count"] = flat_count
     summary["position_rows"] = len(positions)

@@ -360,6 +360,24 @@ class FakeMarketCloseBroker:
         }
 
 
+class FakeProtectionRepairBroker:
+    def __init__(self):
+        self.calls = []
+
+    def place_protection_repair_orders(self, **kwargs):
+        self.calls.append(dict(kwargs))
+        return {
+            "ok": True,
+            "order_ids": ["501", "502"],
+            "tp_coid": "repair_tp_group_SIG_1",
+            "sl_coid": "repair_sl_group_SIG_1",
+            "oca_group": "repair_group_SIG_1",
+            "take_profit_price": kwargs.get("take_profit_price"),
+            "stop_loss_price": kwargs.get("stop_loss_price"),
+            "protection_complete": True,
+        }
+
+
 class FakeQuoteMarketCloseBroker(FakeMarketCloseBroker):
     def __init__(self, quote_result):
         super().__init__()
@@ -1077,6 +1095,77 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
         self.assertEqual("U123456", sl_order.account)
         self.assertFalse(hasattr(tp_order, "ocaGroup"))
         self.assertFalse(hasattr(sl_order, "ocaGroup"))
+
+    def test_place_protection_repair_orders_submits_only_two_close_side_oca_legs(self):
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeClient(
+            submission_result={
+                "ok": True,
+                "orders": {"206": {"ok": True}, "207": {"ok": True}},
+                "missing_order_ids": [],
+            },
+            open_orders=[{"orderId": "205"}],
+        )
+        adapter.resolve_contract = lambda **kwargs: {
+            "conid": 265598,
+            "symbol": "AAPL",
+            "sec_type": "STK",
+            "exchange": "NASDAQ",
+            "currency": "USD",
+        }
+
+        original_order = ib_gateway.Order
+        original_contract = ib_gateway.Contract
+        try:
+            ib_gateway.Order = FakeOrder
+            ib_gateway.Contract = FakeContract
+            result = ib_gateway.BrokerAdapter.place_protection_repair_orders(
+                adapter,
+                conid=265598,
+                symbol="AAPL",
+                direction="long",
+                quantity=16,
+                take_profit_price=310.129,
+                stop_loss_price=290.124,
+                account_id="DU123",
+                trade_group_id="group/INTU 1",
+                outside_rth=True,
+            )
+        finally:
+            ib_gateway.Order = original_order
+            ib_gateway.Contract = original_contract
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(["206", "207"], result["order_ids"])
+        self.assertEqual("repair_group_INTU_1", result["oca_group"])
+        self.assertEqual(2, len(adapter.client.placed_orders))
+        tp_order = adapter.client.placed_orders[0][1]
+        sl_order = adapter.client.placed_orders[1][1]
+        self.assertEqual("SELL", tp_order.action)
+        self.assertEqual("SELL", sl_order.action)
+        self.assertEqual("LMT", tp_order.orderType)
+        self.assertEqual("STP", sl_order.orderType)
+        self.assertEqual(310.13, tp_order.lmtPrice)
+        self.assertEqual(290.12, sl_order.auxPrice)
+        self.assertEqual(16.0, tp_order.totalQuantity)
+        self.assertEqual(16.0, sl_order.totalQuantity)
+        self.assertEqual("DU123", tp_order.account)
+        self.assertEqual("DU123", sl_order.account)
+        self.assertEqual("repair_group_INTU_1", tp_order.ocaGroup)
+        self.assertEqual("repair_group_INTU_1", sl_order.ocaGroup)
+        self.assertFalse(hasattr(tp_order, "parentId"))
+        self.assertFalse(hasattr(sl_order, "parentId"))
+        self.assertFalse(tp_order.transmit)
+        self.assertTrue(sl_order.transmit)
+        self.assertTrue(tp_order.outsideRth)
+        self.assertTrue(sl_order.outsideRth)
+        self.assertEqual("repair_tp_group_INTU_1", tp_order.orderRef)
+        self.assertEqual("repair_sl_group_INTU_1", sl_order.orderRef)
+        self.assertEqual(
+            {"order_ids": ["206", "207"], "timeout": ib_gateway.BRACKET_SUBMISSION_CONFIRM_TIMEOUT_SECONDS, "poll_interval": 0.2},
+            adapter.client.await_order_submissions_calls[-1],
+        )
+
     def test_place_bracket_order_smart_routes_us_stock_with_primary_exchange(self):
         adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
         adapter.client = FakeClient(
@@ -2659,6 +2748,51 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
         self.assertEqual("", result["recommended_action"])
         self.assertEqual("background", broker.calls[0]["confirmation_mode"])
 
+    def test_order_placer_logs_protection_repair_rows_without_entry_order(self):
+        pb_client = FakeOrderPBClient()
+        broker = FakeProtectionRepairBroker()
+        placer = OrderPlacer(pb_client=pb_client, broker=broker, account_id="DU123", environment="paper")
+
+        result = placer.place_protection_repair_orders(
+            conid=265598,
+            symbol="aapl",
+            direction="long",
+            quantity=5,
+            take_profit_price=104.0,
+            stop_loss_price=98.0,
+            signal_id="SIG_1",
+            trade_group_id="group_SIG_1",
+            entry_order_unique_id="entry_group_SIG_1",
+            order_extra={"missing_protection_auto_repair": True},
+            outside_rth=True,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(1, len(broker.calls))
+        self.assertEqual("DU123", broker.calls[0]["account_id"])
+        self.assertTrue(broker.calls[0]["outside_rth"])
+        self.assertEqual(2, len(pb_client.upserts))
+        tp_row, sl_row = pb_client.upserts
+        self.assertEqual("repair_tp", tp_row["role"])
+        self.assertEqual("repair_sl", sl_row["role"])
+        self.assertEqual("TakeProfit", tp_row["order_type"])
+        self.assertEqual("StopLoss", sl_row["order_type"])
+        self.assertEqual("Submitted", tp_row["status"])
+        self.assertEqual("Submitted", sl_row["status"])
+        self.assertEqual("active", tp_row["relation_status"])
+        self.assertEqual("active", sl_row["relation_status"])
+        self.assertEqual("group_SIG_1", tp_row["trade_group_id"])
+        self.assertEqual("entry_group_SIG_1", tp_row["entry_order_unique_id"])
+        self.assertEqual("entry_group_SIG_1", tp_row["parent_order_unique_id"])
+        self.assertEqual("repair_sl_group_SIG_1", tp_row["sibling_order_unique_id"])
+        self.assertEqual("repair_tp_group_SIG_1", sl_row["sibling_order_unique_id"])
+        self.assertEqual("501", tp_row["broker_order_id"])
+        self.assertEqual("502", sl_row["broker_order_id"])
+        self.assertTrue(tp_row["extra"]["missing_protection_auto_repair"])
+        self.assertTrue(sl_row["extra"]["missing_protection_auto_repair"])
+        self.assertTrue(tp_row["extra"]["protection_repair"])
+        self.assertTrue(sl_row["extra"]["protection_repair"])
+
     def test_bracket_order_links_origin_signal_execution_metadata_in_live_data_env(self):
         pb_client = FakeOrderAndSignalPBClient(
             {
@@ -2826,6 +2960,34 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         self.assertEqual("marketable", adjusted["extra"]["entry_limit_intent"])
         self.assertEqual(98.0, adjusted["extra"]["order_flow_original_stop_loss"])
 
+    def test_order_flow_does_not_worsen_structural_anchor_entry(self):
+        signal = self._signal("AAPL")
+        signal.update({"entry": 99.5, "stop_loss": 97.5, "take_profit": 103.5})
+        signal["extra"] = {
+            **signal["extra"],
+            "entry_price_plan": "structural_anchor_limit",
+            "entry_limit_intent": "structural_anchor",
+            "planned_entry_price": 99.5,
+            "reference_entry": 100.0,
+        }
+        service = FakeSignalService(signal, lifecycle=FakeLifecycle(), pb=FakeSignalPBClient({"id": "row-aapl"}))
+
+        adjusted = service._apply_order_flow_entry_decision(
+            signal,
+            {
+                "enforced": True,
+                "marketable_limit": {"ok": True, "price": 100.08, "order_type": "marketable_limit"},
+            },
+        )
+
+        self.assertEqual(99.5, adjusted["entry"])
+        self.assertEqual(97.5, adjusted["stop_loss"])
+        self.assertEqual(103.5, adjusted["take_profit"])
+        self.assertEqual("structural_anchor", adjusted["extra"]["entry_limit_intent"])
+        self.assertEqual("structural_anchor_limit", adjusted["extra"]["entry_price_plan"])
+        self.assertTrue(adjusted["extra"]["order_flow_reprice_blocked"])
+        self.assertEqual("structural_anchor_worse_than_planned", adjusted["extra"]["order_flow_reprice_block_reason"])
+
     def test_tv_direct_signal_uses_freshness_and_bounded_adaptive_limit_without_quote_subscription(self):
         signal = self._tv_signal("AAPL")
         pb = FakeSignalPBClient({"id": "row-aapl", "extra": dict(signal["extra"])})
@@ -2859,6 +3021,45 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         self.assertEqual(100.0, ack_extra["reference_entry"])
         self.assertEqual(100.15, ack_extra["submitted_entry_limit_price"])
         self.assertTrue(ack_extra["final_protection_from_fill"])
+
+    def test_tv_direct_structural_anchor_preserves_planned_limit_without_market_cap(self):
+        signal = self._tv_signal("AAPL")
+        signal.update({"entry": 99.5, "stop_loss": 97.5, "take_profit": 103.5})
+        signal["extra"] = {
+            **signal["extra"],
+            "entry_price_plan": "structural_anchor_limit",
+            "entry_limit_intent": "structural_anchor",
+            "entry_anchor_mode": "setup_structural",
+            "entry_anchor_reason": "前低支撑 + EMA20支撑",
+            "planned_entry_price": 99.5,
+            "submitted_entry_limit_price": 99.5,
+            "reference_entry": 100.0,
+        }
+        signal["raw"]["extra"] = dict(signal["extra"])
+        pb = FakeSignalPBClient({"id": "row-aapl", "extra": dict(signal["extra"])})
+        service = FakeSignalService(
+            signal,
+            lifecycle=FakeLifecycle(),
+            pb=pb,
+            config=FakeConfig({"tv_entry_limit_cap_bps": 15, "entry_pre_submit_guard_enabled": "true"}),
+        )
+
+        service._process_signals()
+
+        self.assertEqual(["sig-aapl"], service.signal_router.processed)
+        self.assertEqual(1, len(service.order_placer.calls))
+        order_payload = service.order_placer.calls[0]
+        self.assertEqual(99.5, order_payload["entry_price"])
+        self.assertEqual(97.5, order_payload["stop_loss_price"])
+        self.assertEqual(103.5, order_payload["take_profit_price"])
+        ack_extra = pb.acks[-1]["order"]["extra"]
+        self.assertEqual("structural_anchor", ack_extra["entry_limit_intent"])
+        self.assertEqual("structural_anchor_limit", ack_extra["entry_price_plan"])
+        self.assertEqual("freshness_then_structural_anchor_guard", ack_extra["tv_direct_validation_policy"])
+        self.assertEqual(100.0, ack_extra["reference_entry"])
+        self.assertEqual(99.5, ack_extra["planned_entry_price"])
+        self.assertEqual(99.5, ack_extra["submitted_entry_limit_price"])
+        self.assertFalse(ack_extra["submitted_limit_cap_applied"])
 
     def test_tv_direct_background_confirmation_is_submitted_not_protection_incomplete(self):
         signal = self._tv_signal("AAPL")
@@ -3100,6 +3301,86 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         self.assertNotIn("marketable", str(seed).lower())
         self.assertNotIn("marketable", str(ack_order["extra"]).lower())
         self.assertTrue(service.signal_processor.pending_entries)
+
+    def test_entry_guard_rejects_structural_anchor_long_when_ask_above_plan(self):
+        signal = self._signal("AAPL")
+        signal.update({"entry": 99.5, "stop_loss": 97.5, "take_profit": 103.5})
+        signal["extra"] = {
+            **signal["extra"],
+            "entry_price_plan": "structural_anchor_limit",
+            "entry_limit_intent": "structural_anchor",
+            "planned_entry_price": 99.5,
+            "reference_entry": 100.0,
+        }
+        pb = FakeSignalPBClient({"id": "row-aapl", "extra": dict(signal["extra"])})
+        quote_book = FakeQuoteBook(
+            {
+                "AAPL": {
+                    "last_price": 100.0,
+                    "bid": 99.95,
+                    "ask": 100.05,
+                    "quote_age_s": 1.0,
+                }
+            }
+        )
+        service = FakeSignalService(signal, lifecycle=FakeLifecycle(), pb=pb, quote_book=quote_book)
+
+        service._process_signals()
+
+        self.assertEqual(["sig-aapl"], service.signal_router.processed)
+        self.assertEqual([], service.signal_router.released)
+        self.assertEqual([], service.order_placer.calls)
+        patch = pb.updates[-1][2]
+        extra = patch["extra"]
+        self.assertEqual("entry_structural_price_not_reached", extra["status_reason"])
+        self.assertTrue(extra["structural_anchor_guard"])
+        self.assertFalse(extra["structural_anchor_price_reached"])
+        self.assertEqual("structural_anchor_limit", extra["entry_price_plan"])
+
+    def test_entry_guard_allows_structural_anchor_short_when_bid_reaches_plan_without_repricing_protection(self):
+        signal = self._signal("MSFT")
+        signal.update(
+            {
+                "direction": "short",
+                "entry": 101.0,
+                "stop_loss": 103.0,
+                "take_profit": 97.0,
+            }
+        )
+        signal["extra"] = {
+            **signal["extra"],
+            "entry_price_plan": "structural_anchor_limit",
+            "entry_limit_intent": "structural_anchor",
+            "planned_entry_price": 101.0,
+            "reference_entry": 100.0,
+        }
+        pb = FakeSignalPBClient({"id": "row-msft", "extra": dict(signal["extra"])})
+        quote_book = FakeQuoteBook(
+            {
+                "MSFT": {
+                    "last_price": 101.1,
+                    "bid": 101.0,
+                    "ask": 101.2,
+                    "quote_age_s": 1.0,
+                }
+            }
+        )
+        service = FakeSignalService(signal, lifecycle=FakeLifecycle(), pb=pb, quote_book=quote_book)
+
+        service._process_signals()
+
+        self.assertEqual(["sig-msft"], service.signal_router.processed)
+        self.assertEqual(1, len(service.order_placer.calls))
+        order_payload = service.order_placer.calls[0]
+        self.assertEqual(101.0, order_payload["entry_price"])
+        self.assertEqual(103.0, order_payload["stop_loss_price"])
+        self.assertEqual(97.0, order_payload["take_profit_price"])
+        ack_order = pb.acks[-1]["order"]
+        self.assertEqual("structural_anchor", ack_order["extra"]["entry_limit_intent"])
+        self.assertEqual("structural_anchor_limit", ack_order["extra"]["entry_price_plan"])
+        self.assertTrue(ack_order["extra"]["structural_anchor_guard"])
+        self.assertTrue(ack_order["extra"]["structural_anchor_price_reached"])
+        self.assertEqual("structural_anchor_guard", ack_order["extra"]["reprice_source"])
 
     def test_entry_guard_reprices_short_with_passive_ask_offset_and_shifted_protection(self):
         signal = self._signal("MSFT")

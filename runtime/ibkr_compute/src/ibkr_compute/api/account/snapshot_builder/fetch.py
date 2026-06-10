@@ -11,6 +11,26 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return text in {"1", "true", "yes", "y", "on"}
 
 
+def _service_environment(service) -> str:
+    for owner_name in ("order_lifecycle", "order_placer"):
+        owner = getattr(service, owner_name, None)
+        environment = str(getattr(owner, "environment", "") or "").strip().lower()
+        if environment:
+            return environment
+    return "live"
+
+
+def _service_config_bool(service, key: str, default: bool) -> bool:
+    config = getattr(service, "config", None)
+    getter = getattr(config, "get_bool_for_environment", None)
+    if callable(getter):
+        try:
+            return bool(getter(key, _service_environment(service), default))
+        except Exception:
+            return bool(default)
+    return bool(default)
+
+
 def fetch_snapshot_sources(service, account_id: str, *, include_pnl: bool = True) -> dict:
     summary_raw = {}
     pnl_raw = {}
@@ -106,13 +126,20 @@ def fetch_snapshot_sources(service, account_id: str, *, include_pnl: bool = True
                 summary_error = summary_error or str(exc)
         elif not summary_raw:
             summary_error = summary_error or "account_summary_fallback_disabled"
-        if not positions_loaded:
+        positions_fallback_enabled = _service_config_bool(
+            service,
+            "ibkr_account_snapshot_positions_fallback_enabled",
+            _env_bool("IBKR_ACCOUNT_SNAPSHOT_POSITIONS_FALLBACK_ENABLED", False),
+        )
+        if not positions_loaded and positions_fallback_enabled:
             try:
                 positions_raw = service.order_lifecycle.get_positions(account_id)
                 positions_loaded = True
                 positions_error = ""
             except Exception as exc:
                 positions_error = positions_error or str(exc)
+        elif not positions_loaded:
+            positions_error = ""
 
     return {
         "summary_raw": summary_raw,

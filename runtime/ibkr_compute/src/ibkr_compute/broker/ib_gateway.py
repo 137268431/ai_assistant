@@ -4727,6 +4727,133 @@ class BrokerAdapter:
             "entry_adaptive_priority": adaptive_priority if algo_strategy.lower() == "adaptive" else "",
         }
 
+    def place_protection_repair_orders(
+        self,
+        *,
+        conid: int,
+        symbol: str,
+        direction: str,
+        quantity: int,
+        take_profit_price: float,
+        stop_loss_price: float,
+        account_id: str = "",
+        trade_group_id: str = "",
+        entry_order_unique_id: str = "",
+        signal_id: str = "",
+        metric_environment: str = "",
+        outside_rth: bool = False,
+    ) -> dict:
+        contract_info = self.resolve_contract(symbol=symbol, conid=conid)
+        if not contract_info:
+            return {"ok": False, "error": "contract_not_found"}
+        contract = self._build_order_contract(contract_info, conid=conid, symbol=symbol)
+
+        high_water = self.client.max_seen_order_id() if hasattr(self.client, "max_seen_order_id") else 0
+        if hasattr(self.client, "next_order_ids_above"):
+            order_ids = self.client.next_order_ids_above(2, minimum=high_water + 1)
+        else:
+            order_ids = self.client.next_order_ids(2)
+        close_side = "SELL" if str(direction or "").strip().lower() == "long" else "BUY"
+        base_group = self._sanitize_order_ref_group(trade_group_id or entry_order_unique_id or signal_id)
+        if not base_group:
+            stamp = datetime.now(ET).strftime("%Y%m%d_%H%M%S")
+            base_group = f"{str(symbol or '').upper()}_{str(direction or '').lower()}_{stamp}"
+        oca_group = f"repair_{base_group}"
+        tp_ref = f"repair_tp_{base_group}"
+        sl_ref = f"repair_sl_{base_group}"
+        account_id = str(account_id or "").strip()
+        normalized_tp_price = self._normalize_order_price(take_profit_price)
+        normalized_sl_price = self._normalize_order_price(stop_loss_price)
+
+        tp = Order()
+        tp.orderId = int(order_ids[0])
+        tp.action = close_side
+        tp.orderType = "LMT"
+        tp.totalQuantity = float(quantity or 0)
+        tp.lmtPrice = float(normalized_tp_price)
+        tp.tif = "GTC"
+        tp.orderRef = tp_ref
+        if account_id:
+            tp.account = account_id
+        tp.ocaGroup = oca_group
+        tp.ocaType = 1
+        tp.transmit = False
+        self._clear_legacy_order_flags(tp)
+        tp.outsideRth = bool(outside_rth)
+
+        sl = Order()
+        sl.orderId = int(order_ids[1])
+        sl.action = close_side
+        sl.orderType = "STP"
+        sl.totalQuantity = float(quantity or 0)
+        sl.auxPrice = float(normalized_sl_price)
+        sl.tif = "GTC"
+        sl.orderRef = sl_ref
+        if account_id:
+            sl.account = account_id
+        sl.ocaGroup = oca_group
+        sl.ocaType = 1
+        sl.transmit = True
+        self._clear_legacy_order_flags(sl)
+        sl.outsideRth = bool(outside_rth)
+
+        try:
+            with self._gateway_write_lock("place_protection_repair_orders", environment=metric_environment):
+                for broker_order_id in order_ids:
+                    self.client.clear_order_error(str(broker_order_id))
+                self.client.place_order(contract, tp)
+                self.client.place_order(contract, sl)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": str(exc),
+                "order_ids": [str(order_ids[0]), str(order_ids[1])],
+                "trade_group_id": str(trade_group_id or ""),
+                "entry_order_unique_id": str(entry_order_unique_id or ""),
+                "signal_id": str(signal_id or ""),
+                "oca_group": oca_group,
+                "tp_coid": tp_ref,
+                "sl_coid": sl_ref,
+                "take_profit_price": normalized_tp_price,
+                "stop_loss_price": normalized_sl_price,
+                "quantity": int(quantity or 0),
+            }
+
+        submission_result = self.client.await_order_submissions(
+            [str(order_ids[0]), str(order_ids[1])],
+            timeout=BRACKET_SUBMISSION_CONFIRM_TIMEOUT_SECONDS,
+            poll_interval=0.2,
+        )
+        missing_order_ids = [
+            str(item or "").strip()
+            for item in (submission_result.get("missing_order_ids") or [])
+            if str(item or "").strip()
+        ]
+        ok = bool(submission_result.get("ok"))
+        return {
+            "ok": ok,
+            "error": "" if ok else str(submission_result.get("error") or "repair_order_submission_failed"),
+            "submission": submission_result,
+            "missing_order_ids": missing_order_ids,
+            "missing_protection_roles": [
+                role
+                for role, order_id in (("take_profit", str(order_ids[0])), ("stop_loss", str(order_ids[1])))
+                if order_id in missing_order_ids
+            ],
+            "order_ids": [str(order_ids[0]), str(order_ids[1])],
+            "trade_group_id": str(trade_group_id or ""),
+            "entry_order_unique_id": str(entry_order_unique_id or ""),
+            "signal_id": str(signal_id or ""),
+            "oca_group": oca_group,
+            "tp_coid": tp_ref,
+            "sl_coid": sl_ref,
+            "take_profit_price": normalized_tp_price,
+            "stop_loss_price": normalized_sl_price,
+            "quantity": int(quantity or 0),
+            "outside_rth": bool(outside_rth),
+            "protection_complete": ok,
+        }
+
     def place_market_close(
         self,
         *,

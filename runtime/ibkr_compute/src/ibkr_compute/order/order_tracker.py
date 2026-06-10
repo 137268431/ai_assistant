@@ -25,7 +25,7 @@ ORDER_UPDATES_MODE = str(os.environ.get("IBKR_ORDER_UPDATES_MODE", "hybrid") or 
 POLL_INTERVAL_ACTIVE = max(5, int(os.environ.get("IBKR_ORDER_POLL_INTERVAL_ACTIVE_SEC", "5")))
 POLL_INTERVAL_IDLE = max(POLL_INTERVAL_ACTIVE, int(os.environ.get("IBKR_ORDER_POLL_INTERVAL_IDLE_SEC", "15")))
 ORDER_FAST_TRACK_WINDOW = max(POLL_INTERVAL_ACTIVE, int(os.environ.get("IBKR_ORDER_FAST_TRACK_SEC", "30")))
-EXECUTION_FILL_SYNC_INTERVAL = max(0, int(os.environ.get("IBKR_EXECUTION_FILL_SYNC_INTERVAL_SEC", "900")))
+EXECUTION_FILL_SYNC_INTERVAL = max(0, int(os.environ.get("IBKR_EXECUTION_FILL_SYNC_INTERVAL_SEC", "0")))
 ACCOUNT_DATA_BACKOFF_SECONDS = max(5.0, float(os.environ.get("IBKR_ACCOUNT_DATA_CIRCUIT_POLL_BACKOFF_SEC", "30") or 30))
 
 
@@ -995,37 +995,51 @@ class OrderTracker:
 
         return None
 
-    def get_broker_order_history(self, days: int = 1, force: bool = True) -> Dict[str, Any]:
+    def get_broker_order_history(
+        self,
+        days: int = 1,
+        force: bool = False,
+        *,
+        include_executions: bool = False,
+    ) -> Dict[str, Any]:
         requested_days = max(1, int(days or 1))
         orders_by_id: Dict[str, Dict[str, Any]] = {}
 
         try:
-            for order in self.get_live_orders(force=force):
+            if force:
+                source_orders = self.get_live_orders(force=True)
+            else:
+                source_orders = self.get_cached_live_orders(include_all=True)
+            for order in source_orders:
                 order_id = self._normalize_text(order.get("orderId") or order.get("order_id") or order.get("id"))
                 if order_id:
                     orders_by_id[order_id] = dict(order)
         except Exception as exc:
             logger.warning("Failed to get live orders for history: %s", exc)
 
-        try:
-            raw_executions = list(self.broker.list_recent_fills() or [])
-            fill_index = self._build_fill_history_index(raw_executions)
-            for order_id, payload in fill_index.items():
-                merged = dict(payload)
-                merged.update(orders_by_id.get(order_id) or {})
-                merged["orderId"] = order_id
-                if "status" not in merged or not merged["status"]:
-                    merged["status"] = "FILLED"
-                orders_by_id[order_id] = merged
-        except Exception as exc:
-            logger.warning("Failed to get recent fills for history: %s", exc)
-            raw_executions = []
+        raw_executions = []
+        if include_executions:
+            try:
+                raw_executions = list(self.broker.list_recent_fills() or [])
+                fill_index = self._build_fill_history_index(raw_executions)
+                for order_id, payload in fill_index.items():
+                    merged = dict(payload)
+                    merged.update(orders_by_id.get(order_id) or {})
+                    merged["orderId"] = order_id
+                    if "status" not in merged or not merged["status"]:
+                        merged["status"] = "FILLED"
+                    orders_by_id[order_id] = merged
+            except Exception as exc:
+                logger.warning("Failed to get recent fills for history: %s", exc)
+                raw_executions = []
 
         return {
             "ok": True,
             "requested_days": requested_days,
             "effective_days": 1,
             "current_day_only": False,
+            "source": "broker_force" if force else "broker_callback_cache",
+            "executions_requested": bool(include_executions),
             "orders": list(orders_by_id.values()),
             "executions": raw_executions,
             "raw": {"orders": list(orders_by_id.values()), "executions": raw_executions},

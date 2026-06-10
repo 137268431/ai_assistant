@@ -154,7 +154,11 @@ def register_account_routes(app):
             return unavailable
 
         requested_days = get_query_arg_int("days", 1, minimum=1)
-        payload = _build_ibkr_order_history(service, requested_days=requested_days)
+        payload = _build_ibkr_order_history(
+            service,
+            requested_days=requested_days,
+            broker_force=get_query_arg_bool("broker_force", False),
+        )
         if payload.get("ok"):
             return jsonify(payload)
         error_text = str(payload.get("error") or (payload.get("errors") or {}).get("broker") or "").strip().lower()

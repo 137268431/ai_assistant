@@ -96,6 +96,7 @@ class OrderLifecycle:
         self._order_flow_risk_error_count = 0
         self._last_order_flow_risk_action_ms = 0
         self._protection_missing_alerted: set[str] = set()
+        self._protection_repair_attempted: dict[str, float] = {}
         self._last_eod_close_result: dict[str, Any] = {}
         self._account_data_backoff_until = 0.0
         self._account_data_backoff_reason = ""
@@ -395,6 +396,18 @@ class OrderLifecycle:
 
     def _consecutive_stop_loss_limit(self) -> int:
         return max(1, self._get_config_int("consecutive_stop_loss_limit", DEFAULT_CONSECUTIVE_STOP_LOSS_LIMIT))
+
+    def _missing_protection_auto_repair_enabled(self) -> bool:
+        return self._get_config_bool(
+            "ibkr_missing_protection_auto_repair_enabled",
+            self.environment == "paper",
+        )
+
+    def _missing_protection_repair_cooldown_sec(self) -> float:
+        return max(0.0, self._get_config_float("ibkr_missing_protection_repair_cooldown_sec", 600.0))
+
+    def _missing_protection_stale_price_policy(self) -> str:
+        return self._get_config_value("ibkr_missing_protection_repair_stale_price_policy", "skip_and_alert").strip().lower()
 
     @staticmethod
     def _ensure_dict(value: Any) -> dict:
@@ -1503,7 +1516,7 @@ class OrderLifecycle:
             "Broker入场订单ID": self._order_broker_id(entry) or "-",
             "当前持仓": self._broker_position_quantity(broker_position),
             "缺失保护": "/".join(missing_labels) or "-",
-            "处理建议": "立即核对 IBKR 持仓和 open orders，人工补保护单或平仓；本告警不会自动下单。",
+            "处理建议": "系统会按配置在 Paper 尝试自动补挂完整 TP/SL；若价格已过期、Live 默认关闭或补挂失败，请立即人工核对 IBKR 持仓和 open orders。",
         }
         try:
             notifier(
@@ -1550,6 +1563,7 @@ class OrderLifecycle:
             "status": entry.get("status") or "Filled",
             "extra": extra_patch,
         }
+        issue["entry"] = payload
         try:
             if hasattr(self.pb_client, "upsert_order"):
                 self.pb_client.upsert_order(payload)
@@ -1560,6 +1574,182 @@ class OrderLifecycle:
         if not already_marked and notify_key not in self._protection_missing_alerted:
             self._notify_protection_missing(issue, broker_position)
             self._protection_missing_alerted.add(notify_key)
+
+    def _protection_repair_key(self, issue: dict, entry: dict) -> str:
+        return str(
+            issue.get("group_key")
+            or self._order_group_key(entry)
+            or entry.get("entry_order_unique_id")
+            or entry.get("unique_id")
+            or ""
+        ).strip()
+
+    def _protection_repair_recently_attempted(self, key: str) -> bool:
+        if not key:
+            return False
+        last_attempt = float(self._protection_repair_attempted.get(key, 0.0) or 0.0)
+        return last_attempt > 0 and time.time() - last_attempt < self._missing_protection_repair_cooldown_sec()
+
+    def _protection_repair_prices(self, entry: dict) -> tuple[float, float]:
+        extra = self._order_extra(entry)
+        tp_price = self._coerce_float(
+            entry.get("tp_price")
+            or entry.get("take_profit")
+            or extra.get("take_profit_price")
+            or extra.get("take_profit")
+            or extra.get("reference_take_profit")
+            or extra.get("safety_take_profit"),
+            0.0,
+        )
+        sl_price = self._coerce_float(
+            entry.get("sl_price")
+            or entry.get("stop_loss")
+            or extra.get("stop_loss_price")
+            or extra.get("stop_loss")
+            or extra.get("reference_stop_loss"),
+            0.0,
+        )
+        return float(tp_price or 0.0), float(sl_price or 0.0)
+
+    def _protection_repair_prices_valid(
+        self,
+        *,
+        direction: str,
+        current_price: float,
+        take_profit_price: float,
+        stop_loss_price: float,
+    ) -> tuple[bool, str]:
+        if take_profit_price <= 0 or stop_loss_price <= 0:
+            return False, "missing_repair_prices"
+        if direction == "long":
+            if take_profit_price <= current_price:
+                return False, "stale_take_profit_price"
+            if stop_loss_price >= current_price:
+                return False, "stale_stop_loss_price"
+            if take_profit_price <= stop_loss_price:
+                return False, "invalid_long_protection_prices"
+        elif direction == "short":
+            if take_profit_price >= current_price:
+                return False, "stale_take_profit_price"
+            if stop_loss_price <= current_price:
+                return False, "stale_stop_loss_price"
+            if take_profit_price >= stop_loss_price:
+                return False, "invalid_short_protection_prices"
+        else:
+            return False, "invalid_direction"
+        return True, ""
+
+    def _mark_protection_repair_result(self, issue: dict, broker_position: dict, result: dict) -> None:
+        if not self.pb_client:
+            return
+        entry = dict(issue.get("entry") or {})
+        if not entry:
+            return
+        extra = {
+            **self._order_extra(entry),
+            "protection_repair_checked_at_ms": int(time.time() * 1000),
+            "protection_repair_result": dict(result or {}),
+        }
+        reason = str(result.get("reason") or result.get("error") or "")
+        if result.get("ok"):
+            extra.update(
+                {
+                    "protection_state": "repair_submitted",
+                    "protection_incomplete": False,
+                    "protection_complete": True,
+                    "protection_repair_submitted": True,
+                    "protection_repair_order_ids": list(result.get("order_ids") or []),
+                    "protection_repaired_roles": list(issue.get("missing_roles") or []),
+                    "missing_protection_roles": [],
+                    "active_protection_roles": ["take_profit", "stop_loss"],
+                }
+            )
+        elif reason:
+            extra.update(
+                {
+                    "protection_repair_skipped": True,
+                    "protection_repair_skip_reason": reason,
+                }
+            )
+            if reason.startswith("stale_") or reason in {"invalid_long_protection_prices", "invalid_short_protection_prices"}:
+                extra["protection_state"] = "stale_protection_prices"
+        payload = {**entry, "extra": extra}
+        try:
+            if hasattr(self.pb_client, "upsert_order"):
+                self.pb_client.upsert_order(payload)
+            elif entry.get("id"):
+                self.pb_client.update_record("orders", entry["id"], payload)
+        except Exception as exc:
+            logger.debug("Protection repair PB patch failed for %s: %s", entry.get("unique_id"), exc)
+
+    def _maybe_auto_repair_missing_protection(self, issue: dict, broker_position: dict) -> dict:
+        if not self._missing_protection_auto_repair_enabled():
+            return {"ok": False, "action": "skip", "reason": "auto_repair_disabled"}
+        if not self.order_placer or not hasattr(self.order_placer, "place_protection_repair_orders"):
+            return {"ok": False, "action": "skip", "reason": "order_placer_unavailable"}
+        missing_roles = set(str(role or "").strip() for role in (issue.get("missing_roles") or []))
+        if missing_roles != {"take_profit", "stop_loss"}:
+            return {"ok": False, "action": "skip", "reason": "partial_protection_missing"}
+        entry = dict(issue.get("entry") or {})
+        key = self._protection_repair_key(issue, entry)
+        if self._protection_repair_recently_attempted(key):
+            return {"ok": False, "action": "skip", "reason": "repair_cooldown_active"}
+        extra = self._order_extra(entry)
+        if extra.get("protection_repair_submitted") or extra.get("protection_state") == "repair_submitted":
+            return {"ok": False, "action": "skip", "reason": "repair_already_submitted"}
+
+        quantity = int(round(abs(self._broker_position_quantity(broker_position))))
+        conid = self._broker_position_conid(broker_position)
+        current_price = self._coerce_float(
+            broker_position.get("mktPrice")
+            or broker_position.get("market_price")
+            or broker_position.get("last_price"),
+            0.0,
+        )
+        direction = "long" if self._broker_position_quantity(broker_position) > 0 else "short"
+        take_profit_price, stop_loss_price = self._protection_repair_prices(entry)
+        if quantity <= 0 or conid <= 0:
+            return {"ok": False, "action": "skip", "reason": "missing_quantity_or_conid"}
+        if current_price <= 0:
+            return {"ok": False, "action": "skip", "reason": "missing_current_price"}
+        prices_valid, invalid_reason = self._protection_repair_prices_valid(
+            direction=direction,
+            current_price=float(current_price or 0.0),
+            take_profit_price=take_profit_price,
+            stop_loss_price=stop_loss_price,
+        )
+        if not prices_valid:
+            result = {
+                "ok": False,
+                "action": "skip",
+                "reason": invalid_reason or "invalid_repair_prices",
+                "stale_price_policy": self._missing_protection_stale_price_policy(),
+                "current_price": float(current_price),
+                "take_profit_price": take_profit_price,
+                "stop_loss_price": stop_loss_price,
+            }
+            self._mark_protection_repair_result(issue, broker_position, result)
+            return result
+
+        self._protection_repair_attempted[key] = time.time()
+        result = self.order_placer.place_protection_repair_orders(
+            conid=conid,
+            symbol=self._broker_position_symbol(broker_position),
+            direction=direction,
+            quantity=quantity,
+            take_profit_price=take_profit_price,
+            stop_loss_price=stop_loss_price,
+            use_paper=self.environment == "paper",
+            signal_id=str(entry.get("signal_id") or ""),
+            trade_group_id=str(issue.get("group_key") or self._order_group_key(entry) or ""),
+            entry_order_unique_id=str(entry.get("entry_order_unique_id") or entry.get("unique_id") or ""),
+            order_extra={
+                "missing_protection_auto_repair": True,
+                "source_entry_order_id": self._order_broker_id(entry),
+            },
+        )
+        self._mark_protection_repair_result(issue, broker_position, result if isinstance(result, dict) else {})
+        return result if isinstance(result, dict) else {"ok": False, "reason": "repair_result_unavailable"}
 
     def _detect_missing_protection_after_fill(
         self,
@@ -1588,6 +1778,8 @@ class OrderLifecycle:
                 issue["symbol"] = symbol
                 issues.append(issue)
                 self._mark_protection_missing_issue(issue, broker_position)
+                repair_result = self._maybe_auto_repair_missing_protection(issue, broker_position)
+                issue["repair_result"] = dict(repair_result or {})
         return issues
 
     def _select_live_exit_policy_group(self, rows: list[dict]) -> tuple[dict, dict, dict]:

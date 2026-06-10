@@ -1006,6 +1006,7 @@ class OrderPlacer:
         settings: Dict[str, Any] | None = None,
         entry_order_type: str = "LMT",
         buying_power_guard: Dict[str, Any] | None = None,
+        confirmation_mode: str = "",
         outside_rth: Any = None,
     ) -> Dict[str, Any]:
         from ibkr_compute.core.intraday_harvest import (
@@ -1058,6 +1059,7 @@ class OrderPlacer:
             bracket_group=bracket_group,
             order_family_type="partial_harvest_bracket" if partial_harvest else "bracket_oco",
             buying_power_guard=buying_power_guard,
+            confirmation_mode=confirmation_mode,
             outside_rth=outside_rth,
         )
         result["harvest_split"] = False
@@ -1066,6 +1068,89 @@ class OrderPlacer:
         result["partial_tp_quantity"] = partial_tp_qty
         result["remaining_after_partial_tp"] = max(0, total_qty - partial_tp_qty)
         return result
+
+    def place_protection_repair_orders(
+        self,
+        *,
+        conid: int,
+        symbol: str,
+        direction: str,
+        quantity: int,
+        take_profit_price: float,
+        stop_loss_price: float,
+        use_paper: bool = False,
+        signal_id: str = "",
+        trade_group_id: str = "",
+        entry_order_unique_id: str = "",
+        order_extra: Dict[str, Any] | None = None,
+        outside_rth: Any = None,
+    ) -> Dict[str, Any]:
+        acct_id = self.get_active_account_id(use_paper)
+        normalized_symbol = str(symbol or "").strip().upper()
+        normalized_direction = str(direction or "").strip().lower()
+        quantity_int = int(quantity or 0)
+        if not normalized_symbol:
+            return {"ok": False, "error": "missing_symbol"}
+        if normalized_direction not in {"long", "short"}:
+            return {"ok": False, "error": "invalid_direction"}
+        if quantity_int <= 0:
+            return {"ok": False, "error": "invalid_quantity"}
+        if float(take_profit_price or 0.0) <= 0 or float(stop_loss_price or 0.0) <= 0:
+            return {"ok": False, "error": "invalid_protection_prices"}
+
+        broker_kwargs = {
+            "conid": int(conid or 0),
+            "symbol": normalized_symbol,
+            "direction": normalized_direction,
+            "quantity": quantity_int,
+            "take_profit_price": float(take_profit_price or 0.0),
+            "stop_loss_price": float(stop_loss_price or 0.0),
+            "account_id": acct_id,
+            "trade_group_id": str(trade_group_id or "").strip(),
+            "entry_order_unique_id": str(entry_order_unique_id or "").strip(),
+            "signal_id": str(signal_id or "").strip(),
+            "outside_rth": self._coerce_bool(outside_rth, False),
+        }
+        if getattr(self.broker, "uses_internal_gateway_write_lock", False):
+            broker_kwargs["metric_environment"] = self.environment
+            result = self.broker.place_protection_repair_orders(**broker_kwargs)
+        else:
+            with self.gateway_gate.hold("place_protection_repair_orders", symbol=normalized_symbol) as gate_info:
+                result = self.broker.place_protection_repair_orders(**broker_kwargs)
+            record_gateway_order_serial_event(
+                environment=self.environment,
+                operation="place_protection_repair_orders",
+                result="ok" if result.get("ok") else "error",
+                queue_wait_s=gate_info.get("queue_wait_s"),
+            )
+        if result.get("ok"):
+            self._log_protection_repair_orders_to_pb(
+                symbol=normalized_symbol,
+                conid=int(conid or 0),
+                direction=normalized_direction,
+                quantity=quantity_int,
+                account=acct_id,
+                signal_id=str(signal_id or "").strip(),
+                trade_group_id=str(trade_group_id or "").strip(),
+                entry_order_unique_id=str(entry_order_unique_id or "").strip(),
+                order_ids=result.get("order_ids") or [],
+                tp_coid=str(result.get("tp_coid") or ""),
+                sl_coid=str(result.get("sl_coid") or ""),
+                take_profit_price=float(result.get("take_profit_price") or take_profit_price or 0.0),
+                stop_loss_price=float(result.get("stop_loss_price") or stop_loss_price or 0.0),
+                oca_group=str(result.get("oca_group") or ""),
+                order_extra=dict(order_extra or {}),
+                result=result,
+            )
+        return {
+            **dict(result or {}),
+            "action": "place_protection_repair_orders",
+            "environment": self.environment,
+            "symbol": normalized_symbol,
+            "direction": normalized_direction,
+            "quantity": quantity_int,
+            "account_id": acct_id,
+        }
 
     def place_market_close(self, *args, **kwargs) -> Dict[str, Any]:
         metadata = self._market_close_call_metadata(args, kwargs)
@@ -1417,6 +1502,85 @@ class OrderPlacer:
             self.pb_client.upsert_order(payload)
         except Exception as exc:
             logger.debug("Failed to log close order to PB: %s", exc)
+
+    def _log_protection_repair_orders_to_pb(self, **kwargs):
+        if not self.pb_client or not hasattr(self.pb_client, "upsert_order"):
+            return
+        try:
+            et_now = datetime.now(ET)
+            us_time = et_now.strftime("%Y-%m-%d %H:%M:%S")
+            order_ids = [str(item or "").strip() for item in (kwargs.get("order_ids") or [])]
+            tp_order_id = order_ids[0] if len(order_ids) > 0 else ""
+            sl_order_id = order_ids[1] if len(order_ids) > 1 else ""
+            symbol = str(kwargs.get("symbol") or "").strip().upper()
+            direction = str(kwargs.get("direction") or "").strip().lower()
+            trade_group_id = str(kwargs.get("trade_group_id") or "").strip()
+            entry_order_unique_id = str(kwargs.get("entry_order_unique_id") or "").strip()
+            if not trade_group_id:
+                trade_group_id = entry_order_unique_id
+            if not entry_order_unique_id:
+                entry_order_unique_id = trade_group_id
+            order_extra = dict(kwargs.get("order_extra") or {})
+            base_extra = {
+                **order_extra,
+                "source": "missing_protection_auto_repair",
+                "protection_repair": True,
+                "linked_trade_group_id": trade_group_id,
+                "linked_entry_order_unique_id": entry_order_unique_id,
+                "oca_group": str(kwargs.get("oca_group") or "").strip(),
+                "repair_result": dict(kwargs.get("result") or {}),
+            }
+            base_payload = {
+                "symbol": symbol,
+                "environment": self.environment,
+                "conid": kwargs.get("conid", 0),
+                "direction": direction,
+                "position_side": direction,
+                "quantity": kwargs.get("quantity", 0),
+                "status": "Submitted",
+                "relation_status": "active",
+                "trade_group_id": trade_group_id,
+                "entry_order_unique_id": entry_order_unique_id,
+                "parent_order_unique_id": entry_order_unique_id,
+                "signal_id": str(kwargs.get("signal_id") or "").strip(),
+                "bar_time_ms": int(et_now.timestamp() * 1000),
+                "us_time": us_time,
+                "cn_time": "",
+            }
+            tp_coid = str(kwargs.get("tp_coid") or tp_order_id or "").strip()
+            sl_coid = str(kwargs.get("sl_coid") or sl_order_id or "").strip()
+            self.pb_client.upsert_order({
+                **base_payload,
+                "unique_id": tp_coid,
+                "order_id": tp_order_id,
+                "broker_order_id": tp_order_id,
+                "order_type": "TakeProfit",
+                "role": "repair_tp",
+                "sibling_order_unique_id": sl_coid,
+                "limit_price": kwargs.get("take_profit_price", 0),
+                "tp_price": kwargs.get("take_profit_price", 0),
+                "sl_price": 0,
+                "filled_qty": 0,
+                "fill_price": 0,
+                "extra": {**base_extra, "repair_role": "take_profit"},
+            })
+            self.pb_client.upsert_order({
+                **base_payload,
+                "unique_id": sl_coid,
+                "order_id": sl_order_id,
+                "broker_order_id": sl_order_id,
+                "order_type": "StopLoss",
+                "role": "repair_sl",
+                "sibling_order_unique_id": tp_coid,
+                "limit_price": kwargs.get("stop_loss_price", 0),
+                "tp_price": 0,
+                "sl_price": kwargs.get("stop_loss_price", 0),
+                "filled_qty": 0,
+                "fill_price": 0,
+                "extra": {**base_extra, "repair_role": "stop_loss"},
+            })
+        except Exception as exc:
+            logger.debug("Failed to log protection repair orders to PB: %s", exc)
 
     def _log_order_to_pb(self, **kwargs):
         if not self.pb_client:

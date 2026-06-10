@@ -215,10 +215,32 @@ def _build_snapshot_summary(
     return enrich_buying_power_summary(summary)
 
 
-def _build_snapshot_counts(positions: list[dict], orders: list[dict], live_open_orders: list[dict]) -> dict:
+def _position_counts(positions: list[dict]) -> dict:
+    long_positions = 0
+    short_positions = 0
+    flat_positions = 0
+    for item in positions or []:
+        quantity = float(item.get("quantity", 0) or 0)
+        if quantity > 0:
+            long_positions += 1
+        elif quantity < 0:
+            short_positions += 1
+        else:
+            flat_positions += 1
     return {
         "positions": len(positions),
-        "open_positions": len([item for item in positions if float(item.get("quantity", 0) or 0) != 0]),
+        "position_rows": len(positions),
+        "open_positions": long_positions + short_positions,
+        "long_positions": long_positions,
+        "short_positions": short_positions,
+        "flat_positions": flat_positions,
+    }
+
+
+def _build_snapshot_counts(positions: list[dict], orders: list[dict], live_open_orders: list[dict]) -> dict:
+    position_counts = _position_counts(positions)
+    return {
+        **position_counts,
         "orders": len(orders),
         "open_orders": len(live_open_orders),
         "cancelable_orders": len([item for item in live_open_orders if item.get("can_cancel")]),
@@ -229,6 +251,18 @@ def _build_snapshot_counts(positions: list[dict], orders: list[dict], live_open_
             if str(item.get("recovery_source") or "").strip() == "status_recovered"
         ]),
     }
+
+
+def _merge_position_counts(base_counts: dict, cached_counts: dict, *, available: bool) -> dict:
+    merged = dict(base_counts or {})
+    if not available:
+        return merged
+    for key in ("positions", "position_rows", "open_positions", "long_positions", "short_positions", "flat_positions"):
+        if key in (cached_counts or {}):
+            merged[key] = cached_counts.get(key)
+    if "position_rows" not in merged and "positions" in merged:
+        merged["position_rows"] = merged.get("positions")
+    return merged
 
 
 def _buying_power_unavailable_reason(service_status: dict, summary_error: str, summary: dict) -> str:
@@ -854,6 +888,8 @@ def _build_fresh_ibkr_account_snapshot_payload(service, context: dict) -> dict:
         "live_order_coverage": live_open_payload.get("coverage") or {},
         "recovery_diagnostics": live_open_payload.get("diagnostics") or {},
         "counts": _build_snapshot_counts(positions, orders, live_open_orders),
+        "positions_detail_available": True,
+        "positions_source": "account_snapshot",
         "errors": snapshot_sources["errors"],
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "source": "account_snapshot",
@@ -999,6 +1035,11 @@ def _build_orders_fast_ibkr_account_snapshot_payload(
         else []
     )
     positions_source = "omitted_open_orders_only" if open_orders_only else ("snapshot_cache" if cached_full else "unavailable")
+    cached_counts = cached_full.get("counts") if isinstance(cached_full.get("counts"), dict) else {}
+    cached_position_counts_available = bool(
+        cached_counts
+        and all(key in cached_counts for key in ("open_positions", "long_positions", "short_positions"))
+    )
     positions, orders, live_open_orders, live_open_payload = _normalize_snapshot_rows(
         context["account_id"],
         cached_positions,
@@ -1027,6 +1068,9 @@ def _build_orders_fast_ibkr_account_snapshot_payload(
     errors = dict(cached_full.get("errors") or {})
     if not _summary_snapshot_available(summary):
         errors.setdefault("summary", "orders_fast_summary_cache_unavailable")
+    counts = _build_snapshot_counts(positions, orders, live_open_orders)
+    if open_orders_only:
+        counts = _merge_position_counts(counts, cached_counts, available=cached_position_counts_available)
     elapsed_ms = round((time.perf_counter() - started) * 1000.0, 1)
     payload = {
         "ok": True,
@@ -1047,7 +1091,10 @@ def _build_orders_fast_ibkr_account_snapshot_payload(
         "live_open_orders": live_open_orders,
         "live_order_coverage": live_open_payload.get("coverage") or {},
         "recovery_diagnostics": live_open_payload.get("diagnostics") or {},
-        "counts": _build_snapshot_counts(positions, orders, live_open_orders),
+        "counts": counts,
+        "positions_detail_available": bool((not open_orders_only) and cached_full),
+        "positions_source": positions_source,
+        "positions_count_available": bool(((not open_orders_only) and cached_full) or cached_position_counts_available),
         "errors": errors,
         "diagnostics": {
             "account_snapshot": {
@@ -1074,6 +1121,7 @@ def _build_orders_fast_ibkr_account_snapshot_payload(
             "historical_orders_omitted": bool(open_orders_only),
             "positions_source": positions_source,
             "positions_omitted": bool(open_orders_only),
+            "positions_count_available": bool(cached_position_counts_available),
             "summary_source": "snapshot_cache" if cached_full else "unavailable",
             "summary_cache_state": str(cached_full.get("cache_state") or "") if cached_full else "",
             "summary_cache_age_s": cached_full.get("cache_age_s") if cached_full else None,
@@ -1139,13 +1187,24 @@ def _build_ibkr_account_snapshot(
 
         decorated = _decorate_account_snapshot_health(dict(payload))
         if not bool(decorated.get("summary_available")):
+            summary_error = (
+                (decorated.get("errors") or {}).get("summary")
+                if isinstance(decorated.get("errors"), dict)
+                else ""
+            )
             cached = load_cached_snapshot(api_app, cache_key, allow_stale=allow_stale)
             if cached:
                 stale = _stale_snapshot_after_error(
                     cached,
-                    (decorated.get("errors") or {}).get("summary") if isinstance(decorated.get("errors"), dict) else "",
+                    summary_error,
                 )
                 return _apply_reservation_overlay_to_account_payload(service, stale) if apply_reservation_overlay else stale
+            if not allow_stale:
+                error_payload = _account_snapshot_error_payload(
+                    context,
+                    summary_error or "account_snapshot_unavailable",
+                )
+                return _apply_reservation_overlay_to_account_payload(service, error_payload) if apply_reservation_overlay else error_payload
             return _apply_reservation_overlay_to_account_payload(service, decorated) if apply_reservation_overlay else decorated
         store_cached_snapshot(api_app, cache_key, decorated)
         fresh = load_cached_snapshot(api_app, cache_key, allow_stale=False) or decorated

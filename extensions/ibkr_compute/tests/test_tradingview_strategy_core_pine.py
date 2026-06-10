@@ -57,8 +57,8 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertIn("jsonBool(\"target_is_hard\", not runnerMode)", source)
         self.assertIn("jsonBool(\"target_checkpoint_is_exit\", not runnerMode)", source)
         self.assertIn('jsonStr("target_role", runnerMode ? "safety_tp" : "hard_tp")', source)
-        self.assertIn("buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, \"long\", longSetup, longReason, qty, entryPrice, submittedLimitPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode", source)
-        self.assertIn("buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, \"short\", shortSetup, shortReason, qty, entryPrice, submittedLimitPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode", source)
+        self.assertIn("buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, \"long\", longSetup, longReason, qty, longReferenceEntry, entryPrice, submittedLimitPrice", source)
+        self.assertIn("buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, \"short\", shortSetup, shortReason, qty, shortReferenceEntry, entryPrice, submittedLimitPrice", source)
         self.assertIn("jsonRequestedSides(string requestedSides)", source)
         self.assertIn('string requestedSides = stopChanged and targetChanged ? "stop_loss,take_profit" : stopChanged ? "stop_loss" : targetChanged ? "take_profit" : ""', source)
         self.assertIn("float eventNewTarget = targetChanged ? activeTarget : na", source)
@@ -94,7 +94,7 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertIn("flowStatusColor(string state, string direction) =>", source)
         self.assertIn("color.new(flowBaseColor(state, direction), 0)", source)
         self.assertIn("color=color.new(color.orange, flowLabelTransparency)", source)
-        self.assertIn("color statusColor = activePositionId != \"\" ? flowStatusColor", source)
+        self.assertIn("color statusColor = activePendingEntry ? color.new(color.orange, 0) : activeFilledPosition ? flowStatusColor", source)
         self.assertIn("color.new(color.green, flowLabelTransparency)", source)
         self.assertIn("color.new(color.red, flowLabelTransparency)", source)
         self.assertFalse(
@@ -145,9 +145,9 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertIn("profitSpaceEntryAllowed(float netProfit, float netRoiPct, float costPct, float targetAtrMultiple)", source)
         self.assertIn('blockLongReason := "profit_space_too_small"', source)
         self.assertIn('blockShortReason := "profit_space_too_small"', source)
-        self.assertIn('"净利/ROI/成本/ATR空间不够，等更大空间"', source)
+        self.assertIn('"预计净利/预计ROI/成本/ATR空间不够，等更大空间"', source)
         self.assertIn('"\\n获利空间不足\\n" + profitSpaceSummaryText', source)
-        self.assertIn('"门槛 净利 " + fmtMoney(effectiveMinNetProfitForEntry)', source)
+        self.assertIn('"门槛 预计净利 " + fmtMoney(effectiveMinNetProfitForEntry)', source)
         self.assertIn('profitSpacePayload(direction, qty, entryPrice, targetPrice, targetCheckpoint)', source)
         self.assertIn('jsonNum("entry_notional", entryNotionalValue)', source)
         self.assertIn('jsonNum("expected_net_profit", netProfitValue)', source)
@@ -207,11 +207,30 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertNotIn("买入做多", activation_lines)
         self.assertNotIn("卖出做空", activation_lines)
 
+    def test_signal_diagnostics_draw_filtered_candidates_without_alerts(self):
+        source = self.source
+        diagnostic_start = source.index("bool diagnosticLongCandidate")
+        diagnostic_end = source.index("if enterLong")
+        diagnostic_section = source[diagnostic_start:diagnostic_end]
+
+        self.assertIn('showSignalDiagnostics = input.bool(true, "Show raw/filtered signal diagnostics", group="08 Display")', source)
+        self.assertIn("bool diagnosticLongCandidate = canTrade and flatForEntry and longRaw and not enterLong", source)
+        self.assertIn("bool diagnosticShortCandidate = canTrade and flatForEntry and shortRaw and not enterShort", source)
+        self.assertIn("bool blockedNow = diagnosticLongCandidate or diagnosticShortCandidate", source)
+        self.assertIn("bool blockedVisualNow = showFlowLabels and showSignalDiagnostics and blockedNow", source)
+        self.assertIn('string blockedReason = blockedReasonRaw == "" ? "candidate_filtered" : blockedReasonRaw', source)
+        self.assertIn('"信号过滤\\n" + directionDisplayName(blockedDirection)', source)
+        self.assertIn('"\\n原因: " + filterDisplayName(blockedReason)', source)
+        self.assertIn('reason == "candidate_filtered" ? "候选未执行"', source)
+        self.assertIn('reason == "candidate_filtered" ? "候选未进入下单分支，检查窗口/方向/数量条件"', source)
+        self.assertIn("string blockedAnchorText = structuralAnchorMode ?", source)
+        self.assertNotIn("alert(", diagnostic_section)
+
     def test_sd_window_resets_only_on_activation_events(self):
         source = self.source
 
-        self.assertIn("bool lowerActivationEvent = sdLowerHit and (not lowerWindowActive or lowerWindowUsed or na(lowerWindowStart) or bar_index - lowerWindowStart > mrWindowBars)", source)
-        self.assertIn("bool upperActivationEvent = sdUpperHit and (not upperWindowActive or upperWindowUsed or na(upperWindowStart) or bar_index - upperWindowStart > mrWindowBars)", source)
+        self.assertIn("bool lowerActivationEvent = canOpenEntry and sdLowerHit and (not lowerWindowActive or lowerWindowUsed or lowerWindowExpired or na(lowerWindowStart))", source)
+        self.assertIn("bool upperActivationEvent = canOpenEntry and sdUpperHit and (not upperWindowActive or upperWindowUsed or upperWindowExpired or na(upperWindowStart))", source)
         self.assertIn("if lowerActivationEvent\n    lowerWindowActive := true", source)
         self.assertIn("if upperActivationEvent\n    upperWindowActive := true", source)
         self.assertNotIn("if sdLowerHit\n    lowerWindowActive := true", source)
@@ -222,26 +241,88 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
 
         self.assertIn("directionComponentCount(bool fractalReady, bool divReady, bool emaCrossReady)", source)
         self.assertIn("directionComponentsReady(bool fractalReady, bool divReady, bool emaCrossReady)", source)
-        self.assertIn("int longTrendUpperDirectionComponents = directionComponentCount(upperBullFractalSeen, bullDivSeen, upperBullEmaCrossSeen)", source)
-        self.assertIn("int longMrLowerDirectionComponents = directionComponentCount(lowerBullFractalSeen, bullDivSeen, lowerBullEmaCrossSeen)", source)
-        self.assertIn("int shortMrUpperDirectionComponents = directionComponentCount(upperBearFractalSeen, bearDivSeen, upperBearEmaCrossSeen)", source)
-        self.assertIn("int shortTrendLowerDirectionComponents = directionComponentCount(lowerBearFractalSeen, bearDivSeen, lowerBearEmaCrossSeen)", source)
-        self.assertIn("bool setupLongTrendUpper = upperWindowValid and upperBullTouchSeen and longTrendUpperDirectionComponents >= 2", source)
+        self.assertIn("int longTrendUpperDirectionComponents = directionComponentCount(upperBullFractalFresh, bullDivFresh, upperBullEmaCrossFresh)", source)
+        self.assertIn("int longMrLowerRawDirectionComponents = directionComponentCount(lowerBullFractalSeen, bullDivSeen, lowerBullEmaCrossSeen)", source)
+        self.assertIn("int longMrLowerDirectionComponents = directionComponentCount(lowerBullFractalFresh, bullDivFresh, lowerBullEmaCrossFresh)", source)
+        self.assertIn("int shortMrUpperRawDirectionComponents = directionComponentCount(upperBearFractalSeen, bearDivSeen, upperBearEmaCrossSeen)", source)
+        self.assertIn("int shortMrUpperDirectionComponents = directionComponentCount(upperBearFractalFresh, bearDivFresh, upperBearEmaCrossFresh)", source)
+        self.assertIn("int shortTrendLowerDirectionComponents = directionComponentCount(lowerBearFractalFresh, bearDivFresh, lowerBearEmaCrossFresh)", source)
+        self.assertIn("bool setupLongTrendUpper = upperWindowValid and upperBullTouchFresh and longTrendUpperDirectionComponents >= 2", source)
         self.assertIn("bool setupLongMrLower = lowerWindowValid and longMrLowerDirectionComponents >= 2", source)
         self.assertIn("bool setupShortMrUpper = upperWindowValid and shortMrUpperDirectionComponents >= 2", source)
-        self.assertIn("bool setupShortTrendLower = lowerWindowValid and lowerBearTouchSeen and shortTrendLowerDirectionComponents >= 2", source)
+        self.assertIn("bool setupShortTrendLower = lowerWindowValid and lowerBearTouchFresh and shortTrendLowerDirectionComponents >= 2", source)
         self.assertIn("int scoreLongTrendUpper = math.min(100,", source)
         self.assertIn("int scoreLongMrLower = math.min(100,", source)
         self.assertIn("int scoreShortMrUpper = math.min(100,", source)
         self.assertIn("int scoreShortTrendLower = math.min(100,", source)
+
+    def test_structural_anchor_entry_limit_payload_and_pending_ttl(self):
+        source = self.source
+
+        self.assertIn('entryAnchorMode = input.string("setup_structural", "Entry anchor mode", options=["setup_structural", "marketable_cap"], group="05 Risk")', source)
+        self.assertIn('entryOrderTtlBars = input.int(1, "Entry order TTL bars"', source)
+        self.assertIn("entryAnchorZoneAtr = input.float(0.15, \"Entry anchor zone (x ATR)\"", source)
+        self.assertIn("float longStructuralAnchorLevel = nearestSupportBelow(longReferenceEntry", source)
+        self.assertIn("float shortStructuralAnchorLevel = nearestResistanceAbove(shortReferenceEntry", source)
+        self.assertIn("float longStructuralEntryRaw = math.min(longReferenceEntry, longStructuralAnchorLevel + atrRaw * entryAnchorZoneAtr)", source)
+        self.assertIn("float shortStructuralEntryRaw = math.max(shortReferenceEntry, shortStructuralAnchorLevel - atrRaw * entryAnchorZoneAtr)", source)
+        self.assertIn("jsonNum(\"planned_entry_price\", plannedEntry)", source)
+        self.assertIn('jsonStr("entry_price_plan", structuralAnchorMode ? "structural_anchor_limit" : "tv_direct_bounded_limit")', source)
+        self.assertIn('jsonStr("entry_anchor_reason", entryAnchorReason == "" ? "none" : entryAnchorReason)', source)
+        self.assertIn('jsonStr("risk_model", structuralAnchorMode ? "setup_aware_structural_v1" : "tv_direct_bounded_limit_v1")', source)
+        self.assertIn("activePendingEntry := true", source)
+        self.assertIn('strategy.cancel("TV-L")', source)
+        self.assertIn('strategy.cancel("TV-S")', source)
+        self.assertIn('"\\nref " + str.tostring(longReferenceEntry', source)
+        self.assertIn('"bar\\n锚点: " + activeEntryAnchorReason', source)
+        self.assertIn("bool pendingFilledNow = confirmed and activePendingEntry and strategy.position_size != 0", source)
+        self.assertIn("bool pendingEntryExpired = confirmed and activePendingEntry and strategy.position_size == 0", source)
+        self.assertIn("bool pendingCancelNow = pendingCancelReason != \"\"", source)
+        self.assertIn("bool enterLong = canOpenEntry and flatForEntry and allowLong and longSignalCandidate", source)
+        self.assertIn("bool enterShort = canOpenEntry and flatForEntry and allowShort and shortSignalCandidate", source)
+
+    def test_mr_window_freshness_and_mr_exit_guards(self):
+        source = self.source
+
+        self.assertIn('mrWindowMaxMinutes = input.int(30, "MR window max minutes"', source)
+        self.assertIn('mrComponentFreshBars = input.int(8, "MR component freshness bars"', source)
+        self.assertIn('mrExpireOnMeanTouch = input.bool(true, "Expire MR window after mean touch"', source)
+        self.assertIn("bool lowerWindowTimeExpired = lowerWindowActive and not na(lowerWindowStartTime)", source)
+        self.assertIn("bool lowerWindowMeanTouched = lowerWindowActive and mrExpireOnMeanTouch", source)
+        self.assertIn("componentFresh(int componentBar)", source)
+        self.assertIn('blockShortReason := "mr_dtp_countertrend"', source)
+        self.assertIn('blockShortReason := "mr_ema_cross_missing"', source)
+        self.assertIn('blockShortReason := "mr_component_stale"', source)
+        self.assertIn('pendingExitReason := "mr_structure_invalidated"', source)
+        self.assertIn('pendingExitReason := "mr_time_stop"', source)
+        self.assertIn('riskUpdateReason := "mr_checkpoint_lock"', source)
 
     def test_risk_update_sequence_is_incremented_and_serialized(self):
         source = self.source
 
         self.assertIn("var int activeRiskUpdateSeq = 0", source)
         self.assertIn('jsonInt("risk_update_seq", activeRiskUpdateSeq)', source)
-        self.assertIn("activeRiskUpdateSeq := activeRiskUpdateSeq + 1\n            alert(buildRiskPayload(eventId(\"risk_update\", \"initial\")", source)
+        self.assertNotIn('alert(buildRiskPayload(eventId("risk_update", "initial")', source)
+        self.assertNotIn('"initial_protection"', source)
         self.assertIn("activeRiskUpdateSeq := activeRiskUpdateSeq + 1\n        alert(buildRiskPayload(eventId(\"risk_update\", reasonForEvent)", source)
+
+    def test_cancel_alert_payload_and_signal_fill_visuals_are_separate(self):
+        source = self.source
+
+        self.assertIn("buildCancelPayload(string eventIdValue, string positionIdValue, string cancelReason)", source)
+        self.assertIn('basePayload("cancel", eventIdValue, positionIdValue)', source)
+        self.assertIn('jsonStr("origin_signal_id", activeSignalId)', source)
+        self.assertIn('jsonStr("cancel_scope", "trade_intent")', source)
+        self.assertIn('jsonStr("cancel_policy", "cancel_unfilled_or_close_filled")', source)
+        self.assertIn('jsonNum("submitted_entry_limit_price", activeSubmittedEntryLimit)', source)
+        self.assertIn('jsonBool("tv_position_filled", strategy.position_size != 0)', source)
+        self.assertIn("alert(buildCancelPayload(eventId(\"cancel\", pendingCancelReason), activePositionId, pendingCancelReason), alert.freq_all)", source)
+        self.assertIn("var bool activeCancelSent = false", source)
+        self.assertIn("activeCancelSent := true", source)
+        self.assertIn('"信号已发出\\n提交限价做多\\n"', source)
+        self.assertIn('"信号已发出\\n提交限价做空\\n"', source)
+        self.assertIn('"TV模拟成交\\n"', source)
+        self.assertIn('"信号撤销\\n" + cancelReasonDisplayName(pendingCancelReason)', source)
 
 
 if __name__ == "__main__":

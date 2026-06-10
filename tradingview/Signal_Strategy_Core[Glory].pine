@@ -5,7 +5,7 @@ strategy(title="Signal Strategy Core[Glory]", overlay=true, max_labels_count=500
 // Derived from Signal Alert Core[Glory]: EMA trend/touch, SD mean-reversion windows,
 // DTP direction, fractal pivots, cRSI/OBV divergence, ATR risk sizing.
 
-string STRATEGY_VERSION = "SSC_v1_20260604_profit100_roi20"
+string STRATEGY_VERSION = "SSC_v1_20260609_structural_anchor_mr_guard"
 string SCRIPT_TAG = "Signal_Strategy_Core[Glory]"
 
 // -----------------------------------------------------------------------------
@@ -26,7 +26,10 @@ sdMult3 = input.float(3.0, "Band multiplier 3", step=0.5, group="03 SD Channel")
 sdMult4 = input.float(4.0, "Band multiplier 4", step=0.5, group="03 SD Channel")
 sdSignalBand = input.int(3, "MR trigger band", minval=1, maxval=4, group="03 SD Channel")
 sdFilterBand = input.int(2, "Zone filter band", minval=1, maxval=4, group="03 SD Channel")
-mrWindowBars = input.int(48, "MR window bars", minval=2, maxval=200, group="03 SD Channel")
+mrWindowBars = input.int(15, "MR window bars", minval=2, maxval=200, group="03 SD Channel")
+mrWindowMaxMinutes = input.int(30, "MR window max minutes", minval=1, maxval=240, group="03 SD Channel")
+mrComponentFreshBars = input.int(8, "MR component freshness bars", minval=1, maxval=100, group="03 SD Channel")
+mrExpireOnMeanTouch = input.bool(true, "Expire MR window after mean touch", group="03 SD Channel")
 
 dtpSmaLength = input.int(100, "DTP SMA length", minval=5, group="04 DTP")
 dtpAtrLength = input.int(200, "DTP ATR length", minval=5, group="04 DTP")
@@ -61,6 +64,18 @@ minTargetAtrMultipleForEntry = input.float(2.0, "Minimum target distance (x ATR)
 estimatedRoundTripFee = input.float(2.10, "Estimated round-trip fixed costs ($)", step=0.05, minval=0.0, group="05 Risk")
 estimatedSlippagePerSharePerSide = input.float(0.05, "Estimated slippage/share/side ($)", step=0.01, minval=0.0, group="05 Risk")
 tvEntryLimitCapBps = input.float(15.0, "TV->IBKR entry limit cap (bps)", step=1.0, minval=0.0, group="05 Risk")
+entryAnchorMode = input.string("setup_structural", "Entry anchor mode", options=["setup_structural", "marketable_cap"], group="05 Risk")
+entryLevelLookbackBars = input.int(60, "Entry level lookback bars", minval=5, maxval=300, group="05 Risk")
+entryAnchorZoneAtr = input.float(0.15, "Entry anchor zone (x ATR)", step=0.05, minval=0.0, maxval=3.0, group="05 Risk")
+entryMaxAnchorAtr = input.float(0.60, "Max anchor distance (x ATR)", step=0.05, minval=0.05, maxval=5.0, group="05 Risk")
+entryMaxAnchorBps = input.float(80.0, "Max anchor distance (bps)", step=5.0, minval=1.0, maxval=1000.0, group="05 Risk")
+entryFallbackAtr = input.float(0.25, "Fallback entry offset (x ATR)", step=0.05, minval=0.0, maxval=3.0, group="05 Risk")
+entryOrderTtlBars = input.int(1, "Entry order TTL bars", minval=1, maxval=20, group="05 Risk")
+structuralSlBufferAtr = input.float(0.20, "Structural SL buffer (x ATR)", step=0.05, minval=0.0, maxval=3.0, group="05 Risk")
+mrCheckpointR = input.float(0.60, "MR checkpoint lock trigger (R)", step=0.05, minval=0.10, maxval=5.0, group="05 Risk")
+mrCheckpointLockR = input.float(0.05, "MR checkpoint lock offset (R)", step=0.01, minval=0.0, maxval=2.0, group="05 Risk")
+mrTimeStopBars = input.int(10, "MR time stop bars", minval=1, maxval=100, group="05 Risk")
+mrTimeStopMinMfeR = input.float(0.35, "MR time stop min MFE (R)", step=0.05, minval=0.0, maxval=5.0, group="05 Risk")
 float profitSpaceMinNetProfitFloor = 100.0
 float profitSpaceMinNetRoiPctFloor = 2.0
 float effectiveMinNetProfitForEntry = math.max(minNetProfitForEntry, profitSpaceMinNetProfitFloor)
@@ -75,6 +90,9 @@ divType = input.string("both", "Divergence type", options=["hidden", "regular", 
 obvRsiLen = input.int(10, "OBV RSI length", minval=1, group="06 Oscillators")
 
 tradingSession = input.session("0945-1530", "Trading session", group="07 TV Primary Events")
+useIntradayEntryWindows = input.bool(true, "Use intraday entry windows", group="07 TV Primary Events")
+morningEntrySession = input.session("0945-1130", "Morning entry window", group="07 TV Primary Events")
+afternoonEntrySession = input.session("1430-1530", "Afternoon entry window", group="07 TV Primary Events")
 enableAlerts = input.bool(true, "Emit TV-primary alert() payloads", group="07 TV Primary Events")
 preAlertThreshold = input.int(65, "Pre-alert activity score", minval=1, maxval=99, group="07 TV Primary Events")
 enableEodForceClose = input.bool(true, "Mirror system EOD force close", group="07 TV Primary Events")
@@ -95,6 +113,7 @@ string TIMEFRAME_STACK = enableMtf ? "entry=" + timeframe.period + ";confirm=" +
 
 displayPreset = input.string("核心交易流程", "Display preset", options=["核心交易流程", "指标辅助", "调试全量"], group="08 Display")
 showFlowLabels = input.bool(true, "Show activation/prep/entry labels", group="08 Display")
+showSignalDiagnostics = input.bool(true, "Show raw/filtered signal diagnostics", group="08 Display")
 flowLabelTransparency = input.int(30, "Flow label background transparency", minval=0, maxval=100, group="08 Display")
 showStatusPanel = input.bool(true, "Show status panel", group="08 Display")
 showBands = input.bool(true, "Show SD bands", group="08 Display")
@@ -116,7 +135,11 @@ bool showComponentMarkers = showDebugComponents or displayDebugMode
 
 bool confirmed = barstate.isconfirmed
 bool inSession = not na(time(timeframe.period, tradingSession, syminfo.timezone))
+bool inMorningEntryWindow = not na(time(timeframe.period, morningEntrySession, syminfo.timezone))
+bool inAfternoonEntryWindow = not na(time(timeframe.period, afternoonEntrySession, syminfo.timezone))
+bool inEntryWindow = not useIntradayEntryWindows or inMorningEntryWindow or inAfternoonEntryWindow
 bool canTrade = confirmed and inSession
+bool canOpenEntry = canTrade and inEntryWindow
 int dailyTime = time("D")
 bool isNewTradingDay = not na(dailyTime[1]) and dailyTime != dailyTime[1]
 
@@ -214,7 +237,10 @@ directionDisplayName(string direction) =>
     direction == "short" ? "做空" : "做多"
 
 exitReasonDisplayName(string reason) =>
-    reason == "take_profit" ? "TP止盈" : reason == "runner_stop" ? "跟踪止盈" : reason == "stop_loss" ? "SL止损" : reason == "force_flat_eod" or reason == "eod" ? "EOD强平" : reason == "strategy_closed" ? "策略退出" : reason
+    reason == "take_profit" ? "TP止盈" : reason == "runner_stop" ? "跟踪止盈" : reason == "stop_loss" ? "SL止损" : reason == "mr_time_stop" ? "MR超时退出" : reason == "mr_structure_invalidated" ? "MR结构失效" : reason == "entry_ttl_expired" ? "挂单过期" : reason == "force_flat_eod" or reason == "eod" ? "EOD强平" : reason == "strategy_closed" ? "策略退出" : reason
+
+cancelReasonDisplayName(string reason) =>
+    reason == "entry_ttl_expired" ? "挂单过期" : reason == "entry_window_expired" ? "入场窗口结束" : reason == "setup_window_expired" ? "结构窗口失效" : reason == "entry_anchor_invalidated" ? "结构价失效" : reason == "opposite_signal_or_conflict" ? "反向/冲突信号" : reason == "pending_eod_cancel" ? "EOD撤销挂单" : reason
 
 fmtSignedMoney(float value) =>
     na(value) ? "--" : (value >= 0.0 ? "+$" : "-$") + str.tostring(math.abs(value), "#.##")
@@ -243,6 +269,12 @@ setupUsesBullSide(string setup) =>
 setupUsesRunner(string setup) =>
     enableTpCheckpointRunner and (not runnerOnlyTrendSetups or setup == "trend_sdUpper" or setup == "trend_sdLower")
 
+setupIsMr(string setup) =>
+    setup == "mr_sdUpper" or setup == "mr_sdLower"
+
+setupIsTrend(string setup) =>
+    setup == "trend_sdUpper" or setup == "trend_sdLower"
+
 calcTargetAtR(float entryPrice, float stopPrice, int direction, float rMultiple) =>
     float risk = direction == 1 ? entryPrice - stopPrice : stopPrice - entryPrice
     direction == 1 ? entryPrice + risk * rMultiple : entryPrice - risk * rMultiple
@@ -258,10 +290,64 @@ roundEntryLimitToTick(float price, int direction) =>
     float tick = math.max(syminfo.mintick, 0.00000001)
     direction == -1 ? math.floor(price / tick) * tick : math.ceil(price / tick) * tick
 
+roundStructuralEntryLimitToTick(float price, int direction) =>
+    float tick = math.max(syminfo.mintick, 0.00000001)
+    direction == -1 ? math.ceil(price / tick) * tick : math.floor(price / tick) * tick
+
 calcSubmittedEntryLimit(float referenceEntry, int direction) =>
     float cap = tvEntryLimitCapBps / 10000.0
     float rawLimit = direction == -1 ? referenceEntry * (1.0 - cap) : referenceEntry * (1.0 + cap)
     roundEntryLimitToTick(rawLimit, direction)
+
+directionalDistanceAtr(float referencePrice, float plannedPrice, float atrValue) =>
+    atrValue > 0.0 ? math.abs(plannedPrice - referencePrice) / atrValue : 0.0
+
+directionalDistanceBps(float referencePrice, float plannedPrice) =>
+    referencePrice > 0.0 ? math.abs(plannedPrice - referencePrice) / referencePrice * 10000.0 : 999999.0
+
+entryAnchorValid(float referencePrice, float plannedPrice, float atrValue) =>
+    not na(plannedPrice) and plannedPrice > 0.0 and directionalDistanceAtr(referencePrice, plannedPrice, atrValue) <= entryMaxAnchorAtr and directionalDistanceBps(referencePrice, plannedPrice) <= entryMaxAnchorBps
+
+appendAnchorReason(string existing, string nextValue) =>
+    existing == "" ? nextValue : existing + " + " + nextValue
+
+limitByHardCap(float referencePrice, float plannedPrice, int direction) =>
+    float cap = tvEntryLimitCapBps / 10000.0
+    float hardCap = direction == 1 ? referencePrice * (1.0 + cap) : referencePrice * (1.0 - cap)
+    direction == 1 ? math.min(plannedPrice, hardCap) : math.max(plannedPrice, hardCap)
+
+anchorNear(float plannedPrice, float levelPrice, float atrValue) =>
+    not na(plannedPrice) and not na(levelPrice) and levelPrice > 0.0 and math.abs(plannedPrice - levelPrice) <= math.max(syminfo.mintick * 2.0, atrValue * entryAnchorZoneAtr)
+
+nearestSupportBelow(float referencePrice, float v1, float v2, float v3, float v4, float v5, float v6, float v7, float v8, float fallback) =>
+    float best = na
+    best := not na(v1) and v1 > 0.0 and v1 <= referencePrice and (na(best) or v1 > best) ? v1 : best
+    best := not na(v2) and v2 > 0.0 and v2 <= referencePrice and (na(best) or v2 > best) ? v2 : best
+    best := not na(v3) and v3 > 0.0 and v3 <= referencePrice and (na(best) or v3 > best) ? v3 : best
+    best := not na(v4) and v4 > 0.0 and v4 <= referencePrice and (na(best) or v4 > best) ? v4 : best
+    best := not na(v5) and v5 > 0.0 and v5 <= referencePrice and (na(best) or v5 > best) ? v5 : best
+    best := not na(v6) and v6 > 0.0 and v6 <= referencePrice and (na(best) or v6 > best) ? v6 : best
+    best := not na(v7) and v7 > 0.0 and v7 <= referencePrice and (na(best) or v7 > best) ? v7 : best
+    best := not na(v8) and v8 > 0.0 and v8 <= referencePrice and (na(best) or v8 > best) ? v8 : best
+    na(best) ? fallback : best
+
+nearestResistanceAbove(float referencePrice, float v1, float v2, float v3, float v4, float v5, float v6, float v7, float v8, float fallback) =>
+    float best = na
+    best := not na(v1) and v1 > 0.0 and v1 >= referencePrice and (na(best) or v1 < best) ? v1 : best
+    best := not na(v2) and v2 > 0.0 and v2 >= referencePrice and (na(best) or v2 < best) ? v2 : best
+    best := not na(v3) and v3 > 0.0 and v3 >= referencePrice and (na(best) or v3 < best) ? v3 : best
+    best := not na(v4) and v4 > 0.0 and v4 >= referencePrice and (na(best) or v4 < best) ? v4 : best
+    best := not na(v5) and v5 > 0.0 and v5 >= referencePrice and (na(best) or v5 < best) ? v5 : best
+    best := not na(v6) and v6 > 0.0 and v6 >= referencePrice and (na(best) or v6 < best) ? v6 : best
+    best := not na(v7) and v7 > 0.0 and v7 >= referencePrice and (na(best) or v7 < best) ? v7 : best
+    best := not na(v8) and v8 > 0.0 and v8 >= referencePrice and (na(best) or v8 < best) ? v8 : best
+    na(best) ? fallback : best
+
+componentFresh(int componentBar) =>
+    not na(componentBar) and bar_index - componentBar <= mrComponentFreshBars
+
+setupNeedsFreshMrComponents(string setup) =>
+    setup == "mr_sdUpper" or setup == "mr_sdLower"
 
 exitTouchesTarget(int direction, float exitPrice, float targetPrice) =>
     not na(targetPrice) and (math.abs(exitPrice - targetPrice) <= syminfo.mintick * 2.0 or (direction == 1 ? exitPrice >= targetPrice : exitPrice <= targetPrice))
@@ -339,10 +425,10 @@ waitComponentText(string value) =>
     missingText == "齐" ? "组件齐" : "等 " + missingText
 
 filterDisplayName(string reason) =>
-    reason == "dtp_bearish_early" ? "DTP偏空初期" : reason == "dtp_bullish_early" ? "DTP偏多初期" : reason == "dtp_bearish_early_or_confirmed" ? "DTP偏空" : reason == "dtp_bullish_early_or_confirmed" ? "DTP偏多" : reason == "ema_weak" ? "EMA弱" : reason == "low_volatility" ? "低波动" : reason == "profit_space_too_small" ? "获利空间不足" : reason == "mtf_5m_15m_opposite" ? "MTF反向" : reason == "long_short_conflict" ? "多空冲突" : reason == "" ? "过滤" : reason
+    reason == "entry_time_blocked" ? "非优先入场时段" : reason == "entry_anchor_unavailable" ? "无有效结构挂单价" : reason == "mr_dtp_countertrend" ? "MR逆DTP强趋势" : reason == "mr_ema_cross_missing" ? "MR缺少EMA反转" : reason == "mr_component_stale" ? "MR组件过期" : reason == "candidate_filtered" ? "候选未执行" : reason == "dtp_bearish_early" ? "DTP偏空初期" : reason == "dtp_bullish_early" ? "DTP偏多初期" : reason == "dtp_bearish_early_or_confirmed" ? "DTP偏空" : reason == "dtp_bullish_early_or_confirmed" ? "DTP偏多" : reason == "ema_weak" ? "EMA弱" : reason == "low_volatility" ? "低波动" : reason == "profit_space_too_small" ? "获利空间不足" : reason == "mtf_5m_15m_opposite" ? "MTF反向" : reason == "long_short_conflict" ? "多空冲突" : reason == "" ? "过滤" : reason
 
 filterActionText(string reason, string direction) =>
-    reason == "dtp_bearish_early" ? "DTP偏空初期，等过初期" : reason == "dtp_bullish_early" ? "DTP偏多初期，等过初期" : reason == "dtp_bearish_early_or_confirmed" ? "DTP偏空，等转弱/中性/多" : reason == "dtp_bullish_early_or_confirmed" ? "DTP偏多，等转弱/中性/空" : reason == "ema_weak" ? "EMA偏弱，等快慢线走强" : reason == "low_volatility" ? "ATR%低于入场阈值，等波动恢复" : reason == "profit_space_too_small" ? "净利/ROI/成本/ATR空间不够，等更大空间" : reason == "mtf_5m_15m_opposite" ? "5m+15m 同时反向，等MTF转中性/同向" : reason == "long_short_conflict" ? "多空冲突，等单边明确" : reason == "" ? "过滤" + directionDisplayName(direction) + "，等条件恢复" : filterDisplayName(reason)
+    reason == "entry_time_blocked" ? "不在优先日内窗口，等下一窗口" : reason == "entry_anchor_unavailable" ? "结构价离现价太远/无依据，放弃追价" : reason == "mr_dtp_countertrend" ? "MR逆DTP强趋势，等趋势转弱再做回归" : reason == "mr_ema_cross_missing" ? "MR缺少EMA20/50反转确认，等金叉/死叉" : reason == "mr_component_stale" ? "MR组件过期，等新分形/背离/交叉" : reason == "candidate_filtered" ? "候选未进入下单分支，检查窗口/方向/数量条件" : reason == "dtp_bearish_early" ? "DTP偏空初期，等过初期" : reason == "dtp_bullish_early" ? "DTP偏多初期，等过初期" : reason == "dtp_bearish_early_or_confirmed" ? "DTP偏空，等转弱/中性/多" : reason == "dtp_bullish_early_or_confirmed" ? "DTP偏多，等转弱/中性/空" : reason == "ema_weak" ? "EMA偏弱，等快慢线走强" : reason == "low_volatility" ? "ATR%低于入场阈值，等波动恢复" : reason == "profit_space_too_small" ? "预计净利/预计ROI/成本/ATR空间不够，等更大空间" : reason == "mtf_5m_15m_opposite" ? "5m+15m 同时反向，等MTF转中性/同向" : reason == "long_short_conflict" ? "多空冲突，等单边明确" : reason == "" ? "过滤" + directionDisplayName(direction) + "，等条件恢复" : filterDisplayName(reason)
 
 dtpPhaseDisplayName(string phase) =>
     phase == "early" ? "初期" : phase == "confirmed" ? "确认" : phase == "mature" ? "成熟" : phase == "weakening" ? "转弱" : "中性"
@@ -455,6 +541,34 @@ float fractalPivotHigh = ta.pivothigh(high, fractalPeriod, fractalPeriod)
 float fractalPivotLow = ta.pivotlow(low, fractalPeriod, fractalPeriod)
 bool fractalBear = confirmed and not na(fractalPivotHigh) and fractalPivotHigh > donchianBase[fractalPeriod]
 bool fractalBull = confirmed and not na(fractalPivotLow) and fractalPivotLow < donchianBase[fractalPeriod]
+var float lastPivotHigh = na
+var float lastPivotLow = na
+var int lastPivotHighBar = na
+var int lastPivotLowBar = na
+if isNewTradingDay
+    lastPivotHigh := na
+    lastPivotLow := na
+    lastPivotHighBar := na
+    lastPivotLowBar := na
+if confirmed and not na(fractalPivotHigh)
+    lastPivotHigh := fractalPivotHigh
+    lastPivotHighBar := bar_index - fractalPeriod
+if confirmed and not na(fractalPivotLow)
+    lastPivotLow := fractalPivotLow
+    lastPivotLowBar := bar_index - fractalPeriod
+
+var float sessionHigh = na
+var float sessionLow = na
+if isNewTradingDay or na(sessionHigh) or na(sessionLow)
+    sessionHigh := high
+    sessionLow := low
+else if confirmed
+    sessionHigh := math.max(sessionHigh, high)
+    sessionLow := math.min(sessionLow, low)
+
+float recentHigh = ta.highest(high, entryLevelLookbackBars)
+float recentLow = ta.lowest(low, entryLevelLookbackBars)
+float signalMid = (high + low) / 2.0
 
 float sdReg = ta.linreg(close, sdLength, 0)
 float sdStd = ta.stdev(close, sdLength)
@@ -535,10 +649,10 @@ profitSpaceEntryAllowed(float netProfit, float netRoiPct, float costPct, float t
     not useProfitSpaceFilter or profitSpaceFailureReason(netProfit, netRoiPct, costPct, targetAtrMultiple) == "pass"
 
 profitSpaceSummaryText(float netProfit, float netRoiPct, float costPct, float targetAtrMultiple) =>
-    "净利 " + fmtSignedMoney(netProfit) + " / ROI " + fmtSignedPct(netRoiPct) + " / 成本 " + str.tostring(costPct, "#.#") + "% / TP " + str.tostring(targetAtrMultiple, "#.#") + "ATR"
+    "预计净利 " + fmtSignedMoney(netProfit) + " / 预计ROI " + fmtSignedPct(netRoiPct) + " / 成本 " + str.tostring(costPct, "#.#") + "% / TP " + str.tostring(targetAtrMultiple, "#.#") + "ATR"
 
 profitSpaceThresholdText() =>
-    "门槛 净利 " + fmtMoney(effectiveMinNetProfitForEntry) + " / ROI " + str.tostring(effectiveMinNetRoiPctForEntry, "#.##") + "%"
+    "门槛 预计净利 " + fmtMoney(effectiveMinNetProfitForEntry) + " / 预计ROI " + str.tostring(effectiveMinNetRoiPctForEntry, "#.##") + "%"
 
 profitSpaceBlockedText(float netProfit, float netRoiPct, float costPct, float targetAtrMultiple) =>
     "\n获利空间不足\n" + profitSpaceSummaryText(netProfit, netRoiPct, costPct, targetAtrMultiple) + "\n" + profitSpaceThresholdText()
@@ -663,19 +777,31 @@ var bool lowerWindowUsed = false
 var bool upperWindowUsed = false
 var int lowerWindowStart = na
 var int upperWindowStart = na
+var int lowerWindowStartTime = na
+var int upperWindowStartTime = na
 
 var bool upperBullTouchSeen = false
 var string upperBullTouchLine = ""
+var int upperBullTouchBar = na
 var bool upperBullFractalSeen = false
+var int upperBullFractalBar = na
 var bool upperBearFractalSeen = false
+var int upperBearFractalBar = na
 var bool upperBullEmaCrossSeen = false
+var int upperBullEmaCrossBar = na
 var bool upperBearEmaCrossSeen = false
+var int upperBearEmaCrossBar = na
 var bool lowerBullFractalSeen = false
+var int lowerBullFractalBar = na
 var bool lowerBullEmaCrossSeen = false
+var int lowerBullEmaCrossBar = na
 var bool lowerBearTouchSeen = false
 var string lowerBearTouchLine = ""
+var int lowerBearTouchBar = na
 var bool lowerBearFractalSeen = false
+var int lowerBearFractalBar = na
 var bool lowerBearEmaCrossSeen = false
+var int lowerBearEmaCrossBar = na
 
 var bool bullDivSeen = false
 var string bullDivSource = ""
@@ -691,18 +817,30 @@ if isNewTradingDay
     upperWindowUsed := false
     lowerWindowStart := na
     upperWindowStart := na
+    lowerWindowStartTime := na
+    upperWindowStartTime := na
     upperBullTouchSeen := false
     upperBullTouchLine := ""
+    upperBullTouchBar := na
     upperBullFractalSeen := false
+    upperBullFractalBar := na
     upperBearFractalSeen := false
+    upperBearFractalBar := na
     upperBullEmaCrossSeen := false
+    upperBullEmaCrossBar := na
     upperBearEmaCrossSeen := false
+    upperBearEmaCrossBar := na
     lowerBullFractalSeen := false
+    lowerBullFractalBar := na
     lowerBullEmaCrossSeen := false
+    lowerBullEmaCrossBar := na
     lowerBearTouchSeen := false
     lowerBearTouchLine := ""
+    lowerBearTouchBar := na
     lowerBearFractalSeen := false
+    lowerBearFractalBar := na
     lowerBearEmaCrossSeen := false
+    lowerBearEmaCrossBar := na
     bullDivSeen := false
     bullDivSource := ""
     bullDivBar := na
@@ -710,56 +848,98 @@ if isNewTradingDay
     bearDivSource := ""
     bearDivBar := na
 
-bool lowerActivationEvent = sdLowerHit and (not lowerWindowActive or lowerWindowUsed or na(lowerWindowStart) or bar_index - lowerWindowStart > mrWindowBars)
-bool upperActivationEvent = sdUpperHit and (not upperWindowActive or upperWindowUsed or na(upperWindowStart) or bar_index - upperWindowStart > mrWindowBars)
+int mrWindowMaxMs = mrWindowMaxMinutes * 60000
+bool lowerWindowBarExpired = lowerWindowActive and not na(lowerWindowStart) and bar_index - lowerWindowStart > mrWindowBars
+bool upperWindowBarExpired = upperWindowActive and not na(upperWindowStart) and bar_index - upperWindowStart > mrWindowBars
+bool lowerWindowTimeExpired = lowerWindowActive and not na(lowerWindowStartTime) and time - lowerWindowStartTime > mrWindowMaxMs
+bool upperWindowTimeExpired = upperWindowActive and not na(upperWindowStartTime) and time - upperWindowStartTime > mrWindowMaxMs
+bool lowerWindowMeanTouched = lowerWindowActive and mrExpireOnMeanTouch and not na(lowerWindowStart) and bar_index > lowerWindowStart and (high >= sdReg or high >= emaFast or high >= emaSlow)
+bool upperWindowMeanTouched = upperWindowActive and mrExpireOnMeanTouch and not na(upperWindowStart) and bar_index > upperWindowStart and (low <= sdReg or low <= emaFast or low <= emaSlow)
+bool lowerWindowExpired = lowerWindowBarExpired or lowerWindowTimeExpired or lowerWindowMeanTouched
+bool upperWindowExpired = upperWindowBarExpired or upperWindowTimeExpired or upperWindowMeanTouched
+
+bool lowerActivationEvent = canOpenEntry and sdLowerHit and (not lowerWindowActive or lowerWindowUsed or lowerWindowExpired or na(lowerWindowStart))
+bool upperActivationEvent = canOpenEntry and sdUpperHit and (not upperWindowActive or upperWindowUsed or upperWindowExpired or na(upperWindowStart))
 
 if lowerActivationEvent
     lowerWindowActive := true
+    upperWindowActive := false
     lowerWindowUsed := false
     lowerWindowStart := bar_index
+    lowerWindowStartTime := time
     lowerBullFractalSeen := false
+    lowerBullFractalBar := na
     lowerBullEmaCrossSeen := false
+    lowerBullEmaCrossBar := na
     lowerBearTouchSeen := false
     lowerBearTouchLine := ""
+    lowerBearTouchBar := na
     lowerBearFractalSeen := false
+    lowerBearFractalBar := na
     lowerBearEmaCrossSeen := false
+    lowerBearEmaCrossBar := na
 
 if upperActivationEvent
     upperWindowActive := true
+    lowerWindowActive := false
     upperWindowUsed := false
     upperWindowStart := bar_index
+    upperWindowStartTime := time
     upperBullTouchSeen := false
     upperBullTouchLine := ""
+    upperBullTouchBar := na
     upperBullFractalSeen := false
+    upperBullFractalBar := na
     upperBearFractalSeen := false
+    upperBearFractalBar := na
     upperBullEmaCrossSeen := false
+    upperBullEmaCrossBar := na
     upperBearEmaCrossSeen := false
+    upperBearEmaCrossBar := na
 
-if lowerWindowActive and not na(lowerWindowStart) and bar_index - lowerWindowStart > mrWindowBars
+if lowerWindowExpired and not lowerActivationEvent
     lowerWindowActive := false
-if upperWindowActive and not na(upperWindowStart) and bar_index - upperWindowStart > mrWindowBars
+if upperWindowExpired and not upperActivationEvent
     upperWindowActive := false
 
-bool lowerWindowValid = lowerWindowActive and not lowerWindowUsed and not na(lowerWindowStart) and bar_index > lowerWindowStart and bar_index - lowerWindowStart <= mrWindowBars
-bool upperWindowValid = upperWindowActive and not upperWindowUsed and not na(upperWindowStart) and bar_index > upperWindowStart and bar_index - upperWindowStart <= mrWindowBars
+bool lowerWindowValid = lowerWindowActive and not lowerWindowUsed and not na(lowerWindowStart) and not lowerWindowExpired and bar_index > lowerWindowStart and bar_index - lowerWindowStart <= mrWindowBars
+bool upperWindowValid = upperWindowActive and not upperWindowUsed and not na(upperWindowStart) and not upperWindowExpired and bar_index > upperWindowStart and bar_index - upperWindowStart <= mrWindowBars
 
 if lowerWindowActive and not lowerWindowUsed
-    lowerBullFractalSeen := lowerBullFractalSeen or fractalBull
-    lowerBullEmaCrossSeen := lowerBullEmaCrossSeen or emaGoldenCross
+    if fractalBull
+        lowerBullFractalSeen := true
+        lowerBullFractalBar := bar_index
+    if emaGoldenCross
+        lowerBullEmaCrossSeen := true
+        lowerBullEmaCrossBar := bar_index
     if emaBearTouch
         lowerBearTouchSeen := true
         lowerBearTouchLine := bearTouchLine
-    lowerBearFractalSeen := lowerBearFractalSeen or fractalBear
-    lowerBearEmaCrossSeen := lowerBearEmaCrossSeen or emaDeathCross
+        lowerBearTouchBar := bar_index
+    if fractalBear
+        lowerBearFractalSeen := true
+        lowerBearFractalBar := bar_index
+    if emaDeathCross
+        lowerBearEmaCrossSeen := true
+        lowerBearEmaCrossBar := bar_index
 
 if upperWindowActive and not upperWindowUsed
     if emaBullTouch
         upperBullTouchSeen := true
         upperBullTouchLine := bullTouchLine
-    upperBullFractalSeen := upperBullFractalSeen or fractalBull
-    upperBearFractalSeen := upperBearFractalSeen or fractalBear
-    upperBullEmaCrossSeen := upperBullEmaCrossSeen or emaGoldenCross
-    upperBearEmaCrossSeen := upperBearEmaCrossSeen or emaDeathCross
+        upperBullTouchBar := bar_index
+    if fractalBull
+        upperBullFractalSeen := true
+        upperBullFractalBar := bar_index
+    if fractalBear
+        upperBearFractalSeen := true
+        upperBearFractalBar := bar_index
+    if emaGoldenCross
+        upperBullEmaCrossSeen := true
+        upperBullEmaCrossBar := bar_index
+    if emaDeathCross
+        upperBearEmaCrossSeen := true
+        upperBearEmaCrossBar := bar_index
 
 if bullDivNow
     bullDivSeen := true
@@ -778,30 +958,97 @@ if bearDivSeen and not na(bearDivBar) and bar_index - bearDivBar > divMaxBars
     bearDivSource := ""
     bearDivBar := na
 
+bool upperBullTouchFresh = upperBullTouchSeen and componentFresh(upperBullTouchBar)
+bool lowerBearTouchFresh = lowerBearTouchSeen and componentFresh(lowerBearTouchBar)
+bool upperBullFractalFresh = upperBullFractalSeen and componentFresh(upperBullFractalBar)
+bool lowerBullFractalFresh = lowerBullFractalSeen and componentFresh(lowerBullFractalBar)
+bool upperBearFractalFresh = upperBearFractalSeen and componentFresh(upperBearFractalBar)
+bool lowerBearFractalFresh = lowerBearFractalSeen and componentFresh(lowerBearFractalBar)
+bool upperBullEmaCrossFresh = upperBullEmaCrossSeen and componentFresh(upperBullEmaCrossBar)
+bool lowerBullEmaCrossFresh = lowerBullEmaCrossSeen and componentFresh(lowerBullEmaCrossBar)
+bool upperBearEmaCrossFresh = upperBearEmaCrossSeen and componentFresh(upperBearEmaCrossBar)
+bool lowerBearEmaCrossFresh = lowerBearEmaCrossSeen and componentFresh(lowerBearEmaCrossBar)
+bool bullDivFresh = bullDivSeen and componentFresh(bullDivBar)
+bool bearDivFresh = bearDivSeen and componentFresh(bearDivBar)
+
 // -----------------------------------------------------------------------------
 // Setup assembly and filters.
 // -----------------------------------------------------------------------------
-int longTrendUpperDirectionComponents = directionComponentCount(upperBullFractalSeen, bullDivSeen, upperBullEmaCrossSeen)
-int longMrLowerDirectionComponents = directionComponentCount(lowerBullFractalSeen, bullDivSeen, lowerBullEmaCrossSeen)
-int shortMrUpperDirectionComponents = directionComponentCount(upperBearFractalSeen, bearDivSeen, upperBearEmaCrossSeen)
-int shortTrendLowerDirectionComponents = directionComponentCount(lowerBearFractalSeen, bearDivSeen, lowerBearEmaCrossSeen)
-bool setupLongTrendUpper = upperWindowValid and upperBullTouchSeen and longTrendUpperDirectionComponents >= 2
+int longTrendUpperDirectionComponents = directionComponentCount(upperBullFractalFresh, bullDivFresh, upperBullEmaCrossFresh)
+int longMrLowerRawDirectionComponents = directionComponentCount(lowerBullFractalSeen, bullDivSeen, lowerBullEmaCrossSeen)
+int longMrLowerDirectionComponents = directionComponentCount(lowerBullFractalFresh, bullDivFresh, lowerBullEmaCrossFresh)
+int shortMrUpperRawDirectionComponents = directionComponentCount(upperBearFractalSeen, bearDivSeen, upperBearEmaCrossSeen)
+int shortMrUpperDirectionComponents = directionComponentCount(upperBearFractalFresh, bearDivFresh, upperBearEmaCrossFresh)
+int shortTrendLowerDirectionComponents = directionComponentCount(lowerBearFractalFresh, bearDivFresh, lowerBearEmaCrossFresh)
+bool setupLongTrendUpper = upperWindowValid and upperBullTouchFresh and longTrendUpperDirectionComponents >= 2
 bool setupLongMrLower = lowerWindowValid and longMrLowerDirectionComponents >= 2
 bool setupShortMrUpper = upperWindowValid and shortMrUpperDirectionComponents >= 2
-bool setupShortTrendLower = lowerWindowValid and lowerBearTouchSeen and shortTrendLowerDirectionComponents >= 2
+bool setupShortTrendLower = lowerWindowValid and lowerBearTouchFresh and shortTrendLowerDirectionComponents >= 2
+bool longMrLowerComponentStale = lowerWindowValid and longMrLowerRawDirectionComponents >= 2 and longMrLowerDirectionComponents < 2
+bool shortMrUpperComponentStale = upperWindowValid and shortMrUpperRawDirectionComponents >= 2 and shortMrUpperDirectionComponents < 2
 
-bool longRaw = allowLong and (setupLongTrendUpper or setupLongMrLower)
-bool shortRaw = allowShort and (setupShortMrUpper or setupShortTrendLower)
-string longSetup = setupLongTrendUpper ? "trend_sdUpper" : setupLongMrLower ? "mr_sdLower" : "none"
-string shortSetup = setupShortMrUpper ? "mr_sdUpper" : setupShortTrendLower ? "trend_sdLower" : "none"
-string longReason = setupLongTrendUpper ? "SD upper trend-continuation long: EMA touch + 2 of 3 bull direction components" : setupLongMrLower ? "SD lower mean-reversion long: 2 of 3 bull direction components" : "none"
-string shortReason = setupShortMrUpper ? "SD upper mean-reversion short: 2 of 3 bear direction components" : setupShortTrendLower ? "SD lower trend-continuation short: EMA touch + 2 of 3 bear direction components" : "none"
+bool longSignalCandidate = setupLongTrendUpper or setupLongMrLower
+bool shortSignalCandidate = setupShortMrUpper or setupShortTrendLower
+bool longStaleCandidate = longMrLowerComponentStale
+bool shortStaleCandidate = shortMrUpperComponentStale
+bool longRaw = allowLong and (longSignalCandidate or longStaleCandidate)
+bool shortRaw = allowShort and (shortSignalCandidate or shortStaleCandidate)
+string longSetup = setupLongTrendUpper ? "trend_sdUpper" : setupLongMrLower or longStaleCandidate ? "mr_sdLower" : "none"
+string shortSetup = setupShortMrUpper or shortStaleCandidate ? "mr_sdUpper" : setupShortTrendLower ? "trend_sdLower" : "none"
+string longReason = setupLongTrendUpper ? "SD upper trend-continuation long: EMA touch + 2 of 3 bull direction components" : setupLongMrLower ? "SD lower mean-reversion long: fresh 2 of 3 bull direction components" : longStaleCandidate ? "SD lower mean-reversion long blocked: stale MR components" : "none"
+string shortReason = setupShortMrUpper ? "SD upper mean-reversion short: fresh 2 of 3 bear direction components" : shortStaleCandidate ? "SD upper mean-reversion short blocked: stale MR components" : setupShortTrendLower ? "SD lower trend-continuation short: EMA touch + 2 of 3 bear direction components" : "none"
 
-float longEntryCandidate = close
+bool structuralAnchorMode = entryAnchorMode == "setup_structural"
+float longReferenceEntry = close
+float shortReferenceEntry = close
+float longFallbackEntry = close - atrRaw * entryFallbackAtr
+float shortFallbackEntry = close + atrRaw * entryFallbackAtr
+float longSupportEmaFast = emaFast <= longReferenceEntry ? emaFast : na
+float longSupportEmaSlow = emaSlow <= longReferenceEntry ? emaSlow : na
+float longSupportMid = signalMid <= longReferenceEntry ? signalMid : na
+float longSupportSd = setupLongMrLower ? sdSignalLower : na
+float shortResistanceEmaFast = emaFast >= shortReferenceEntry ? emaFast : na
+float shortResistanceEmaSlow = emaSlow >= shortReferenceEntry ? emaSlow : na
+float shortResistanceMid = signalMid >= shortReferenceEntry ? signalMid : na
+float shortResistanceSd = setupShortMrUpper ? sdSignalUpper : na
+float longStructuralAnchorLevel = nearestSupportBelow(longReferenceEntry, lastPivotLow, recentLow, sessionLow, longSupportEmaFast, longSupportEmaSlow, longSupportSd, na, na, longFallbackEntry)
+float shortStructuralAnchorLevel = nearestResistanceAbove(shortReferenceEntry, lastPivotHigh, recentHigh, sessionHigh, shortResistanceEmaFast, shortResistanceEmaSlow, shortResistanceSd, na, na, shortFallbackEntry)
+float longStructuralEntryRaw = math.min(longReferenceEntry, longStructuralAnchorLevel + atrRaw * entryAnchorZoneAtr)
+float shortStructuralEntryRaw = math.max(shortReferenceEntry, shortStructuralAnchorLevel - atrRaw * entryAnchorZoneAtr)
+float longPlannedEntryRaw = structuralAnchorMode ? longStructuralEntryRaw : longReferenceEntry
+float shortPlannedEntryRaw = structuralAnchorMode ? shortStructuralEntryRaw : shortReferenceEntry
+float longEntryCandidate = structuralAnchorMode ? roundStructuralEntryLimitToTick(limitByHardCap(longReferenceEntry, longPlannedEntryRaw, 1), 1) : longReferenceEntry
+float shortEntryCandidate = structuralAnchorMode ? roundStructuralEntryLimitToTick(limitByHardCap(shortReferenceEntry, shortPlannedEntryRaw, -1), -1) : shortReferenceEntry
+string longEntryAnchorReason = ""
+longEntryAnchorReason := structuralAnchorMode and anchorNear(longEntryCandidate, lastPivotLow, atrRaw) ? appendAnchorReason(longEntryAnchorReason, "前低支撑") : longEntryAnchorReason
+longEntryAnchorReason := structuralAnchorMode and anchorNear(longEntryCandidate, recentLow, atrRaw) ? appendAnchorReason(longEntryAnchorReason, "近期低点") : longEntryAnchorReason
+longEntryAnchorReason := structuralAnchorMode and anchorNear(longEntryCandidate, sessionLow, atrRaw) ? appendAnchorReason(longEntryAnchorReason, "日内低点") : longEntryAnchorReason
+longEntryAnchorReason := structuralAnchorMode and anchorNear(longEntryCandidate, longSupportEmaFast, atrRaw) ? appendAnchorReason(longEntryAnchorReason, "EMA20支撑") : longEntryAnchorReason
+longEntryAnchorReason := structuralAnchorMode and anchorNear(longEntryCandidate, longSupportEmaSlow, atrRaw) ? appendAnchorReason(longEntryAnchorReason, "EMA50支撑") : longEntryAnchorReason
+longEntryAnchorReason := structuralAnchorMode and anchorNear(longEntryCandidate, low, atrRaw) ? appendAnchorReason(longEntryAnchorReason, "信号K低点") : longEntryAnchorReason
+longEntryAnchorReason := structuralAnchorMode and anchorNear(longEntryCandidate, longSupportMid, atrRaw) ? appendAnchorReason(longEntryAnchorReason, "信号K中点") : longEntryAnchorReason
+longEntryAnchorReason := structuralAnchorMode and anchorNear(longEntryCandidate, longSupportSd, atrRaw) ? appendAnchorReason(longEntryAnchorReason, "SD下轨接近") : longEntryAnchorReason
+longEntryAnchorReason := structuralAnchorMode and longEntryAnchorReason == "" and anchorNear(longEntryCandidate, longFallbackEntry, atrRaw) ? "ATR回撤备选" : longEntryAnchorReason
+string shortEntryAnchorReason = ""
+shortEntryAnchorReason := structuralAnchorMode and anchorNear(shortEntryCandidate, lastPivotHigh, atrRaw) ? appendAnchorReason(shortEntryAnchorReason, "前高压力") : shortEntryAnchorReason
+shortEntryAnchorReason := structuralAnchorMode and anchorNear(shortEntryCandidate, recentHigh, atrRaw) ? appendAnchorReason(shortEntryAnchorReason, "近期高点") : shortEntryAnchorReason
+shortEntryAnchorReason := structuralAnchorMode and anchorNear(shortEntryCandidate, sessionHigh, atrRaw) ? appendAnchorReason(shortEntryAnchorReason, "日内高点") : shortEntryAnchorReason
+shortEntryAnchorReason := structuralAnchorMode and anchorNear(shortEntryCandidate, shortResistanceEmaFast, atrRaw) ? appendAnchorReason(shortEntryAnchorReason, "EMA20压力") : shortEntryAnchorReason
+shortEntryAnchorReason := structuralAnchorMode and anchorNear(shortEntryCandidate, shortResistanceEmaSlow, atrRaw) ? appendAnchorReason(shortEntryAnchorReason, "EMA50压力") : shortEntryAnchorReason
+shortEntryAnchorReason := structuralAnchorMode and anchorNear(shortEntryCandidate, high, atrRaw) ? appendAnchorReason(shortEntryAnchorReason, "信号K高点") : shortEntryAnchorReason
+shortEntryAnchorReason := structuralAnchorMode and anchorNear(shortEntryCandidate, shortResistanceMid, atrRaw) ? appendAnchorReason(shortEntryAnchorReason, "信号K中点") : shortEntryAnchorReason
+shortEntryAnchorReason := structuralAnchorMode and anchorNear(shortEntryCandidate, shortResistanceSd, atrRaw) ? appendAnchorReason(shortEntryAnchorReason, "SD上轨接近") : shortEntryAnchorReason
+shortEntryAnchorReason := structuralAnchorMode and shortEntryAnchorReason == "" and anchorNear(shortEntryCandidate, shortFallbackEntry, atrRaw) ? "ATR反抽备选" : shortEntryAnchorReason
+string longEntryAnchorSource = structuralAnchorMode ? "support_anchor" : "marketable_cap"
+string shortEntryAnchorSource = structuralAnchorMode ? "resistance_anchor" : "marketable_cap"
+bool longEntryAnchorAllowed = not structuralAnchorMode or (entryAnchorValid(longReferenceEntry, longEntryCandidate, atrRaw) and longEntryCandidate <= longReferenceEntry)
+bool shortEntryAnchorAllowed = not structuralAnchorMode or (entryAnchorValid(shortReferenceEntry, shortEntryCandidate, atrRaw) and shortEntryCandidate >= shortReferenceEntry)
 float longQtyCandidate = longEntryCandidate > 0.0 ? math.max(1.0, math.floor(positionAmount / longEntryCandidate)) : 0.0
 float longAtrStopCandidate = longEntryCandidate - atrVal * slAtrMult
 float longRiskStopCandidate = longQtyCandidate > 0.0 ? longEntryCandidate - maxLossPerTrade / longQtyCandidate : longAtrStopCandidate
-float longStopCandidate = math.max(longAtrStopCandidate, longRiskStopCandidate)
+float longStopSupportBase = nearestSupportBelow(longEntryCandidate, lastPivotLow, recentLow, sessionLow, longSupportEmaFast, longSupportEmaSlow, low, signalMid <= longEntryCandidate ? signalMid : na, longSupportSd, longEntryCandidate - atrRaw)
+float longStructureStopCandidate = setupIsMr(longSetup) ? longStopSupportBase - atrRaw * structuralSlBufferAtr : longAtrStopCandidate
+float longStopCandidate = math.max(math.max(longAtrStopCandidate, longStructureStopCandidate), longRiskStopCandidate)
 bool longRunnerCandidate = setupUsesRunner(longSetup)
 float longHardTargetCandidate = calcTargetAtR(longEntryCandidate, longStopCandidate, 1, rrRatio)
 float longRunnerActivationCandidate = longRunnerCandidate ? calcRunnerActivationTarget(longEntryCandidate, longStopCandidate, 1) : na
@@ -817,11 +1064,12 @@ float longTargetDistanceAtr = profitSpaceTargetAtrMultiple(longEntryCandidate, l
 bool longProfitSpaceAllowed = profitSpaceEntryAllowed(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr)
 bool longProfitSpaceEntryBlocked = useProfitSpaceFilter and longRaw and not longProfitSpaceAllowed
 
-float shortEntryCandidate = close
 float shortQtyCandidate = shortEntryCandidate > 0.0 ? math.max(1.0, math.floor(positionAmount / shortEntryCandidate)) : 0.0
 float shortAtrStopCandidate = shortEntryCandidate + atrVal * slAtrMult
 float shortRiskStopCandidate = shortQtyCandidate > 0.0 ? shortEntryCandidate + maxLossPerTrade / shortQtyCandidate : shortAtrStopCandidate
-float shortStopCandidate = math.min(shortAtrStopCandidate, shortRiskStopCandidate)
+float shortStopResistanceBase = nearestResistanceAbove(shortEntryCandidate, lastPivotHigh, recentHigh, sessionHigh, shortResistanceEmaFast, shortResistanceEmaSlow, high, signalMid >= shortEntryCandidate ? signalMid : na, shortResistanceSd, shortEntryCandidate + atrRaw)
+float shortStructureStopCandidate = setupIsMr(shortSetup) ? shortStopResistanceBase + atrRaw * structuralSlBufferAtr : shortAtrStopCandidate
+float shortStopCandidate = math.min(math.min(shortAtrStopCandidate, shortStructureStopCandidate), shortRiskStopCandidate)
 bool shortRunnerCandidate = setupUsesRunner(shortSetup)
 float shortHardTargetCandidate = calcTargetAtR(shortEntryCandidate, shortStopCandidate, -1, rrRatio)
 float shortRunnerActivationCandidate = shortRunnerCandidate ? calcRunnerActivationTarget(shortEntryCandidate, shortStopCandidate, -1) : na
@@ -855,9 +1103,21 @@ bool mtfShortBlock = mtfShortStatus == "block"
 bool emaWeak = math.abs(calcSlope(emaFast, emaSlopeLookback)) < emaMinAngle or math.abs(slopeSlow) < emaMinAngle or not spacingOk
 bool blockLong = false
 string blockLongReason = ""
-if useDtpFilter and setupLongMrLower and dtpDir == -1 and dtpMrBlocksPhase(dtpMrFilterMode, dtpPhase)
+if longStaleCandidate
     blockLong := true
-    blockLongReason := dtpBlockReasonText("long", dtpMrFilterMode)
+    blockLongReason := "mr_component_stale"
+else if longRaw and not inEntryWindow
+    blockLong := true
+    blockLongReason := "entry_time_blocked"
+else if useDtpFilter and setupLongMrLower and dtpDir == -1
+    blockLong := true
+    blockLongReason := "mr_dtp_countertrend"
+else if setupLongMrLower and emaFast < emaSlow and not lowerBullEmaCrossFresh
+    blockLong := true
+    blockLongReason := "mr_ema_cross_missing"
+else if longRaw and not longEntryAnchorAllowed
+    blockLong := true
+    blockLongReason := "entry_anchor_unavailable"
 else if mtfLongBlock and longRaw
     blockLong := true
     blockLongReason := mtfLongBlockReason
@@ -873,9 +1133,21 @@ else if useEmaWeakFilter and setupLongTrendUpper and emaWeak
 
 bool blockShort = false
 string blockShortReason = ""
-if useDtpFilter and setupShortMrUpper and dtpDir == 1 and dtpMrBlocksPhase(dtpMrFilterMode, dtpPhase)
+if shortStaleCandidate
     blockShort := true
-    blockShortReason := dtpBlockReasonText("short", dtpMrFilterMode)
+    blockShortReason := "mr_component_stale"
+else if shortRaw and not inEntryWindow
+    blockShort := true
+    blockShortReason := "entry_time_blocked"
+else if useDtpFilter and setupShortMrUpper and dtpDir == 1
+    blockShort := true
+    blockShortReason := "mr_dtp_countertrend"
+else if setupShortMrUpper and emaFast > emaSlow and not upperBearEmaCrossFresh
+    blockShort := true
+    blockShortReason := "mr_ema_cross_missing"
+else if shortRaw and not shortEntryAnchorAllowed
+    blockShort := true
+    blockShortReason := "entry_anchor_unavailable"
 else if mtfShortBlock and shortRaw
     blockShort := true
     blockShortReason := mtfShortBlockReason
@@ -1037,7 +1309,14 @@ var string activeSignalId = ""
 var string activeTradeGroupId = ""
 var int activeDirection = 0
 var string activeSetup = ""
+var float activeReferenceEntry = na
 var float activeEntry = na
+var float activeSubmittedEntryLimit = na
+var string activeEntryAnchorSource = ""
+var string activeEntryAnchorReason = ""
+var int activeEntryOrderExpiresBar = na
+var bool activePendingEntry = false
+var bool activeCancelSent = false
 var float activeStop = na
 var float activeTarget = na
 var float activeRunnerActivation = na
@@ -1048,6 +1327,8 @@ var bool activeRunnerMode = false
 var bool activeRunnerActive = false
 var float activeRunnerExtreme = na
 var bool activeBreakevenDone = false
+var bool activeMrCheckpointDone = false
+var float activeMfeR = 0.0
 var int activeRiskUpdateSeq = 0
 var string pendingExitReason = ""
 var int eodForceCloseDay = na
@@ -1070,9 +1351,12 @@ calcShortStop(float entryPrice, float qty) =>
     float riskStop = qty > 0.0 ? entryPrice + maxLossPerTrade / qty : atrStop
     math.min(atrStop, riskStop)
 
-buildEntryPayload(string eventIdValue, string signalIdValue, string tradeGroupIdValue, string positionIdValue, string direction, string setup, string reason, float qty, float entryPrice, float submittedLimitPrice, float stopPrice, float targetPrice, float runnerActivationPrice, bool runnerMode, string divSource, string touchLine) =>
+buildEntryPayload(string eventIdValue, string signalIdValue, string tradeGroupIdValue, string positionIdValue, string direction, string setup, string reason, float qty, float referenceEntry, float plannedEntry, float submittedLimitPrice, float stopPrice, float targetPrice, float runnerActivationPrice, bool runnerMode, string entryAnchorSource, string entryAnchorReason, int entryExpiresBar, string divSource, string touchLine) =>
+    float entryPrice = plannedEntry
     float riskPerShare = direction == "long" ? entryPrice - stopPrice : stopPrice - entryPrice
     float targetCheckpoint = runnerMode ? runnerActivationPrice : targetPrice
+    float anchorDistanceAtr = directionalDistanceAtr(referenceEntry, plannedEntry, atrRaw)
+    float anchorDistanceBps = directionalDistanceBps(referenceEntry, plannedEntry)
     basePayload("entry", eventIdValue, positionIdValue) +
      jsonStr("signal_id", signalIdValue) +
      jsonStr("trade_group_id", tradeGroupIdValue) +
@@ -1092,18 +1376,28 @@ buildEntryPayload(string eventIdValue, string signalIdValue, string tradeGroupId
      jsonNum("shares", qty) +
      jsonNum("entry_price", entryPrice) +
      jsonNum("entry", entryPrice) +
-     jsonNum("reference_entry", entryPrice) +
+     jsonNum("reference_entry", referenceEntry) +
+     jsonNum("planned_entry_price", plannedEntry) +
+     jsonNum("signal_reference_price", referenceEntry) +
      jsonNum("reference_stop_loss", stopPrice) +
      jsonNum("reference_take_profit", targetPrice) +
      jsonNum("submitted_entry_limit_price", submittedLimitPrice) +
      jsonNum("submitted_limit_cap_price", submittedLimitPrice) +
      jsonNum("submitted_limit_cap_bps", tvEntryLimitCapBps) +
-     jsonBool("submitted_limit_cap_applied", true) +
+     jsonBool("submitted_limit_cap_applied", not structuralAnchorMode) +
      jsonBool("reference_protection_only", true) +
      jsonBool("final_protection_from_fill", true) +
      jsonStr("entry_order_type", "LMT") +
-     jsonStr("entry_limit_intent", "bounded_marketable") +
-     jsonStr("entry_price_plan", "tv_direct_bounded_limit") +
+     jsonStr("entry_limit_intent", structuralAnchorMode ? "structural_anchor" : "bounded_marketable") +
+     jsonStr("entry_price_plan", structuralAnchorMode ? "structural_anchor_limit" : "tv_direct_bounded_limit") +
+     jsonStr("entry_anchor_mode", entryAnchorMode) +
+     jsonStr("entry_anchor_source", entryAnchorSource) +
+     jsonStr("entry_anchor_reason", entryAnchorReason == "" ? "none" : entryAnchorReason) +
+     jsonNum("entry_anchor_distance_atr", anchorDistanceAtr) +
+     jsonNum("entry_anchor_distance_bps", anchorDistanceBps) +
+     jsonInt("entry_order_ttl_bars", entryOrderTtlBars) +
+     jsonInt("entry_order_expires_bar_index", entryExpiresBar) +
+     jsonStr("risk_model", structuralAnchorMode ? "setup_aware_structural_v1" : "tv_direct_bounded_limit_v1") +
      jsonNum("stop_loss", stopPrice) +
      jsonNum("take_profit", targetPrice) +
      jsonNum("target_checkpoint", targetCheckpoint) +
@@ -1223,6 +1517,50 @@ buildExitPayload(string eventIdValue, string positionIdValue, string exitReason,
      jsonInt("bar_index", bar_index) +
      '}'
 
+buildCancelPayload(string eventIdValue, string positionIdValue, string cancelReason) =>
+    string direction = activeDirection == 1 ? "long" : "short"
+    basePayload("cancel", eventIdValue, positionIdValue) +
+     jsonStr("signal_id", activeSignalId) +
+     jsonStr("origin_signal_id", activeSignalId) +
+     jsonStr("trade_group_id", activeTradeGroupId) +
+     jsonStr("bracket_group", activeTradeGroupId) +
+     jsonStr("entry_order_unique_id", entryOrderSignal(activeTradeGroupId)) +
+     jsonStr("tp_order_unique_id", tpOrderSignal(activeTradeGroupId)) +
+     jsonStr("sl_order_unique_id", slOrderSignal(activeTradeGroupId)) +
+     jsonStr("entry_coid", entryOrderSignal(activeTradeGroupId)) +
+     jsonStr("tp_coid", tpOrderSignal(activeTradeGroupId)) +
+     jsonStr("sl_coid", slOrderSignal(activeTradeGroupId)) +
+     jsonStr("signal_key_policy", "bar_time_trade_group_v1") +
+     jsonStr("direction", direction) +
+     jsonStr("position_side", direction) +
+     jsonStr("setup", activeSetup) +
+     jsonStr("cancel_reason", cancelReason) +
+     jsonStr("reason", cancelReason) +
+     jsonStr("cancel_scope", "trade_intent") +
+     jsonStr("cancel_policy", "cancel_unfilled_or_close_filled") +
+     jsonNum("quantity", activeQty) +
+     jsonNum("entry_price", activeEntry) +
+     jsonNum("reference_entry", activeReferenceEntry) +
+     jsonNum("planned_entry_price", activeEntry) +
+     jsonNum("submitted_entry_limit_price", activeSubmittedEntryLimit) +
+     jsonNum("submitted_limit_cap_price", activeSubmittedEntryLimit) +
+     jsonNum("stop_loss", activeStop) +
+     jsonNum("take_profit", activeTarget) +
+     jsonNum("target_checkpoint", activeRunnerMode ? activeRunnerActivation : activeTarget) +
+     jsonNum("entry_anchor_distance_atr", directionalDistanceAtr(activeReferenceEntry, activeEntry, atrRaw)) +
+     jsonNum("entry_anchor_distance_bps", directionalDistanceBps(activeReferenceEntry, activeEntry)) +
+     jsonStr("entry_anchor_mode", entryAnchorMode) +
+     jsonStr("entry_anchor_source", activeEntryAnchorSource) +
+     jsonStr("entry_anchor_reason", activeEntryAnchorReason == "" ? "none" : activeEntryAnchorReason) +
+     jsonInt("entry_order_ttl_bars", entryOrderTtlBars) +
+     jsonInt("entry_order_expires_bar_index", activeEntryOrderExpiresBar) +
+     jsonBool("tv_position_filled", strategy.position_size != 0) +
+     jsonNum("close", close) +
+     jsonNum("atr", atrRaw) +
+     jsonNum("atr_pct", atrPct) +
+     jsonInt("bar_index", bar_index) +
+     '}'
+
 buildPreAlertPayload(string eventIdValue, string pendingPositionId, string activationWindow) =>
     basePayload("pre_alert", eventIdValue, pendingPositionId) +
      jsonStr("pre_alert_stage", "window_activation") +
@@ -1287,7 +1625,14 @@ if exitedNow
     activeTradeGroupId := ""
     activeDirection := 0
     activeSetup := ""
+    activeReferenceEntry := na
     activeEntry := na
+    activeSubmittedEntryLimit := na
+    activeEntryAnchorSource := ""
+    activeEntryAnchorReason := ""
+    activeEntryOrderExpiresBar := na
+    activePendingEntry := false
+    activeCancelSent := false
     activeStop := na
     activeTarget := na
     activeRunnerActivation := na
@@ -1298,13 +1643,75 @@ if exitedNow
     activeRunnerActive := false
     activeRunnerExtreme := na
     activeBreakevenDone := false
+    activeMrCheckpointDone := false
+    activeMfeR := 0.0
+    activeRiskUpdateSeq := 0
+
+bool pendingFilledNow = confirmed and activePendingEntry and strategy.position_size != 0
+if pendingFilledNow
+    activePendingEntry := false
+    activeEntry := strategy.position_avg_price > 0.0 ? strategy.position_avg_price : activeEntry
+    activeInitialRisk := activeDirection == 1 ? activeEntry - activeStop : activeStop - activeEntry
+    activeRunnerExtreme := activeDirection == 1 ? high : low
+    activeEntryBar := bar_index
+    if showFlowLabels
+        float fillY = activeDirection == -1 ? high + atrVal * 3.0 : low - atrVal * 3.0
+        label.new(bar_index, fillY, "TV模拟成交\n" + directionDisplayName(activeDirection == -1 ? "short" : "long") + "\n" + setupDisplayName(activeSetup) + "\nfill " + str.tostring(activeEntry, "#.##") + "\nIBKR成交以后端为准", style=activeDirection == -1 ? label.style_label_down : label.style_label_up, color=flowLabelColor("entry", activeDirection == -1 ? "short" : "long"), textcolor=color.white, size=size.small)
+
+int eodCloseHourNow = hour(time_close, "America/New_York")
+int eodCloseMinuteNow = minute(time_close, "America/New_York")
+bool eodCloseTimeReached = eodCloseHourNow > eodCloseHour or (eodCloseHourNow == eodCloseHour and eodCloseMinuteNow >= eodCloseMinute)
+bool pendingEntryExpired = confirmed and activePendingEntry and strategy.position_size == 0 and not na(activeEntryOrderExpiresBar) and bar_index > activeEntryOrderExpiresBar
+bool pendingEntryWindowExpired = confirmed and activePendingEntry and strategy.position_size == 0 and not inEntryWindow
+bool pendingSetupWindowExpired = confirmed and activePendingEntry and strategy.position_size == 0 and ((activeSetup == "mr_sdLower" or activeSetup == "trend_sdLower") and lowerWindowExpired or (activeSetup == "mr_sdUpper" or activeSetup == "trend_sdUpper") and upperWindowExpired)
+bool pendingAnchorInvalidated = confirmed and activePendingEntry and strategy.position_size == 0 and structuralAnchorMode and (activeDirection == 1 ? close < activeEntry - atrRaw * structuralSlBufferAtr : close > activeEntry + atrRaw * structuralSlBufferAtr)
+bool pendingOppositeOrConflict = confirmed and activePendingEntry and strategy.position_size == 0 and (conflict or (activeDirection == 1 and shortSignalCandidate) or (activeDirection == -1 and longSignalCandidate))
+bool pendingEodCancel = confirmed and enableEodForceClose and activePendingEntry and strategy.position_size == 0 and eodCloseTimeReached and (na(eodForceCloseDay) or eodForceCloseDay != dailyTime)
+string pendingCancelReason = pendingEodCancel ? "pending_eod_cancel" : pendingEntryExpired ? "entry_ttl_expired" : pendingEntryWindowExpired ? "entry_window_expired" : pendingSetupWindowExpired ? "setup_window_expired" : pendingAnchorInvalidated ? "entry_anchor_invalidated" : pendingOppositeOrConflict ? "opposite_signal_or_conflict" : ""
+bool pendingCancelNow = pendingCancelReason != ""
+if pendingCancelNow
+    if enableAlerts and not activeCancelSent
+        alert(buildCancelPayload(eventId("cancel", pendingCancelReason), activePositionId, pendingCancelReason), alert.freq_all)
+        activeCancelSent := true
+    if activeDirection == 1
+        strategy.cancel("TV-L")
+    if activeDirection == -1
+        strategy.cancel("TV-S")
+    if showFlowLabels
+        float ttlY = activeDirection == -1 ? high + atrVal * 2.8 : low - atrVal * 2.8
+        label.new(bar_index, ttlY, "信号撤销\n" + cancelReasonDisplayName(pendingCancelReason) + "\n" + setupDisplayName(activeSetup) + "\nref " + str.tostring(activeReferenceEntry, "#.##") + " / plan " + str.tostring(activeEntry, "#.##") + "\n锚点: " + activeEntryAnchorReason, style=activeDirection == -1 ? label.style_label_down : label.style_label_up, color=flowLabelColor("blocked", activeDirection == -1 ? "short" : "long"), textcolor=color.white, size=size.small)
+    activePositionId := ""
+    activeSignalId := ""
+    activeTradeGroupId := ""
+    activeDirection := 0
+    activeSetup := ""
+    activeReferenceEntry := na
+    activeEntry := na
+    activeSubmittedEntryLimit := na
+    activeEntryAnchorSource := ""
+    activeEntryAnchorReason := ""
+    activeEntryOrderExpiresBar := na
+    activePendingEntry := false
+    activeCancelSent := false
+    activeStop := na
+    activeTarget := na
+    activeRunnerActivation := na
+    activeInitialRisk := na
+    activeQty := na
+    activeEntryBar := na
+    activeRunnerMode := false
+    activeRunnerActive := false
+    activeRunnerExtreme := na
+    activeBreakevenDone := false
+    activeMrCheckpointDone := false
+    activeMfeR := 0.0
     activeRiskUpdateSeq := 0
 
 bool flatForEntry = activePositionId == "" and strategy.position_size == 0 and not exitedNow
-bool enterLong = canTrade and flatForEntry and longRaw and not shortRaw and not blockLong and not conflict
-bool enterShort = canTrade and flatForEntry and shortRaw and not longRaw and not blockShort and not conflict
+bool enterLong = canOpenEntry and flatForEntry and allowLong and longSignalCandidate and not shortSignalCandidate and not blockLong and not conflict
+bool enterShort = canOpenEntry and flatForEntry and allowShort and shortSignalCandidate and not longSignalCandidate and not blockShort and not conflict
 
-bool preAlertNow = canTrade and flatForEntry and not enterLong and not enterShort and activityScore >= preAlertThreshold and activityScore < 100 and not conflict
+bool preAlertNow = canOpenEntry and flatForEntry and not enterLong and not enterShort and activityScore >= preAlertThreshold and activityScore < 100 and not conflict
 bool preAlertCross = preAlertNow and nz(activityScore[1], 0) < preAlertThreshold
 var bool candidateNoticeSentToday = false
 if isNewTradingDay
@@ -1347,16 +1754,26 @@ if prepareVisualNow and prepareVisualKey != lastPrepareVisualKey
 if not prepareVisualNow and activityScore == 0
     lastPrepareVisualKey := ""
 
-bool blockedNow = canTrade and flatForEntry and ((longRaw and (blockLong or conflict)) or (shortRaw and (blockShort or conflict)))
-bool blockedVisualNow = showFlowLabels and blockedNow
-string blockedDirection = longRaw and (blockLong or candidateDirection == "long") ? "long" : "short"
+bool diagnosticLongCandidate = canTrade and flatForEntry and longRaw and not enterLong
+bool diagnosticShortCandidate = canTrade and flatForEntry and shortRaw and not enterShort
+bool blockedNow = diagnosticLongCandidate or diagnosticShortCandidate
+bool blockedVisualNow = showFlowLabels and showSignalDiagnostics and blockedNow
+string blockedDirection = diagnosticLongCandidate and (not diagnosticShortCandidate or candidateDirection == "long") ? "long" : "short"
 string blockedSetup = blockedDirection == "long" ? longSetup : shortSetup
-string blockedReason = conflict ? "long_short_conflict" : blockedDirection == "long" ? blockLongReason : blockShortReason
+string blockedReasonRaw = conflict ? "long_short_conflict" : blockedDirection == "long" ? blockLongReason : blockShortReason
+string blockedReason = blockedReasonRaw == "" ? "candidate_filtered" : blockedReasonRaw
 string blockedProfitSpaceText = blockedReason == "profit_space_too_small" ? (blockedDirection == "long" ? profitSpaceBlockedText(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr) : profitSpaceBlockedText(shortExpectedNetProfit, shortExpectedNetRoiPct, shortCostPctOfReward, shortTargetDistanceAtr)) : ""
-string blockedVisualKey = blockedDirection + ":" + blockedSetup + ":" + blockedReason + ":" + blockedProfitSpaceText
+string blockedComponentText = componentSummaryForSetup(blockedSetup, upperWindowValid, lowerWindowValid, upperBullTouchSeen, lowerBearTouchSeen, upperBullFractalSeen, lowerBullFractalSeen, upperBearFractalSeen, lowerBearFractalSeen, upperBullEmaCrossSeen, lowerBullEmaCrossSeen, upperBearEmaCrossSeen, lowerBearEmaCrossSeen, bullDivSeen, bearDivSeen)
+float blockedReferenceEntry = blockedDirection == "long" ? longReferenceEntry : shortReferenceEntry
+float blockedEntryCandidate = blockedDirection == "long" ? longEntryCandidate : shortEntryCandidate
+string blockedAnchorReason = blockedDirection == "long" ? longEntryAnchorReason : shortEntryAnchorReason
+blockedAnchorReason := blockedAnchorReason == "" ? "none" : blockedAnchorReason
+string blockedAnchorText = structuralAnchorMode ? "\nref " + str.tostring(blockedReferenceEntry, "#.##") + " / plan " + str.tostring(blockedEntryCandidate, "#.##") + "\n锚点: " + blockedAnchorReason : ""
+string blockedProfitSummary = blockedDirection == "long" ? profitSpaceSummaryText(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr) : profitSpaceSummaryText(shortExpectedNetProfit, shortExpectedNetRoiPct, shortCostPctOfReward, shortTargetDistanceAtr)
+string blockedVisualKey = blockedDirection + ":" + blockedSetup + ":" + blockedReason + ":" + blockedComponentText + ":" + blockedProfitSpaceText + ":" + blockedAnchorText
 if blockedVisualNow and blockedVisualKey != lastBlockVisualKey
     float blockedY = blockedDirection == "short" ? high + atrVal * 4.0 : low - atrVal * 4.0
-    string blockedText = "过滤" + directionDisplayName(blockedDirection) + "\n" + setupDisplayName(blockedSetup) + "\n组件齐，未开仓\n" + mtfSummaryForDirection(blockedDirection) + "\n" + filterActionText(blockedReason, blockedDirection) + blockedProfitSpaceText
+    string blockedText = "信号过滤\n" + directionDisplayName(blockedDirection) + " · " + setupDisplayName(blockedSetup) + "\n组件: " + blockedComponentText + "\n原因: " + filterDisplayName(blockedReason) + "\n" + filterActionText(blockedReason, blockedDirection) + "\n" + mtfSummaryForDirection(blockedDirection) + "\n" + dtpEntryFilterText(blockedDirection, dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\n" + blockedProfitSummary + blockedAnchorText + blockedProfitSpaceText
     label.new(bar_index, blockedY, blockedText, style=flowLabelStyle(blockedDirection), color=flowLabelColor("blocked", blockedDirection), textcolor=color.white, size=size.small)
     lastBlockVisualKey := blockedVisualKey
 if not blockedNow and not longRaw and not shortRaw
@@ -1371,7 +1788,8 @@ if enterLong
         float hardTargetPrice = longHardTargetCandidate
         float runnerActivationPrice = longRunnerActivationCandidate
         float targetPrice = longTargetCandidate
-        float submittedLimitPrice = calcSubmittedEntryLimit(entryPrice, 1)
+        float submittedLimitPrice = structuralAnchorMode ? entryPrice : calcSubmittedEntryLimit(entryPrice, 1)
+        int entryExpiresBar = bar_index + entryOrderTtlBars
         string posId = positionId("long")
         string tradeGroup = tradeGroupId("long", longSetup)
         string entryEventId = eventId("entry", longSetup)
@@ -1380,7 +1798,14 @@ if enterLong
         activeTradeGroupId := tradeGroup
         activeDirection := 1
         activeSetup := longSetup
+        activeReferenceEntry := longReferenceEntry
         activeEntry := entryPrice
+        activeSubmittedEntryLimit := submittedLimitPrice
+        activeEntryAnchorSource := longEntryAnchorSource
+        activeEntryAnchorReason := longEntryAnchorReason == "" ? "none" : longEntryAnchorReason
+        activeEntryOrderExpiresBar := entryExpiresBar
+        activePendingEntry := true
+        activeCancelSent := false
         activeStop := stopPrice
         activeTarget := targetPrice
         activeRunnerActivation := runnerActivationPrice
@@ -1391,12 +1816,14 @@ if enterLong
         activeRunnerActive := false
         activeRunnerExtreme := high
         activeBreakevenDone := false
+        activeMrCheckpointDone := false
+        activeMfeR := 0.0
         activeRiskUpdateSeq := 0
         string divSourceForEntry = bullDivSource == "" ? bullDivSourceNow : bullDivSource
         strategy.entry("TV-L", strategy.long, qty=qty, limit=submittedLimitPrice, comment=entryComment("long", longSetup))
         strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment="平多 · TP/SL", comment_profit="平多 · TP止盈", comment_loss="平多 · SL止损")
         if showFlowLabels
-            label.new(bar_index, low - atrVal * 3.1, "买入做多\n" + setupDisplayName(longSetup) + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("long") + "\n" + dtpEntryFilterText("long", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\n" + profitSpaceSummaryText(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr) + "\nentry " + str.tostring(entryPrice, "#.##") + " / LMT " + str.tostring(submittedLimitPrice, "#.##"), style=label.style_label_up, color=flowLabelColor("entry", "long"), textcolor=color.white, size=size.normal)
+            label.new(bar_index, low - atrVal * 3.1, "信号已发出\n提交限价做多\n" + setupDisplayName(longSetup) + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("long") + "\n" + dtpEntryFilterText("long", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\n" + profitSpaceSummaryText(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr) + "\nref " + str.tostring(longReferenceEntry, "#.##") + " / plan " + str.tostring(entryPrice, "#.##") + " / TTL " + str.tostring(entryOrderTtlBars, "#") + "bar\n锚点: " + activeEntryAnchorReason, style=label.style_label_up, color=flowLabelColor("entry", "long"), textcolor=color.white, size=size.normal)
         lowerWindowUsed := setupLongMrLower ? true : lowerWindowUsed
         upperWindowUsed := setupLongTrendUpper ? true : upperWindowUsed
         bullDivSeen := false
@@ -1404,9 +1831,7 @@ if enterLong
         bullDivBar := na
         if enableAlerts
             string touchLine = setupLongTrendUpper ? upperBullTouchLine : "none"
-            alert(buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, "long", longSetup, longReason, qty, entryPrice, submittedLimitPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode, divSourceForEntry, touchLine), alert.freq_all)
-            activeRiskUpdateSeq := activeRiskUpdateSeq + 1
-            alert(buildRiskPayload(eventId("risk_update", "initial"), posId, "initial_protection", "stop_loss,take_profit", na, na, stopPrice, targetPrice), alert.freq_all)
+            alert(buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, "long", longSetup, longReason, qty, longReferenceEntry, entryPrice, submittedLimitPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode, longEntryAnchorSource, activeEntryAnchorReason, entryExpiresBar, divSourceForEntry, touchLine), alert.freq_all)
 
 if enterShort
     float entryPrice = shortEntryCandidate
@@ -1417,7 +1842,8 @@ if enterShort
         float hardTargetPrice = shortHardTargetCandidate
         float runnerActivationPrice = shortRunnerActivationCandidate
         float targetPrice = shortTargetCandidate
-        float submittedLimitPrice = calcSubmittedEntryLimit(entryPrice, -1)
+        float submittedLimitPrice = structuralAnchorMode ? entryPrice : calcSubmittedEntryLimit(entryPrice, -1)
+        int entryExpiresBar = bar_index + entryOrderTtlBars
         string posId = positionId("short")
         string tradeGroup = tradeGroupId("short", shortSetup)
         string entryEventId = eventId("entry", shortSetup)
@@ -1426,7 +1852,14 @@ if enterShort
         activeTradeGroupId := tradeGroup
         activeDirection := -1
         activeSetup := shortSetup
+        activeReferenceEntry := shortReferenceEntry
         activeEntry := entryPrice
+        activeSubmittedEntryLimit := submittedLimitPrice
+        activeEntryAnchorSource := shortEntryAnchorSource
+        activeEntryAnchorReason := shortEntryAnchorReason == "" ? "none" : shortEntryAnchorReason
+        activeEntryOrderExpiresBar := entryExpiresBar
+        activePendingEntry := true
+        activeCancelSent := false
         activeStop := stopPrice
         activeTarget := targetPrice
         activeRunnerActivation := runnerActivationPrice
@@ -1437,12 +1870,14 @@ if enterShort
         activeRunnerActive := false
         activeRunnerExtreme := low
         activeBreakevenDone := false
+        activeMrCheckpointDone := false
+        activeMfeR := 0.0
         activeRiskUpdateSeq := 0
         string divSourceForEntry = bearDivSource == "" ? bearDivSourceNow : bearDivSource
         strategy.entry("TV-S", strategy.short, qty=qty, limit=submittedLimitPrice, comment=entryComment("short", shortSetup))
         strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment="平空 · TP/SL", comment_profit="平空 · TP止盈", comment_loss="平空 · SL止损")
         if showFlowLabels
-            label.new(bar_index, high + atrVal * 3.1, "卖出做空\n" + setupDisplayName(shortSetup) + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("short") + "\n" + dtpEntryFilterText("short", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\n" + profitSpaceSummaryText(shortExpectedNetProfit, shortExpectedNetRoiPct, shortCostPctOfReward, shortTargetDistanceAtr) + "\nentry " + str.tostring(entryPrice, "#.##") + " / LMT " + str.tostring(submittedLimitPrice, "#.##"), style=label.style_label_down, color=flowLabelColor("entry", "short"), textcolor=color.white, size=size.normal)
+            label.new(bar_index, high + atrVal * 3.1, "信号已发出\n提交限价做空\n" + setupDisplayName(shortSetup) + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("short") + "\n" + dtpEntryFilterText("short", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\n" + profitSpaceSummaryText(shortExpectedNetProfit, shortExpectedNetRoiPct, shortCostPctOfReward, shortTargetDistanceAtr) + "\nref " + str.tostring(shortReferenceEntry, "#.##") + " / plan " + str.tostring(entryPrice, "#.##") + " / TTL " + str.tostring(entryOrderTtlBars, "#") + "bar\n锚点: " + activeEntryAnchorReason, style=label.style_label_down, color=flowLabelColor("entry", "short"), textcolor=color.white, size=size.normal)
         upperWindowUsed := setupShortMrUpper ? true : upperWindowUsed
         lowerWindowUsed := setupShortTrendLower ? true : lowerWindowUsed
         bearDivSeen := false
@@ -1450,9 +1885,7 @@ if enterShort
         bearDivBar := na
         if enableAlerts
             string touchLine = setupShortTrendLower ? lowerBearTouchLine : "none"
-            alert(buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, "short", shortSetup, shortReason, qty, entryPrice, submittedLimitPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode, divSourceForEntry, touchLine), alert.freq_all)
-            activeRiskUpdateSeq := activeRiskUpdateSeq + 1
-            alert(buildRiskPayload(eventId("risk_update", "initial"), posId, "initial_protection", "stop_loss,take_profit", na, na, stopPrice, targetPrice), alert.freq_all)
+            alert(buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, "short", shortSetup, shortReason, qty, shortReferenceEntry, entryPrice, submittedLimitPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode, shortEntryAnchorSource, activeEntryAnchorReason, entryExpiresBar, divSourceForEntry, touchLine), alert.freq_all)
 
 if confirmed and activePositionId != "" and strategy.position_size != 0
     float previousStop = activeStop
@@ -1460,8 +1893,34 @@ if confirmed and activePositionId != "" and strategy.position_size != 0
     string riskUpdateReason = ""
     bool runnerStateChanged = false
     float initialRisk = activeInitialRisk > 0.0 ? activeInitialRisk : activeDirection == 1 ? activeEntry - activeStop : activeStop - activeEntry
+    int barsInTrade = na(activeEntryBar) ? 0 : bar_index - activeEntryBar
     if activeRunnerMode
         activeRunnerExtreme := activeDirection == 1 ? math.max(nz(activeRunnerExtreme, high), high) : math.min(nz(activeRunnerExtreme, low), low)
+    float mfeRNow = initialRisk > 0.0 ? (activeDirection == 1 ? (high - activeEntry) / initialRisk : (activeEntry - low) / initialRisk) : 0.0
+    activeMfeR := math.max(nz(activeMfeR, 0.0), mfeRNow)
+    bool mrSetupActive = setupIsMr(activeSetup)
+    bool mrStructureInvalidated = mrSetupActive and barsInTrade > 1 and (activeDirection == 1 ? close < sdSignalLower - atrRaw * structuralSlBufferAtr : close > sdSignalUpper + atrRaw * structuralSlBufferAtr)
+    bool mrTimeStopNow = mrSetupActive and barsInTrade >= mrTimeStopBars and activeMfeR < mrTimeStopMinMfeR
+    if mrStructureInvalidated
+        pendingExitReason := "mr_structure_invalidated"
+        if activeDirection == 1
+            strategy.close("TV-L", comment=exitReasonDisplayName("mr_structure_invalidated"))
+        if activeDirection == -1
+            strategy.close("TV-S", comment=exitReasonDisplayName("mr_structure_invalidated"))
+    else if mrTimeStopNow
+        pendingExitReason := "mr_time_stop"
+        if activeDirection == 1
+            strategy.close("TV-L", comment=exitReasonDisplayName("mr_time_stop"))
+        if activeDirection == -1
+            strategy.close("TV-S", comment=exitReasonDisplayName("mr_time_stop"))
+    if mrSetupActive and not activeMrCheckpointDone and initialRisk > 0.0 and activeMfeR >= mrCheckpointR
+        float mrLockStop = activeDirection == 1 ? activeEntry + initialRisk * mrCheckpointLockR : activeEntry - initialRisk * mrCheckpointLockR
+        mrLockStop := activeDirection == 1 ? math.min(mrLockStop, close - syminfo.mintick) : math.max(mrLockStop, close + syminfo.mintick)
+        bool mrLockImproved = activeDirection == 1 ? mrLockStop > activeStop : mrLockStop < activeStop
+        if mrLockImproved
+            activeStop := mrLockStop
+            riskUpdateReason := "mr_checkpoint_lock"
+        activeMrCheckpointDone := true
     if enableBreakeven and not activeBreakevenDone
         if initialRisk > 0.0 and activeDirection == 1 and close >= activeEntry + initialRisk * breakevenAtR
             activeStop := math.max(activeStop, activeEntry + initialRisk * breakevenOffsetR)
@@ -1501,9 +1960,6 @@ if confirmed and activePositionId != "" and strategy.position_size != 0
         activeRiskUpdateSeq := activeRiskUpdateSeq + 1
         alert(buildRiskPayload(eventId("risk_update", reasonForEvent), activePositionId, reasonForEvent, requestedSides, previousStop, previousTarget, eventNewStop, eventNewTarget), alert.freq_all)
 
-int eodCloseHourNow = hour(time_close, "America/New_York")
-int eodCloseMinuteNow = minute(time_close, "America/New_York")
-bool eodCloseTimeReached = eodCloseHourNow > eodCloseHour or (eodCloseHourNow == eodCloseHour and eodCloseMinuteNow >= eodCloseMinute)
 bool eodCloseNow = confirmed and enableEodForceClose and activePositionId != "" and strategy.position_size != 0 and eodCloseTimeReached and (na(eodForceCloseDay) or eodForceCloseDay != dailyTime)
 if eodCloseNow
     float eodExitPrice = close
@@ -1532,7 +1988,14 @@ if eodCloseNow
     activeTradeGroupId := ""
     activeDirection := 0
     activeSetup := ""
+    activeReferenceEntry := na
     activeEntry := na
+    activeSubmittedEntryLimit := na
+    activeEntryAnchorSource := ""
+    activeEntryAnchorReason := ""
+    activeEntryOrderExpiresBar := na
+    activePendingEntry := false
+    activeCancelSent := false
     activeStop := na
     activeTarget := na
     activeRunnerActivation := na
@@ -1543,9 +2006,11 @@ if eodCloseNow
     activeRunnerActive := false
     activeRunnerExtreme := na
     activeBreakevenDone := false
+    activeMrCheckpointDone := false
+    activeMfeR := 0.0
     activeRiskUpdateSeq := 0
 
-if activePositionId != "" and not eodCloseNow
+if activePositionId != "" and not activePendingEntry and not eodCloseNow
     if activeDirection == 1
         strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment="平多 · TP/SL", comment_profit="平多 · TP止盈", comment_loss="平多 · SL止损")
     if activeDirection == -1
@@ -1576,25 +2041,26 @@ plotshape(showEmaCrossMarkers and emaDeathCross, "EMA20/50 death cross", locatio
 plotshape(showComponentMarkers and bullDivNow, "Bull divergence", location=location.belowbar, style=shape.diamond, color=color.new(color.lime, 0), size=size.tiny, text="D+")
 plotshape(showComponentMarkers and bearDivNow, "Bear divergence", location=location.abovebar, style=shape.diamond, color=color.new(color.red, 0), size=size.tiny, text="D-")
 
-float visibleHardTarget = activePositionId != "" and not activeRunnerMode ? activeTarget : na
-float visibleSafetyTarget = activePositionId != "" and activeRunnerMode ? activeTarget : na
-float visibleRunnerActivation = activePositionId != "" and activeRunnerMode and not activeRunnerActive ? activeRunnerActivation : na
-plot(activePositionId != "" ? activeStop : na, "SL / Trailing SL", color=color.new(color.red, 0), style=plot.style_linebr, linewidth=2)
+bool activeFilledPosition = activePositionId != "" and not activePendingEntry and strategy.position_size != 0
+float visibleHardTarget = activeFilledPosition and not activeRunnerMode ? activeTarget : na
+float visibleSafetyTarget = activeFilledPosition and activeRunnerMode ? activeTarget : na
+float visibleRunnerActivation = activeFilledPosition and activeRunnerMode and not activeRunnerActive ? activeRunnerActivation : na
+plot(activeFilledPosition ? activeStop : na, "SL / Trailing SL", color=color.new(color.red, 0), style=plot.style_linebr, linewidth=2)
 plot(visibleHardTarget, "TP 真实止盈", color=color.new(color.green, 0), style=plot.style_linebr, linewidth=2)
 plot(visibleSafetyTarget, "Safety TP 真实止盈", color=color.new(color.lime, 0), style=plot.style_linebr, linewidth=2)
 plot(visibleRunnerActivation, "Runner Activation", color=color.new(color.blue, 0), style=plot.style_linebr, linewidth=2)
 
 var table flowStatus = table.new(position.top_right, 2, 8, border_width=1)
 string statusDirection = activeDirection == -1 ? "做空" : activeDirection == 1 ? "做多" : blockedNow ? directionDisplayName(blockedDirection) : activityScore > 0 ? directionDisplayName(candidateDirection) : "--"
-string statusText = activePositionId != "" ? "持仓 " + statusDirection : enterLong ? "买入做多" : enterShort ? "卖出做空" : blockedNow ? "过滤" + directionDisplayName(blockedDirection) : observeNow ? "观察" + directionDisplayName(candidateDirection) : lowerWindowValid or upperWindowValid ? "窗口激活" : "等待"
-color statusColor = activePositionId != "" ? flowStatusColor("entry", activeDirection == -1 ? "short" : "long") : blockedNow ? flowStatusColor("blocked", blockedDirection) : observeNow ? color.new(color.orange, 0) : lowerWindowValid ? flowStatusColor("activate_lower", "long") : upperWindowValid ? flowStatusColor("activate_upper", "short") : color.new(color.gray, 20)
+string statusText = activePendingEntry ? "挂单等待 " + statusDirection : activeFilledPosition ? "持仓 " + statusDirection : enterLong ? "买入做多" : enterShort ? "卖出做空" : blockedNow ? "过滤" + directionDisplayName(blockedDirection) : observeNow ? "观察" + directionDisplayName(candidateDirection) : lowerWindowValid or upperWindowValid ? "窗口激活" : "等待"
+color statusColor = activePendingEntry ? color.new(color.orange, 0) : activeFilledPosition ? flowStatusColor("entry", activeDirection == -1 ? "short" : "long") : blockedNow ? flowStatusColor("blocked", blockedDirection) : observeNow ? color.new(color.orange, 0) : lowerWindowValid ? flowStatusColor("activate_lower", "long") : upperWindowValid ? flowStatusColor("activate_upper", "short") : color.new(color.gray, 20)
 string statusSetup = activePositionId != "" ? setupDisplayName(activeSetup) : blockedNow ? setupDisplayName(blockedSetup) : activityScore > 0 ? setupDisplayName(candidateSetup) : "--"
-string statusComponents = activePositionId != "" ? "组件齐 + 过滤通过" : blockedNow ? candidateComponentText + " · " + filterActionText(blockedReason, blockedDirection) + (blockedProfitSpaceText == "" ? "" : " · " + str.replace_all(blockedProfitSpaceText, "\n", "")) : activityScore > 0 ? candidateComponentText + " · " + candidateWaitText : "--"
+string statusComponents = activePendingEntry ? "等计划价成交 · 锚点 " + activeEntryAnchorReason : activeFilledPosition ? "组件齐 + 过滤通过" : blockedNow ? blockedComponentText + " · " + filterActionText(blockedReason, blockedDirection) + (blockedProfitSpaceText == "" ? "" : " · " + str.replace_all(blockedProfitSpaceText, "\n", "")) : activityScore > 0 ? candidateComponentText + " · " + candidateWaitText : "--"
 string statusDtp = dtpStateText(dtpDir, dtpPhase)
 string statusMtf = activeDirection == -1 ? mtfSummaryForDirection("short") : activeDirection == 1 ? mtfSummaryForDirection("long") : blockedNow ? mtfSummaryForDirection(blockedDirection) : activityScore > 0 ? mtfSummaryForDirection(candidateDirection) : enableMtf ? "MTF 等待信号" : "off"
 string lastExitText = lastExitReason != "" ? exitReasonDisplayName(lastExitReason) + " " + lastExitTimeText + " @ " + str.tostring(lastExitPrice, "#.##") + " · PnL " + fmtSignedMoney(lastExitPnl) + " (" + fmtSignedPct(lastExitPnlPct) + ")" : "--"
 string runnerRiskText = activeRunnerActive ? "Runner ON / Safety TP " + str.tostring(activeTarget, "#.##") + " / Trail SL " + str.tostring(activeStop, "#.##") : "Runner " + str.tostring(runnerActivationR, "#.##") + "R " + str.tostring(activeRunnerActivation, "#.##") + " / Safety TP " + str.tostring(activeTarget, "#.##") + " / SL " + str.tostring(activeStop, "#.##")
-string statusRisk = activePositionId != "" ? (activeRunnerMode ? runnerRiskText : "TP " + str.tostring(activeTarget, "#.##") + " / SL " + str.tostring(activeStop, "#.##")) : lastExitText
+string statusRisk = activePendingEntry ? "ref " + str.tostring(activeReferenceEntry, "#.##") + " / plan " + str.tostring(activeEntry, "#.##") + " / exp " + str.tostring(activeEntryOrderExpiresBar, "#") : activeFilledPosition ? (activeRunnerMode ? runnerRiskText : "TP " + str.tostring(activeTarget, "#.##") + " / SL " + str.tostring(activeStop, "#.##")) : lastExitText
 if confirmed
     if showStatusPanel
         table.cell(flowStatus, 0, 0, "流程", bgcolor=statusColor, text_color=color.white)

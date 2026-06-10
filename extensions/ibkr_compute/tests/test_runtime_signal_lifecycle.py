@@ -11,6 +11,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from ibkr_compute.orchestration.runtime_ops import TradingServiceRuntimeOpsMixin
 from ibkr_compute.orchestration.signals import TradingServiceSignalsMixin
+from ibkr_compute.order.order_lifecycle import OrderLifecycle
 
 
 class _FakePB:
@@ -305,6 +306,48 @@ class _FakeOrderModifier:
         return {"ok": True, "order_id": str(order_id), "price": float(new_tp_price)}
 
 
+class _FakeProtectionRepairPlacer:
+    def __init__(self):
+        self.calls = []
+
+    def place_protection_repair_orders(self, **kwargs):
+        self.calls.append(copy.deepcopy(kwargs))
+        return {
+            "ok": True,
+            "order_ids": ["2001", "2002"],
+            "tp_coid": "repair_tp_group_SIG_1",
+            "sl_coid": "repair_sl_group_SIG_1",
+            "take_profit_price": kwargs.get("take_profit_price"),
+            "stop_loss_price": kwargs.get("stop_loss_price"),
+        }
+
+
+class _FakeLifecycleConfig:
+    def __init__(self, values=None):
+        self.values = dict(values or {})
+
+    def get_for_environment(self, key, _environment, default=None):
+        return self.values.get(key, default)
+
+    def get_bool_for_environment(self, key, _environment, default=False):
+        value = self.values.get(key, default)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    def get_int_for_environment(self, key, _environment, default=0):
+        try:
+            return int(self.values.get(key, default))
+        except Exception:
+            return int(default)
+
+    def get_float_for_environment(self, key, _environment, default=0.0):
+        try:
+            return float(self.values.get(key, default))
+        except Exception:
+            return float(default)
+
+
 class _FakeService(TradingServiceRuntimeOpsMixin):
     def __init__(self):
         from ibkr_compute.orchestration import trading_service as service_mod
@@ -333,6 +376,112 @@ class _FakeSignalsService(TradingServiceSignalsMixin):
 
     def _now_iso(self):
         return "2026-05-06T12:00:00Z"
+
+
+class MissingProtectionAutoRepairTest(unittest.TestCase):
+    def _lifecycle(self, *, stop_loss=98.0, take_profit=104.0, current_price=100.0, environment="paper"):
+        pb = _FakePB()
+        pb.orders = [
+            {
+                "id": "entry-row",
+                "unique_id": "entry_group_SIG_1",
+                "entry_order_unique_id": "entry_group_SIG_1",
+                "order_id": "1001",
+                "broker_order_id": "1001",
+                "signal_id": "SIG_1",
+                "trade_group_id": "group_SIG_1",
+                "symbol": "AAPL",
+                "role": "entry",
+                "status": "Filled",
+                "environment": environment,
+                "direction": "long",
+                "quantity": 5,
+                "tp_price": take_profit,
+                "sl_price": stop_loss,
+                "extra": {},
+            },
+            {
+                "id": "tp-row",
+                "unique_id": "tp_group_SIG_1",
+                "entry_order_unique_id": "entry_group_SIG_1",
+                "order_id": "1002",
+                "broker_order_id": "1002",
+                "signal_id": "SIG_1",
+                "trade_group_id": "group_SIG_1",
+                "symbol": "AAPL",
+                "role": "take_profit",
+                "status": "Canceled",
+                "environment": environment,
+                "direction": "long",
+                "quantity": 5,
+            },
+            {
+                "id": "sl-row",
+                "unique_id": "sl_group_SIG_1",
+                "entry_order_unique_id": "entry_group_SIG_1",
+                "order_id": "1003",
+                "broker_order_id": "1003",
+                "signal_id": "SIG_1",
+                "trade_group_id": "group_SIG_1",
+                "symbol": "AAPL",
+                "role": "stop_loss",
+                "status": "Canceled",
+                "environment": environment,
+                "direction": "long",
+                "quantity": 5,
+            },
+        ]
+        placer = _FakeProtectionRepairPlacer()
+        lifecycle = OrderLifecycle(
+            account_id="DU123",
+            pb_client=pb,
+            order_placer=placer,
+            config=_FakeLifecycleConfig(),
+            environment=environment,
+        )
+        position = {
+            "ticker": "AAPL",
+            "contractDesc": "AAPL",
+            "conid": 265598,
+            "position": 5,
+            "mktPrice": current_price,
+        }
+        return lifecycle, pb, placer, position
+
+    def test_auto_repairs_missing_take_profit_and_stop_loss_in_paper(self):
+        lifecycle, pb, placer, position = self._lifecycle()
+
+        issues = lifecycle._detect_missing_protection_after_fill([position], open_orders=[])
+
+        self.assertEqual(1, len(issues))
+        self.assertEqual(1, len(placer.calls))
+        self.assertEqual("AAPL", placer.calls[0]["symbol"])
+        self.assertEqual(5, placer.calls[0]["quantity"])
+        self.assertEqual(104.0, placer.calls[0]["take_profit_price"])
+        self.assertEqual(98.0, placer.calls[0]["stop_loss_price"])
+        entry_row = next(row for row in pb.orders if row["id"] == "entry-row")
+        self.assertTrue(entry_row["extra"]["protection_repair_submitted"])
+        self.assertEqual(["2001", "2002"], entry_row["extra"]["protection_repair_order_ids"])
+
+    def test_stale_stop_price_skips_auto_repair_and_marks_state(self):
+        lifecycle, pb, placer, position = self._lifecycle(stop_loss=102.0, current_price=100.0)
+
+        issues = lifecycle._detect_missing_protection_after_fill([position], open_orders=[])
+
+        self.assertEqual(1, len(issues))
+        self.assertEqual([], placer.calls)
+        entry_row = next(row for row in pb.orders if row["id"] == "entry-row")
+        self.assertEqual("stale_protection_prices", entry_row["extra"]["protection_state"])
+        self.assertEqual("stale_stop_loss_price", entry_row["extra"]["protection_repair_skip_reason"])
+
+    def test_live_mode_does_not_auto_repair_by_default(self):
+        lifecycle, pb, placer, position = self._lifecycle(environment="live")
+
+        issues = lifecycle._detect_missing_protection_after_fill([position], open_orders=[])
+
+        self.assertEqual(1, len(issues))
+        self.assertEqual([], placer.calls)
+        self.assertEqual("auto_repair_disabled", issues[0]["repair_result"]["reason"])
 
 
 class RuntimeSignalLifecycleTest(unittest.TestCase):
