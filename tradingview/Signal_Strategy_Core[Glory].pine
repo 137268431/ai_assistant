@@ -441,7 +441,7 @@ filterDisplayName(string reason) =>
     reason == "entry_time_blocked" ? "非优先入场时段" : reason == "entry_anchor_unavailable" ? "无有效结构挂单价" : reason == "post_reversal_anchor_unqualified" ? "反转顺势锚点不足" : reason == "mr_dtp_phase_blocked" ? "MR逆DTP未转弱" : reason == "mr_anchor_unqualified" ? "MR锚点依据不足" : reason == "mr_reversal_confirm_missing" ? "MR缺少反转确认" : reason == "mr_target_space_too_small" ? "MR均值空间不足" : reason == "mr_ema_cross_missing" ? "MR缺少EMA反转" : reason == "mr_component_stale" ? "MR组件过期" : reason == "candidate_filtered" ? "候选未执行" : reason == "dtp_bearish_early" ? "DTP偏空初期" : reason == "dtp_bullish_early" ? "DTP偏多初期" : reason == "dtp_bearish_early_or_confirmed" ? "DTP偏空" : reason == "dtp_bullish_early_or_confirmed" ? "DTP偏多" : reason == "ema_weak" ? "EMA弱" : reason == "low_volatility" ? "低波动" : reason == "profit_space_too_small" ? "获利空间不足" : reason == "mtf_5m_15m_opposite" ? "MTF反向" : reason == "long_short_conflict" ? "多空冲突" : reason == "" ? "过滤" : reason
 
 filterActionText(string reason, string direction) =>
-    reason == "entry_time_blocked" ? "不在优先日内窗口，等下一窗口" : reason == "entry_anchor_unavailable" ? "结构价离现价太远/无依据，放弃追价" : reason == "post_reversal_anchor_unqualified" ? "死叉/金叉后只接受EMA/前高低/日内结构锚点" : reason == "mr_dtp_phase_blocked" ? "MR逆DTP强趋势，等DTP转弱/中性再做回归" : reason == "mr_anchor_unqualified" ? "MR只接受SD外轨/前高低/EMA结构锚点" : reason == "mr_reversal_confirm_missing" ? "逆趋势转弱MR需要EMA反转交叉 + 分形/背离" : reason == "mr_target_space_too_small" ? "均值目标不可用或预计净利/ROI/ATR空间不足" : reason == "mr_ema_cross_missing" ? "MR缺少EMA20/50反转确认，等金叉/死叉" : reason == "mr_component_stale" ? "MR组件过期，等新分形/背离/交叉" : reason == "candidate_filtered" ? "候选未进入下单分支，检查窗口/方向/数量条件" : reason == "dtp_bearish_early" ? "DTP偏空初期，等过初期" : reason == "dtp_bullish_early" ? "DTP偏多初期，等过初期" : reason == "dtp_bearish_early_or_confirmed" ? "DTP偏空，等转弱/中性/多" : reason == "dtp_bullish_early_or_confirmed" ? "DTP偏多，等转弱/中性/空" : reason == "ema_weak" ? "EMA偏弱，等快慢线走强" : reason == "low_volatility" ? "ATR%低于入场阈值，等波动恢复" : reason == "profit_space_too_small" ? "预计净利/预计ROI/成本/ATR空间不够，等更大空间" : reason == "mtf_5m_15m_opposite" ? "5m+15m 同时反向，等MTF转中性/同向" : reason == "long_short_conflict" ? "多空冲突，等单边明确" : reason == "" ? "过滤" + directionDisplayName(direction) + "，等条件恢复" : filterDisplayName(reason)
+    reason == "entry_time_blocked" ? "不在优先日内窗口，等下一窗口" : reason == "entry_anchor_unavailable" ? "结构价离现价太远/无依据，放弃追价" : reason == "post_reversal_anchor_unqualified" ? "死叉/金叉后只接受EMA/前高低/日内结构锚点" : reason == "mr_dtp_phase_blocked" ? "MR逆DTP强趋势，等DTP转弱/中性再做回归" : reason == "mr_anchor_unqualified" ? "MR只接受SD外轨/前高低/EMA结构锚点" : reason == "mr_reversal_confirm_missing" ? "逆趋势转弱MR需要EMA反转交叉 + 分形/背离" : reason == "mr_target_space_too_small" ? "均值目标不可用或获利空间不足" : reason == "mr_ema_cross_missing" ? "MR缺少EMA20/50反转确认，等金叉/死叉" : reason == "mr_component_stale" ? "MR组件过期，等新分形/背离/交叉" : reason == "candidate_filtered" ? "候选未进入下单分支，检查窗口/方向/数量条件" : reason == "dtp_bearish_early" ? "DTP偏空初期，等过初期" : reason == "dtp_bullish_early" ? "DTP偏多初期，等过初期" : reason == "dtp_bearish_early_or_confirmed" ? "DTP偏空，等转弱/中性/多" : reason == "dtp_bullish_early_or_confirmed" ? "DTP偏多，等转弱/中性/空" : reason == "ema_weak" ? "EMA偏弱，等快慢线走强" : reason == "low_volatility" ? "ATR%低于入场阈值，等波动恢复" : reason == "profit_space_too_small" ? "等更大空间" : reason == "mtf_5m_15m_opposite" ? "5m+15m 同时反向，等MTF转中性/同向" : reason == "long_short_conflict" ? "多空冲突，等单边明确" : reason == "" ? "过滤" + directionDisplayName(direction) + "，等条件恢复" : filterDisplayName(reason)
 
 dtpPhaseDisplayName(string phase) =>
     phase == "early" ? "初期" : phase == "confirmed" ? "确认" : phase == "mature" ? "成熟" : phase == "weakening" ? "转弱" : "中性"
@@ -682,13 +682,36 @@ profitSpaceEntryAllowed(float netProfit, float netRoiPct, float costPct, float t
     not useProfitSpaceFilter or profitSpaceFailureReason(netProfit, netRoiPct, costPct, targetAtrMultiple) == "pass"
 
 profitSpaceSummaryText(float netProfit, float netRoiPct, float costPct, float targetAtrMultiple) =>
-    "预计净利 " + fmtSignedMoney(netProfit) + " / 预计ROI " + fmtSignedPct(netRoiPct) + " / 成本 " + str.tostring(costPct, "#.#") + "% / TP " + str.tostring(targetAtrMultiple, "#.#") + "ATR"
+    "预计净利 " + fmtSignedMoney(netProfit) + " / 占用ROI " + fmtSignedPct(netRoiPct) + " / 成本/毛利 " + str.tostring(costPct, "#.#") + "% / TP " + str.tostring(targetAtrMultiple, "#.#") + "ATR"
 
 profitSpaceThresholdText() =>
-    "门槛 预计净利 " + fmtMoney(effectiveMinNetProfitForEntry) + " / 预计ROI " + str.tostring(effectiveMinNetRoiPctForEntry, "#.##") + "%"
+    "门槛 净利 >= " + fmtMoney(effectiveMinNetProfitForEntry) + " / 占用ROI >= " + str.tostring(effectiveMinNetRoiPctForEntry, "#.##") + "% / 成本/毛利 <= " + str.tostring(maxCostPctOfReward, "#.#") + "% / TP >= " + str.tostring(minTargetAtrMultipleForEntry, "#.#") + "ATR"
+
+profitSpaceNetProfitCompareText(float netProfit) =>
+    string operatorText = netProfit >= effectiveMinNetProfitForEntry ? " >= " : " < "
+    string gapText = netProfit < effectiveMinNetProfitForEntry ? "，差 " + fmtMoney(effectiveMinNetProfitForEntry - netProfit) : ""
+    "净利 " + fmtSignedMoney(netProfit) + operatorText + fmtMoney(effectiveMinNetProfitForEntry) + gapText
+
+profitSpaceNetRoiCompareText(float netRoiPct) =>
+    string operatorText = netRoiPct >= effectiveMinNetRoiPctForEntry ? " >= " : " < "
+    string gapText = netRoiPct < effectiveMinNetRoiPctForEntry ? "，差 " + str.tostring(effectiveMinNetRoiPctForEntry - netRoiPct, "#.##") + "%" : ""
+    "占用ROI " + fmtSignedPct(netRoiPct) + operatorText + str.tostring(effectiveMinNetRoiPctForEntry, "#.##") + "%" + gapText
+
+profitSpaceCostCompareText(float costPct) =>
+    string operatorText = costPct <= maxCostPctOfReward ? " <= " : " > "
+    string gapText = costPct > maxCostPctOfReward ? "，超 " + str.tostring(costPct - maxCostPctOfReward, "#.#") + "%" : ""
+    "成本/毛利 " + str.tostring(costPct, "#.#") + "%" + operatorText + str.tostring(maxCostPctOfReward, "#.#") + "%" + gapText
+
+profitSpaceTargetAtrCompareText(float targetAtrMultiple) =>
+    string operatorText = targetAtrMultiple >= minTargetAtrMultipleForEntry ? " >= " : " < "
+    string gapText = targetAtrMultiple < minTargetAtrMultipleForEntry ? "，差 " + str.tostring(minTargetAtrMultipleForEntry - targetAtrMultiple, "#.#") + "ATR" : ""
+    "TP " + str.tostring(targetAtrMultiple, "#.#") + "ATR" + operatorText + str.tostring(minTargetAtrMultipleForEntry, "#.#") + "ATR" + gapText
 
 profitSpaceBlockedText(float netProfit, float netRoiPct, float costPct, float targetAtrMultiple) =>
-    "\n获利空间不足\n" + profitSpaceSummaryText(netProfit, netRoiPct, costPct, targetAtrMultiple) + "\n" + profitSpaceThresholdText()
+    "\n获利空间不足\n" + profitSpaceNetProfitCompareText(netProfit) + "\n" + profitSpaceNetRoiCompareText(netRoiPct) + "\n" + profitSpaceCostCompareText(costPct) + "\n" + profitSpaceTargetAtrCompareText(targetAtrMultiple) + "\n" + profitSpaceThresholdText()
+
+profitSpaceBlockedStatusText(float netProfit, float netRoiPct, float costPct, float targetAtrMultiple) =>
+    "获利空间不足: " + profitSpaceNetProfitCompareText(netProfit) + " / " + profitSpaceNetRoiCompareText(netRoiPct) + " / " + profitSpaceCostCompareText(costPct) + " / " + profitSpaceTargetAtrCompareText(targetAtrMultiple)
 
 int crsiCycleLen = math.max(1, int(math.round(crsiDomcycle / 2.0)))
 int crsiMemory = math.max(2, crsiDomcycle * 2)
@@ -1858,7 +1881,11 @@ bool pendingSetupWindowExpired = confirmed and activePendingEntry and strategy.p
 bool pendingAnchorInvalidated = confirmed and activePendingEntry and strategy.position_size == 0 and structuralAnchorMode and (activeDirection == 1 ? close < activeEntry - atrRaw * structuralSlBufferAtr : close > activeEntry + atrRaw * structuralSlBufferAtr)
 bool pendingOppositeOrConflict = confirmed and activePendingEntry and strategy.position_size == 0 and (conflict or (activeDirection == 1 and shortSignalCandidate) or (activeDirection == -1 and longSignalCandidate))
 bool pendingEodCancel = confirmed and enableEodForceClose and activePendingEntry and strategy.position_size == 0 and eodCloseTimeReached and (na(eodForceCloseDay) or eodForceCloseDay != dailyTime)
-string pendingCancelReason = pendingEodCancel ? "pending_eod_cancel" : pendingEntryExpired ? "entry_ttl_expired" : pendingEntryWindowExpired ? "entry_window_expired" : pendingSetupWindowExpired ? "setup_window_expired" : pendingAnchorInvalidated ? "entry_anchor_invalidated" : pendingOppositeOrConflict ? "opposite_signal_or_conflict" : ""
+bool pendingSameSignalStillValid = confirmed and activePendingEntry and strategy.position_size == 0 and (activeDirection == 1 ? longSignalCandidate and longSetup == activeSetup and not blockLong : activeDirection == -1 ? shortSignalCandidate and shortSetup == activeSetup and not blockShort : false) and not conflict
+bool pendingEntryRenewNow = pendingEntryExpired and pendingSameSignalStillValid and not pendingEodCancel and not pendingEntryWindowExpired and not pendingSetupWindowExpired and not pendingAnchorInvalidated and not pendingOppositeOrConflict
+if pendingEntryRenewNow
+    activeEntryOrderExpiresBar := bar_index + entryOrderTtlBars
+string pendingCancelReason = pendingEodCancel ? "pending_eod_cancel" : pendingOppositeOrConflict ? "opposite_signal_or_conflict" : pendingEntryWindowExpired ? "entry_window_expired" : pendingSetupWindowExpired ? "setup_window_expired" : pendingAnchorInvalidated ? "entry_anchor_invalidated" : pendingEntryExpired and not pendingEntryRenewNow ? "entry_ttl_expired" : ""
 bool pendingCancelNow = pendingCancelReason != ""
 if pendingCancelNow
     if enableAlerts and not activeCancelSent
@@ -1955,7 +1982,10 @@ string blockedDirection = diagnosticLongCandidate and (not diagnosticShortCandid
 string blockedSetup = blockedDirection == "long" ? longSetup : shortSetup
 string blockedReasonRaw = conflict ? "long_short_conflict" : blockedDirection == "long" ? blockLongReason : blockShortReason
 string blockedReason = blockedReasonRaw == "" ? "candidate_filtered" : blockedReasonRaw
-string blockedProfitSpaceText = blockedReason == "profit_space_too_small" ? (blockedDirection == "long" ? profitSpaceBlockedText(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr) : profitSpaceBlockedText(shortExpectedNetProfit, shortExpectedNetRoiPct, shortCostPctOfReward, shortTargetDistanceAtr)) : ""
+bool blockedProfitSpaceEntryBlocked = blockedDirection == "long" ? longProfitSpaceEntryBlocked : shortProfitSpaceEntryBlocked
+string blockedProfitSpaceFailureReason = blockedDirection == "long" ? profitSpaceFailureReason(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr) : profitSpaceFailureReason(shortExpectedNetProfit, shortExpectedNetRoiPct, shortCostPctOfReward, shortTargetDistanceAtr)
+string blockedProfitSpaceText = blockedProfitSpaceEntryBlocked ? (blockedDirection == "long" ? profitSpaceBlockedText(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr) : profitSpaceBlockedText(shortExpectedNetProfit, shortExpectedNetRoiPct, shortCostPctOfReward, shortTargetDistanceAtr)) : ""
+string blockedProfitStatusText = blockedProfitSpaceEntryBlocked ? (blockedDirection == "long" ? profitSpaceBlockedStatusText(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr) : profitSpaceBlockedStatusText(shortExpectedNetProfit, shortExpectedNetRoiPct, shortCostPctOfReward, shortTargetDistanceAtr)) : ""
 bool blockedUpperWindowReady = blockedSetup == "trend_sdUpperBreakdown" ? upperSdExtremeFresh : blockedSetup == "mr_sdUpper" ? upperMrWindowValid : upperWindowValid
 bool blockedLowerWindowReady = blockedSetup == "trend_sdLowerBreakout" ? lowerSdExtremeFresh : blockedSetup == "mr_sdLower" ? lowerMrWindowValid : lowerWindowValid
 string blockedComponentText = componentSummaryForSetup(blockedSetup, blockedUpperWindowReady, blockedLowerWindowReady, upperBullTouchSeen, lowerBearTrendTriggerSeen, upperBullFractalSeen, lowerBullFractalSeen, upperBearFractalSeen, lowerBearFractalSeen, upperBullEmaCrossSeen, lowerBullEmaCrossSeen, upperBearEmaCrossSeen, lowerBearEmaCrossSeen, bullDivSeen, bearDivSeen)
@@ -1966,10 +1996,11 @@ blockedAnchorReason := blockedAnchorReason == "" ? "none" : blockedAnchorReason
 string blockedAnchorText = structuralAnchorMode ? "\nref " + str.tostring(blockedReferenceEntry, "#.##") + " / plan " + str.tostring(blockedEntryCandidate, "#.##") + "\n锚点: " + blockedAnchorReason : ""
 string blockedProfitSummary = blockedDirection == "long" ? profitSpaceSummaryText(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr) : profitSpaceSummaryText(shortExpectedNetProfit, shortExpectedNetRoiPct, shortCostPctOfReward, shortTargetDistanceAtr)
 string blockedMrRegimeText = setupIsMr(blockedSetup) ? "\nMR: " + mrRegimeDisplayName(blockedSetup == "mr_sdLower" ? longMrRegime : shortMrRegime) : ""
-string blockedVisualKey = blockedDirection + ":" + blockedSetup + ":" + blockedReason + ":" + blockedComponentText + ":" + blockedProfitSpaceText + ":" + blockedAnchorText
+string blockedProfitLabelText = blockedProfitSpaceText == "" ? "\n" + blockedProfitSummary : blockedProfitSpaceText
+string blockedVisualKey = blockedDirection + ":" + blockedSetup + ":" + blockedReason + ":" + blockedComponentText + ":" + mtfStatusForDirection(blockedDirection) + ":" + mtfBlockReasonForDirection(blockedDirection) + ":" + str.tostring(dtpDir, "#") + ":" + dtpPhase + ":" + (blockedProfitSpaceEntryBlocked ? blockedProfitSpaceFailureReason : "none")
 if blockedVisualNow and blockedVisualKey != lastBlockVisualKey
     float blockedY = blockedDirection == "short" ? high + atrVal * 4.0 : low - atrVal * 4.0
-    string blockedText = "信号过滤\n" + directionDisplayName(blockedDirection) + " · " + setupDisplayName(blockedSetup) + "\n组件: " + blockedComponentText + "\n原因: " + filterDisplayName(blockedReason) + "\n" + filterActionText(blockedReason, blockedDirection) + "\n" + mtfSummaryForDirection(blockedDirection) + "\n" + dtpEntryFilterText(blockedDirection, dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + blockedMrRegimeText + "\n" + blockedProfitSummary + blockedAnchorText + blockedProfitSpaceText
+    string blockedText = "信号过滤\n" + directionDisplayName(blockedDirection) + " · " + setupDisplayName(blockedSetup) + "\n组件: " + blockedComponentText + "\n原因: " + filterDisplayName(blockedReason) + "\n" + filterActionText(blockedReason, blockedDirection) + "\n" + mtfSummaryForDirection(blockedDirection) + "\n" + dtpEntryFilterText(blockedDirection, dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + blockedMrRegimeText + blockedProfitLabelText + blockedAnchorText
     label.new(bar_index, blockedY, blockedText, style=flowLabelStyle(blockedDirection), color=flowLabelColor("blocked", blockedDirection), textcolor=color.white, size=size.small)
     lastBlockVisualKey := blockedVisualKey
 if not blockedNow and not longRaw and not shortRaw
@@ -2255,7 +2286,7 @@ string statusDirection = activeDirection == -1 ? "做空" : activeDirection == 1
 string statusText = activePendingEntry ? "挂单等待 " + statusDirection : activeFilledPosition ? "持仓 " + statusDirection : enterLong ? "买入做多" : enterShort ? "卖出做空" : blockedNow ? "过滤" + directionDisplayName(blockedDirection) : observeNow ? "观察" + directionDisplayName(candidateDirection) : lowerWindowValid or upperWindowValid ? "窗口激活" : "等待"
 color statusColor = activePendingEntry ? color.new(color.orange, 0) : activeFilledPosition ? flowStatusColor("entry", activeDirection == -1 ? "short" : "long") : blockedNow ? flowStatusColor("blocked", blockedDirection) : observeNow ? color.new(color.orange, 0) : lowerWindowValid ? flowStatusColor("activate_lower", "long") : upperWindowValid ? flowStatusColor("activate_upper", "short") : color.new(color.gray, 20)
 string statusSetup = activePositionId != "" ? setupDisplayName(activeSetup) : blockedNow ? setupDisplayName(blockedSetup) : activityScore > 0 ? setupDisplayName(candidateSetup) : "--"
-string statusComponents = activePendingEntry ? "等计划价成交 · 锚点 " + activeEntryAnchorReason : activeFilledPosition ? "组件齐 + 过滤通过" : blockedNow ? blockedComponentText + " · " + filterActionText(blockedReason, blockedDirection) + (blockedProfitSpaceText == "" ? "" : " · " + str.replace_all(blockedProfitSpaceText, "\n", "")) : activityScore > 0 ? candidateComponentText + " · " + candidateWaitText : "--"
+string statusComponents = activePendingEntry ? "等计划价成交 · 锚点 " + activeEntryAnchorReason : activeFilledPosition ? "组件齐 + 过滤通过" : blockedNow ? blockedComponentText + " · " + filterActionText(blockedReason, blockedDirection) + (blockedProfitStatusText == "" ? "" : " · " + blockedProfitStatusText) : activityScore > 0 ? candidateComponentText + " · " + candidateWaitText : "--"
 string statusDtp = dtpStateText(dtpDir, dtpPhase)
 string statusMtf = activeDirection == -1 ? mtfSummaryForDirection("short") : activeDirection == 1 ? mtfSummaryForDirection("long") : blockedNow ? mtfSummaryForDirection(blockedDirection) : activityScore > 0 ? mtfSummaryForDirection(candidateDirection) : enableMtf ? "MTF 等待信号" : "off"
 string lastExitText = lastExitReason != "" ? exitReasonDisplayName(lastExitReason) + " " + lastExitTimeText + " @ " + str.tostring(lastExitPrice, "#.##") + " · PnL " + fmtSignedMoney(lastExitPnl) + " (" + fmtSignedPct(lastExitPnlPct) + ")" : "--"
