@@ -1890,10 +1890,10 @@ bool pendingLongEmaHardReversed = emaFast < emaSlow and close < emaSlow
 bool pendingShortEmaHardReversed = emaFast > emaSlow and close > emaSlow
 bool pendingTrendInvalidated = confirmed and activePendingEntry and strategy.position_size == 0 and (activeDirection == 1 ? dtpDir == -1 or mtfLongStatus == "block" or pendingLongEmaHardReversed : activeDirection == -1 ? dtpDir == 1 or mtfShortStatus == "block" or pendingShortEmaHardReversed : true)
 bool pendingTrendStillValid = confirmed and activePendingEntry and strategy.position_size == 0 and not pendingTrendInvalidated
-bool pendingEntryRenewNow = pendingEntryExpired and pendingTrendStillValid and not pendingEodCancel and not pendingEntryWindowExpired and not pendingSetupWindowExpired and not pendingAnchorInvalidated and not pendingOppositeOrConflict
+bool pendingEntryRenewNow = pendingEntryExpired and pendingTrendStillValid and not pendingEodCancel and not pendingEntryWindowExpired and not pendingAnchorInvalidated and not pendingOppositeOrConflict
 if pendingEntryRenewNow
     activeEntryOrderExpiresBar := bar_index + entryOrderTtlBars
-string pendingCancelReason = pendingEodCancel ? "pending_eod_cancel" : pendingOppositeOrConflict ? "opposite_signal_or_conflict" : pendingEntryWindowExpired ? "entry_window_expired" : pendingSetupWindowExpired ? "setup_window_expired" : pendingAnchorInvalidated ? "entry_anchor_invalidated" : pendingTrendInvalidated ? "trend_invalidated" : pendingEntryExpired and not pendingEntryRenewNow ? "entry_ttl_expired" : ""
+string pendingCancelReason = pendingEodCancel ? "pending_eod_cancel" : pendingOppositeOrConflict ? "opposite_signal_or_conflict" : pendingEntryWindowExpired ? "entry_window_expired" : pendingAnchorInvalidated ? "entry_anchor_invalidated" : pendingTrendInvalidated ? "trend_invalidated" : pendingEntryExpired and not pendingEntryRenewNow ? "entry_ttl_expired" : ""
 bool pendingCancelNow = pendingCancelReason != ""
 if pendingCancelNow
     if enableAlerts and not activeCancelSent
