@@ -63,6 +63,15 @@ def _account_snapshot_open_orders_only(default: bool = False) -> bool:
     return bool(default)
 
 
+def _record_account_snapshot_metrics(payload: dict) -> None:
+    try:
+        from ibkr_compute.observability.prometheus import set_account_snapshot_metrics
+
+        set_account_snapshot_metrics(payload, source="account_snapshot")
+    except Exception:
+        return
+
+
 def register_account_routes(app):
     if should_proxy_runtime_requests():
         register_runtime_proxy_route(app, "ibkr_account", "/ibkr/account", ["GET"])
@@ -84,16 +93,16 @@ def register_account_routes(app):
             return unavailable
         try:
             broker_force = _account_snapshot_broker_force()
-            return jsonify(
-                _build_ibkr_account_snapshot(
-                    service,
-                    include_pnl=get_query_arg_bool("include_pnl", True),
-                    force_refresh=broker_force,
-                    allow_stale=not broker_force,
-                    orders_fast=_account_snapshot_orders_fast(),
-                    orders_fast_open_only=_account_snapshot_open_orders_only(),
-                )
+            payload = _build_ibkr_account_snapshot(
+                service,
+                include_pnl=get_query_arg_bool("include_pnl", True),
+                force_refresh=broker_force,
+                allow_stale=not broker_force,
+                orders_fast=_account_snapshot_orders_fast(),
+                orders_fast_open_only=_account_snapshot_open_orders_only(),
             )
+            _record_account_snapshot_metrics(payload)
+            return jsonify(payload)
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)}), 500
 

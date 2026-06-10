@@ -1,6 +1,7 @@
 import contextlib
 import importlib
 import inspect
+import math
 import os
 import sys
 import unittest
@@ -142,6 +143,50 @@ def _collector_registry():
     except ModuleNotFoundError:
         return None
     return CollectorRegistry(auto_describe=True)
+
+
+class _FakeMetricHandle:
+    def __init__(self, metric, labels):
+        self._metric = metric
+        self._labels = tuple(labels)
+
+    def set(self, value):
+        self._metric.values[self._labels] = value
+
+
+class _FakeMetric:
+    def __init__(self, labelnames=("service", "environment", "source")):
+        self._labelnames = tuple(labelnames)
+        self.values = {}
+
+    def labels(self, *labels):
+        return _FakeMetricHandle(self, labels)
+
+
+def _fake_account_snapshot_metrics():
+    metric_names = (
+        "ACCOUNT_SNAPSHOT_AVAILABLE",
+        "ACCOUNT_SNAPSHOT_REFRESH_OK",
+        "ACCOUNT_SNAPSHOT_STALE",
+        "ACCOUNT_SNAPSHOT_AGE",
+        "ACCOUNT_NET_LIQUIDATION",
+        "ACCOUNT_AVAILABLE_FUNDS",
+        "ACCOUNT_EXCESS_LIQUIDITY",
+        "ACCOUNT_TOTAL_CASH",
+        "ACCOUNT_GROSS_POSITION_VALUE",
+        "ACCOUNT_INITIAL_MARGIN",
+        "ACCOUNT_MAINTENANCE_MARGIN",
+        "ACCOUNT_BUYING_POWER_CONFIGURED",
+        "ACCOUNT_BUYING_POWER_REMAINING",
+        "ACCOUNT_BUYING_POWER_USED_EXPOSURE",
+        "ACCOUNT_BUYING_POWER_UTILIZATION",
+        "ACCOUNT_BUYING_POWER_REMAINING_SLOTS",
+        "ACCOUNT_BUYING_POWER_WARN_FLOOR",
+        "ACCOUNT_BUYING_POWER_BLOCK_FLOOR",
+    )
+    metrics = {name: _FakeMetric() for name in metric_names}
+    metrics["ACCOUNT_BUYING_POWER_GUARD_STATE"] = _FakeMetric(("service", "environment", "source", "state"))
+    return metrics
 
 
 def _install_metrics(testcase, app, *, service_name="ibkr-compute", service_profile="compute"):
@@ -394,6 +439,16 @@ class ComputePrometheusMetricsTest(unittest.TestCase):
         )
 
         account_labels = set(getattr(getattr(module, "ACCOUNT_BUYING_POWER_REMAINING", None), "_labelnames", None) or ())
+        snapshot_metric_names = (
+            "ACCOUNT_SNAPSHOT_AVAILABLE",
+            "ACCOUNT_SNAPSHOT_REFRESH_OK",
+            "ACCOUNT_SNAPSHOT_STALE",
+            "ACCOUNT_SNAPSHOT_AGE",
+        )
+        snapshot_label_sets = [
+            set(getattr(getattr(module, name, None), "_labelnames", None) or ())
+            for name in snapshot_metric_names
+        ]
         capital_metric_names = (
             "ACCOUNT_AVAILABLE_FUNDS",
             "ACCOUNT_EXCESS_LIQUIDITY",
@@ -415,6 +470,7 @@ class ComputePrometheusMetricsTest(unittest.TestCase):
         gateway_labels = set(getattr(getattr(module, "GATEWAY_SESSION_AUTHENTICATED", None), "_labelnames", None) or ())
         if (
             not account_labels
+            or any(not labels for labels in snapshot_label_sets)
             or any(not labels for labels in capital_label_sets)
             or not state_labels
             or not position_current_labels
@@ -428,6 +484,7 @@ class ComputePrometheusMetricsTest(unittest.TestCase):
 
         denied = _get_denylist(module)
         for label_set in (
+            *snapshot_label_sets,
             account_labels,
             *capital_label_sets,
             state_labels,
@@ -439,6 +496,8 @@ class ComputePrometheusMetricsTest(unittest.TestCase):
             gateway_labels,
         ):
             self.assertFalse(denied.intersection(label_set), label_set)
+        for label_set in snapshot_label_sets:
+            self.assertEqual({"service", "environment", "source"}, label_set)
         self.assertEqual({"service", "environment", "source"}, account_labels)
         for label_set in capital_label_sets:
             self.assertEqual({"service", "environment", "source"}, label_set)
@@ -449,6 +508,110 @@ class ComputePrometheusMetricsTest(unittest.TestCase):
         self.assertEqual({"service", "environment", "basis"}, trade_pnl_labels)
         self.assertEqual({"service", "environment", "basis", "grain", "result"}, trade_result_labels)
         self.assertEqual({"service", "environment"}, gateway_labels)
+
+    def test_account_snapshot_metrics_treat_usable_stale_cache_as_available(self):
+        module = _observability_or_skip(self, requiring=("set_account_snapshot_metrics",))
+
+        environment = "metric_account_stale_available_test"
+        payload = {
+            "ok": True,
+            "environment": environment,
+            "summary_available": True,
+            "stale": True,
+            "cache_state": "stale_after_error",
+            "cache_age_s": 42.0,
+            "refresh_error": "account_snapshot_timeout",
+            "summary": {
+                "net_liquidation": 59040.51,
+                "buying_power": 228419.95,
+                "remaining_buying_power": 228419.95,
+            },
+            "buying_power_guard": {
+                "available": True,
+                "state": "ok",
+                "remaining": 228419.95,
+            },
+            "account_snapshot_health": {
+                "state": "stale",
+                "summary_available": True,
+                "cache_state": "stale_after_error",
+                "cache_age_s": 42.0,
+            },
+        }
+        metrics = _fake_account_snapshot_metrics()
+        with (
+            mock.patch.object(module, "_client_available", return_value=True),
+            mock.patch.multiple(module, **metrics),
+            mock.patch.dict(
+                os.environ,
+                {"IBKR_SERVICE_PROFILE": "runtime", "IBKR_SERVICE_NAME": "", "IBKR_BROKER_MODE": ""},
+                clear=False,
+            ),
+        ):
+            module.set_account_snapshot_metrics(payload, source="account_snapshot")
+
+        labels = ("ibkr-runtime", environment, "account_snapshot")
+        self.assertEqual(1.0, metrics["ACCOUNT_SNAPSHOT_AVAILABLE"].values[labels])
+        self.assertEqual(0.0, metrics["ACCOUNT_SNAPSHOT_REFRESH_OK"].values[labels])
+        self.assertEqual(1.0, metrics["ACCOUNT_SNAPSHOT_STALE"].values[labels])
+        self.assertEqual(42.0, metrics["ACCOUNT_SNAPSHOT_AGE"].values[labels])
+        self.assertEqual(228419.95, metrics["ACCOUNT_BUYING_POWER_REMAINING"].values[labels])
+
+    def test_account_snapshot_metrics_clear_values_when_effectively_unavailable(self):
+        module = _observability_or_skip(self, requiring=("set_account_snapshot_metrics",))
+
+        environment = "metric_account_unavailable_clear_test"
+        labels = ("ibkr-runtime", environment, "account_snapshot")
+        fresh_payload = {
+            "ok": True,
+            "environment": environment,
+            "summary_available": True,
+            "summary": {
+                "net_liquidation": 10000.0,
+                "buying_power": 1000.0,
+                "remaining_buying_power": 1000.0,
+            },
+            "buying_power_guard": {
+                "available": True,
+                "state": "ok",
+                "remaining": 1000.0,
+            },
+            "account_snapshot_health": {"state": "ok", "summary_available": True},
+        }
+        unavailable_payload = {
+            "ok": False,
+            "environment": environment,
+            "summary_available": False,
+            "cache_age_s": 1200.0,
+            "summary": {},
+            "buying_power_guard": {
+                "available": False,
+                "state": "unavailable",
+                "reason": "account_snapshot_unavailable",
+            },
+            "account_snapshot_health": {
+                "state": "unavailable",
+                "summary_available": False,
+                "cache_age_s": 1200.0,
+            },
+        }
+        metrics = _fake_account_snapshot_metrics()
+        with (
+            mock.patch.object(module, "_client_available", return_value=True),
+            mock.patch.multiple(module, **metrics),
+            mock.patch.dict(
+                os.environ,
+                {"IBKR_SERVICE_PROFILE": "runtime", "IBKR_SERVICE_NAME": "", "IBKR_BROKER_MODE": ""},
+                clear=False,
+            ),
+        ):
+            module.set_account_snapshot_metrics(fresh_payload, source="account_snapshot")
+            module.set_account_snapshot_metrics(unavailable_payload, source="account_snapshot")
+
+        self.assertEqual(0.0, metrics["ACCOUNT_SNAPSHOT_AVAILABLE"].values[labels])
+        self.assertEqual(0.0, metrics["ACCOUNT_SNAPSHOT_REFRESH_OK"].values[labels])
+        self.assertEqual(1200.0, metrics["ACCOUNT_SNAPSHOT_AGE"].values[labels])
+        self.assertTrue(math.isnan(metrics["ACCOUNT_BUYING_POWER_REMAINING"].values[labels]))
 
     def test_broker_request_suppressed_metric_uses_low_cardinality_labels(self):
         module = _observability_or_skip(

@@ -235,14 +235,36 @@ groups:
       summary: Account buying power is near the block floor
       description: 账户剩余购买力低于预警阈值但尚未低于禁止阈值。remaining={{ $value }}.
   - alert: AccountSnapshotUnavailable
-    expr: max by (service, environment) (max_over_time(ibkr_account_snapshot_available{source=~"account_snapshot|account_summary"}[10m]))
-      == 0
+    expr: |
+      (
+        max by (service, environment) (max_over_time(ibkr_account_snapshot_available{source=~"account_snapshot|account_summary"}[10m])) == 0
+      )
+      and on (service, environment)
+      (
+        max by (service, environment) (ibkr_account_snapshot_age_seconds{source=~"account_snapshot|account_summary"}) > 900
+      )
     for: 5m
     labels:
       severity: warning
     annotations:
       summary: Account snapshot is unavailable
-      description: 账户快照不可用，购买力、NetLiq 或保证金信息可能不可信。service={{ $labels.service }} environment={{
+      description: 账户快照超过 15 分钟没有可用的新鲜或可接受缓存数据，购买力、NetLiq 或保证金信息不可信。service={{ $labels.service }} environment={{
+        $labels.environment }}.
+  - alert: AccountSnapshotRefreshFailing
+    expr: |
+      (
+        max by (service, environment) (max_over_time(ibkr_account_snapshot_refresh_ok{source=~"account_snapshot|account_summary"}[10m])) == 0
+      )
+      and on (service, environment)
+      (
+        max by (service, environment) (max_over_time(ibkr_account_snapshot_available{source=~"account_snapshot|account_summary"}[10m])) == 1
+      )
+    for: 10m
+    labels:
+      severity: warning
+    annotations:
+      summary: Account snapshot refresh is failing
+      description: 账户快照刷新连续失败，但当前仍有可用缓存；请关注 IBKR account summary/snapshot 链路。service={{ $labels.service }} environment={{
         $labels.environment }}.
   - alert: AccountDataCircuitActive
     expr: ibkr_account_data_circuit_active == 1

@@ -6,6 +6,7 @@ import os
 import re
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
@@ -462,7 +463,22 @@ if _client_available():
     )
     ACCOUNT_SNAPSHOT_AVAILABLE = Gauge(
         "ibkr_account_snapshot_available",
-        "Whether the latest account or buying-power snapshot is available.",
+        "Whether an effective account or buying-power snapshot is currently available.",
+        ("service", "environment", "source"),
+    )
+    ACCOUNT_SNAPSHOT_REFRESH_OK = Gauge(
+        "ibkr_account_snapshot_refresh_ok",
+        "Whether the latest account or buying-power snapshot observation was fresh and error-free.",
+        ("service", "environment", "source"),
+    )
+    ACCOUNT_SNAPSHOT_STALE = Gauge(
+        "ibkr_account_snapshot_stale",
+        "Whether the current account or buying-power snapshot is served from stale cache.",
+        ("service", "environment", "source"),
+    )
+    ACCOUNT_SNAPSHOT_AGE = Gauge(
+        "ibkr_account_snapshot_age_seconds",
+        "Age in seconds of the current account or buying-power snapshot.",
         ("service", "environment", "source"),
     )
     ACCOUNT_NET_LIQUIDATION = Gauge(
@@ -719,7 +735,8 @@ else:  # pragma: no cover
     MARKET_DATA_SUBSCRIPTION_UTILIZATION = MARKET_DATA_SUBSCRIPTION_PENDING = None
     MARKET_DATA_WS_LAST_MESSAGE_AGE = MARKET_DATA_WS_LAST_TIC_AGE = None
     MARKET_DATA_BAR_LAG = MARKET_DATA_BAR_PENDING_SYMBOLS = ACCOUNT_DATA_CIRCUIT_ACTIVE = None
-    ACCOUNT_SNAPSHOT_AVAILABLE = ACCOUNT_NET_LIQUIDATION = ACCOUNT_AVAILABLE_FUNDS = ACCOUNT_EXCESS_LIQUIDITY = None
+    ACCOUNT_SNAPSHOT_AVAILABLE = ACCOUNT_SNAPSHOT_REFRESH_OK = ACCOUNT_SNAPSHOT_STALE = ACCOUNT_SNAPSHOT_AGE = None
+    ACCOUNT_NET_LIQUIDATION = ACCOUNT_AVAILABLE_FUNDS = ACCOUNT_EXCESS_LIQUIDITY = None
     ACCOUNT_TOTAL_CASH = ACCOUNT_GROSS_POSITION_VALUE = ACCOUNT_INITIAL_MARGIN = ACCOUNT_MAINTENANCE_MARGIN = None
     ACCOUNT_BUYING_POWER_CONFIGURED = None
     ACCOUNT_BUYING_POWER_REMAINING = ACCOUNT_BUYING_POWER_USED_EXPOSURE = ACCOUNT_BUYING_POWER_UTILIZATION = None
@@ -942,6 +959,70 @@ def _gauge_set(metric: Any, labels: tuple[Any, ...], value: Any) -> None:
         metric.labels(*labels).set(number)
     except Exception:
         pass
+
+
+def _gauge_clear(metric: Any, labels: tuple[Any, ...]) -> None:
+    if metric is None:
+        return
+    try:
+        metric.labels(*labels).set(float("nan"))
+    except Exception:
+        pass
+
+
+def _metric_bool_or_none(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    raw = str(value).strip().lower()
+    if raw in {"1", "true", "yes", "y", "on", "ok", "available"}:
+        return True
+    if raw in {"0", "false", "no", "n", "off", "unavailable"}:
+        return False
+    return None
+
+
+def _snapshot_summary_available(payload: dict[str, Any], summary: dict[str, Any], health: dict[str, Any]) -> bool:
+    explicit = _metric_bool_or_none(payload.get("summary_available"))
+    if explicit is None:
+        explicit = _metric_bool_or_none(health.get("summary_available"))
+    if explicit is not None:
+        return explicit
+    for key in (
+        "net_liquidation",
+        "available_funds",
+        "excess_liquidity",
+        "total_cash_value",
+        "gross_position_value",
+        "initial_margin",
+        "maintenance_margin",
+        "remaining_buying_power",
+        "buying_power",
+    ):
+        if _optional_float(summary.get(key)) is not None:
+            return True
+    return False
+
+
+def _snapshot_age_seconds(payload: dict[str, Any], health: dict[str, Any]) -> float | None:
+    for value in (payload.get("cache_age_s"), health.get("cache_age_s")):
+        number = _optional_float(value)
+        if number is not None:
+            return max(0.0, number)
+    raw = payload.get("fetched_at")
+    if raw in (None, ""):
+        return None
+    try:
+        text = str(raw).strip()
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        fetched_at = datetime.fromisoformat(text)
+        if fetched_at.tzinfo is None:
+            fetched_at = fetched_at.replace(tzinfo=timezone.utc)
+        return max(0.0, time.time() - fetched_at.timestamp())
+    except Exception:
+        return None
 
 
 def _safe_len(value: Any) -> int:
@@ -1452,13 +1533,40 @@ def set_account_snapshot_metrics(payload: dict[str, Any] | None = None, *, sourc
     src = _sanitize_label(source or guard.get("source") or payload.get("source") or "account_snapshot")
 
     health = payload.get("account_snapshot_health") if isinstance(payload.get("account_snapshot_health"), dict) else {}
-    guard_available = guard.get("available")
-    health_state = str(health.get("state") or health.get("health") or "ok").lower()
-    available = bool(payload.get("ok", True)) and health_state != "unavailable"
-    if guard_available is False:
-        available = False
+    guard_available = _metric_bool_or_none(guard.get("available"))
+    guard_state = str(guard.get("state") or "").strip().lower()
+    health_state = str(health.get("state") or health.get("health") or "ok").strip().lower()
+    cache_state = str(payload.get("cache_state") or health.get("cache_state") or "").strip().lower()
+    stale = bool(_metric_bool_or_none(payload.get("stale"))) or cache_state in {"stale", "stale_after_error", "stale_after_account_data_circuit"}
+    errors = payload.get("errors") if isinstance(payload.get("errors"), dict) else {}
+    refresh_error = str(payload.get("refresh_error") or errors.get("refresh") or "").strip()
+    payload_ok = _metric_bool_or_none(payload.get("ok"))
+    if payload_ok is None:
+        payload_ok = True
+    summary_available = _snapshot_summary_available(payload, summary, health)
+    guard_unavailable = guard_available is False or guard_state == "unavailable"
+    available = (
+        summary_available
+        and not guard_unavailable
+        and health_state != "unavailable"
+        and (payload_ok or stale)
+    )
+    refresh_ok = (
+        bool(payload_ok)
+        and summary_available
+        and not guard_unavailable
+        and health_state == "ok"
+        and not stale
+        and not refresh_error
+    )
+    age_seconds = _snapshot_age_seconds(payload, health)
     if ACCOUNT_SNAPSHOT_AVAILABLE is not None:
         ACCOUNT_SNAPSHOT_AVAILABLE.labels(service, env, src).set(1.0 if available else 0.0)
+    if ACCOUNT_SNAPSHOT_REFRESH_OK is not None:
+        ACCOUNT_SNAPSHOT_REFRESH_OK.labels(service, env, src).set(1.0 if refresh_ok else 0.0)
+    if ACCOUNT_SNAPSHOT_STALE is not None:
+        ACCOUNT_SNAPSHOT_STALE.labels(service, env, src).set(1.0 if stale else 0.0)
+    _gauge_set(ACCOUNT_SNAPSHOT_AGE, (service, env, src), age_seconds)
 
     net_liq = _optional_float(guard.get("net_liquidation"))
     if net_liq is None:
@@ -1481,19 +1589,26 @@ def set_account_snapshot_metrics(payload: dict[str, Any] | None = None, *, sourc
     elif used is None:
         used = gross_position_value
 
-    _gauge_set(ACCOUNT_NET_LIQUIDATION, (service, env, src), net_liq)
-    _gauge_set(ACCOUNT_AVAILABLE_FUNDS, (service, env, src), available_funds)
-    _gauge_set(ACCOUNT_EXCESS_LIQUIDITY, (service, env, src), excess_liquidity)
-    _gauge_set(ACCOUNT_TOTAL_CASH, (service, env, src), total_cash)
-    _gauge_set(ACCOUNT_GROSS_POSITION_VALUE, (service, env, src), gross_position_value)
-    _gauge_set(ACCOUNT_INITIAL_MARGIN, (service, env, src), initial_margin)
-    _gauge_set(ACCOUNT_MAINTENANCE_MARGIN, (service, env, src), maintenance_margin)
-    _gauge_set(ACCOUNT_BUYING_POWER_CONFIGURED, (service, env, src), configured)
-    _gauge_set(ACCOUNT_BUYING_POWER_REMAINING, (service, env, src), remaining)
-    _gauge_set(ACCOUNT_BUYING_POWER_USED_EXPOSURE, (service, env, src), used)
-    _gauge_set(ACCOUNT_BUYING_POWER_REMAINING_SLOTS, (service, env, src), guard.get("risk_model_remaining_slots"))
-    _gauge_set(ACCOUNT_BUYING_POWER_WARN_FLOOR, (service, env, src), guard.get("warn_floor"))
-    _gauge_set(ACCOUNT_BUYING_POWER_BLOCK_FLOOR, (service, env, src), guard.get("block_floor"))
+    account_value_metrics = (
+        (ACCOUNT_NET_LIQUIDATION, net_liq),
+        (ACCOUNT_AVAILABLE_FUNDS, available_funds),
+        (ACCOUNT_EXCESS_LIQUIDITY, excess_liquidity),
+        (ACCOUNT_TOTAL_CASH, total_cash),
+        (ACCOUNT_GROSS_POSITION_VALUE, gross_position_value),
+        (ACCOUNT_INITIAL_MARGIN, initial_margin),
+        (ACCOUNT_MAINTENANCE_MARGIN, maintenance_margin),
+        (ACCOUNT_BUYING_POWER_CONFIGURED, configured),
+        (ACCOUNT_BUYING_POWER_REMAINING, remaining),
+        (ACCOUNT_BUYING_POWER_USED_EXPOSURE, used),
+        (ACCOUNT_BUYING_POWER_REMAINING_SLOTS, guard.get("risk_model_remaining_slots")),
+        (ACCOUNT_BUYING_POWER_WARN_FLOOR, guard.get("warn_floor")),
+        (ACCOUNT_BUYING_POWER_BLOCK_FLOOR, guard.get("block_floor")),
+    )
+    for metric, value in account_value_metrics:
+        if available:
+            _gauge_set(metric, (service, env, src), value)
+        else:
+            _gauge_clear(metric, (service, env, src))
 
     utilization = _optional_float(guard.get("utilization_pct"))
     if utilization is None and configured is not None and configured > 0 and used is not None:
@@ -1504,7 +1619,10 @@ def set_account_snapshot_metrics(payload: dict[str, Any] | None = None, *, sourc
             utilization = max(0.0, min(100.0, (buying_power - remaining) / buying_power * 100.0))
         elif used is not None and remaining + used > 0:
             utilization = max(0.0, min(100.0, used / (remaining + used) * 100.0))
-    _gauge_set(ACCOUNT_BUYING_POWER_UTILIZATION, (service, env, src), utilization)
+    if available:
+        _gauge_set(ACCOUNT_BUYING_POWER_UTILIZATION, (service, env, src), utilization)
+    else:
+        _gauge_clear(ACCOUNT_BUYING_POWER_UTILIZATION, (service, env, src))
 
     state = _sanitize_label(str(guard.get("state") or "unknown").strip().lower() or "unknown")
     if ACCOUNT_BUYING_POWER_GUARD_STATE is not None:

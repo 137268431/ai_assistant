@@ -73,5 +73,19 @@ class AccountRouteOrdersFastTest(unittest.TestCase):
         self.assertTrue(self._orders_fast({}, default=True))
 
 
+class AccountRouteMetricsTest(unittest.TestCase):
+    def test_record_account_snapshot_metrics_is_best_effort(self):
+        payload = {"ok": True, "environment": "paper"}
+        with mock.patch("ibkr_compute.observability.prometheus.set_account_snapshot_metrics") as recorder:
+            account_routes._record_account_snapshot_metrics(payload)
+        recorder.assert_called_once_with(payload, source="account_snapshot")
+
+        with mock.patch(
+            "ibkr_compute.observability.prometheus.set_account_snapshot_metrics",
+            side_effect=RuntimeError("metrics unavailable"),
+        ):
+            account_routes._record_account_snapshot_metrics(payload)
+
+
 if __name__ == "__main__":
     unittest.main()

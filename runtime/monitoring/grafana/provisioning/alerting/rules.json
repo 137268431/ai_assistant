@@ -1918,7 +1918,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "max by (service, environment) (max_over_time(ibkr_account_snapshot_available{source=~\"account_snapshot|account_summary\"}[10m])) == bool 0",
+                "expr": "(max by (service, environment) (max_over_time(ibkr_account_snapshot_available{source=~\"account_snapshot|account_summary\"}[10m])) == bool 0) * on (service, environment) (max by (service, environment) (ibkr_account_snapshot_age_seconds{source=~\"account_snapshot|account_summary\"}) > bool 900)",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -1977,7 +1977,93 @@
           "for": "5m",
           "annotations": {
             "summary": "账户快照不可用",
-            "description": "account_snapshot/account_summary 在 10 分钟内都不可用，购买力、NetLiq 或保证金信息可能不可信。"
+            "description": "账户快照超过 15 分钟没有可用的新鲜或可接受缓存数据，购买力、NetLiq 或保证金信息不可信。"
+          },
+          "labels": {
+            "severity": "warning",
+            "alert_source": "grafana"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "account_snapshot_refresh_failing",
+          "title": "AccountSnapshotRefreshFailing",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 900,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "(max by (service, environment) (max_over_time(ibkr_account_snapshot_refresh_ok{source=~\"account_snapshot|account_summary\"}[10m])) == bool 0) * on (service, environment) (max by (service, environment) (max_over_time(ibkr_account_snapshot_available{source=~\"account_snapshot|account_summary\"}[10m])) == bool 1)",
+                "hide": false,
+                "instant": true,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": false,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0.5
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "A"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "hide": false,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B",
+                "type": "classic_conditions"
+              }
+            }
+          ],
+          "dashboardUid": "quant-monitoring-overview",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "10m",
+          "annotations": {
+            "summary": "账户快照刷新失败",
+            "description": "账户快照刷新连续失败，但当前仍有可用缓存；请关注 IBKR account summary/snapshot 链路。"
           },
           "labels": {
             "severity": "warning",

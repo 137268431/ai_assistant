@@ -72,7 +72,7 @@ entryAnchorZoneAtr = input.float(0.15, "Entry anchor zone (x ATR)", step=0.05, m
 entryMaxAnchorAtr = input.float(0.60, "Max anchor distance (x ATR)", step=0.05, minval=0.05, maxval=5.0, group="05 Risk")
 entryMaxAnchorBps = input.float(80.0, "Max anchor distance (bps)", step=5.0, minval=1.0, maxval=1000.0, group="05 Risk")
 entryFallbackAtr = input.float(0.25, "Fallback entry offset (x ATR)", step=0.05, minval=0.0, maxval=3.0, group="05 Risk")
-entryOrderTtlBars = input.int(1, "Entry order TTL bars", minval=1, maxval=20, group="05 Risk")
+entryOrderTtlBars = input.int(1, "Entry order review bars", minval=1, maxval=20, group="05 Risk")
 structuralSlBufferAtr = input.float(0.20, "Structural SL buffer (x ATR)", step=0.05, minval=0.0, maxval=3.0, group="05 Risk")
 mrCheckpointR = input.float(0.60, "MR checkpoint lock trigger (R)", step=0.05, minval=0.10, maxval=5.0, group="05 Risk")
 mrCheckpointLockR = input.float(0.05, "MR checkpoint lock offset (R)", step=0.01, minval=0.0, maxval=2.0, group="05 Risk")
@@ -243,7 +243,7 @@ exitReasonDisplayName(string reason) =>
     reason == "take_profit" ? "TP止盈" : reason == "runner_stop" ? "跟踪止盈" : reason == "stop_loss" ? "SL止损" : reason == "mr_time_stop" ? "MR超时退出" : reason == "mr_structure_invalidated" ? "MR结构失效" : reason == "entry_ttl_expired" ? "挂单过期" : reason == "force_flat_eod" or reason == "eod" ? "EOD强平" : reason == "strategy_closed" ? "策略退出" : reason
 
 cancelReasonDisplayName(string reason) =>
-    reason == "entry_ttl_expired" ? "挂单过期" : reason == "entry_window_expired" ? "入场窗口结束" : reason == "setup_window_expired" ? "结构窗口失效" : reason == "entry_anchor_invalidated" ? "结构价失效" : reason == "opposite_signal_or_conflict" ? "反向/冲突信号" : reason == "pending_eod_cancel" ? "EOD撤销挂单" : reason
+    reason == "entry_ttl_expired" ? "挂单过期" : reason == "entry_window_expired" ? "入场窗口结束" : reason == "setup_window_expired" ? "结构窗口失效" : reason == "entry_anchor_invalidated" ? "结构价失效" : reason == "trend_invalidated" ? "趋势失效" : reason == "opposite_signal_or_conflict" ? "反向/冲突信号" : reason == "pending_eod_cancel" ? "EOD撤销挂单" : reason
 
 fmtSignedMoney(float value) =>
     na(value) ? "--" : (value >= 0.0 ? "+$" : "-$") + str.tostring(math.abs(value), "#.##")
@@ -1340,6 +1340,8 @@ else if useEmaWeakFilter and (setupShortTrendLower or setupShortPostUpperBreakdo
     blockShortReason := "ema_weak"
 
 bool conflict = longRaw and shortRaw
+bool longActionable = longSignalCandidate and not blockLong
+bool shortActionable = shortSignalCandidate and not blockShort
 
 int scoreLongTrendUpper = math.min(100, (upperWindowValid ? 25 : 0) + (upperBullTouchSeen ? 25 : 0) + (upperBullFractalSeen ? 25 : 0) + (bullDivSeen ? 25 : 0) + (upperBullEmaCrossSeen ? 25 : 0))
 int scoreLongPostLowerBreakout = math.min(100, (lowerSdExtremeFresh ? 34 : 0) + (lowerBullFractalSeen ? 33 : 0) + (bullDivSeen ? 33 : 0) + (lowerBullEmaCrossSeen ? 33 : 0))
@@ -1879,13 +1881,19 @@ bool pendingEntryExpired = confirmed and activePendingEntry and strategy.positio
 bool pendingEntryWindowExpired = confirmed and activePendingEntry and strategy.position_size == 0 and not inEntryWindow
 bool pendingSetupWindowExpired = confirmed and activePendingEntry and strategy.position_size == 0 and (activeSetup == "mr_sdLower" and lowerWindowExpired or activeSetup == "trend_sdLower" and lowerWindowHardExpired or activeSetup == "trend_sdLowerBreakout" and not lowerSdExtremeFresh or activeSetup == "mr_sdUpper" and upperWindowExpired or activeSetup == "trend_sdUpper" and upperWindowHardExpired or activeSetup == "trend_sdUpperBreakdown" and not upperSdExtremeFresh)
 bool pendingAnchorInvalidated = confirmed and activePendingEntry and strategy.position_size == 0 and structuralAnchorMode and (activeDirection == 1 ? close < activeEntry - atrRaw * structuralSlBufferAtr : close > activeEntry + atrRaw * structuralSlBufferAtr)
-bool pendingOppositeOrConflict = confirmed and activePendingEntry and strategy.position_size == 0 and (conflict or (activeDirection == 1 and shortSignalCandidate) or (activeDirection == -1 and longSignalCandidate))
+bool pendingOppositeLongActionable = confirmed and activePendingEntry and strategy.position_size == 0 and activeDirection == -1 and longActionable
+bool pendingOppositeShortActionable = confirmed and activePendingEntry and strategy.position_size == 0 and activeDirection == 1 and shortActionable
+bool pendingActionableConflict = confirmed and activePendingEntry and strategy.position_size == 0 and longActionable and shortActionable
+bool pendingOppositeOrConflict = pendingActionableConflict or pendingOppositeLongActionable or pendingOppositeShortActionable
 bool pendingEodCancel = confirmed and enableEodForceClose and activePendingEntry and strategy.position_size == 0 and eodCloseTimeReached and (na(eodForceCloseDay) or eodForceCloseDay != dailyTime)
-bool pendingSameSignalStillValid = confirmed and activePendingEntry and strategy.position_size == 0 and (activeDirection == 1 ? longSignalCandidate and longSetup == activeSetup and not blockLong : activeDirection == -1 ? shortSignalCandidate and shortSetup == activeSetup and not blockShort : false) and not conflict
-bool pendingEntryRenewNow = pendingEntryExpired and pendingSameSignalStillValid and not pendingEodCancel and not pendingEntryWindowExpired and not pendingSetupWindowExpired and not pendingAnchorInvalidated and not pendingOppositeOrConflict
+bool pendingLongEmaHardReversed = emaFast < emaSlow and close < emaSlow
+bool pendingShortEmaHardReversed = emaFast > emaSlow and close > emaSlow
+bool pendingTrendInvalidated = confirmed and activePendingEntry and strategy.position_size == 0 and (activeDirection == 1 ? dtpDir == -1 or mtfLongStatus == "block" or pendingLongEmaHardReversed : activeDirection == -1 ? dtpDir == 1 or mtfShortStatus == "block" or pendingShortEmaHardReversed : true)
+bool pendingTrendStillValid = confirmed and activePendingEntry and strategy.position_size == 0 and not pendingTrendInvalidated
+bool pendingEntryRenewNow = pendingEntryExpired and pendingTrendStillValid and not pendingEodCancel and not pendingEntryWindowExpired and not pendingSetupWindowExpired and not pendingAnchorInvalidated and not pendingOppositeOrConflict
 if pendingEntryRenewNow
     activeEntryOrderExpiresBar := bar_index + entryOrderTtlBars
-string pendingCancelReason = pendingEodCancel ? "pending_eod_cancel" : pendingOppositeOrConflict ? "opposite_signal_or_conflict" : pendingEntryWindowExpired ? "entry_window_expired" : pendingSetupWindowExpired ? "setup_window_expired" : pendingAnchorInvalidated ? "entry_anchor_invalidated" : pendingEntryExpired and not pendingEntryRenewNow ? "entry_ttl_expired" : ""
+string pendingCancelReason = pendingEodCancel ? "pending_eod_cancel" : pendingOppositeOrConflict ? "opposite_signal_or_conflict" : pendingEntryWindowExpired ? "entry_window_expired" : pendingSetupWindowExpired ? "setup_window_expired" : pendingAnchorInvalidated ? "entry_anchor_invalidated" : pendingTrendInvalidated ? "trend_invalidated" : pendingEntryExpired and not pendingEntryRenewNow ? "entry_ttl_expired" : ""
 bool pendingCancelNow = pendingCancelReason != ""
 if pendingCancelNow
     if enableAlerts and not activeCancelSent
@@ -2051,7 +2059,7 @@ if enterLong
         strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment="平多 · TP/SL", comment_profit="平多 · TP止盈", comment_loss="平多 · SL止损")
         if showFlowLabels
             string mrLine = longSetup == "mr_sdLower" ? "\nMR: " + mrRegimeDisplayName(longMrRegime) + " / 均值TP " + str.tostring(targetPrice, "#.##") : ""
-            label.new(bar_index, low - atrVal * 3.1, "信号已发出\n提交限价做多\n" + setupDisplayName(longSetup) + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("long") + "\n" + dtpEntryFilterText("long", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + mrLine + "\n" + profitSpaceSummaryText(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr) + "\nref " + str.tostring(longReferenceEntry, "#.##") + " / plan " + str.tostring(entryPrice, "#.##") + " / TTL " + str.tostring(entryOrderTtlBars, "#") + "bar\n锚点: " + activeEntryAnchorReason, style=label.style_label_up, color=flowLabelColor("entry", "long"), textcolor=color.white, size=size.normal)
+            label.new(bar_index, low - atrVal * 3.1, "信号已发出\n提交限价做多\n" + setupDisplayName(longSetup) + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("long") + "\n" + dtpEntryFilterText("long", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + mrLine + "\n" + profitSpaceSummaryText(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr) + "\nref " + str.tostring(longReferenceEntry, "#.##") + " / plan " + str.tostring(entryPrice, "#.##") + " / 复查 " + str.tostring(entryOrderTtlBars, "#") + "bar\n锚点: " + activeEntryAnchorReason, style=label.style_label_up, color=flowLabelColor("entry", "long"), textcolor=color.white, size=size.normal)
         lowerPostReversalUsed := setupLongPostLowerBreakout ? true : lowerPostReversalUsed
         lowerWindowUsed := longSetup == "mr_sdLower" ? true : lowerWindowUsed
         upperWindowUsed := longSetup == "trend_sdUpper" ? true : upperWindowUsed
@@ -2107,7 +2115,7 @@ if enterShort
         strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment="平空 · TP/SL", comment_profit="平空 · TP止盈", comment_loss="平空 · SL止损")
         if showFlowLabels
             string mrLine = shortSetup == "mr_sdUpper" ? "\nMR: " + mrRegimeDisplayName(shortMrRegime) + " / 均值TP " + str.tostring(targetPrice, "#.##") : ""
-            label.new(bar_index, high + atrVal * 3.1, "信号已发出\n提交限价做空\n" + setupDisplayName(shortSetup) + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("short") + "\n" + dtpEntryFilterText("short", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + mrLine + "\n" + profitSpaceSummaryText(shortExpectedNetProfit, shortExpectedNetRoiPct, shortCostPctOfReward, shortTargetDistanceAtr) + "\nref " + str.tostring(shortReferenceEntry, "#.##") + " / plan " + str.tostring(entryPrice, "#.##") + " / TTL " + str.tostring(entryOrderTtlBars, "#") + "bar\n锚点: " + activeEntryAnchorReason, style=label.style_label_down, color=flowLabelColor("entry", "short"), textcolor=color.white, size=size.normal)
+            label.new(bar_index, high + atrVal * 3.1, "信号已发出\n提交限价做空\n" + setupDisplayName(shortSetup) + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("short") + "\n" + dtpEntryFilterText("short", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + mrLine + "\n" + profitSpaceSummaryText(shortExpectedNetProfit, shortExpectedNetRoiPct, shortCostPctOfReward, shortTargetDistanceAtr) + "\nref " + str.tostring(shortReferenceEntry, "#.##") + " / plan " + str.tostring(entryPrice, "#.##") + " / 复查 " + str.tostring(entryOrderTtlBars, "#") + "bar\n锚点: " + activeEntryAnchorReason, style=label.style_label_down, color=flowLabelColor("entry", "short"), textcolor=color.white, size=size.normal)
         upperPostReversalUsed := setupShortPostUpperBreakdown ? true : upperPostReversalUsed
         upperWindowUsed := shortSetup == "mr_sdUpper" ? true : upperWindowUsed
         lowerWindowUsed := shortSetup == "trend_sdLower" ? true : lowerWindowUsed
