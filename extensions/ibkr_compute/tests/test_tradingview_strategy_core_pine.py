@@ -83,9 +83,13 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertIn("exitPnlLabelText(string reason, string timeText, float price, float pnl, float pnlPct)", source)
         self.assertIn("PnL \" + fmtSignedMoney(pnl) + \" (\" + fmtSignedPct(pnlPct) + \")", source)
         self.assertIn("string exitDetailText = exitPnlLabelText(exitReason, lastExitTimeText, exitPrice, lastExitPnl, lastExitPnlPct)", source)
+        self.assertIn("float exitR = activeInitialRisk > 0.0 ? exitPnlPerShare / activeInitialRisk : na", source)
+        self.assertIn("decisionExitRText(exitR)", source)
         self.assertIn("flowLabelText(exitCompactText, exitDetailText)", source)
         self.assertIn("tooltip=flowLabelTooltip(exitDetailText)", source)
         self.assertIn('string eodDetailText = exitPnlLabelText("force_flat_eod", lastExitTimeText, eodExitPrice, lastExitPnl, lastExitPnlPct)', source)
+        self.assertIn("float eodR = activeInitialRisk > 0.0 ? eodPnlPerShare / activeInitialRisk : na", source)
+        self.assertIn("decisionExitRText(eodR)", source)
         self.assertIn("flowLabelText(eodCompactText, eodDetailText)", source)
         self.assertIn("tooltip=flowLabelTooltip(eodDetailText)", source)
 
@@ -126,13 +130,21 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
             all("tooltip=flowLabelTooltip(" in line for line in label_lines),
             "all flow labels should preserve full details in tooltips",
         )
-        self.assertIn('flowLabelText("候选池\\nSD下轨", lowerActivateDetailText)', source)
+        self.assertIn("decisionSetupTag(string setup) =>", source)
+        self.assertIn("decisionRiskLine(float entryPrice, float stopPrice, float targetPrice, float rewardRisk, float targetAtrMultiple) =>", source)
+        self.assertIn("decisionBlockReason(string reason, string profitFailureReason) =>", source)
+        self.assertIn('flowLabelText("候选 L·SD↓\\n等组件", lowerActivateDetailText)', source)
+        self.assertIn('flowLabelText("候选 S·SD↑\\n等组件", upperActivateDetailText)', source)
         self.assertIn("flowLabelText(prepareCompactText, prepareDetailText)", source)
         self.assertIn("flowLabelText(blockedCompactText, blockedDetailText)", source)
         self.assertIn("flowLabelText(longEntryCompactText, longEntryDetailText)", source)
         self.assertIn("flowLabelText(shortEntryCompactText, shortEntryDetailText)", source)
-        self.assertIn('string blockedCompactReasonText = blockedProfitSpaceEntryBlocked ? "获利不足" : filterDisplayName(blockedReason)', source)
-        self.assertIn('string blockedCompactText = "过滤" + directionDisplayName(blockedDirection) + "\\n" + blockedCompactReasonText', source)
+        self.assertIn('string prepareCompactText = "观察 " + decisionDirectionTag(candidateDirection) + "·" + decisionSetupTag(candidateSetup) + "\\n" + decisionComponentLine(candidateProgressText, candidateWaitText)', source)
+        self.assertIn('string blockedCompactReasonText = decisionBlockReason(blockedReason, blockedProfitSpaceEntryBlocked ? blockedProfitSpaceFailureReason : "none")', source)
+        self.assertIn('string blockedCompactMetricText = blockedProfitSpaceEntryBlocked ? " / " + decisionProfitMetricLine(blockedStructureRewardRisk, blockedTargetDistanceAtr) : ""', source)
+        self.assertIn('string blockedCompactText = "过滤 " + decisionDirectionTag(blockedDirection) + "·" + decisionSetupTag(blockedSetup) + "\\n" + blockedCompactReasonText + blockedCompactMetricText', source)
+        self.assertIn('string longEntryCompactText = "入场 L·" + decisionSetupTag(longSetup) + " " + str.tostring(entryPrice, "#.##") + "\\n" + decisionRiskLine(entryPrice, stopPrice, targetPrice, longStructureRewardRisk, longTargetDistanceAtr)', source)
+        self.assertIn('string shortEntryCompactText = "入场 S·" + decisionSetupTag(shortSetup) + " " + str.tostring(entryPrice, "#.##") + "\\n" + decisionRiskLine(entryPrice, stopPrice, targetPrice, shortStructureRewardRisk, shortTargetDistanceAtr)', source)
 
     def test_fast_in_defaults_volatility_filter_and_marker_toggles(self):
         source = self.source
@@ -388,7 +400,8 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertIn("string blockedProfitCheckpointText = blockedDirection == \"long\" ? profitSpaceCheckpointText", source)
         self.assertIn("string blockedProfitLabelText = (blockedProfitSpaceText == \"\" ? \"\\n\" + blockedProfitSummary : blockedProfitSpaceText) + blockedProfitCheckpointText", source)
         self.assertIn('"\\n" + entryWindowDiagnosticsText() + "\\n组件: " + blockedComponentText', source)
-        self.assertIn('string blockedCompactReasonText = blockedProfitSpaceEntryBlocked ? "获利不足" : filterDisplayName(blockedReason)', source)
+        self.assertIn('string blockedCompactReasonText = decisionBlockReason(blockedReason, blockedProfitSpaceEntryBlocked ? blockedProfitSpaceFailureReason : "none")', source)
+        self.assertIn('string blockedCompactText = "过滤 " + decisionDirectionTag(blockedDirection) + "·" + decisionSetupTag(blockedSetup) + "\\n" + blockedCompactReasonText + blockedCompactMetricText', source)
         self.assertIn("label.new(bar_index, blockedY, flowLabelText(blockedCompactText, blockedDetailText)", source)
         self.assertIn("string blockedVisualKey = blockedDirection + \":\" + blockedSetup + \":\" + blockedReason + \":\" + blockedComponentText", source)
         self.assertIn("mtfStatusForDirection(blockedDirection)", source)
