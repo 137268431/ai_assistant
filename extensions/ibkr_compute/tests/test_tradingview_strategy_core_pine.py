@@ -64,8 +64,8 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertIn('jsonStr("mr_regime", mrRegimeValue)', source)
         self.assertIn('jsonBool("mr_regime_allowed", mrRegimeAllowedValue)', source)
         self.assertIn('jsonNum("mr_sd_slope_atr", sdSlopeAtr)', source)
-        self.assertIn("buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, \"long\", longSetup, longReason, qty, longReferenceEntry, entryPrice, submittedLimitPrice", source)
-        self.assertIn("buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, \"short\", shortSetup, shortReason, qty, shortReferenceEntry, entryPrice, submittedLimitPrice", source)
+        self.assertIn("buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, activePlanId, \"long\", longSetup, longReason, qty, longReferenceEntry, entryPrice, submittedLimitPrice", source)
+        self.assertIn("buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, activePlanId, \"short\", shortSetup, shortReason, qty, shortReferenceEntry, entryPrice, submittedLimitPrice", source)
         self.assertIn("jsonRequestedSides(string requestedSides)", source)
         self.assertIn('string requestedSides = stopChanged and targetChanged ? "stop_loss,take_profit" : stopChanged ? "stop_loss" : targetChanged ? "take_profit" : ""', source)
         self.assertIn("float eventNewTarget = targetChanged ? activeTarget : na", source)
@@ -136,6 +136,37 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertIn('plotshape(showEmaCrossMarkers and emaDeathCross, "EMA20/50 death cross"', source)
         self.assertIn('text="20/50金叉"', source)
         self.assertIn('text="20/50死叉"', source)
+
+    def test_independent_two_leg_plan_metadata_and_per_leg_risk(self):
+        source = self.source
+
+        self.assertIn('strategy(title="Signal Strategy Core[Glory]", overlay=true, max_labels_count=500, pyramiding=0', source)
+        self.assertIn('scalePlanEnabled = input.bool(true, "Independent two-leg plan metadata", group="05 Risk")', source)
+        self.assertIn('maxLegRisk = input.float(75.0, "Max loss per independent leg ($)", step=5.0, minval=1.0, group="05 Risk")', source)
+        self.assertIn("float effectiveMaxLegRisk = scalePlanEnabled ? math.min(maxLegRisk, effectiveMaxPlanRisk / 2.0) : maxLossPerTrade", source)
+        self.assertIn("scalePlanId(string direction, string setup) =>", source)
+        self.assertIn('scalePlanEnabled ? planIdValue + "_leg1" : planIdValue', source)
+        self.assertIn("scalePlanPayload(string planIdValue, string tradeGroupIdValue, int legIndex, string legTrigger) =>", source)
+        self.assertIn('jsonStr("plan_type", "independent_two_leg")', source)
+        self.assertIn('string resolvedPlanId = planIdValue == "" ? str.replace_all(tradeGroupIdValue, "_leg" + str.tostring(legIndex, "#"), "") : planIdValue', source)
+        self.assertIn('jsonStr("plan_id", resolvedPlanId)', source)
+        self.assertIn('jsonInt("leg_index", legIndex)', source)
+        self.assertIn('jsonStr("leg_trade_group_id", tradeGroupIdValue)', source)
+        self.assertIn('jsonNum("max_leg_notional", positionAmount)', source)
+        self.assertIn('jsonNum("max_leg_risk", effectiveMaxLegRisk)', source)
+        self.assertIn('jsonNum("max_plan_risk", effectiveMaxPlanRisk)', source)
+        self.assertIn('jsonBool("independent_legs", true)', source)
+        self.assertIn('jsonBool("cross_leg_protection_sync", false)', source)
+        self.assertIn('jsonBool("aggregate_position_management", false)', source)
+        self.assertIn('jsonStr("leg_order_mode", "independent_bracket")', source)
+        self.assertIn('jsonBool("leg2_requires_leg1_protected", true)', source)
+        self.assertIn("float longRiskStopCandidate = longQtyCandidate > 0.0 ? longEntryCandidate - effectiveMaxLegRisk / longQtyCandidate : longAtrStopCandidate", source)
+        self.assertIn("float shortRiskStopCandidate = shortQtyCandidate > 0.0 ? shortEntryCandidate + effectiveMaxLegRisk / shortQtyCandidate : shortAtrStopCandidate", source)
+        self.assertIn('string planIdValue = scalePlanId("long", longSetup)', source)
+        self.assertIn('string planIdValue = scalePlanId("short", shortSetup)', source)
+        self.assertIn("activePlanId := planIdValue", source)
+        self.assertIn("scalePlanPayload(activePlanId, activeTradeGroupId, 1, activeEntryAnchorSource)", source)
+        self.assertNotIn("pyramiding=2", source)
 
     def test_profit_space_filter_blocks_small_net_roi_or_target_space(self):
         source = self.source

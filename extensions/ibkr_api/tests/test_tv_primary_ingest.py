@@ -1023,6 +1023,83 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertEqual(saved["extra"]["mtf"]["status"], "pass")
         self.assertEqual(pb.records[TV_EVENT_COLLECTION][0]["broker_mode"], "paper")
 
+    def test_entry_preserves_independent_two_leg_plan_metadata(self):
+        pb = _FakePB()
+        pb.create_record(
+            "ibkr_targets",
+            {
+                "symbol": "AAPL",
+                "date": "2026-05-29",
+                "environment": "live",
+                "direction_bias": "long",
+                "score": 90,
+                "status": "active",
+                "extra": {"source": "tradingview", "activity_rank": 1},
+            },
+        )
+
+        response, status = _process(
+            pb,
+            {
+                "source": "tv",
+                "event_type": "entry",
+                "event_id": "tv-entry-plan-1",
+                "signal_id": "tv-entry-plan-1",
+                "symbol": "AAPL",
+                "direction": "long",
+                "entry_price": 188.25,
+                "quantity": 12,
+                "stop_loss": 185.80,
+                "take_profit": 193.10,
+                "market_date": "2026-05-29",
+                "environment": "paper",
+                "us_time": "2026-05-29 09:45:00",
+                "activity_score": 91,
+                "trade_group_id": "AAPL_long_20260529_0945_2_mr_sdLower_leg2",
+                "scale_plan_enabled": True,
+                "scale_plan_version": "independent_two_leg_v1",
+                "plan_type": "independent_two_leg",
+                "scale_plan_type": "independent_two_leg",
+                "plan_id": "AAPL_long_20260529_0945_2_mr_sdLower",
+                "leg_index": 2,
+                "scale_leg_index": 2,
+                "leg_count": 2,
+                "leg_role": "secondary",
+                "leg_trigger": "dtp_retest",
+                "leg_trade_group_id": "AAPL_long_20260529_0945_2_mr_sdLower_leg2",
+                "max_leg_notional": 5000,
+                "max_leg_risk": 75,
+                "max_plan_risk": 150,
+                "plan_risk_budget_used": 150,
+                "plan_risk_budget_ok": True,
+                "independent_legs": True,
+                "cross_leg_protection_sync": False,
+                "aggregate_position_management": False,
+                "leg_order_mode": "independent_bracket",
+                "leg2_requires_leg1_protected": True,
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(response["ok"])
+        saved = pb.records["ibkr_signals"][0]
+        extra = saved["extra"]
+        self.assertEqual("AAPL_long_20260529_0945_2_mr_sdLower", extra["plan_id"])
+        self.assertEqual("independent_two_leg", extra["plan_type"])
+        self.assertEqual(2, extra["leg_index"])
+        self.assertEqual("secondary", extra["leg_role"])
+        self.assertEqual("dtp_retest", extra["leg_trigger"])
+        self.assertEqual("AAPL_long_20260529_0945_2_mr_sdLower_leg2", extra["trade_group_id"])
+        self.assertEqual("AAPL_long_20260529_0945_2_mr_sdLower_leg2", extra["leg_trade_group_id"])
+        self.assertEqual(5000, extra["max_leg_notional"])
+        self.assertEqual(75, extra["max_leg_risk"])
+        self.assertEqual(150, extra["max_plan_risk"])
+        self.assertTrue(extra["plan_risk_budget_ok"])
+        self.assertTrue(extra["independent_legs"])
+        self.assertFalse(extra["cross_leg_protection_sync"])
+        self.assertFalse(extra["aggregate_position_management"])
+        self.assertEqual("independent_bracket", extra["leg_order_mode"])
+
     def test_entry_route_success_triggers_runtime_wakeup(self):
         pb = _FakePB()
         wakeup_calls = []

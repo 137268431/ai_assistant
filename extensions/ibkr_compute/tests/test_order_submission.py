@@ -3047,6 +3047,74 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         self.assertEqual(100.15, ack_extra["submitted_entry_limit_price"])
         self.assertTrue(ack_extra["final_protection_from_fill"])
 
+    def test_tv_direct_independent_plan_metadata_stays_on_single_leg_bracket(self):
+        signal = self._tv_signal("AAPL")
+        plan_id = "AAPL_long_20260611_0945_2_mr_sdLower"
+        leg_group = f"{plan_id}_leg2"
+        signal["extra"] = {
+            **signal["extra"],
+            "trade_group_id": leg_group,
+            "bracket_group": leg_group,
+            "scale_plan_enabled": True,
+            "plan_type": "independent_two_leg",
+            "plan_id": plan_id,
+            "leg_index": 2,
+            "leg_trigger": "dtp_retest",
+            "max_leg_notional": 5000,
+            "max_leg_risk": 75,
+            "max_plan_risk": 150,
+            "independent_legs": True,
+            "cross_leg_protection_sync": False,
+        }
+        signal["raw"]["extra"] = dict(signal["extra"])
+        pb = FakeSignalPBClient({"id": "row-aapl", "extra": dict(signal["extra"])})
+        service = FakeSignalService(
+            signal,
+            lifecycle=FakeLifecycle(),
+            pb=pb,
+            config=FakeConfig({"entry_pre_submit_guard_enabled": "true"}),
+        )
+        service.order_placer = FakeBracketBroker()
+
+        service._process_signals()
+
+        self.assertEqual(["sig-aapl"], service.signal_router.processed)
+        self.assertEqual(1, len(service.order_placer.calls))
+        order_payload = service.order_placer.calls[0]
+        self.assertEqual(leg_group, order_payload["trade_group_id"])
+        self.assertEqual(leg_group, order_payload["bracket_group"])
+        order_extra = order_payload["order_extra"]
+        self.assertEqual(plan_id, order_extra["plan_id"])
+        self.assertEqual("independent_two_leg", order_extra["plan_type"])
+        self.assertEqual(2, order_extra["leg_index"])
+        self.assertEqual(2, order_extra["leg_count"])
+        self.assertEqual("secondary", order_extra["leg_role"])
+        self.assertEqual("dtp_retest", order_extra["leg_trigger"])
+        self.assertEqual(leg_group, order_extra["leg_trade_group_id"])
+        self.assertEqual(5000.0, order_extra["max_leg_notional"])
+        self.assertEqual(75.0, order_extra["max_leg_risk"])
+        self.assertEqual(150.0, order_extra["max_plan_risk"])
+        self.assertEqual(150.0, order_extra["plan_risk_budget_used"])
+        self.assertTrue(order_extra["plan_risk_budget_ok"])
+        self.assertTrue(order_extra["independent_legs"])
+        self.assertFalse(order_extra["cross_leg_protection_sync"])
+        self.assertFalse(order_extra["aggregate_position_management"])
+        self.assertEqual("independent_bracket", order_extra["leg_order_mode"])
+
+        ack = pb.acks[-1]
+        ack_extra = ack["order"]["extra"]
+        self.assertEqual(plan_id, ack_extra["plan_id"])
+        self.assertEqual(2, ack_extra["leg_index"])
+        self.assertEqual(leg_group, ack_extra["leg_trade_group_id"])
+        self.assertTrue(ack_extra["independent_legs"])
+        self.assertFalse(ack_extra["cross_leg_protection_sync"])
+        self.assertEqual(2, len(ack["child_orders"]))
+        for child_order in ack["child_orders"]:
+            self.assertEqual(leg_group, child_order["trade_group_id"])
+            self.assertEqual(plan_id, child_order["extra"]["plan_id"])
+            self.assertEqual(2, child_order["extra"]["leg_index"])
+            self.assertFalse(child_order["extra"]["cross_leg_protection_sync"])
+
     def test_tv_direct_structural_anchor_preserves_planned_limit_without_market_cap(self):
         signal = self._tv_signal("AAPL")
         signal.update({"entry": 99.5, "stop_loss": 97.5, "take_profit": 103.5})

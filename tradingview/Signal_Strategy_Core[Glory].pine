@@ -45,6 +45,8 @@ atrSmoothing = input.string("RMA", "ATR smoothing", options=["RMA", "SMA", "EMA"
 atrMultiplier = input.float(1.5, "ATR multiplier", step=0.1, group="05 Risk")
 positionAmount = input.float(5000, "Notional per trade ($)", step=500, minval=100, group="05 Risk")
 maxLossPerTrade = input.float(150, "Max loss per trade ($)", step=10, minval=10, group="05 Risk")
+scalePlanEnabled = input.bool(true, "Independent two-leg plan metadata", group="05 Risk")
+maxLegRisk = input.float(75.0, "Max loss per independent leg ($)", step=5.0, minval=1.0, group="05 Risk")
 slAtrMult = input.float(2.0, "Stop loss (x ATR)", step=0.25, minval=0.25, maxval=12.0, group="05 Risk")
 rrRatio = input.float(1.5, "Reward/risk", step=0.1, minval=0.5, maxval=10.0, group="05 Risk")
 enableBreakeven = input.bool(true, "Trail stop to breakeven", group="05 Risk")
@@ -80,6 +82,8 @@ mrTimeStopBars = input.int(10, "MR time stop bars", minval=1, maxval=100, group=
 mrTimeStopMinMfeR = input.float(0.35, "MR time stop min MFE (R)", step=0.05, minval=0.0, maxval=5.0, group="05 Risk")
 float profitSpaceMinNetProfitFloor = 100.0
 float profitSpaceMinNetRoiPctFloor = 2.0
+float effectiveMaxPlanRisk = maxLossPerTrade
+float effectiveMaxLegRisk = scalePlanEnabled ? math.min(maxLegRisk, effectiveMaxPlanRisk / 2.0) : maxLossPerTrade
 float effectiveMinNetProfitForEntry = math.max(minNetProfitForEntry, profitSpaceMinNetProfitFloor)
 float effectiveMinNetRoiPctForEntry = math.max(minNetRoiPctForEntry, profitSpaceMinNetRoiPctFloor)
 
@@ -179,8 +183,12 @@ symbolKey() =>
 barTimeKey() =>
     str.format_time(time, "yyyyMMdd_HHmm", "America/New_York")
 
-tradeGroupId(string direction, string setup) =>
+scalePlanId(string direction, string setup) =>
     symbolKey() + "_" + direction + "_" + barTimeKey() + "_" + timeframe.period + "_" + setup
+
+tradeGroupId(string direction, string setup) =>
+    string planIdValue = scalePlanId(direction, setup)
+    scalePlanEnabled ? planIdValue + "_leg1" : planIdValue
 
 entryOrderSignal(string tradeGroupIdValue) =>
     "entry_" + tradeGroupIdValue
@@ -216,6 +224,34 @@ basePayload(string eventType, string eventIdValue, string positionIdValue) =>
      jsonStr("exchange", syminfo.prefix) +
      jsonStr("currency", syminfo.currency) +
      jsonStr("session", tradingSession)
+
+scalePlanPayload(string planIdValue, string tradeGroupIdValue, int legIndex, string legTrigger) =>
+    string payload = jsonBool("scale_plan_enabled", scalePlanEnabled)
+    if scalePlanEnabled
+        string resolvedPlanId = planIdValue == "" ? str.replace_all(tradeGroupIdValue, "_leg" + str.tostring(legIndex, "#"), "") : planIdValue
+        payload := payload +
+         jsonStr("scale_plan_version", "independent_two_leg_v1") +
+         jsonStr("plan_type", "independent_two_leg") +
+         jsonStr("scale_plan_type", "independent_two_leg") +
+         jsonStr("plan_id", resolvedPlanId) +
+         jsonInt("leg_index", legIndex) +
+         jsonInt("scale_leg_index", legIndex) +
+         jsonInt("leg_count", 2) +
+         jsonStr("leg_role", legIndex == 1 ? "primary" : "secondary") +
+         jsonStr("leg_trigger", legTrigger == "" ? "initial_structure" : legTrigger) +
+         jsonStr("leg_trade_group_id", tradeGroupIdValue) +
+         jsonNum("max_leg_notional", positionAmount) +
+         jsonNum("max_leg_risk", effectiveMaxLegRisk) +
+         jsonNum("max_plan_risk", effectiveMaxPlanRisk) +
+         jsonNum("plan_risk_budget_used", effectiveMaxLegRisk * 2.0) +
+         jsonBool("plan_risk_budget_ok", effectiveMaxLegRisk * 2.0 <= effectiveMaxPlanRisk) +
+         jsonBool("independent_legs", true) +
+         jsonBool("cross_leg_protection_sync", false) +
+         jsonBool("aggregate_position_management", false) +
+         jsonStr("leg_order_mode", "independent_bracket") +
+         jsonStr("scale_plan_risk_model", "fixed_risk_per_independent_leg") +
+         jsonBool("leg2_requires_leg1_protected", true)
+    payload
 
 appendSource(string existing, string nextValue) =>
     existing == "" ? nextValue : existing + "+" + nextValue
@@ -1217,7 +1253,7 @@ bool longPostReversalAnchorQualified = not setupLongPostLowerBreakout or longPos
 bool shortPostReversalAnchorQualified = not setupShortPostUpperBreakdown or shortPostReversalStructuralAnchorQualified
 float longQtyCandidate = longEntryCandidate > 0.0 ? math.max(1.0, math.floor(positionAmount / longEntryCandidate)) : 0.0
 float longAtrStopCandidate = longEntryCandidate - atrVal * slAtrMult
-float longRiskStopCandidate = longQtyCandidate > 0.0 ? longEntryCandidate - maxLossPerTrade / longQtyCandidate : longAtrStopCandidate
+float longRiskStopCandidate = longQtyCandidate > 0.0 ? longEntryCandidate - effectiveMaxLegRisk / longQtyCandidate : longAtrStopCandidate
 float longStopSupportBase = nearestSupportBelow(longEntryCandidate, lastPivotLow, recentLow, sessionLow, longSupportEmaFast, longSupportEmaSlow, low, signalMid <= longEntryCandidate ? signalMid : noLevel, longSupportSd, longEntryCandidate - atrRaw)
 float longStructureStopCandidate = setupIsMr(longSetup) or setupIsPostSdReversal(longSetup) ? longStopSupportBase - atrRaw * structuralSlBufferAtr : longAtrStopCandidate
 float longStopCandidate = math.max(math.max(longAtrStopCandidate, longStructureStopCandidate), longRiskStopCandidate)
@@ -1241,7 +1277,7 @@ bool longProfitSpaceEntryBlocked = useProfitSpaceFilter and longRaw and not long
 
 float shortQtyCandidate = shortEntryCandidate > 0.0 ? math.max(1.0, math.floor(positionAmount / shortEntryCandidate)) : 0.0
 float shortAtrStopCandidate = shortEntryCandidate + atrVal * slAtrMult
-float shortRiskStopCandidate = shortQtyCandidate > 0.0 ? shortEntryCandidate + maxLossPerTrade / shortQtyCandidate : shortAtrStopCandidate
+float shortRiskStopCandidate = shortQtyCandidate > 0.0 ? shortEntryCandidate + effectiveMaxLegRisk / shortQtyCandidate : shortAtrStopCandidate
 float shortStopResistanceBase = nearestResistanceAbove(shortEntryCandidate, lastPivotHigh, recentHigh, sessionHigh, shortResistanceEmaFast, shortResistanceEmaSlow, high, signalMid >= shortEntryCandidate ? signalMid : noLevel, shortResistanceSd, shortEntryCandidate + atrRaw)
 float shortStructureStopCandidate = setupIsMr(shortSetup) or setupIsPostSdReversal(shortSetup) ? shortStopResistanceBase + atrRaw * structuralSlBufferAtr : shortAtrStopCandidate
 float shortStopCandidate = math.min(math.min(shortAtrStopCandidate, shortStructureStopCandidate), shortRiskStopCandidate)
@@ -1532,6 +1568,7 @@ profitSpacePayload(string direction, float qty, float entryPrice, float targetPr
 var string activePositionId = ""
 var string activeSignalId = ""
 var string activeTradeGroupId = ""
+var string activePlanId = ""
 var int activeDirection = 0
 var string activeSetup = ""
 var float activeReferenceEntry = na
@@ -1568,15 +1605,15 @@ calcQty(float entryPrice) =>
 
 calcLongStop(float entryPrice, float qty) =>
     float atrStop = entryPrice - atrVal * slAtrMult
-    float riskStop = qty > 0.0 ? entryPrice - maxLossPerTrade / qty : atrStop
+    float riskStop = qty > 0.0 ? entryPrice - effectiveMaxLegRisk / qty : atrStop
     math.max(atrStop, riskStop)
 
 calcShortStop(float entryPrice, float qty) =>
     float atrStop = entryPrice + atrVal * slAtrMult
-    float riskStop = qty > 0.0 ? entryPrice + maxLossPerTrade / qty : atrStop
+    float riskStop = qty > 0.0 ? entryPrice + effectiveMaxLegRisk / qty : atrStop
     math.min(atrStop, riskStop)
 
-buildEntryPayload(string eventIdValue, string signalIdValue, string tradeGroupIdValue, string positionIdValue, string direction, string setup, string reason, float qty, float referenceEntry, float plannedEntry, float submittedLimitPrice, float stopPrice, float targetPrice, float runnerActivationPrice, bool runnerMode, string entryAnchorSource, string entryAnchorReason, int entryExpiresBar, string divSource, string touchLine) =>
+buildEntryPayload(string eventIdValue, string signalIdValue, string tradeGroupIdValue, string positionIdValue, string planIdValue, string direction, string setup, string reason, float qty, float referenceEntry, float plannedEntry, float submittedLimitPrice, float stopPrice, float targetPrice, float runnerActivationPrice, bool runnerMode, string entryAnchorSource, string entryAnchorReason, int entryExpiresBar, string divSource, string touchLine) =>
     float entryPrice = plannedEntry
     float riskPerShare = direction == "long" ? entryPrice - stopPrice : stopPrice - entryPrice
     float targetCheckpoint = runnerMode ? runnerActivationPrice : targetPrice
@@ -1589,6 +1626,7 @@ buildEntryPayload(string eventIdValue, string signalIdValue, string tradeGroupId
      jsonStr("signal_id", signalIdValue) +
      jsonStr("trade_group_id", tradeGroupIdValue) +
      jsonStr("bracket_group", tradeGroupIdValue) +
+     scalePlanPayload(planIdValue, tradeGroupIdValue, 1, entryAnchorSource) +
      jsonStr("entry_order_unique_id", entryOrderSignal(tradeGroupIdValue)) +
      jsonStr("tp_order_unique_id", tpOrderSignal(tradeGroupIdValue)) +
      jsonStr("sl_order_unique_id", slOrderSignal(tradeGroupIdValue)) +
@@ -1673,6 +1711,7 @@ buildRiskPayload(string eventIdValue, string positionIdValue, string updateReaso
      jsonStr("origin_signal_id", activeSignalId) +
      jsonStr("trade_group_id", activeTradeGroupId) +
      jsonStr("bracket_group", activeTradeGroupId) +
+     scalePlanPayload(activePlanId, activeTradeGroupId, 1, activeEntryAnchorSource) +
      jsonStr("entry_order_unique_id", entryOrderSignal(activeTradeGroupId)) +
      jsonStr("tp_order_unique_id", tpOrderSignal(activeTradeGroupId)) +
      jsonStr("sl_order_unique_id", slOrderSignal(activeTradeGroupId)) +
@@ -1719,6 +1758,7 @@ buildExitPayload(string eventIdValue, string positionIdValue, string exitReason,
      jsonStr("origin_signal_id", activeSignalId) +
      jsonStr("trade_group_id", activeTradeGroupId) +
      jsonStr("bracket_group", activeTradeGroupId) +
+     scalePlanPayload(activePlanId, activeTradeGroupId, 1, activeEntryAnchorSource) +
      jsonStr("entry_order_unique_id", entryOrderSignal(activeTradeGroupId)) +
      jsonStr("tp_order_unique_id", tpOrderSignal(activeTradeGroupId)) +
      jsonStr("sl_order_unique_id", slOrderSignal(activeTradeGroupId)) +
@@ -1759,6 +1799,7 @@ buildCancelPayload(string eventIdValue, string positionIdValue, string cancelRea
      jsonStr("origin_signal_id", activeSignalId) +
      jsonStr("trade_group_id", activeTradeGroupId) +
      jsonStr("bracket_group", activeTradeGroupId) +
+     scalePlanPayload(activePlanId, activeTradeGroupId, 1, activeEntryAnchorSource) +
      jsonStr("entry_order_unique_id", entryOrderSignal(activeTradeGroupId)) +
      jsonStr("tp_order_unique_id", tpOrderSignal(activeTradeGroupId)) +
      jsonStr("sl_order_unique_id", slOrderSignal(activeTradeGroupId)) +
@@ -1870,6 +1911,7 @@ if exitedNow
     activePositionId := ""
     activeSignalId := ""
     activeTradeGroupId := ""
+    activePlanId := ""
     activeDirection := 0
     activeSetup := ""
     activeReferenceEntry := na
@@ -1940,6 +1982,7 @@ if pendingCancelNow
     activePositionId := ""
     activeSignalId := ""
     activeTradeGroupId := ""
+    activePlanId := ""
     activeDirection := 0
     activeSetup := ""
     activeReferenceEntry := na
@@ -2057,11 +2100,13 @@ if enterLong
         float submittedLimitPrice = structuralAnchorMode ? entryPrice : calcSubmittedEntryLimit(entryPrice, 1)
         int entryExpiresBar = bar_index + entryOrderTtlBars
         string posId = positionId("long")
+        string planIdValue = scalePlanId("long", longSetup)
         string tradeGroup = tradeGroupId("long", longSetup)
         string entryEventId = eventId("entry", longSetup)
         activePositionId := posId
         activeSignalId := tradeGroup
         activeTradeGroupId := tradeGroup
+        activePlanId := planIdValue
         activeDirection := 1
         activeSetup := longSetup
         activeReferenceEntry := longReferenceEntry
@@ -2099,7 +2144,7 @@ if enterLong
         bullDivBar := na
         if enableAlerts
             string touchLine = longSetup == "trend_sdUpper" ? upperBullTouchLine : longSetup == "trend_sdLowerBreakout" ? "post_sd_lower_breakout" : "none"
-            alert(buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, "long", longSetup, longReason, qty, longReferenceEntry, entryPrice, submittedLimitPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode, longEntryAnchorSource, activeEntryAnchorReason, entryExpiresBar, divSourceForEntry, touchLine), alert.freq_all)
+            alert(buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, activePlanId, "long", longSetup, longReason, qty, longReferenceEntry, entryPrice, submittedLimitPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode, longEntryAnchorSource, activeEntryAnchorReason, entryExpiresBar, divSourceForEntry, touchLine), alert.freq_all)
 
 if enterShort
     float entryPrice = shortEntryCandidate
@@ -2113,11 +2158,13 @@ if enterShort
         float submittedLimitPrice = structuralAnchorMode ? entryPrice : calcSubmittedEntryLimit(entryPrice, -1)
         int entryExpiresBar = bar_index + entryOrderTtlBars
         string posId = positionId("short")
+        string planIdValue = scalePlanId("short", shortSetup)
         string tradeGroup = tradeGroupId("short", shortSetup)
         string entryEventId = eventId("entry", shortSetup)
         activePositionId := posId
         activeSignalId := tradeGroup
         activeTradeGroupId := tradeGroup
+        activePlanId := planIdValue
         activeDirection := -1
         activeSetup := shortSetup
         activeReferenceEntry := shortReferenceEntry
@@ -2156,7 +2203,7 @@ if enterShort
         bearDivBar := na
         if enableAlerts
             string touchLine = shortSetup == "trend_sdLower" ? lowerBearTrendTriggerLine : shortSetup == "trend_sdUpperBreakdown" ? "post_sd_upper_breakdown" : shortSetup == "trend_emaDeathContinuation" ? "ema_death_continuation" : "none"
-            alert(buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, "short", shortSetup, shortReason, qty, shortReferenceEntry, entryPrice, submittedLimitPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode, shortEntryAnchorSource, activeEntryAnchorReason, entryExpiresBar, divSourceForEntry, touchLine), alert.freq_all)
+            alert(buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, activePlanId, "short", shortSetup, shortReason, qty, shortReferenceEntry, entryPrice, submittedLimitPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode, shortEntryAnchorSource, activeEntryAnchorReason, entryExpiresBar, divSourceForEntry, touchLine), alert.freq_all)
 
 if confirmed and activePositionId != "" and strategy.position_size != 0
     float previousStop = activeStop
@@ -2257,6 +2304,7 @@ if eodCloseNow
     activePositionId := ""
     activeSignalId := ""
     activeTradeGroupId := ""
+    activePlanId := ""
     activeDirection := 0
     activeSetup := ""
     activeReferenceEntry := na

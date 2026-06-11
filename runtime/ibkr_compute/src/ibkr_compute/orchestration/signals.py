@@ -19,6 +19,7 @@ from ibkr_compute.order.buying_power_reservations import (
     apply_reservations_to_buying_power_summary,
     merge_reservation_snapshot_into_guard,
 )
+from ibkr_compute.order.scale_plan import normalize_independent_scale_plan_extra
 
 
 def _service_mod():
@@ -646,12 +647,25 @@ class TradingServiceSignalsMixin:
                         }
                     else:
                         extra = self._signal_extra(sig)
-                        trade_group_id = str(extra.get("trade_group_id") or extra.get("bracket_group") or signal_id).strip()
+                        trade_group_id = str(
+                            extra.get("trade_group_id")
+                            or extra.get("bracket_group")
+                            or extra.get("leg_trade_group_id")
+                            or signal_id
+                        ).strip()
                         order_extra = {
                             **extra,
                             "trade_group_id": trade_group_id,
                             "bracket_group": trade_group_id,
                         }
+                        order_extra = normalize_independent_scale_plan_extra(
+                            order_extra,
+                            signal_id=signal_id,
+                            trade_group_id=trade_group_id,
+                            symbol=symbol,
+                            direction=str(sig.get("direction") or ""),
+                        )
+                        sig["extra"] = order_extra
                         result = direct_submitter(
                             conid=conid,
                             symbol=symbol,
@@ -1206,7 +1220,16 @@ class TradingServiceSignalsMixin:
         adaptive_priority = self._config_text("tv_entry_adaptive_priority", "Normal").strip() or "Normal"
         adjusted_sig = copy.deepcopy(sig)
         adjusted_sig["entry"] = submitted_limit
-        adjusted_sig["extra"] = {
+        trade_group_id = str(
+            extra.get("trade_group_id")
+            or extra.get("bracket_group")
+            or extra.get("leg_trade_group_id")
+            or sig.get("trade_group_id")
+            or sig.get("bracket_group")
+            or sig.get("signal_id")
+            or ""
+        ).strip()
+        adjusted_extra = {
             **extra,
             **freshness_fields,
             "tv_direct_entry": True,
@@ -1240,6 +1263,13 @@ class TradingServiceSignalsMixin:
             "original_take_profit": reference_target,
             "status_reason": "tv_direct_ready",
         }
+        adjusted_sig["extra"] = normalize_independent_scale_plan_extra(
+            adjusted_extra,
+            signal_id=str(sig.get("signal_id") or ""),
+            trade_group_id=trade_group_id,
+            symbol=str(sig.get("symbol") or ""),
+            direction=direction,
+        )
         return True, adjusted_sig, ""
 
     def _mark_signal_tv_direct_rejected(self, sig: dict, reason: str):
@@ -4017,8 +4047,22 @@ class TradingServiceSignalsMixin:
                 except Exception:
                     raw_extra = {}
             signal_extra = raw_extra if isinstance(raw_extra, dict) else {}
+        signal_extra = normalize_independent_scale_plan_extra(
+            signal_extra,
+            signal_id=str(sig.get("signal_id") or ""),
+            trade_group_id=str(trade_group_id or ""),
+            symbol=str(sig.get("symbol") or ""),
+            direction=str(sig.get("direction") or ""),
+        )
         if bool(signal_extra.get("tv_direct_entry")):
             order_extra = {**signal_extra, **order_extra}
+        order_extra = normalize_independent_scale_plan_extra(
+            order_extra,
+            signal_id=str(sig.get("signal_id") or ""),
+            trade_group_id=str(trade_group_id or ""),
+            symbol=str(sig.get("symbol") or ""),
+            direction=str(sig.get("direction") or ""),
+        )
         exit_policy_fields = {
             key: signal_extra.get(key)
             for key in (
