@@ -102,6 +102,43 @@ def _payload_order_ids(payload: dict) -> list[str]:
     return normalized
 
 
+def _result_order_ids(result: dict) -> list[str]:
+    return [
+        str(item or "").strip()
+        for item in ((result or {}).get("order_ids") or [])
+        if str(item or "").strip()
+    ]
+
+
+def _strict_bracket_protection_confirmed(result: dict) -> bool:
+    order_ids = _result_order_ids(result)
+    return bool((result or {}).get("protection_complete")) and len(order_ids) >= 3
+
+
+def _mark_place_order_protection_incomplete(result: dict, *, reason: str) -> dict:
+    marked = dict(result or {})
+    order_ids = _result_order_ids(marked)
+    original_error = str(marked.get("error") or "").strip()
+    if original_error:
+        marked["broker_error"] = original_error
+    marked["ok"] = False
+    marked["error"] = "protection_incomplete"
+    marked["message"] = (
+        "Entry order may have been submitted, but TP/SL protection was not fully confirmed."
+    )
+    marked["entry_submitted"] = bool(
+        marked.get("entry_coid")
+        or marked.get("entry_order_id")
+        or (order_ids and str(order_ids[0] or "").strip())
+        or marked.get("entry_submitted")
+    )
+    marked["protection_incomplete"] = True
+    marked["protection_incomplete_reason"] = str(reason or "protection_not_confirmed")
+    marked.setdefault("recommended_action", "refresh_account_and_review_or_cancel_unprotected_entry")
+    marked.setdefault("safe_action", "diagnostic_only_no_broker_call")
+    return marked
+
+
 def _merge_snapshot_guard_metadata(guard: dict, snapshot_guard: dict | None) -> dict:
     if not isinstance(snapshot_guard, dict):
         return guard
@@ -601,6 +638,11 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
         confirmation_mode=confirmation_mode,
     )
     operation_elapsed_s = time.perf_counter() - operation_started_at
+    strict_confirmation_requested = _payload_bool((payload or {}).get("wait_for_confirmation"), False)
+    if bool(result.get("ok")) and bool(result.get("protection_incomplete")):
+        result = _mark_place_order_protection_incomplete(result, reason="protection_incomplete")
+    elif bool(result.get("ok")) and strict_confirmation_requested and not _strict_bracket_protection_confirmed(result):
+        result = _mark_place_order_protection_incomplete(result, reason="strict_confirmation_missing_protection")
     submitted_buying_power_guard = (
         dict(result.get("buying_power_guard"))
         if isinstance(result.get("buying_power_guard"), dict)
@@ -638,6 +680,7 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
             "pre_submit_buying_power_guard": buying_power_guard,
             "confirmation_mode": confirmation_mode,
             "fast_ack": bool(fast_accept_enabled),
+            "wait_for_confirmation": bool(strict_confirmation_requested),
             "tif": tif,
             "outside_rth": outside_rth,
         },

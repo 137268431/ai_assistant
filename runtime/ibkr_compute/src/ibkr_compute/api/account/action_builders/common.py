@@ -140,7 +140,15 @@ def _build_snapshot_action_response(
             status = 200
         else:
             error = str((result or {}).get("error") or "")
-            status = 409 if error == "buying_power_blocked" else 503 if error == "buying_power_unavailable" else 500
+            payload["error"] = error or "account_action_failed"
+            payload["message"] = str((result or {}).get("message") or payload["error"])
+            status = (
+                409
+                if error in {"buying_power_blocked", "protection_incomplete"}
+                else 503
+                if error == "buying_power_unavailable"
+                else 500
+            )
         return payload, status
     finally:
         record_order_event(

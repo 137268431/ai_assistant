@@ -124,7 +124,11 @@
                     </label>
                     <label class="ticket-field">
                         <span class="ticket-label">Entry Price</span>
-                        <input class="ticket-input" id="ticketEntryPrice" type="number" min="0" step="0.01" placeholder="182.45" oninput="renderTicketPreview()">
+                        <input class="ticket-input" id="ticketEntryPrice" type="number" min="0" step="0.01" placeholder="182.45" oninput="onTicketEntryPriceInput()">
+                    </label>
+                    <label class="ticket-field">
+                        <span class="ticket-label">Price Step</span>
+                        <input class="ticket-input" id="ticketPriceStep" type="number" min="0.0001" step="0.01" value="0.01" placeholder="0.01" oninput="onTicketPriceStepChange(false)" onchange="onTicketPriceStepChange(true)">
                     </label>
                     <label class="ticket-field">
                         <span class="ticket-label">Take Profit</span>
@@ -138,6 +142,10 @@
                         <span class="ticket-label">Preview</span>
                         <div class="ticket-preview" id="ticketPreview">等待输入下单参数...</div>
                     </div>
+                    <label class="ticket-field span-2" style="display:flex;align-items:center;gap:10px;flex-direction:row;">
+                        <input id="ticketProtectiveAutoShift" type="checkbox" checked onchange="renderTicketPreview()">
+                        <span class="ticket-label" style="margin:0;">Entry 限价按步长调整时，同步平移 TP / SL，保持原保护距离。</span>
+                    </label>
                 </div>
                 <div class="ticket-actions">
                     <button class="ticket-button primary" id="submitOrderButton" type="button" onclick="submitManualOrder()">提交 Bracket Order</button>
@@ -154,6 +162,8 @@
         let latestSnapshot = null;
         let actionBusy = false;
         let ticketDrawerOpen = false;
+        const DEFAULT_TICKET_PRICE_STEP = 0.01;
+        let ticketPriceLinkState = { initialized: false, lastEntryPrice: 0 };
         let orderViewState = { search: '', scope: 'all' };
         const FLAT_POSITION_PAGE_SIZE_OPTIONS = [5, 10, 20];
         let positionViewState = { flatPage: 1, flatPageSize: 5 };
@@ -238,7 +248,10 @@
                     data = { ok: false, raw: text };
                 }
                 if (!response.ok) {
-                    throw new Error(data.message || data.error || `Request failed (${response.status})`);
+                    const requestError = new Error(data.message || data.error || `Request failed (${response.status})`);
+                    requestError.status = response.status;
+                    requestError.payload = data;
+                    throw requestError;
                 }
                 if (methodText !== 'GET' && typeof invalidateIbkrDataCache === 'function') {
                     invalidateIbkrDataCache(['account', 'orders', 'runtimeStatus', 'tradingList']);
@@ -1819,7 +1832,121 @@
                 entryPrice: Number(document.getElementById('ticketEntryPrice')?.value || 0),
                 takeProfit: Number(document.getElementById('ticketTakeProfit')?.value || 0),
                 stopLoss: Number(document.getElementById('ticketStopLoss')?.value || 0),
+                priceStep: getTicketPriceStep(),
+                protectiveAutoShift: isTicketProtectiveAutoShiftEnabled(),
             };
+        }
+
+        function getTicketPriceStep() {
+            const value = Number(document.getElementById('ticketPriceStep')?.value || DEFAULT_TICKET_PRICE_STEP);
+            return Number.isFinite(value) && value > 0 ? value : DEFAULT_TICKET_PRICE_STEP;
+        }
+
+        function ticketStepPrecision(step = getTicketPriceStep()) {
+            const text = String(step || DEFAULT_TICKET_PRICE_STEP);
+            if (text.includes('e-')) {
+                const exponent = Number(text.split('e-')[1] || 0);
+                return Math.min(8, Math.max(2, exponent));
+            }
+            const decimal = text.includes('.') ? text.split('.')[1].length : 0;
+            return Math.min(8, Math.max(2, decimal));
+        }
+
+        function normalizeTicketPriceToStep(value, step = getTicketPriceStep()) {
+            const num = Number(value);
+            const normalizedStep = Number.isFinite(Number(step)) && Number(step) > 0 ? Number(step) : DEFAULT_TICKET_PRICE_STEP;
+            if (!Number.isFinite(num)) return NaN;
+            const precision = ticketStepPrecision(normalizedStep);
+            return Number((Math.round(num / normalizedStep) * normalizedStep).toFixed(precision));
+        }
+
+        function formatTicketPriceInputValue(value, step = getTicketPriceStep()) {
+            const normalized = normalizeTicketPriceToStep(value, step);
+            if (!Number.isFinite(normalized) || normalized <= 0) return '';
+            return normalized.toFixed(ticketStepPrecision(step));
+        }
+
+        function isTicketProtectiveAutoShiftEnabled() {
+            return Boolean(document.getElementById('ticketProtectiveAutoShift')?.checked);
+        }
+
+        function syncTicketPriceStepAttributes() {
+            const step = getTicketPriceStep();
+            ['ticketEntryPrice', 'ticketTakeProfit', 'ticketStopLoss'].forEach((id) => {
+                const node = document.getElementById(id);
+                if (node) node.step = String(step);
+            });
+        }
+
+        function computeShiftedTicketProtectionPrices({ takeProfit, stopLoss, delta, step }) {
+            const shifted = {};
+            const normalizedDelta = Number(delta);
+            const normalizedStep = Number.isFinite(Number(step)) && Number(step) > 0 ? Number(step) : DEFAULT_TICKET_PRICE_STEP;
+            if (!Number.isFinite(normalizedDelta) || Math.abs(normalizedDelta) < 1e-12) return shifted;
+            const tp = Number(takeProfit);
+            const sl = Number(stopLoss);
+            if (Number.isFinite(tp) && tp > 0) shifted.takeProfit = normalizeTicketPriceToStep(tp + normalizedDelta, normalizedStep);
+            if (Number.isFinite(sl) && sl > 0) shifted.stopLoss = normalizeTicketPriceToStep(sl + normalizedDelta, normalizedStep);
+            return shifted;
+        }
+
+        function initializeTicketEntryLinkState(entryPrice = getManualOrderState().entryPrice) {
+            if (Number.isFinite(entryPrice) && entryPrice > 0) {
+                ticketPriceLinkState = { initialized: true, lastEntryPrice: entryPrice };
+            } else {
+                ticketPriceLinkState = { initialized: false, lastEntryPrice: 0 };
+            }
+        }
+
+        function onTicketEntryPriceInput() {
+            syncTicketPriceStepAttributes();
+            const state = getManualOrderState();
+            const entry = Number(state.entryPrice);
+            if (state.orderType !== 'LMT' || !Number.isFinite(entry) || entry <= 0) {
+                initializeTicketEntryLinkState(entry);
+                renderTicketPreview();
+                return;
+            }
+            if (!ticketPriceLinkState.initialized) {
+                initializeTicketEntryLinkState(entry);
+                renderTicketPreview();
+                return;
+            }
+            const delta = entry - Number(ticketPriceLinkState.lastEntryPrice || 0);
+            ticketPriceLinkState = { initialized: true, lastEntryPrice: entry };
+            if (state.protectiveAutoShift && Math.abs(delta) > 1e-12) {
+                const shifted = computeShiftedTicketProtectionPrices({
+                    takeProfit: state.takeProfit,
+                    stopLoss: state.stopLoss,
+                    delta,
+                    step: state.priceStep,
+                });
+                const tpNode = document.getElementById('ticketTakeProfit');
+                const slNode = document.getElementById('ticketStopLoss');
+                if (tpNode && Number.isFinite(shifted.takeProfit) && shifted.takeProfit > 0) {
+                    tpNode.value = formatTicketPriceInputValue(shifted.takeProfit, state.priceStep);
+                }
+                if (slNode && Number.isFinite(shifted.stopLoss) && shifted.stopLoss > 0) {
+                    slNode.value = formatTicketPriceInputValue(shifted.stopLoss, state.priceStep);
+                }
+            }
+            renderTicketPreview();
+        }
+
+        function onTicketPriceStepChange(commit = false) {
+            syncTicketPriceStepAttributes();
+            const step = getTicketPriceStep();
+            if (commit) {
+                ['ticketEntryPrice', 'ticketTakeProfit', 'ticketStopLoss'].forEach((id) => {
+                    const node = document.getElementById(id);
+                    const value = Number(node?.value || 0);
+                    if (node && Number.isFinite(value) && value > 0) {
+                        node.value = formatTicketPriceInputValue(value, step);
+                    }
+                });
+                initializeTicketEntryLinkState();
+            }
+            renderTicketPreview();
         }
 
         function estimateTicketExposure(state) {
@@ -1879,10 +2006,16 @@
         function toggleEntryPriceField() {
             const orderType = String(document.getElementById('ticketOrderType')?.value || 'LMT').trim().toUpperCase();
             const field = document.getElementById('ticketEntryPrice');
+            syncTicketPriceStepAttributes();
             if (!field) return;
             const disabled = orderType === 'MKT';
             field.disabled = disabled;
-            if (disabled) field.value = '';
+            if (disabled) {
+                field.value = '';
+                initializeTicketEntryLinkState(0);
+            } else {
+                initializeTicketEntryLinkState(Number(field.value || 0));
+            }
         }
 
         function renderTicketPreview() {
@@ -1901,6 +2034,12 @@
             }
             lines.push(`入场方式: <strong>${escapeHtml(state.orderType)}</strong>${state.orderType === 'LMT' && Number.isFinite(state.entryPrice) && state.entryPrice > 0 ? ` · Entry ${escapeHtml(formatMoney(state.entryPrice))}` : state.orderType === 'MKT' ? ' · 市价触发' : ''}`);
             lines.push(`止盈 / 止损: <strong>${Number.isFinite(state.takeProfit) && state.takeProfit > 0 ? escapeHtml(formatMoney(state.takeProfit)) : '--'}</strong> / <strong>${Number.isFinite(state.stopLoss) && state.stopLoss > 0 ? escapeHtml(formatMoney(state.stopLoss)) : '--'}</strong>`);
+            if (state.orderType === 'LMT') {
+                lines.push(`价格步长: <strong>${escapeHtml(String(state.priceStep))}</strong> · TP/SL 联动: <strong>${state.protectiveAutoShift ? '开启' : '关闭'}</strong>`);
+                if (state.protectiveAutoShift && (!(Number.isFinite(state.takeProfit) && state.takeProfit > 0) || !(Number.isFinite(state.stopLoss) && state.stopLoss > 0))) {
+                    lines.push('<span class="ticket-bp-line warning">填写有效 TP / SL 后，调整 Entry 才会同步平移保护价。</span>');
+                }
+            }
 
             const bp = evaluateTicketBuyingPower(state);
             if (bp.state !== 'unknown' && bp.state !== 'disabled') {
@@ -1935,8 +2074,14 @@
             });
             const direction = document.getElementById('ticketDirection');
             const orderType = document.getElementById('ticketOrderType');
+            const priceStep = document.getElementById('ticketPriceStep');
+            const autoShift = document.getElementById('ticketProtectiveAutoShift');
             if (direction) direction.value = 'long';
             if (orderType) orderType.value = 'LMT';
+            if (priceStep) priceStep.value = String(DEFAULT_TICKET_PRICE_STEP);
+            if (autoShift) autoShift.checked = true;
+            initializeTicketEntryLinkState(0);
+            syncTicketPriceStepAttributes();
             toggleEntryPriceField();
             renderTicketPreview();
         }
@@ -2990,11 +3135,26 @@
                 showToast(message || `${label} 已执行`);
                 return payload;
             } catch (error) {
+                if (error?.payload?.snapshot) {
+                    latestSnapshot = error.payload.snapshot;
+                    renderBlocker(latestSnapshot);
+                    renderSummary(latestSnapshot);
+                    renderMeta(latestSnapshot);
+                    renderPositions(latestSnapshot);
+                    renderOrders(latestSnapshot);
+                    renderHistoryOrders(latestSnapshot);
+                    renderTicketPreview();
+                    setPageRefreshTime(latestSnapshot.fetched_at || new Date());
+                    document.getElementById('refreshInfo').textContent = '账户状态已加载';
+                }
                 if (isAccountRequestTimeout(error)) {
                     showToast(actionOptions.timeoutMessage || `${label} 请求已发出但等待确认超时，请刷新账户状态核对是否已提交`);
                     setTimeout(() => loadAccountSnapshot(false), 1200);
                 } else {
-                    showToast(`${label} 失败: ${error.message || error}`);
+                    const errorMessage = typeof actionOptions.errorMessage === 'function'
+                        ? actionOptions.errorMessage(error)
+                        : (actionOptions.errorMessage || `${label} 失败: ${error.message || error}`);
+                    showToast(errorMessage);
                 }
                 return false;
             } finally {
@@ -3131,6 +3291,29 @@
             }
         }
 
+        function buildManualOrderErrorMessage(error) {
+            const payload = error?.payload || {};
+            const result = payload.result || {};
+            if (result.protection_incomplete || result.entry_submitted) {
+                const roles = Array.isArray(result.missing_protection_roles)
+                    ? result.missing_protection_roles.filter(Boolean).join(', ')
+                    : '';
+                const missingIds = Array.isArray(result.missing_order_ids)
+                    ? result.missing_order_ids.filter(Boolean).join(', ')
+                    : '';
+                const orderIds = Array.isArray(result.order_ids)
+                    ? result.order_ids.filter(Boolean).join(', ')
+                    : '';
+                const parts = ['下单异常：Entry 可能已提交，但 TP/SL 未完整确认'];
+                if (roles) parts.push(`缺失保护: ${roles}`);
+                if (missingIds) parts.push(`缺失订单ID: ${missingIds}`);
+                if (orderIds) parts.push(`本次订单ID: ${orderIds}`);
+                parts.push('请刷新账户状态，核对是否需要撤单或修复保护单。');
+                return parts.join('；');
+            }
+            return `下单失败: ${error?.message || error}`;
+        }
+
         async function submitManualOrder() {
             if (actionBusy) return;
             const state = getManualOrderState();
@@ -3218,8 +3401,22 @@
                     entry_price: state.orderType === 'LMT' ? state.entryPrice : undefined,
                     take_profit_price: state.takeProfit,
                     stop_loss_price: state.stopLoss,
+                    wait_for_confirmation: true,
+                    order_extra: {
+                        manual_price_step: state.priceStep,
+                        protective_auto_shift: state.protectiveAutoShift,
+                    },
                 },
-                `${state.symbol} Bracket Order 已提交`
+                (payload) => {
+                    const ids = Array.isArray(payload?.result?.order_ids) ? payload.result.order_ids.filter(Boolean).join(', ') : '';
+                    return `${state.symbol} 三腿 Bracket 已确认${ids ? ` (${ids})` : ''}`;
+                },
+                {
+                    timeoutMs: 150000,
+                    timeoutLabel: 'Bracket 三腿确认',
+                    timeoutMessage: `${state.symbol} 下单请求已发出但等待三腿保护单确认超时，请刷新账户状态核对 Entry / TP / SL。`,
+                    errorMessage: buildManualOrderErrorMessage,
+                }
             );
             if (ok) {
                 resetManualOrderForm();
@@ -3240,6 +3437,9 @@
         window.resetManualOrderForm = resetManualOrderForm;
         window.renderTicketPreview = renderTicketPreview;
         window.toggleEntryPriceField = toggleEntryPriceField;
+        window.onTicketEntryPriceInput = onTicketEntryPriceInput;
+        window.onTicketPriceStepChange = onTicketPriceStepChange;
+        window.computeShiftedTicketProtectionPrices = computeShiftedTicketProtectionPrices;
         window.openHistoryOrdersPage = openHistoryOrdersPage;
         window.onOrderSearchChange = onOrderSearchChange;
         window.setOrderScope = setOrderScope;
