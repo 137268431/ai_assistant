@@ -296,6 +296,39 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertIn('missingComponents := not lowerBearTrendTriggerSeen ? appendSource(missingComponents, "ema_bear_touch") : missingComponents', source)
         self.assertIn('missingText := str.replace_all(missingText, "ema_bear_touch", "空EMA/回抽")', source)
 
+    def test_ema_death_continuation_short_without_upper_memory(self):
+        source = self.source
+
+        self.assertIn('setup == "trend_emaDeathContinuation" ? "EMA死叉顺势空"', source)
+        self.assertIn('setup == "trend_emaDeathContinuation" ? "弱势结构"', source)
+        self.assertIn('missingText := str.replace_all(missingText, "weak_structure", "弱势结构")', source)
+        self.assertIn("var bool trendBearFractalSeen = false", source)
+        self.assertIn("var bool trendBearEmaCrossSeen = false", source)
+        self.assertIn("var bool emaDeathContinuationShortUsed = false", source)
+        self.assertIn("if fractalBear\n    trendBearFractalSeen := true", source)
+        self.assertIn("if emaDeathCross\n    trendBearEmaCrossSeen := true", source)
+        self.assertIn("emaDeathContinuationShortUsed := false", source)
+        self.assertIn("bool trendBearFractalFresh = trendBearFractalSeen and componentFresh(trendBearFractalBar)", source)
+        self.assertIn("bool trendBearEmaCrossFresh = trendBearEmaCrossSeen and componentFresh(trendBearEmaCrossBar)", source)
+        self.assertIn("int shortEmaDeathContinuationDirectionComponents = directionComponentCount(trendBearFractalFresh, bearDivFresh, trendBearEmaCrossFresh)", source)
+        self.assertIn("bool shortEmaDeathContinuationStructureOk = emaFast < emaSlow and close < emaSlow and close < sdReg", source)
+        self.assertIn("bool setupShortEmaDeathContinuation = not emaDeathContinuationShortUsed and not setupShortPostUpperBreakdown and shortEmaDeathContinuationStructureOk and trendBearEmaCrossFresh and (trendBearFractalFresh or bearDivFresh) and shortEmaDeathContinuationDirectionComponents >= 2", source)
+        self.assertIn("bool shortSignalCandidate = setupShortPostUpperBreakdown or setupShortEmaDeathContinuation or setupShortMrUpper or setupShortTrendLower", source)
+        self.assertIn('string shortSetup = setupShortPostUpperBreakdown ? "trend_sdUpperBreakdown" : setupShortEmaDeathContinuation ? "trend_emaDeathContinuation"', source)
+        self.assertIn('setupShortEmaDeathContinuation ? "EMA death continuation short: weak structure + EMA death cross + bear fractal/divergence"', source)
+        self.assertIn("int scoreShortEmaDeathContinuation = math.min(100, (shortEmaDeathContinuationStructureOk ? 34 : 0)", source)
+        self.assertIn('activityScore == scoreShortEmaDeathContinuation ? "trend_emaDeathContinuation"', source)
+        self.assertIn('candidateSetup == "trend_emaDeathContinuation" ? shortEmaDeathContinuationStructureOk', source)
+        self.assertIn('blockedSetup == "trend_emaDeathContinuation" ? shortEmaDeathContinuationStructureOk', source)
+        self.assertIn('candidateSetup == "trend_emaDeathContinuation"', source)
+        self.assertIn('missingComponents := not shortEmaDeathContinuationStructureOk ? appendSource(missingComponents, "weak_structure")', source)
+        self.assertIn('missingComponents := not trendBearEmaCrossSeen ? appendSource(missingComponents, "bear_ema_cross")', source)
+        self.assertIn('if not (trendBearFractalSeen or bearDivSeen)', source)
+        self.assertIn("jsonBool(\"bear_fractal_seen\", lowerBearFractalSeen or upperBearFractalSeen or trendBearFractalSeen)", source)
+        self.assertIn("jsonBool(\"bear_ema_cross_seen\", lowerBearEmaCrossSeen or upperBearEmaCrossSeen or trendBearEmaCrossSeen)", source)
+        self.assertIn("emaDeathContinuationShortUsed := setupShortEmaDeathContinuation ? true : emaDeathContinuationShortUsed", source)
+        self.assertIn('shortSetup == "trend_emaDeathContinuation" ? "ema_death_continuation"', source)
+
     def test_mr_regime_filter_anchor_and_mean_target(self):
         source = self.source
 
@@ -359,7 +392,7 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertIn('string longSetup = setupLongPostLowerBreakout ? "trend_sdLowerBreakout"', source)
         self.assertIn('string shortSetup = setupShortPostUpperBreakdown ? "trend_sdUpperBreakdown"', source)
         self.assertIn("bool longSignalCandidate = setupLongPostLowerBreakout or setupLongTrendUpper or setupLongMrLower", source)
-        self.assertIn("bool shortSignalCandidate = setupShortPostUpperBreakdown or setupShortMrUpper or setupShortTrendLower", source)
+        self.assertIn("bool shortSignalCandidate = setupShortPostUpperBreakdown or setupShortEmaDeathContinuation or setupShortMrUpper or setupShortTrendLower", source)
 
         self.assertIn("bool longPostReversalStructuralAnchorQualified = not structuralAnchorMode or anchorNear(longEntryCandidate, lastPivotLow, atrRaw)", source)
         self.assertIn("bool shortPostReversalStructuralAnchorQualified = not structuralAnchorMode or anchorNear(shortEntryCandidate, lastPivotHigh, atrRaw)", source)
