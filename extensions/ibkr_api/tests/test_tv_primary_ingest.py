@@ -478,9 +478,17 @@ class TvPrimaryIngestTests(unittest.TestCase):
                 "atr_pct": 0.75,
                 "profit_space_entry_allowed": True,
                 "profit_space_filter_reason": "pass",
+                "profit_space_basis": "final_structure_target",
                 "expected_net_profit": 61.5,
                 "expected_net_roi_pct": 1.24,
                 "cost_pct_of_reward": 4.2,
+                "profit_space_target_price": 127.90,
+                "profit_space_checkpoint_price": 124.20,
+                "checkpoint_gross_profit": 13.6,
+                "checkpoint_net_profit": 11.5,
+                "checkpoint_net_roi_pct": 0.12,
+                "checkpoint_cost_pct_of_reward": 15.4,
+                "checkpoint_target_distance_atr": 1.2,
                 "gross_risk": 16.8,
                 "structure_risk_per_share": 2.10,
                 "structure_reward_per_share": 5.40,
@@ -522,9 +530,17 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertEqual(saved["extra"]["atr_pct"], 0.75)
         self.assertTrue(saved["extra"]["profit_space_entry_allowed"])
         self.assertEqual(saved["extra"]["profit_space_filter_reason"], "pass")
+        self.assertEqual(saved["extra"]["profit_space_basis"], "final_structure_target")
         self.assertEqual(saved["extra"]["expected_net_profit"], 61.5)
         self.assertEqual(saved["extra"]["expected_net_roi_pct"], 1.24)
         self.assertEqual(saved["extra"]["cost_pct_of_reward"], 4.2)
+        self.assertEqual(saved["extra"]["profit_space_target_price"], 127.90)
+        self.assertEqual(saved["extra"]["profit_space_checkpoint_price"], 124.20)
+        self.assertEqual(saved["extra"]["checkpoint_gross_profit"], 13.6)
+        self.assertEqual(saved["extra"]["checkpoint_net_profit"], 11.5)
+        self.assertEqual(saved["extra"]["checkpoint_net_roi_pct"], 0.12)
+        self.assertEqual(saved["extra"]["checkpoint_cost_pct_of_reward"], 15.4)
+        self.assertEqual(saved["extra"]["checkpoint_target_distance_atr"], 1.2)
         self.assertEqual(saved["extra"]["gross_risk"], 16.8)
         self.assertEqual(saved["extra"]["structure_risk_per_share"], 2.10)
         self.assertEqual(saved["extra"]["structure_reward_per_share"], 5.40)

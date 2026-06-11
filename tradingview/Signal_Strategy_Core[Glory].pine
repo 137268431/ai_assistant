@@ -756,7 +756,13 @@ profitSpaceEntryAllowed(float netProfit, float netRoiPct, float costPct, float t
     not useProfitSpaceFilter or profitSpaceFailureReason(netProfit, netRoiPct, costPct, targetAtrMultiple, rewardRisk, structureStopAvailable, structureTargetAvailable, minRewardRisk) == "pass"
 
 profitSpaceSummaryText(float netProfit, float netRoiPct, float costPct, float targetAtrMultiple, float rewardRisk) =>
-    "预计净利 " + fmtSignedMoney(netProfit) + " / 占用ROI " + fmtSignedPct(netRoiPct) + " / 成本/毛利 " + str.tostring(costPct, "#.#") + "% / R " + str.tostring(rewardRisk, "#.##") + " / TP " + str.tostring(targetAtrMultiple, "#.#") + "ATR"
+    "结构TP口径 预计净利 " + fmtSignedMoney(netProfit) + " / 占用ROI " + fmtSignedPct(netRoiPct) + " / 成本/毛利 " + str.tostring(costPct, "#.#") + "% / R " + str.tostring(rewardRisk, "#.##") + " / TP " + str.tostring(targetAtrMultiple, "#.#") + "ATR"
+
+profitSpaceCheckpointText(bool runnerMode, float netProfit, float costPct, float targetAtrMultiple) =>
+    runnerMode ? "\nRunner检查 净利 " + fmtSignedMoney(netProfit) + " / 成本/毛利 " + str.tostring(costPct, "#.#") + "% / 距离 " + str.tostring(targetAtrMultiple, "#.#") + "ATR" : ""
+
+entryWindowDiagnosticsText() =>
+    "窗口: " + entryWindowStage + " / " + ENTRY_WINDOW_MODEL
 
 profitSpaceThresholdText(float minRewardRisk) =>
     "门槛 净利 >= " + fmtMoney(effectiveMinNetProfitForEntry) + " / 占用ROI >= " + str.tostring(effectiveMinNetRoiPctForEntry, "#.##") + "% / 成本/毛利 <= " + str.tostring(maxCostPctOfReward, "#.#") + "% / R >= " + str.tostring(minRewardRisk, "#.##") + " / TP >= " + str.tostring(minTargetAtrMultipleForEntry, "#.#") + "ATR"
@@ -1322,11 +1328,16 @@ float longStructureRewardRisk = rewardRiskMultiple(longStructureRewardPerShare, 
 float longProfitCheckpoint = longRunnerCandidate ? longRunnerActivationCandidate : longTargetCandidate
 float longEntryNotional = profitSpaceEntryNotional(longEntryCandidate, longQtyCandidate)
 float longEstimatedCost = profitSpaceRoundTripCost(longQtyCandidate)
-float longExpectedGrossProfit = profitSpaceGrossProfit(1, longEntryCandidate, longProfitCheckpoint, longQtyCandidate)
+float longExpectedGrossProfit = profitSpaceGrossProfit(1, longEntryCandidate, longTargetCandidate, longQtyCandidate)
 float longExpectedNetProfit = longExpectedGrossProfit - longEstimatedCost
 float longExpectedNetRoiPct = profitSpaceNetRoiPct(longExpectedNetProfit, longEntryNotional)
 float longCostPctOfReward = profitSpaceCostPct(longEstimatedCost, longExpectedGrossProfit)
-float longTargetDistanceAtr = profitSpaceTargetAtrMultiple(longEntryCandidate, longProfitCheckpoint)
+float longTargetDistanceAtr = profitSpaceTargetAtrMultiple(longEntryCandidate, longTargetCandidate)
+float longCheckpointGrossProfit = profitSpaceGrossProfit(1, longEntryCandidate, longProfitCheckpoint, longQtyCandidate)
+float longCheckpointNetProfit = longCheckpointGrossProfit - longEstimatedCost
+float longCheckpointNetRoiPct = profitSpaceNetRoiPct(longCheckpointNetProfit, longEntryNotional)
+float longCheckpointCostPctOfReward = profitSpaceCostPct(longEstimatedCost, longCheckpointGrossProfit)
+float longCheckpointTargetDistanceAtr = profitSpaceTargetAtrMultiple(longEntryCandidate, longProfitCheckpoint)
 bool longProfitSpaceAllowed = profitSpaceEntryAllowed(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr, longStructureRewardRisk, longStructureStopAvailable, longStructureTargetAvailable, effectiveMinStructureRewardRiskForEntry)
 bool longProfitSpaceEntryBlocked = useProfitSpaceFilter and longRaw and not longProfitSpaceAllowed
 
@@ -1356,11 +1367,16 @@ float shortStructureRewardRisk = rewardRiskMultiple(shortStructureRewardPerShare
 float shortProfitCheckpoint = shortRunnerCandidate ? shortRunnerActivationCandidate : shortTargetCandidate
 float shortEntryNotional = profitSpaceEntryNotional(shortEntryCandidate, shortQtyCandidate)
 float shortEstimatedCost = profitSpaceRoundTripCost(shortQtyCandidate)
-float shortExpectedGrossProfit = profitSpaceGrossProfit(-1, shortEntryCandidate, shortProfitCheckpoint, shortQtyCandidate)
+float shortExpectedGrossProfit = profitSpaceGrossProfit(-1, shortEntryCandidate, shortTargetCandidate, shortQtyCandidate)
 float shortExpectedNetProfit = shortExpectedGrossProfit - shortEstimatedCost
 float shortExpectedNetRoiPct = profitSpaceNetRoiPct(shortExpectedNetProfit, shortEntryNotional)
 float shortCostPctOfReward = profitSpaceCostPct(shortEstimatedCost, shortExpectedGrossProfit)
-float shortTargetDistanceAtr = profitSpaceTargetAtrMultiple(shortEntryCandidate, shortProfitCheckpoint)
+float shortTargetDistanceAtr = profitSpaceTargetAtrMultiple(shortEntryCandidate, shortTargetCandidate)
+float shortCheckpointGrossProfit = profitSpaceGrossProfit(-1, shortEntryCandidate, shortProfitCheckpoint, shortQtyCandidate)
+float shortCheckpointNetProfit = shortCheckpointGrossProfit - shortEstimatedCost
+float shortCheckpointNetRoiPct = profitSpaceNetRoiPct(shortCheckpointNetProfit, shortEntryNotional)
+float shortCheckpointCostPctOfReward = profitSpaceCostPct(shortEstimatedCost, shortCheckpointGrossProfit)
+float shortCheckpointTargetDistanceAtr = profitSpaceTargetAtrMultiple(shortEntryCandidate, shortProfitCheckpoint)
 bool shortProfitSpaceAllowed = profitSpaceEntryAllowed(shortExpectedNetProfit, shortExpectedNetRoiPct, shortCostPctOfReward, shortTargetDistanceAtr, shortStructureRewardRisk, shortStructureStopAvailable, shortStructureTargetAvailable, effectiveMinStructureRewardRiskForEntry)
 bool shortProfitSpaceEntryBlocked = useProfitSpaceFilter and shortRaw and not shortProfitSpaceAllowed
 
@@ -1597,28 +1613,34 @@ profitSpacePayload(string direction, float qty, float entryPrice, float stopPric
     int directionSign = direction == "long" ? 1 : -1
     float entryNotionalValue = profitSpaceEntryNotional(entryPrice, qty)
     float estimatedCostValue = profitSpaceRoundTripCost(qty)
-    float grossProfitValue = profitSpaceGrossProfit(directionSign, entryPrice, targetCheckpoint, qty)
+    float grossProfitValue = profitSpaceGrossProfit(directionSign, entryPrice, targetPrice, qty)
     float netProfitValue = grossProfitValue - estimatedCostValue
     float netRoiPctValue = profitSpaceNetRoiPct(netProfitValue, entryNotionalValue)
     float costPctValue = profitSpaceCostPct(estimatedCostValue, grossProfitValue)
-    float targetAtrValue = profitSpaceTargetAtrMultiple(entryPrice, targetCheckpoint)
-    float finalGrossProfitValue = profitSpaceGrossProfit(directionSign, entryPrice, targetPrice, qty)
-    float finalNetProfitValue = finalGrossProfitValue - estimatedCostValue
-    float finalNetRoiPctValue = profitSpaceNetRoiPct(finalNetProfitValue, entryNotionalValue)
+    float targetAtrValue = profitSpaceTargetAtrMultiple(entryPrice, targetPrice)
+    float checkpointGrossProfitValue = profitSpaceGrossProfit(directionSign, entryPrice, targetCheckpoint, qty)
+    float checkpointNetProfitValue = checkpointGrossProfitValue - estimatedCostValue
+    float checkpointNetRoiPctValue = profitSpaceNetRoiPct(checkpointNetProfitValue, entryNotionalValue)
+    float checkpointCostPctValue = profitSpaceCostPct(estimatedCostValue, checkpointGrossProfitValue)
+    float checkpointTargetAtrValue = profitSpaceTargetAtrMultiple(entryPrice, targetCheckpoint)
+    float finalGrossProfitValue = grossProfitValue
+    float finalNetProfitValue = netProfitValue
+    float finalNetRoiPctValue = netRoiPctValue
     float finalTargetAtrValue = profitSpaceTargetAtrMultiple(entryPrice, targetPrice)
     float riskPerShareValue = structureRiskPerShare(directionSign, entryPrice, stopPrice)
     float rewardPerShareValue = structureRewardPerShare(directionSign, entryPrice, targetPrice)
     float grossRiskValue = riskPerShareValue > 0.0 and qty > 0.0 ? riskPerShareValue * qty : na
     float structureRewardRiskValue = rewardRiskMultiple(rewardPerShareValue, riskPerShareValue)
     float netRewardRiskValue = grossRiskValue > 0.0 ? finalNetProfitValue / grossRiskValue : na
-    float checkpointNetRewardRiskValue = grossRiskValue > 0.0 ? netProfitValue / grossRiskValue : na
-    float minRewardRiskValue = structureContextMinRewardRisk(weakTrendOrLowVolContext)
+    float checkpointNetRewardRiskValue = grossRiskValue > 0.0 ? checkpointNetProfitValue / grossRiskValue : na
+    float minRewardRiskValue = effectiveMinStructureRewardRiskForEntry
     string failureReasonValue = profitSpaceFailureReason(netProfitValue, netRoiPctValue, costPctValue, targetAtrValue, structureRewardRiskValue, true, true, minRewardRiskValue)
     bool entryAllowedValue = profitSpaceEntryAllowed(netProfitValue, netRoiPctValue, costPctValue, targetAtrValue, structureRewardRiskValue, true, true, minRewardRiskValue)
     jsonBool("profit_space_filter_enabled", useProfitSpaceFilter) +
      jsonBool("profit_space_entry_allowed", entryAllowedValue) +
      jsonBool("profit_space_entry_blocked", useProfitSpaceFilter and not entryAllowedValue) +
      jsonStr("profit_space_filter_reason", failureReasonValue) +
+     jsonStr("profit_space_basis", "final_structure_target") +
      jsonNum("entry_notional", entryNotionalValue) +
      jsonNum("gross_risk", grossRiskValue) +
      jsonNum("expected_gross_profit", grossProfitValue) +
@@ -1633,7 +1655,13 @@ profitSpacePayload(string direction, float qty, float entryPrice, float stopPric
      jsonNum("net_reward_risk", netRewardRiskValue) +
      jsonNum("target_checkpoint_net_reward_risk", checkpointNetRewardRiskValue) +
      jsonNum("target_distance_atr", targetAtrValue) +
-     jsonNum("profit_space_target_price", targetCheckpoint) +
+     jsonNum("profit_space_target_price", targetPrice) +
+     jsonNum("profit_space_checkpoint_price", targetCheckpoint) +
+     jsonNum("checkpoint_gross_profit", checkpointGrossProfitValue) +
+     jsonNum("checkpoint_net_profit", checkpointNetProfitValue) +
+     jsonNum("checkpoint_net_roi_pct", checkpointNetRoiPctValue) +
+     jsonNum("checkpoint_cost_pct_of_reward", checkpointCostPctValue) +
+     jsonNum("checkpoint_target_distance_atr", checkpointTargetAtrValue) +
      jsonNum("profit_space_final_target_price", targetPrice) +
      jsonNum("final_target_gross_profit", finalGrossProfitValue) +
      jsonNum("final_target_net_profit", finalNetProfitValue) +
@@ -2194,12 +2222,13 @@ string blockedAnchorReason = blockedDirection == "long" ? longEntryAnchorReason 
 blockedAnchorReason := blockedAnchorReason == "" ? "none" : blockedAnchorReason
 string blockedAnchorText = structuralAnchorMode ? "\nref " + str.tostring(blockedReferenceEntry, "#.##") + " / plan " + str.tostring(blockedEntryCandidate, "#.##") + "\n锚点: " + blockedAnchorReason : ""
 string blockedProfitSummary = blockedDirection == "long" ? profitSpaceSummaryText(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr, longStructureRewardRisk) : profitSpaceSummaryText(shortExpectedNetProfit, shortExpectedNetRoiPct, shortCostPctOfReward, shortTargetDistanceAtr, shortStructureRewardRisk)
+string blockedProfitCheckpointText = blockedDirection == "long" ? profitSpaceCheckpointText(longRunnerCandidate, longCheckpointNetProfit, longCheckpointCostPctOfReward, longCheckpointTargetDistanceAtr) : profitSpaceCheckpointText(shortRunnerCandidate, shortCheckpointNetProfit, shortCheckpointCostPctOfReward, shortCheckpointTargetDistanceAtr)
 string blockedMrRegimeText = setupIsMr(blockedSetup) ? "\nMR: " + mrRegimeDisplayName(blockedSetup == "mr_sdLower" ? longMrRegime : shortMrRegime) : ""
-string blockedProfitLabelText = blockedProfitSpaceText == "" ? "\n" + blockedProfitSummary : blockedProfitSpaceText
+string blockedProfitLabelText = (blockedProfitSpaceText == "" ? "\n" + blockedProfitSummary : blockedProfitSpaceText) + blockedProfitCheckpointText
 string blockedVisualKey = blockedDirection + ":" + blockedSetup + ":" + blockedReason + ":" + blockedComponentText + ":" + mtfStatusForDirection(blockedDirection) + ":" + mtfBlockReasonForDirection(blockedDirection) + ":" + str.tostring(dtpDir, "#") + ":" + dtpPhase + ":" + (blockedProfitSpaceEntryBlocked ? blockedProfitSpaceFailureReason : "none")
 if blockedVisualNow and blockedVisualKey != lastBlockVisualKey
     float blockedY = blockedDirection == "short" ? high + atrVal * 4.0 : low - atrVal * 4.0
-    string blockedText = "信号过滤\n" + directionDisplayName(blockedDirection) + " · " + setupDisplayName(blockedSetup) + "\n组件: " + blockedComponentText + "\n原因: " + filterDisplayName(blockedReason) + "\n" + filterActionText(blockedReason, blockedDirection) + "\n" + mtfSummaryForDirection(blockedDirection) + "\n" + dtpEntryFilterText(blockedDirection, dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + blockedMrRegimeText + blockedProfitLabelText + blockedAnchorText
+    string blockedText = "信号过滤\n" + directionDisplayName(blockedDirection) + " · " + setupDisplayName(blockedSetup) + "\n" + entryWindowDiagnosticsText() + "\n组件: " + blockedComponentText + "\n原因: " + filterDisplayName(blockedReason) + "\n" + filterActionText(blockedReason, blockedDirection) + "\n" + mtfSummaryForDirection(blockedDirection) + "\n" + dtpEntryFilterText(blockedDirection, dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + blockedMrRegimeText + blockedProfitLabelText + blockedAnchorText
     label.new(bar_index, blockedY, blockedText, style=flowLabelStyle(blockedDirection), color=flowLabelColor("blocked", blockedDirection), textcolor=color.white, size=size.small)
     lastBlockVisualKey := blockedVisualKey
 if not blockedNow and not longRaw and not shortRaw
@@ -2251,7 +2280,8 @@ if enterLong
         strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment="平多 · TP/SL", comment_profit="平多 · TP止盈", comment_loss="平多 · SL止损")
         if showFlowLabels
             string mrLine = longSetup == "mr_sdLower" ? "\nMR: " + mrRegimeDisplayName(longMrRegime) + " / 均值TP " + str.tostring(targetPrice, "#.##") : ""
-            label.new(bar_index, low - atrVal * 3.1, "信号已发出\n提交限价做多\n" + setupDisplayName(longSetup) + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("long") + "\n" + dtpEntryFilterText("long", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + mrLine + "\n" + profitSpaceSummaryText(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr, longStructureRewardRisk) + "\nref " + str.tostring(longReferenceEntry, "#.##") + " / plan " + str.tostring(entryPrice, "#.##") + " / 复查 " + str.tostring(entryOrderTtlBars, "#") + "bar\n锚点: " + activeEntryAnchorReason, style=label.style_label_up, color=flowLabelColor("entry", "long"), textcolor=color.white, size=size.normal)
+            string profitLine = profitSpaceSummaryText(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr, longStructureRewardRisk) + profitSpaceCheckpointText(longRunnerCandidate, longCheckpointNetProfit, longCheckpointCostPctOfReward, longCheckpointTargetDistanceAtr)
+            label.new(bar_index, low - atrVal * 3.1, "信号已发出\n提交限价做多\n" + setupDisplayName(longSetup) + "\n" + entryWindowDiagnosticsText() + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("long") + "\n" + dtpEntryFilterText("long", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + mrLine + "\n" + profitLine + "\nref " + str.tostring(longReferenceEntry, "#.##") + " / plan " + str.tostring(entryPrice, "#.##") + " / 复查 " + str.tostring(entryOrderTtlBars, "#") + "bar\n锚点: " + activeEntryAnchorReason, style=label.style_label_up, color=flowLabelColor("entry", "long"), textcolor=color.white, size=size.normal)
         lowerPostReversalUsed := setupLongPostLowerBreakout ? true : lowerPostReversalUsed
         lowerWindowUsed := longSetup == "mr_sdLower" ? true : lowerWindowUsed
         upperWindowUsed := longSetup == "trend_sdUpper" ? true : upperWindowUsed
@@ -2308,7 +2338,8 @@ if enterShort
         strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment="平空 · TP/SL", comment_profit="平空 · TP止盈", comment_loss="平空 · SL止损")
         if showFlowLabels
             string mrLine = shortSetup == "mr_sdUpper" ? "\nMR: " + mrRegimeDisplayName(shortMrRegime) + " / 均值TP " + str.tostring(targetPrice, "#.##") : ""
-            label.new(bar_index, high + atrVal * 3.1, "信号已发出\n提交限价做空\n" + setupDisplayName(shortSetup) + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("short") + "\n" + dtpEntryFilterText("short", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + mrLine + "\n" + profitSpaceSummaryText(shortExpectedNetProfit, shortExpectedNetRoiPct, shortCostPctOfReward, shortTargetDistanceAtr, shortStructureRewardRisk) + "\nref " + str.tostring(shortReferenceEntry, "#.##") + " / plan " + str.tostring(entryPrice, "#.##") + " / 复查 " + str.tostring(entryOrderTtlBars, "#") + "bar\n锚点: " + activeEntryAnchorReason, style=label.style_label_down, color=flowLabelColor("entry", "short"), textcolor=color.white, size=size.normal)
+            string profitLine = profitSpaceSummaryText(shortExpectedNetProfit, shortExpectedNetRoiPct, shortCostPctOfReward, shortTargetDistanceAtr, shortStructureRewardRisk) + profitSpaceCheckpointText(shortRunnerCandidate, shortCheckpointNetProfit, shortCheckpointCostPctOfReward, shortCheckpointTargetDistanceAtr)
+            label.new(bar_index, high + atrVal * 3.1, "信号已发出\n提交限价做空\n" + setupDisplayName(shortSetup) + "\n" + entryWindowDiagnosticsText() + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("short") + "\n" + dtpEntryFilterText("short", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + mrLine + "\n" + profitLine + "\nref " + str.tostring(shortReferenceEntry, "#.##") + " / plan " + str.tostring(entryPrice, "#.##") + " / 复查 " + str.tostring(entryOrderTtlBars, "#") + "bar\n锚点: " + activeEntryAnchorReason, style=label.style_label_down, color=flowLabelColor("entry", "short"), textcolor=color.white, size=size.normal)
         upperPostReversalUsed := setupShortPostUpperBreakdown ? true : upperPostReversalUsed
         emaDeathContinuationShortUsed := setupShortEmaDeathContinuation ? true : emaDeathContinuationShortUsed
         upperWindowUsed := shortSetup == "mr_sdUpper" ? true : upperWindowUsed
