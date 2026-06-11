@@ -1172,7 +1172,10 @@
             const liveOrderLegCount = liveOrdersAvailable ? Number(liveOrders.leg_total ?? liveOrders.total ?? 0) : 0;
             const liveOrderCancelableGroupCount = liveOrdersAvailable ? Number(liveOrders.cancelable_groups ?? liveOrders.cancelable ?? 0) : 0;
             const liveOrderEditableGroupCount = liveOrdersAvailable ? Number(liveOrders.editable_groups ?? liveOrders.editable ?? 0) : 0;
-            const positionTotal = Number(positions.total || 0);
+            const positionTotal = Number(positions.effective_open_positions ?? positions.total ?? 0) || 0;
+            const brokerOpenPositions = Number(positions.broker_open_positions ?? positions.open_positions ?? positions.total ?? 0) || 0;
+            const inferredOpenPositions = Number(positions.inferred_open_positions ?? 0) || 0;
+            const positionsInferred = positions.inferred === true || (inferredOpenPositions > 0 && brokerOpenPositions === 0);
             const positionsDetailAvailable = positions.detail_available === true;
             const positionsCountAvailable = positions.count_available === true || positions.available === true;
             const positionsOmitted = positions.positions_omitted === true || String(positions.positions_source || '').trim() === 'omitted_open_orders_only';
@@ -1236,7 +1239,7 @@
             setText(
                 'positionsStateLabel',
                 positionsAvailable && positionsCountAvailable
-                    ? (positionTotal > 0 ? '当前持仓' : '无实际持仓')
+                    ? (positionTotal > 0 ? (positionsInferred ? '推断持仓' : '当前持仓') : '无实际持仓')
                     : (positionsOmitted ? '持仓未取样' : '持仓接口不可用')
             );
             setText(
@@ -1248,11 +1251,11 @@
             setText(
                 'positionsFoot',
                 positionsAvailable && positionsCountAvailable
-                    ? `${positionsDetailAvailable ? 'Gateway 真实持仓快照' : 'Gateway 持仓计数快照'}${positionTotal > 0 ? '' : ' · 已确认无实际持仓'}${snapshotSuffix(positions)}`
+                    ? `${positionsInferred ? 'Gateway positions 为空 · 按订单保护单推断' : positionsDetailAvailable ? 'Gateway 真实持仓快照' : 'Gateway 持仓计数快照'}${positionTotal > 0 ? ` · broker=${formatNumber(brokerOpenPositions, 0)} inferred=${formatNumber(inferredOpenPositions, 0)}` : ' · 已确认无实际持仓'}${snapshotSuffix(positions)}`
                     : `Gateway 持仓未确认${positions.error ? ` · ${positions.error}` : ''}`
             );
             document.getElementById('positionsLink').title = positionsAvailable
-                ? `${positionsCountAvailable ? (positionTotal > 0 ? 'Gateway 持仓计数显示有仓位' : 'Gateway 已确认无实际持仓') : 'Gateway 持仓未确认'}；当前挂单组 ${liveOrdersAvailable ? formatNumber(liveOrderGroupCount, 0) : '不可用'}；订单腿 ${liveOrdersAvailable ? formatNumber(liveOrderLegCount, 0) : '不可用'}`
+                ? `${positionsCountAvailable ? (positionTotal > 0 ? (positionsInferred ? 'Gateway positions 为空，按订单推断有持仓' : 'Gateway 持仓计数显示有仓位') : 'Gateway 已确认无实际持仓') : 'Gateway 持仓未确认'}；当前挂单组 ${liveOrdersAvailable ? formatNumber(liveOrderGroupCount, 0) : '不可用'}；订单腿 ${liveOrdersAvailable ? formatNumber(liveOrderLegCount, 0) : '不可用'}`
                 : `Gateway 持仓暂不可用${positions.error ? `: ${positions.error}` : ''}`;
 
             const pnlEl = document.getElementById('todayPnL');

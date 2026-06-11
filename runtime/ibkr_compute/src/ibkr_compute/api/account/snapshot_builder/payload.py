@@ -315,6 +315,34 @@ def _account_data_pacing_status(service_status: dict) -> dict:
     return dict(pacing) if pacing else {}
 
 
+def _account_data_request_gate_status(service_status: dict) -> dict:
+    status = service_status if isinstance(service_status, dict) else {}
+    gate = status.get("account_data_request_gate") if isinstance(status.get("account_data_request_gate"), dict) else {}
+    if gate:
+        return dict(gate)
+    gateway = status.get("gateway") if isinstance(status.get("gateway"), dict) else {}
+    gate = gateway.get("account_data_request_gate") if isinstance(gateway.get("account_data_request_gate"), dict) else {}
+    if gate:
+        return dict(gate)
+    broker = gateway.get("broker") if isinstance(gateway.get("broker"), dict) else {}
+    gate = broker.get("account_data_request_gate") if isinstance(broker.get("account_data_request_gate"), dict) else {}
+    return dict(gate) if gate else {}
+
+
+def _pacing_kind_status(pacing: dict, kind: str) -> dict:
+    by_kind = pacing.get("by_kind") if isinstance(pacing.get("by_kind"), dict) else {}
+    payload = by_kind.get(kind) if isinstance(by_kind.get(kind), dict) else {}
+    return dict(payload) if payload else {}
+
+
+def _pacing_kind_blocked(pacing: dict, kind: str) -> tuple[bool, float, str]:
+    payload = _pacing_kind_status(pacing, kind)
+    retry_after_s = _safe_float(payload.get("retry_after_s"), 0.0)
+    blocked = bool(payload.get("blocked") or retry_after_s > 0)
+    reason = str(payload.get("blocked_reason") or payload.get("cooldown_reason") or payload.get("reason") or "").strip()
+    return blocked, retry_after_s, reason
+
+
 def _summary_snapshot_available(summary: dict) -> bool:
     if not isinstance(summary, dict) or not summary:
         return False
@@ -450,6 +478,7 @@ def _decorate_account_snapshot_health(payload: dict, *, reason: str = "") -> dic
         "cache_age_s": result.get("cache_age_s"),
         "retry_after_s": result.get("retry_after_s"),
     }
+    result.setdefault("summary_source", str(result.get("source") or ""))
     result["account_data_policy"] = {
         "profile": str(result.get("snapshot_profile") or result.get("source") or "account_snapshot"),
         "served_from": str(result.get("source") or result.get("cache_state") or ""),
@@ -629,8 +658,59 @@ def _build_account_data_circuit_buying_power_snapshot(service, context: dict, ci
         "account_data_circuit": dict(circuit or {}),
         "account_data_pacing": _account_data_pacing_status(context["service_status"]),
         "retry_after_s": retry_after_s,
+        "hard_blocked": True,
+        "buying_power_refresh_state": "blocked",
+        "last_refresh_error": reason,
     }
     return _decorate_account_snapshot_health(payload, reason=reason)
+
+
+def _build_blocked_buying_power_snapshot(
+    service,
+    context: dict,
+    *,
+    reason: str,
+    retry_after_s: float = 0.0,
+    source: str = "buying_power_refresh_blocked",
+    in_flight_request: dict | None = None,
+    pacing: dict | None = None,
+) -> dict:
+    normalized_reason = str(reason or "buying_power_refresh_blocked").strip()
+    retry_after = round(max(0.0, _safe_float(retry_after_s, 0.0)), 1)
+    guard = build_buying_power_guard({}, config=getattr(service, "config", None), environment=context["runtime_environment"])
+    guard.update(
+        {
+            "available": False,
+            "state": "unavailable",
+            "reason": normalized_reason,
+            "source": source,
+            "snapshot_error": normalized_reason,
+            "retry_after_s": retry_after,
+        }
+    )
+    payload = {
+        "ok": False,
+        "environment": context["runtime_environment"],
+        "account_id": context["account_id"],
+        "service_running": bool(getattr(service, "is_running", False)),
+        "service_starting": bool(getattr(service, "is_starting", False)),
+        "session_authenticated": bool((context["service_status"].get("session") or {}).get("authenticated")),
+        "gateway_running": bool((context["service_status"].get("gateway") or {}).get("running")),
+        "summary": {},
+        "buying_power_guard": guard,
+        "summary_raw": {},
+        "errors": {"summary": normalized_reason},
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "source": source,
+        "hard_blocked": True,
+        "buying_power_refresh_state": "blocked",
+        "last_refresh_error": normalized_reason,
+        "retry_after_s": retry_after,
+        "account_data_pacing": dict(pacing or _account_data_pacing_status(context["service_status"])),
+    }
+    if in_flight_request:
+        payload["in_flight_request"] = dict(in_flight_request)
+    return _decorate_account_snapshot_health(payload, reason=normalized_reason)
 
 
 def _is_account_data_circuit_buying_power_snapshot(payload: dict) -> bool:
@@ -654,12 +734,14 @@ def _stale_buying_power_snapshot_after_error(api_app, cache_key: tuple, error: s
     payload["stale"] = True
     payload["cache_state"] = "stale_after_error"
     payload["refresh_error"] = str(error or "").strip() or "buying_power_refresh_unavailable"
+    payload["buying_power_refresh_state"] = "stale_after_error"
+    payload["last_refresh_error"] = payload["refresh_error"]
     errors = payload.get("errors") if isinstance(payload.get("errors"), dict) else {}
     payload["errors"] = {**errors, "refresh": payload["refresh_error"]}
     return _decorate_account_snapshot_health(payload, reason=payload["refresh_error"])
 
 
-def _build_ibkr_account_buying_power_snapshot(service) -> dict:
+def _build_ibkr_account_buying_power_snapshot(service, *, force_refresh: bool = False) -> dict:
     context = build_snapshot_context(service, include_pnl=False, fast_status=True)
     api_app = context["api_app"]
     cache_key = (context["runtime_environment"], f"{context['account_id']}::buying_power", False)
@@ -668,21 +750,40 @@ def _build_ibkr_account_buying_power_snapshot(service) -> dict:
         _update_buying_power_baseline_from_payload(service, payload)
         return payload
 
-    cached = load_cached_snapshot(api_app, cache_key)
-    if cached and not _is_account_data_circuit_buying_power_snapshot(cached):
+    cached = load_cached_snapshot(api_app, cache_key, allow_stale=bool(force_refresh))
+    if cached and not force_refresh and not _is_account_data_circuit_buying_power_snapshot(cached):
         return with_baseline(_decorate_account_snapshot_health(cached))
 
     refresh_lock = get_snapshot_refresh_lock(api_app, cache_key)
+    if force_refresh and refresh_lock.locked():
+        stale_payload = _stale_buying_power_snapshot_after_error(api_app, cache_key, "buying_power_refresh_in_flight")
+        if stale_payload:
+            stale_payload["in_flight_request"] = {"kind": "buying_power_snapshot", "source": "snapshot_refresh_lock"}
+            stale_payload["hard_blocked"] = True
+            stale_payload["buying_power_refresh_state"] = "in_flight"
+            return with_baseline(stale_payload)
+        return with_baseline(
+            _build_blocked_buying_power_snapshot(
+                service,
+                context,
+                reason="buying_power_refresh_in_flight",
+                source="buying_power_refresh_in_flight",
+                in_flight_request={"kind": "buying_power_snapshot", "source": "snapshot_refresh_lock"},
+            )
+        )
+
     with refresh_lock:
-        cached = load_cached_snapshot(api_app, cache_key)
-        if cached and not _is_account_data_circuit_buying_power_snapshot(cached):
+        cached = load_cached_snapshot(api_app, cache_key, allow_stale=bool(force_refresh))
+        if cached and not force_refresh and not _is_account_data_circuit_buying_power_snapshot(cached):
             return with_baseline(_decorate_account_snapshot_health(cached))
 
-        full_cached = _fresh_full_snapshot_for_buying_power(api_app, context)
+        full_cached = {} if force_refresh else _fresh_full_snapshot_for_buying_power(api_app, context)
         payload = _build_buying_power_payload_from_full_snapshot(full_cached, context)
         if payload:
             store_cached_snapshot(api_app, cache_key, payload)
-            return with_baseline(load_cached_snapshot(api_app, cache_key, allow_stale=False) or payload)
+            refreshed = load_cached_snapshot(api_app, cache_key, allow_stale=False) or payload
+            refreshed["buying_power_refresh_state"] = "cache_hit" if not force_refresh else "refreshed_from_full_snapshot"
+            return with_baseline(_decorate_account_snapshot_health(refreshed))
 
         circuit = _account_data_circuit_status(context.get("service_status") or {})
         if bool(circuit.get("active")):
@@ -697,16 +798,46 @@ def _build_ibkr_account_buying_power_snapshot(service) -> dict:
                 stale_full_payload["stale"] = True
                 stale_full_payload["refresh_error"] = "account_data_circuit_open"
                 stale_full_payload["account_data_circuit"] = dict(circuit or {})
+                stale_full_payload["hard_blocked"] = True
+                stale_full_payload["buying_power_refresh_state"] = "stale_after_account_data_circuit"
+                stale_full_payload["retry_after_s"] = _safe_float(circuit.get("remaining_s"), 0.0)
                 return with_baseline(stale_full_payload)
             stale_payload = _stale_buying_power_snapshot_after_error(api_app, cache_key, "account_data_circuit_open")
             if stale_payload:
+                stale_payload["account_data_circuit"] = dict(circuit or {})
+                stale_payload["hard_blocked"] = True
+                stale_payload["retry_after_s"] = _safe_float(circuit.get("remaining_s"), 0.0)
                 return with_baseline(stale_payload)
             return with_baseline(_build_account_data_circuit_buying_power_snapshot(service, context, circuit))
+
+        gate = _account_data_request_gate_status(context.get("service_status") or {})
+        owner_kind = str(gate.get("owner_kind") or "").strip()
+        if force_refresh and owner_kind:
+            owner_age_s = _safe_float(gate.get("owner_age_s"), 0.0)
+            serial_timeout_s = _safe_float(gate.get("serial_timeout_s"), 30.0)
+            retry_after_s = max(1.0, serial_timeout_s - owner_age_s) if serial_timeout_s > owner_age_s else 1.0
+            stale_payload = _stale_buying_power_snapshot_after_error(api_app, cache_key, "account_data_request_in_flight")
+            if stale_payload:
+                stale_payload["in_flight_request"] = dict(gate)
+                stale_payload["hard_blocked"] = True
+                stale_payload["buying_power_refresh_state"] = "in_flight"
+                stale_payload["retry_after_s"] = round(retry_after_s, 1)
+                return with_baseline(stale_payload)
+            return with_baseline(
+                _build_blocked_buying_power_snapshot(
+                    service,
+                    context,
+                    reason="account_data_request_in_flight",
+                    retry_after_s=retry_after_s,
+                    source="account_data_request_gate",
+                    in_flight_request=gate,
+                )
+            )
 
         full_refreshed = _build_ibkr_account_snapshot(
             service,
             include_pnl=False,
-            force_refresh=False,
+            force_refresh=bool(force_refresh),
             allow_stale=True,
             fast_status=True,
             apply_reservation_overlay=False,
@@ -722,29 +853,66 @@ def _build_ibkr_account_buying_power_snapshot(service) -> dict:
                 full_payload.setdefault("cache_state", "stale")
                 if not full_payload.get("refresh_error"):
                     full_payload["refresh_error"] = str((full_refreshed or {}).get("refresh_error") or "stale_full_snapshot")
+                full_payload["buying_power_refresh_state"] = "stale_full_snapshot"
                 return with_baseline(_decorate_account_snapshot_health(full_payload))
             store_cached_snapshot(api_app, cache_key, full_payload)
-            return with_baseline(load_cached_snapshot(api_app, cache_key, allow_stale=False) or full_payload)
+            refreshed = load_cached_snapshot(api_app, cache_key, allow_stale=False) or full_payload
+            refreshed["buying_power_refresh_state"] = "refreshed_from_full_snapshot"
+            return with_baseline(_decorate_account_snapshot_health(refreshed))
 
-        if not _env_bool("IBKR_ACCOUNT_SUMMARY_FALLBACK_ENABLED", False):
+        circuit = _account_data_circuit_status(context.get("service_status") or {})
+        if bool(circuit.get("active")):
             stale_payload = _stale_buying_power_snapshot_after_error(
                 api_app,
                 cache_key,
-                "account_summary_fallback_disabled",
+                "account_data_circuit_open",
             )
             if stale_payload:
+                stale_payload["account_data_circuit"] = dict(circuit or {})
+                stale_payload["hard_blocked"] = True
+                stale_payload["retry_after_s"] = _safe_float(circuit.get("remaining_s"), 0.0)
                 return with_baseline(stale_payload)
-            payload = _build_buying_power_payload_from_summary_raw(
-                service,
-                context,
-                {},
-                "account_summary_fallback_disabled",
+            return with_baseline(_build_account_data_circuit_buying_power_snapshot(service, context, circuit))
+
+        pacing = _account_data_pacing_status(context["service_status"])
+        summary_blocked, summary_retry_after, summary_reason = _pacing_kind_blocked(pacing, "account_summary")
+        if summary_blocked:
+            stale_payload = _stale_buying_power_snapshot_after_error(api_app, cache_key, "account_summary_pacing_blocked")
+            if stale_payload:
+                stale_payload["hard_blocked"] = True
+                stale_payload["buying_power_refresh_state"] = "stale_after_pacing"
+                stale_payload["retry_after_s"] = summary_retry_after
+                stale_payload["account_summary_pacing"] = _pacing_kind_status(pacing, "account_summary")
+                return with_baseline(stale_payload)
+            return with_baseline(
+                _build_blocked_buying_power_snapshot(
+                    service,
+                    context,
+                    reason=summary_reason or "account_summary_pacing_blocked",
+                    retry_after_s=summary_retry_after,
+                    source="account_summary_pacing",
+                    pacing=pacing,
+                )
             )
+
+        summary_fallback_enabled = _env_bool(
+            "IBKR_BUYING_POWER_SUMMARY_REFRESH_ENABLED",
+            _env_bool("IBKR_ACCOUNT_SUMMARY_FALLBACK_ENABLED", True),
+        )
+        if not summary_fallback_enabled:
+            stale_payload = _stale_buying_power_snapshot_after_error(api_app, cache_key, "buying_power_summary_refresh_disabled")
+            if stale_payload:
+                return with_baseline(stale_payload)
+            payload = _build_buying_power_payload_from_summary_raw(service, context, {}, "buying_power_summary_refresh_disabled")
+            payload["buying_power_refresh_state"] = "disabled"
             store_cached_snapshot(api_app, cache_key, payload)
             return with_baseline(load_cached_snapshot(api_app, cache_key, allow_stale=False) or payload)
 
         summary_raw, summary_error = _fetch_account_summary_raw_for_buying_power(service, context)
         payload = _build_buying_power_payload_from_summary_raw(service, context, summary_raw, summary_error)
+        payload["buying_power_refresh_state"] = "refreshed" if bool(payload.get("summary_available")) else "failed"
+        if summary_error:
+            payload["last_refresh_error"] = summary_error
         if (payload.get("buying_power_guard") or {}).get("state") == "unavailable":
             stale_payload = _stale_buying_power_snapshot_after_error(
                 api_app,
@@ -756,7 +924,7 @@ def _build_ibkr_account_buying_power_snapshot(service) -> dict:
             full_refreshed = _build_ibkr_account_snapshot(
                 service,
                 include_pnl=False,
-                force_refresh=False,
+                force_refresh=bool(force_refresh),
                 allow_stale=False,
                 fast_status=True,
                 apply_reservation_overlay=False,
@@ -764,9 +932,13 @@ def _build_ibkr_account_buying_power_snapshot(service) -> dict:
             full_payload = _build_buying_power_payload_from_full_snapshot(full_refreshed, context)
             if full_payload:
                 store_cached_snapshot(api_app, cache_key, full_payload)
-                return with_baseline(load_cached_snapshot(api_app, cache_key, allow_stale=False) or full_payload)
+                refreshed = load_cached_snapshot(api_app, cache_key, allow_stale=False) or full_payload
+                refreshed["buying_power_refresh_state"] = "refreshed_from_full_snapshot"
+                return with_baseline(_decorate_account_snapshot_health(refreshed))
         store_cached_snapshot(api_app, cache_key, payload)
-        return with_baseline(load_cached_snapshot(api_app, cache_key, allow_stale=False) or payload)
+        refreshed = load_cached_snapshot(api_app, cache_key, allow_stale=False) or payload
+        refreshed.setdefault("buying_power_refresh_state", payload.get("buying_power_refresh_state") or "refreshed")
+        return with_baseline(_decorate_account_snapshot_health(refreshed))
 
 
 def _stale_snapshot_after_error(payload: dict, error: str) -> dict:
@@ -922,6 +1094,17 @@ def _load_cached_full_snapshot_for_orders_fast(api_app, context: dict) -> dict:
             health_state = str(health.get("state") or "").strip().lower()
             if health_state in {"ok", "stale"} and bool(decorated.get("summary_available")):
                 return decorated
+    return {}
+
+
+def _load_cached_buying_power_snapshot_for_orders_fast(api_app, context: dict) -> dict:
+    cache_key = (context["runtime_environment"], f"{context['account_id']}::buying_power", False)
+    cached = load_cached_snapshot(api_app, cache_key, allow_stale=True)
+    if not isinstance(cached, dict) or not cached:
+        return {}
+    decorated = _decorate_account_snapshot_health(dict(cached))
+    if bool(decorated.get("summary_available")):
+        return decorated
     return {}
 
 
@@ -1107,8 +1290,8 @@ def _inferred_position_from_entry(entry: dict, children: list[dict], *, directio
     tp_orders = [item for item in children if str(item.get("role") or "").strip().lower() == "take_profit"]
     sl_orders = [item for item in children if str(item.get("role") or "").strip().lower() == "stop_loss"]
     signed_quantity = quantity if direction == "long" else -quantity
-    avg_price = _safe_float(entry.get("avg_price"), 0.0) or _safe_float(entry.get("price"), 0.0)
-    market_value = abs(signed_quantity * avg_price) if avg_price > 0 else 0.0
+    avg_price = _safe_float(entry.get("avg_price"), 0.0)
+    avg_price_value = avg_price if avg_price > 0 else None
     relation_reason = (
         "filled_entry_with_open_protection_orders"
         if str(entry.get("status_key") or "").strip().upper() == "FILLED"
@@ -1135,11 +1318,14 @@ def _inferred_position_from_entry(entry: dict, children: list[dict], *, directio
         "conid": int(_safe_float(entry.get("conid"), 0.0) or 0),
         "quantity": signed_quantity,
         "direction": direction,
-        "avg_cost": avg_price,
-        "avg_price": avg_price,
-        "market_price": 0.0,
-        "market_value": market_value,
-        "unrealized_pnl": 0.0,
+        "avg_cost": avg_price_value,
+        "avg_price": avg_price_value,
+        "avg_price_available": bool(avg_price_value),
+        "market_price": None,
+        "market_price_available": False,
+        "market_value": None,
+        "market_value_available": False,
+        "unrealized_pnl": None,
         "realized_pnl": 0.0,
         "account": str(entry.get("account") or ""),
         "currency": str(entry.get("currency") or "USD").upper(),
@@ -1155,11 +1341,11 @@ def _inferred_position_from_entry(entry: dict, children: list[dict], *, directio
         "take_profit_price": _protection_price(tp_orders[0]) if tp_orders else 0.0,
         "stop_loss_order_id": str((sl_orders[0] or {}).get("order_id") or "") if sl_orders else "",
         "stop_loss_price": _protection_price(sl_orders[0]) if sl_orders else 0.0,
-        "open_protection_order_ids": [
+        "open_protection_order_ids": list(dict.fromkeys(
             str(item.get("order_id") or "").strip()
             for item in children
             if str(item.get("order_id") or "").strip()
-        ],
+        )),
         "relation": relation,
     }
 
@@ -1346,6 +1532,8 @@ def _build_orders_fast_ibkr_account_snapshot_payload(
     api_app = context["api_app"]
     cached_full = _load_cached_full_snapshot_for_orders_fast(api_app, context)
     mark_timing("cached_full_snapshot_ms")
+    cached_buying_power = _load_cached_buying_power_snapshot_for_orders_fast(api_app, context)
+    mark_timing("cached_buying_power_ms")
     cached_order_rows, cached_order_source = _cached_live_order_rows(service, include_all=not bool(open_orders_only))
     mark_timing("cached_live_orders_ms")
     fallback_rows_raw = load_pb_fallback_order_rows(api_app, service)
@@ -1383,20 +1571,23 @@ def _build_orders_fast_ibkr_account_snapshot_payload(
     )
     mark_timing("normalize_rows_ms")
     inferred_positions, positions_inference = _position_inference_payload(positions, orders, live_open_orders)
-    summary = dict(cached_full.get("summary") or {})
-    summary_raw = dict(cached_full.get("summary_raw") or {})
-    pnl_raw = dict(cached_full.get("pnl_raw") or {})
+    summary_source = "snapshot_cache" if cached_full else "buying_power_cache" if cached_buying_power else "unavailable"
+    summary_cache_state = str((cached_full or cached_buying_power).get("cache_state") or "") if (cached_full or cached_buying_power) else ""
+    summary_cache_age_s = (cached_full or cached_buying_power).get("cache_age_s") if (cached_full or cached_buying_power) else None
+    summary = dict(cached_full.get("summary") or cached_buying_power.get("summary") or {})
+    summary_raw = dict(cached_full.get("summary_raw") or cached_buying_power.get("summary_raw") or {})
+    pnl_raw = dict(cached_full.get("pnl_raw") or cached_buying_power.get("pnl_raw") or {})
     if not summary:
         summary = _build_snapshot_summary(summary_raw, context["account_id"], positions, pnl_raw)
-    guard = dict(cached_full.get("buying_power_guard") or {})
+    guard = dict(cached_full.get("buying_power_guard") or cached_buying_power.get("buying_power_guard") or {})
     if not guard:
         guard = build_buying_power_guard(
             summary,
             config=getattr(service, "config", None),
             environment=context["runtime_environment"],
         )
-    guard.setdefault("source", "orders_fast_cached_summary" if cached_full else "orders_fast")
-    errors = dict(cached_full.get("errors") or {})
+    guard.setdefault("source", "orders_fast_cached_summary" if cached_full else "orders_fast_buying_power_cache" if cached_buying_power else "orders_fast")
+    errors = dict(cached_full.get("errors") or cached_buying_power.get("errors") or {})
     if not _summary_snapshot_available(summary):
         errors.setdefault("summary", "orders_fast_summary_cache_unavailable")
     counts = _merge_inferred_position_counts(
@@ -1443,6 +1634,7 @@ def _build_orders_fast_ibkr_account_snapshot_payload(
         },
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "source": "account_snapshot_orders_fast",
+        "summary_source": summary_source,
         "account_data_pacing": _account_data_pacing_status(context["service_status"]),
         "snapshot_profile": "orders_fast",
         "orders_fast": True,
@@ -1459,9 +1651,9 @@ def _build_orders_fast_ibkr_account_snapshot_payload(
             "positions_source": positions_source,
             "positions_omitted": bool(open_orders_only),
             "positions_count_available": bool(cached_position_counts_available),
-            "summary_source": "snapshot_cache" if cached_full else "unavailable",
-            "summary_cache_state": str(cached_full.get("cache_state") or "") if cached_full else "",
-            "summary_cache_age_s": cached_full.get("cache_age_s") if cached_full else None,
+            "summary_source": summary_source,
+            "summary_cache_state": summary_cache_state,
+            "summary_cache_age_s": summary_cache_age_s,
             "status_source": "fast_runtime_state",
             "skipped_account_data_fetch": True,
             "elapsed_ms": elapsed_ms,

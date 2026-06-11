@@ -62,6 +62,13 @@ def _orders_fast_request(payload: dict[str, Any]) -> bool:
     return False
 
 
+def _buying_power_refresh_request(payload: dict[str, Any]) -> bool:
+    scope = str((payload or {}).get("refresh_scope") or (payload or {}).get("scope") or "").strip().lower()
+    if scope in {"buying_power", "buying-power", "account_summary", "summary"}:
+        return True
+    return _truthy_param((payload or {}).get("summary_refresh")) or _truthy_param((payload or {}).get("buying_power_refresh"))
+
+
 def _prefers_stale_orders_fast(payload: dict[str, Any]) -> bool:
     if not _orders_fast_request(payload):
         return False
@@ -76,6 +83,8 @@ def _prefers_stale_orders_fast(payload: dict[str, Any]) -> bool:
 
 
 def _prefers_stale_account_snapshot(payload: dict[str, Any]) -> bool:
+    if _buying_power_refresh_request(payload) and request_force_refresh(payload):
+        return False
     if _truthy_param((payload or {}).get("prefer_live_on_force")):
         return False
     return True
@@ -104,6 +113,8 @@ def _account_snapshot_payload_for_cache(payload: dict[str, Any]) -> dict[str, An
 def _account_snapshot_upstream_timeout(payload: dict[str, Any]) -> float:
     if _orders_fast_request(payload):
         return cache_seconds("IBKR_ROUTE_CACHE_ACCOUNT_ORDERS_FAST_UPSTREAM_TIMEOUT_SEC", 2.5)
+    if _buying_power_refresh_request(payload):
+        return cache_seconds("IBKR_ROUTE_CACHE_ACCOUNT_BUYING_POWER_UPSTREAM_TIMEOUT_SEC", 20.0)
     return cache_seconds("IBKR_ROUTE_CACHE_ACCOUNT_SNAPSHOT_UPSTREAM_TIMEOUT_SEC", 20.0)
 
 

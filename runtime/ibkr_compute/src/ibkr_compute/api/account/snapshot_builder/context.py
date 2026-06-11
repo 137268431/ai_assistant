@@ -75,6 +75,31 @@ def _fast_account_data_pacing_status(client) -> dict:
     return payload
 
 
+def _fast_account_data_request_gate_status(client) -> dict:
+    state_lock = getattr(client, "_state_lock", None)
+
+    def snapshot() -> dict:
+        owner_kind = str(getattr(client, "_account_data_request_owner_kind", "") or "")
+        owner_since = float(getattr(client, "_account_data_request_owner_since", 0.0) or 0.0)
+        owner_age_s = round(max(0.0, time.time() - owner_since), 1) if owner_kind and owner_since > 0 else 0.0
+        return {
+            "serial_enabled": True,
+            "serial_timeout_s": 30.0,
+            "owner_kind": owner_kind,
+            "owner_age_s": owner_age_s,
+            "queue_timeouts": _to_int(getattr(client, "_account_data_request_queue_timeouts", 0), 0),
+            "source": "fast_runtime_state",
+        }
+
+    try:
+        if state_lock is not None:
+            with state_lock:
+                return snapshot()
+        return snapshot()
+    except Exception:
+        return {}
+
+
 def _fast_gateway_status(service) -> dict:
     broker = getattr(service, "broker", None)
     client = getattr(broker, "client", None)
@@ -94,6 +119,7 @@ def _fast_gateway_status(service) -> dict:
         status_code = _to_int(getattr(client, "_status_code", 0), 0)
         circuit = _fast_account_data_circuit_status(client)
         pacing = _fast_account_data_pacing_status(client)
+        request_gate = _fast_account_data_request_gate_status(client)
         return {
             "running": bool(connected or ready or getattr(service, "is_running", False)),
             "reachable": bool(connected or ready or status_code not in {0, 502, 503}),
@@ -106,10 +132,12 @@ def _fast_gateway_status(service) -> dict:
                 "status_code": status_code,
                 "account_data_circuit": circuit,
                 "account_data_pacing": pacing,
+                "account_data_request_gate": request_gate,
                 "source": "fast_runtime_state",
             },
             "account_data_circuit": circuit,
             "account_data_pacing": pacing,
+            "account_data_request_gate": request_gate,
             "source": "fast_runtime_state",
         }
 
@@ -133,6 +161,7 @@ def _fast_gateway_status(service) -> dict:
         "broker": broker_status,
         "account_data_circuit": broker_status.get("account_data_circuit") if isinstance(broker_status.get("account_data_circuit"), dict) else {},
         "account_data_pacing": broker_status.get("account_data_pacing") if isinstance(broker_status.get("account_data_pacing"), dict) else {},
+        "account_data_request_gate": broker_status.get("account_data_request_gate") if isinstance(broker_status.get("account_data_request_gate"), dict) else {},
         "source": "fast_runtime_state",
     }
 

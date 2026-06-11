@@ -27,6 +27,11 @@
                 <div class="ops-label">刷新账户</div>
                 <div class="ops-copy">立即拉取最新账户、持仓和挂单状态。</div>
             </button>
+            <button class="ops-btn primary" id="refreshBuyingPowerButton" type="button" onclick="refreshBuyingPower(true)">
+                <div class="ops-kicker">Buying Power</div>
+                <div class="ops-label">刷新购买力</div>
+                <div class="ops-copy">没有并发请求且未触发硬保护时，立即刷新 NetLiq / BuyingPower。</div>
+            </button>
             <button class="ops-btn trade" id="openTicketButton" type="button" onclick="openTicketDrawer()">
                 <div class="ops-kicker">Trade</div>
                 <div class="ops-label">直接下单</div>
@@ -160,6 +165,8 @@
         let currentEnvironment = getCurrentBrokerMode();
         let refreshTimer = null;
         let latestSnapshot = null;
+        let buyingPowerRefreshInFlight = false;
+        let lastBuyingPowerAutoRefreshAt = 0;
         let actionBusy = false;
         let ticketDrawerOpen = false;
         const DEFAULT_TICKET_PRICE_STEP = 0.01;
@@ -271,7 +278,8 @@
         }
 
         function formatMoney(value) {
-            const num = Number(value || 0);
+            if (value === null || value === undefined || value === '') return '--';
+            const num = Number(value);
             if (!Number.isFinite(num)) return '--';
             return `$${num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
         }
@@ -286,7 +294,8 @@
         }
 
         function formatSignedMoney(value) {
-            const num = Number(value || 0);
+            if (value === null || value === undefined || value === '') return '--';
+            const num = Number(value);
             if (!Number.isFinite(num)) return '--';
             const prefix = num > 0 ? '+' : '';
             return `${prefix}${formatMoney(num).replace('$', '$')}`;
@@ -390,7 +399,10 @@
         }
 
         function getSummaryRemainingBuyingPower(summary = latestSnapshot?.summary || {}) {
-            return Number(firstDefined(summary?.remaining_buying_power, summary?.buying_power, 0) || 0);
+            const raw = firstDefined(summary?.remaining_buying_power, summary?.buying_power);
+            if (raw === null || raw === undefined || raw === '') return null;
+            const value = Number(raw);
+            return Number.isFinite(value) ? value : null;
         }
 
         function getAccountBuyingPowerLabel(snapshot = latestSnapshot) {
@@ -445,6 +457,69 @@
                 state,
                 reason: existing.reason || (state === 'ok' ? 'ok' : (state === 'unavailable' ? 'account_snapshot_unavailable' : `buying_power_below_${state === 'blocked' ? 'block' : 'warning'}_threshold`)),
             };
+        }
+
+        function hasSummaryValue(summary = {}, keys = []) {
+            return keys.some((key) => {
+                const raw = summary?.[key];
+                if (raw === null || raw === undefined || raw === '') return false;
+                const value = Number(raw);
+                return Number.isFinite(value);
+            });
+        }
+
+        function mergeBuyingPowerSnapshot(baseSnapshot, bpSnapshot) {
+            if (!bpSnapshot || typeof bpSnapshot !== 'object') return baseSnapshot;
+            const base = baseSnapshot && typeof baseSnapshot === 'object' ? { ...baseSnapshot } : {};
+            const mergedSummary = { ...(base.summary || {}) };
+            if (bpSnapshot.summary && typeof bpSnapshot.summary === 'object') {
+                Object.entries(bpSnapshot.summary).forEach(([key, value]) => {
+                    if (value !== null && value !== undefined && value !== '') mergedSummary[key] = value;
+                });
+            }
+            base.summary = mergedSummary;
+            if (bpSnapshot.buying_power_guard && typeof bpSnapshot.buying_power_guard === 'object') {
+                base.buying_power_guard = { ...(base.buying_power_guard || {}), ...bpSnapshot.buying_power_guard };
+            }
+            ['summary_available', 'summary_source', 'buying_power_refresh_state', 'retry_after_s', 'hard_blocked', 'in_flight_request', 'last_refresh_error', 'account_snapshot_health', 'account_data_policy', 'account_data_pacing'].forEach((key) => {
+                if (bpSnapshot[key] !== undefined) base[key] = bpSnapshot[key];
+            });
+            base.buying_power_snapshot = bpSnapshot;
+            return base;
+        }
+
+        function buyingPowerStatusText(snapshot = latestSnapshot) {
+            const summary = snapshot?.summary || {};
+            const source = snapshot?.summary_source || snapshot?.buying_power_guard?.source || snapshot?.source || '';
+            const state = snapshot?.buying_power_refresh_state || snapshot?.account_snapshot_health?.state || '';
+            const retryAfter = Number(snapshot?.retry_after_s || snapshot?.account_snapshot_health?.retry_after_s || 0);
+            if (hasSummaryValue(summary, ['buying_power', 'remaining_buying_power', 'net_liquidation', 'available_funds'])) {
+                const sourceText = source ? ` · ${source}` : '';
+                return `购买力已同步${sourceText}`;
+            }
+            if (snapshot?.in_flight_request) {
+                const kind = snapshot.in_flight_request.owner_kind || snapshot.in_flight_request.kind || 'account_data';
+                return `购买力获取中：${kind}${retryAfter > 0 ? ` · 等待 ${formatNumber(retryAfter, 0)}s` : ''}`;
+            }
+            if (snapshot?.hard_blocked && retryAfter > 0) {
+                return `购买力硬保护中 · ${formatNumber(retryAfter, 0)}s 后可重试`;
+            }
+            if (state === 'failed' || snapshot?.last_refresh_error) {
+                return `购买力暂不可用 · ${snapshot.last_refresh_error || snapshot?.buying_power_guard?.reason || '等待自动重试'}`;
+            }
+            return '购买力未同步，后台会自动重试';
+        }
+
+        function updateBuyingPowerButton(snapshot = latestSnapshot) {
+            const button = document.getElementById('refreshBuyingPowerButton');
+            if (!button) return;
+            const retryAfter = Number(snapshot?.retry_after_s || snapshot?.account_snapshot_health?.retry_after_s || 0);
+            const hardBlocked = Boolean(snapshot?.hard_blocked || snapshot?.in_flight_request);
+            button.disabled = buyingPowerRefreshInFlight || (hardBlocked && retryAfter > 0);
+            const label = button.querySelector('.ops-label');
+            const copy = button.querySelector('.ops-copy');
+            if (label) label.textContent = buyingPowerRefreshInFlight ? '刷新中...' : hardBlocked && retryAfter > 0 ? `等待 ${formatNumber(retryAfter, 0)}s` : '刷新购买力';
+            if (copy) copy.textContent = buyingPowerStatusText(snapshot);
         }
 
         function positionUnrealizedPct(position) {
@@ -2093,7 +2168,14 @@
         function renderBlocker(snapshot) {
             const blocker = document.getElementById('blocker');
             const errors = snapshot?.errors || {};
-            const hasFetchError = Boolean(errors.summary || errors.positions || errors.orders || errors.pnl);
+            const summaryError = String(errors.summary || '').trim();
+            const summarySoftUnavailable = [
+                'orders_fast_summary_cache_unavailable',
+                'account_summary_fallback_disabled',
+                'buying_power_summary_refresh_disabled',
+                'account_summary_pacing_blocked',
+            ].includes(summaryError);
+            const hasFetchError = Boolean((errors.summary && !summarySoftUnavailable) || errors.positions || errors.orders || errors.pnl);
             const hasServiceState = Boolean(snapshot && ('service_running' in snapshot || 'service_starting' in snapshot));
             const hasSessionState = Boolean(snapshot && 'session_authenticated' in snapshot);
             const sessionAuthenticated = Boolean(snapshot?.session_authenticated);
@@ -2110,7 +2192,7 @@
             const lines = [];
             if (hasServiceState && !serviceRunning) lines.push('Runtime 当前没有 running，账户页只能看到空状态。');
             if (serviceRunning && hasSessionState && !sessionAuthenticated) lines.push('当前会话未认证，先去控制台完成 2FA。');
-            if (errors.summary) lines.push(`summary error: ${errors.summary}`);
+            if (errors.summary && !summarySoftUnavailable) lines.push(`summary error: ${errors.summary}`);
             if (errors.positions) lines.push(`positions error: ${errors.positions}`);
             if (errors.orders) lines.push(`orders error: ${errors.orders}`);
             if (errors.pnl) lines.push(`pnl error: ${errors.pnl}`);
@@ -2147,6 +2229,8 @@
                 ? `${todayPnlSource === 'broker_req_pnl' ? 'IBKR PnL stream' : 'IBKR Daily PnL'} · ${todayRawField}`
                 : (accountTodayPnl.message || 'IBKR Daily PnL unavailable');
             const todayPnlPct = todayPnlOk ? getTodayPnlNetLiqPct(accountTodayPnl, summary) : null;
+            const bpStatus = buyingPowerStatusText(snapshot);
+            const remainingBp = firstDefined(summary.remaining_buying_power, summary.buying_power);
             const cards = [
                 {
                     label: 'Today P&L',
@@ -2158,10 +2242,10 @@
                 },
                 { label: 'Realized', value: formatSignedNullableMoney(summary.realized_pnl), sub: 'IBKR current realized', toneValue: summary.realized_pnl },
                 { label: 'Floating', value: formatSignedNullableMoney(summary.unrealized_pnl), sub: openPositionSub, toneValue: summary.unrealized_pnl },
-                { label: 'Net Liq', value: formatMoney(summary.net_liquidation), sub: '账户净值', toneValue: summary.net_liquidation },
-                { label: 'Available', value: formatMoney(summary.available_funds), sub: '可用资金', toneValue: summary.available_funds },
-                { label: 'Buying Power', value: formatMoney(summary.buying_power), sub: '购买力', toneValue: summary.buying_power },
-                { label: 'Remaining BP', value: formatMoney(summary.remaining_buying_power ?? summary.buying_power), sub: `当前剩余购买力 · ${formatPercent(summary.remaining_buying_power_pct_net_liq ?? bpGuard.remaining_pct_net_liq)} NetLiq`, toneValue: summary.remaining_buying_power ?? summary.buying_power },
+                { label: 'Net Liq', value: formatMoney(summary.net_liquidation), sub: hasSummaryValue(summary, ['net_liquidation']) ? '账户净值' : bpStatus, toneValue: summary.net_liquidation },
+                { label: 'Available', value: formatMoney(summary.available_funds), sub: hasSummaryValue(summary, ['available_funds']) ? '可用资金' : bpStatus, toneValue: summary.available_funds },
+                { label: 'Buying Power', value: formatMoney(summary.buying_power), sub: hasSummaryValue(summary, ['buying_power']) ? '购买力' : bpStatus, toneValue: summary.buying_power },
+                { label: 'Remaining BP', value: formatMoney(remainingBp), sub: `当前剩余购买力 · ${formatPercent(firstDefined(summary.remaining_buying_power_pct_net_liq, bpGuard.remaining_pct_net_liq))} NetLiq · ${bpStatus}`, toneValue: remainingBp },
                 { label: 'Cash', value: formatMoney(summary.total_cash_value), sub: '现金余额', toneValue: summary.total_cash_value },
                 { label: 'Gross Exposure', value: formatMoney(summary.gross_position_value), sub: '持仓市值', toneValue: summary.gross_position_value },
             ];
@@ -2175,6 +2259,7 @@
                     <div class="summary-sub">${escapeHtml(card.sub)}</div>
                 </div>
             `).join('');
+            updateBuyingPowerButton(snapshot);
         }
 
         function renderMeta(snapshot) {
@@ -3090,6 +3175,45 @@
             if (latestSnapshot) renderOrders(latestSnapshot);
         }
 
+        async function refreshBuyingPower(force = false, options = {}) {
+            if (!initAuth()) return null;
+            if (buyingPowerRefreshInFlight) return null;
+            if (!force) lastBuyingPowerAutoRefreshAt = Date.now();
+            buyingPowerRefreshInFlight = true;
+            updateBuyingPowerButton(latestSnapshot);
+            const refreshInfo = document.getElementById('refreshInfo');
+            const previousInfo = refreshInfo?.textContent || '';
+            if (force && refreshInfo) refreshInfo.textContent = '正在刷新购买力...';
+            try {
+                const payload = await requestAccountJson('/api/custom/ibkr/account_snapshot', {
+                    timeoutMs: 22000,
+                    timeoutLabel: '购买力刷新',
+                    force: true,
+                    cacheProfile: 'runtimeStatus',
+                    params: {
+                        refresh_scope: 'buying_power',
+                        summary_refresh: '1',
+                        ...(force ? { force: '1', cache_bust: '1', prefer_live_on_force: '1' } : { prefer_stale: '1' }),
+                    },
+                });
+                latestSnapshot = mergeBuyingPowerSnapshot(latestSnapshot, payload);
+                renderBlocker(latestSnapshot);
+                renderSummary(latestSnapshot);
+                renderMeta(latestSnapshot);
+                renderTicketPreview();
+                if (refreshInfo) refreshInfo.textContent = buyingPowerStatusText(latestSnapshot);
+                if (force) showToast(payload?.hard_blocked ? buyingPowerStatusText(payload) : '购买力刷新已完成');
+                return payload;
+            } catch (error) {
+                if (refreshInfo) refreshInfo.textContent = force ? `购买力刷新失败：${error.message || error}` : previousInfo;
+                if (force) showToast(`购买力刷新失败: ${error.message || error}`);
+                return null;
+            } finally {
+                buyingPowerRefreshInFlight = false;
+                updateBuyingPowerButton(latestSnapshot);
+            }
+        }
+
         async function loadAccountSnapshot(showFeedback = false) {
             if (!initAuth()) return;
             const refreshInfo = document.getElementById('refreshInfo');
@@ -3116,8 +3240,13 @@
                 renderHistoryOrders(snapshot);
                 renderTicketPreview();
                 setPageRefreshTime(snapshot.fetched_at || new Date());
-                refreshInfo.textContent = fastSnapshot || snapshot?.orders_fast ? '账户状态已快速加载' : '账户状态已加载';
+                refreshInfo.textContent = snapshot?.summary_available === false
+                    ? buyingPowerStatusText(snapshot)
+                    : (fastSnapshot || snapshot?.orders_fast ? '账户状态已快速加载' : '账户状态已加载');
                 void loadAccountTargetSummary(Boolean(showFeedback));
+                if (snapshot?.summary_available === false && !buyingPowerRefreshInFlight && (Date.now() - lastBuyingPowerAutoRefreshAt) > 60000) {
+                    void refreshBuyingPower(false, { silent: true });
+                }
                 if (showFeedback) showToast('账户状态已刷新');
             } catch (error) {
                 renderBlocker({ errors: { summary: error.message } });
@@ -3460,6 +3589,7 @@
         window.modifyOrder = modifyOrder;
         window.closePosition = closePosition;
         window.loadAccountSnapshot = loadAccountSnapshot;
+        window.refreshBuyingPower = refreshBuyingPower;
         window.goRuntime = goRuntime;
         window.viewSignal = viewSignal;
         window.viewTradeGroup = viewTradeGroup;

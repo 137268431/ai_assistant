@@ -5,6 +5,7 @@ import os
 from flask import jsonify, request
 
 from ibkr_compute.api.account.views import (
+    _build_ibkr_account_buying_power_snapshot,
     _build_ibkr_account_snapshot,
     _build_ibkr_cancel_all_orders_response,
     _build_ibkr_cancel_order_response,
@@ -63,6 +64,17 @@ def _account_snapshot_open_orders_only(default: bool = False) -> bool:
     return bool(default)
 
 
+def _account_snapshot_refresh_scope() -> str:
+    return str(request.args.get("refresh_scope") or request.args.get("scope") or "").strip().lower()
+
+
+def _account_snapshot_buying_power_refresh() -> bool:
+    scope = _account_snapshot_refresh_scope()
+    if scope in {"buying_power", "buying-power", "account_summary", "summary"}:
+        return True
+    return get_query_arg_bool("summary_refresh", False) or get_query_arg_bool("buying_power_refresh", False)
+
+
 def _record_account_snapshot_metrics(payload: dict) -> None:
     try:
         from ibkr_compute.observability.prometheus import set_account_snapshot_metrics
@@ -93,6 +105,17 @@ def register_account_routes(app):
             return unavailable
         try:
             broker_force = _account_snapshot_broker_force()
+            if _account_snapshot_buying_power_refresh():
+                payload = _build_ibkr_account_buying_power_snapshot(
+                    service,
+                    force_refresh=(
+                        get_query_arg_bool("force", False)
+                        or get_query_arg_bool("refresh", False)
+                        or get_query_arg_bool("cache_bust", False)
+                    ),
+                )
+                _record_account_snapshot_metrics(payload)
+                return jsonify(payload)
             payload = _build_ibkr_account_snapshot(
                 service,
                 include_pnl=get_query_arg_bool("include_pnl", True),

@@ -462,6 +462,22 @@ def _summarize_gateway_positions(payload: dict[str, Any], error: str = "") -> di
         return _attach_runtime_account_meta(summary, payload)
 
     counts = payload.get("counts") if isinstance(payload.get("counts"), dict) else {}
+    inferred_positions = payload.get("inferred_strategy_positions") if isinstance(payload.get("inferred_strategy_positions"), list) else []
+    inferred_long = 0
+    inferred_short = 0
+    for inferred in inferred_positions:
+        if not isinstance(inferred, dict):
+            continue
+        quantity = to_float(inferred.get("quantity")) or 0.0
+        if quantity > 0:
+            inferred_long += 1
+        elif quantity < 0:
+            inferred_short += 1
+    inferred_count = max(
+        to_int(counts.get("inferred_open_positions"), 0),
+        to_int(counts.get("inferred_strategy_positions"), 0),
+        inferred_long + inferred_short,
+    )
     detail_available = payload.get("positions_detail_available")
     fast_diagnostics = payload.get("orders_fast_diagnostics") if isinstance(payload.get("orders_fast_diagnostics"), dict) else {}
     positions_source = to_text(payload.get("positions_source") or fast_diagnostics.get("positions_source"))
@@ -477,7 +493,14 @@ def _summarize_gateway_positions(payload: dict[str, Any], error: str = "") -> di
             long_count = to_int(counts.get("long_positions"), 0)
             short_count = to_int(counts.get("short_positions"), 0)
             open_count = to_int(counts.get("open_positions"), long_count + short_count)
-            if open_count > long_count + short_count and long_count == 0 and short_count == 0:
+            effective_open_count = max(to_int(counts.get("effective_open_positions"), open_count), open_count, inferred_count)
+            if inferred_count > 0 and open_count == 0:
+                long_count = inferred_long
+                short_count = inferred_short
+                if long_count + short_count == 0:
+                    long_count = inferred_count
+                open_count = effective_open_count
+            elif open_count > long_count + short_count and long_count == 0 and short_count == 0:
                 long_count = open_count
             flat_count = to_int(counts.get("flat_positions"), 0)
             position_rows = to_int(counts.get("position_rows", counts.get("positions")), open_count + flat_count)
@@ -489,13 +512,17 @@ def _summarize_gateway_positions(payload: dict[str, Any], error: str = "") -> di
                     "available": True,
                     "detail_available": False,
                     "count_available": True,
-                    "empty_confirmed": open_count == 0,
+                    "empty_confirmed": effective_open_count == 0,
                     "flat_count": flat_count,
                     "position_rows": position_rows,
                     "account_id": to_text(payload.get("account_id") or payload.get("account")),
-                    "source": "runtime_account_position_counts",
+                    "source": "runtime_account_inferred_position_counts" if inferred_count > 0 and to_int(counts.get("open_positions"), 0) == 0 else "runtime_account_position_counts",
                     "positions_source": positions_source or "counts",
                     "positions_omitted": True,
+                    "broker_open_positions": to_int(counts.get("open_positions"), 0),
+                    "inferred_open_positions": inferred_count,
+                    "effective_open_positions": effective_open_count,
+                    "inferred": bool(inferred_count > 0 and to_int(counts.get("open_positions"), 0) == 0),
                 }
             )
             return _attach_runtime_account_meta(summary, payload)
@@ -521,13 +548,26 @@ def _summarize_gateway_positions(payload: dict[str, Any], error: str = "") -> di
             flat_count += 1
 
     summary["total"] = summary["long"] + summary["short"]
+    if summary["total"] == 0 and inferred_count > 0:
+        summary["long"] = inferred_long
+        summary["short"] = inferred_short
+        if summary["long"] + summary["short"] == 0:
+            summary["long"] = inferred_count
+        summary["total"] = summary["long"] + summary["short"]
+        summary["detail_available"] = False
+        summary["inferred"] = True
+        summary["source"] = "runtime_account_inferred_positions"
+    else:
+        summary["detail_available"] = True
     summary["available"] = True
-    summary["detail_available"] = True
     summary["count_available"] = True
     summary["empty_confirmed"] = summary["total"] == 0
     summary["flat_count"] = flat_count
     summary["position_rows"] = len(positions)
     summary["account_id"] = to_text(payload.get("account_id") or payload.get("account"))
+    summary["broker_open_positions"] = to_int(counts.get("open_positions"), summary["total"] if not summary.get("inferred") else 0)
+    summary["inferred_open_positions"] = inferred_count
+    summary["effective_open_positions"] = max(to_int(counts.get("effective_open_positions"), summary["total"]), summary["total"], inferred_count)
     return _attach_runtime_account_meta(summary, payload)
 
 

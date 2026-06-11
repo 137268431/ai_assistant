@@ -2262,7 +2262,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "max by (service, environment) (ibkr_account_data_circuit_active) == bool 1",
+                "expr": "max by (service, environment) (max_over_time(ibkr_account_data_circuit_active[5m])) == bool 1",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -2318,10 +2318,10 @@
           "dashboardUid": "quant-monitoring-overview",
           "noDataState": "OK",
           "execErrState": "Error",
-          "for": "2m",
+          "for": "5m",
           "annotations": {
-            "summary": "账户数据熔断已打开",
-            "description": "账户数据熔断已打开，账户快照和购买力读取可能被暂停。"
+            "summary": "账户数据请求熔断持续打开",
+            "description": "账户数据请求熔断持续打开；这是 request gate/circuit 保护诊断，不等同于购买力一定不可用。购买力是否可用请看 AccountBuyingPowerGuardUnavailable / AccountSnapshotUnavailable。"
           },
           "labels": {
             "severity": "warning",
