@@ -850,6 +850,7 @@ def _build_fresh_ibkr_account_snapshot_payload(service, context: dict) -> dict:
         live_open_payload,
         fallback_ids,
     )
+    inferred_positions, positions_inference = _position_inference_payload(positions, orders, live_open_orders)
 
     summary = _build_snapshot_summary(
         snapshot_sources["summary_raw"],
@@ -887,9 +888,14 @@ def _build_fresh_ibkr_account_snapshot_payload(service, context: dict) -> dict:
         "live_open_orders": live_open_orders,
         "live_order_coverage": live_open_payload.get("coverage") or {},
         "recovery_diagnostics": live_open_payload.get("diagnostics") or {},
-        "counts": _build_snapshot_counts(positions, orders, live_open_orders),
+        "counts": _merge_inferred_position_counts(
+            _build_snapshot_counts(positions, orders, live_open_orders),
+            inferred_positions,
+        ),
         "positions_detail_available": True,
         "positions_source": "account_snapshot",
+        "inferred_strategy_positions": inferred_positions,
+        "positions_inference": positions_inference,
         "errors": snapshot_sources["errors"],
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "source": "account_snapshot",
@@ -995,6 +1001,330 @@ def _build_orders_fast_live_open_payload(cached_rows: list[dict], fallback_rows:
     }
 
 
+def _order_side_direction(order: dict) -> str:
+    side = str((order or {}).get("side") or "").strip().upper()
+    if side in {"BUY", "BOT"}:
+        return "long"
+    if side in {"SELL", "SLD", "SSHORT"}:
+        return "short"
+    text = " ".join(
+        str(value or "").strip().lower()
+        for value in (
+            (order or {}).get("client_order_id"),
+            ((order or {}).get("raw") or {}).get("cOID") if isinstance((order or {}).get("raw"), dict) else "",
+            ((order or {}).get("raw") or {}).get("orderRef") if isinstance((order or {}).get("raw"), dict) else "",
+        )
+        if str(value or "").strip()
+    )
+    if "_short_" in text or text.endswith("_short") or " short " in text:
+        return "short"
+    if "_long_" in text or text.endswith("_long") or " long " in text:
+        return "long"
+    return ""
+
+
+def _order_strategy_group(order: dict) -> str:
+    raw = (order or {}).get("raw") if isinstance((order or {}).get("raw"), dict) else {}
+    candidates = (
+        (order or {}).get("trade_group_id"),
+        (order or {}).get("bracket_group"),
+        (order or {}).get("client_order_id"),
+        raw.get("trade_group_id"),
+        raw.get("bracket_group"),
+        raw.get("cOID"),
+        raw.get("coid"),
+        raw.get("orderRef"),
+        raw.get("order_ref"),
+    )
+    for value in candidates:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        lower = text.lower()
+        for prefix in ("entry_", "tp_", "sl_", "stop_", "take_profit_", "stop_loss_"):
+            if lower.startswith(prefix):
+                return text[len(prefix):]
+        return text
+    return ""
+
+
+def _strategy_direction_from_text(value: str) -> str:
+    text = str(value or "").strip().lower()
+    if "_short_" in text or text.endswith("_short") or " short " in text:
+        return "short"
+    if "_long_" in text or text.endswith("_long") or " long " in text:
+        return "long"
+    return ""
+
+
+def _protection_implied_position_direction(order: dict) -> str:
+    raw = (order or {}).get("raw") if isinstance((order or {}).get("raw"), dict) else {}
+    for value in (
+        (order or {}).get("trade_group_id"),
+        (order or {}).get("bracket_group"),
+        (order or {}).get("client_order_id"),
+        raw.get("trade_group_id"),
+        raw.get("bracket_group"),
+        raw.get("cOID"),
+        raw.get("coid"),
+        raw.get("orderRef"),
+        raw.get("order_ref"),
+    ):
+        direction = _strategy_direction_from_text(str(value or ""))
+        if direction:
+            return direction
+    side = str((order or {}).get("side") or "").strip().upper()
+    if side in {"BUY", "BOT"}:
+        return "short"
+    if side in {"SELL", "SLD", "SSHORT"}:
+        return "long"
+    return ""
+
+
+def _protection_price(order: dict) -> float:
+    role = str((order or {}).get("role") or "").strip().lower()
+    if role == "stop_loss":
+        return _safe_float((order or {}).get("trigger_price"), 0.0) or _safe_float((order or {}).get("price"), 0.0)
+    return _safe_float((order or {}).get("price"), 0.0) or _safe_float((order or {}).get("trigger_price"), 0.0)
+
+
+def _dedupe_orders_by_id(orders: list[dict]) -> list[dict]:
+    deduped = []
+    seen = set()
+    for order in orders or []:
+        if not isinstance(order, dict):
+            continue
+        order_id = str(order.get("order_id") or "").strip()
+        dedupe_key = order_id or f"{order.get('role')}:{order.get('client_order_id')}"
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        deduped.append(order)
+    return deduped
+
+
+def _inferred_position_from_entry(entry: dict, children: list[dict], *, direction: str, quantity: float, group: str) -> dict:
+    tp_orders = [item for item in children if str(item.get("role") or "").strip().lower() == "take_profit"]
+    sl_orders = [item for item in children if str(item.get("role") or "").strip().lower() == "stop_loss"]
+    signed_quantity = quantity if direction == "long" else -quantity
+    avg_price = _safe_float(entry.get("avg_price"), 0.0) or _safe_float(entry.get("price"), 0.0)
+    market_value = abs(signed_quantity * avg_price) if avg_price > 0 else 0.0
+    relation_reason = (
+        "filled_entry_with_open_protection_orders"
+        if str(entry.get("status_key") or "").strip().upper() == "FILLED"
+        else "open_protection_orders_without_filled_entry"
+    )
+    relation = {
+        "status": "inferred_strategy_position",
+        "reason": relation_reason,
+        "signal_id": str(((entry.get("raw") or {}) if isinstance(entry.get("raw"), dict) else {}).get("signal_id") or ""),
+        "trade_group_id": group,
+        "entry_order_unique_id": str(entry.get("client_order_id") or ""),
+        "last_order_status": str(entry.get("status") or ""),
+        "order_count": (1 if entry.get("order_id") else 0) + len(children),
+        "entry_filled_qty": quantity if str(entry.get("status_key") or "").strip().upper() == "FILLED" else 0.0,
+        "exit_filled_qty": 0.0,
+        "commission": _safe_float(entry.get("commission"), 0.0),
+        "commission_currency": str(entry.get("commission_currency") or entry.get("currency") or "USD").upper(),
+        "commission_known": _safe_float(entry.get("commission"), 0.0) > 0,
+        "commission_source": "broker_order",
+        "commission_fill_count": 1 if _safe_float(entry.get("commission"), 0.0) > 0 else 0,
+    }
+    return {
+        "symbol": str(entry.get("symbol") or "").strip().upper(),
+        "conid": int(_safe_float(entry.get("conid"), 0.0) or 0),
+        "quantity": signed_quantity,
+        "direction": direction,
+        "avg_cost": avg_price,
+        "avg_price": avg_price,
+        "market_price": 0.0,
+        "market_value": market_value,
+        "unrealized_pnl": 0.0,
+        "realized_pnl": 0.0,
+        "account": str(entry.get("account") or ""),
+        "currency": str(entry.get("currency") or "USD").upper(),
+        "asset_class": str(entry.get("asset_class") or "STK").upper() or "STK",
+        "source": "orders_fast_inferred",
+        "inferred": True,
+        "inference_confidence": "high" if tp_orders and sl_orders and relation_reason.startswith("filled_entry") else "medium",
+        "entry_order_id": str(entry.get("order_id") or ""),
+        "entry_client_order_id": str(entry.get("client_order_id") or ""),
+        "trade_group_id": group,
+        "protection_status": "complete" if tp_orders and sl_orders else "partial",
+        "take_profit_order_id": str((tp_orders[0] or {}).get("order_id") or "") if tp_orders else "",
+        "take_profit_price": _protection_price(tp_orders[0]) if tp_orders else 0.0,
+        "stop_loss_order_id": str((sl_orders[0] or {}).get("order_id") or "") if sl_orders else "",
+        "stop_loss_price": _protection_price(sl_orders[0]) if sl_orders else 0.0,
+        "open_protection_order_ids": [
+            str(item.get("order_id") or "").strip()
+            for item in children
+            if str(item.get("order_id") or "").strip()
+        ],
+        "relation": relation,
+    }
+
+
+def _infer_strategy_positions_from_orders(orders: list[dict], live_open_orders: list[dict]) -> list[dict]:
+    all_orders = [dict(item) for item in (orders or []) if isinstance(item, dict)]
+    if not all_orders:
+        return []
+    open_ids = {
+        str(item.get("order_id") or "").strip()
+        for item in (live_open_orders or [])
+        if isinstance(item, dict) and str(item.get("order_id") or "").strip()
+    }
+    open_children = [
+        item
+        for item in all_orders
+        if item.get("is_open") or (str(item.get("order_id") or "").strip() in open_ids)
+    ]
+    children_by_parent: dict[str, list[dict]] = {}
+    children_by_group: dict[str, list[dict]] = {}
+    open_parent_entry_ids = set()
+    for child in open_children:
+        role = str(child.get("role") or "").strip().lower()
+        if role == "entry":
+            order_id = str(child.get("order_id") or "").strip()
+            if order_id:
+                open_parent_entry_ids.add(order_id)
+            continue
+        if role not in {"take_profit", "stop_loss", "child"}:
+            continue
+        parent_id = str(child.get("parent_id") or "").strip()
+        if parent_id:
+            children_by_parent.setdefault(parent_id, []).append(child)
+        group = _order_strategy_group(child)
+        if group:
+            children_by_group.setdefault(group, []).append(child)
+
+    inferred = []
+    seen_groups: set[str] = set()
+    for entry in all_orders:
+        if str(entry.get("role") or "").strip().lower() != "entry":
+            continue
+        if str(entry.get("status_key") or "").strip().upper() != "FILLED":
+            continue
+        direction = _order_side_direction(entry)
+        if direction not in {"long", "short"}:
+            continue
+        quantity = _safe_float(entry.get("filled_quantity"), 0.0) or _safe_float(entry.get("total_quantity"), 0.0)
+        if quantity <= 0:
+            continue
+        order_id = str(entry.get("order_id") or "").strip()
+        group = _order_strategy_group(entry)
+        if group and group in seen_groups:
+            continue
+        candidates = []
+        if order_id:
+            candidates.extend(children_by_parent.get(order_id, []))
+        if group:
+            candidates.extend(children_by_group.get(group, []))
+        deduped_children = []
+        seen_child_ids = set()
+        for child in candidates:
+            child_id = str(child.get("order_id") or "").strip()
+            dedupe_key = child_id or f"{child.get('role')}:{child.get('client_order_id')}"
+            if dedupe_key in seen_child_ids:
+                continue
+            seen_child_ids.add(dedupe_key)
+            if str(child.get("symbol") or "").strip().upper() == str(entry.get("symbol") or "").strip().upper():
+                deduped_children.append(child)
+        if not deduped_children:
+            continue
+        tp_orders = [item for item in deduped_children if str(item.get("role") or "").strip().lower() == "take_profit"]
+        sl_orders = [item for item in deduped_children if str(item.get("role") or "").strip().lower() == "stop_loss"]
+        inferred.append(
+            _inferred_position_from_entry(
+                entry,
+                deduped_children,
+                direction=direction,
+                quantity=quantity,
+                group=group,
+            )
+        )
+        if group:
+            seen_groups.add(group)
+
+    for group, children in sorted(children_by_group.items()):
+        if not group or group in seen_groups:
+            continue
+        deduped_children = _dedupe_orders_by_id(children)
+        tp_orders = [item for item in deduped_children if str(item.get("role") or "").strip().lower() == "take_profit"]
+        sl_orders = [item for item in deduped_children if str(item.get("role") or "").strip().lower() == "stop_loss"]
+        if not tp_orders or not sl_orders:
+            continue
+        parent_ids = {
+            str(item.get("parent_id") or "").strip()
+            for item in deduped_children
+            if str(item.get("parent_id") or "").strip()
+        }
+        if parent_ids and any(parent_id in open_parent_entry_ids for parent_id in parent_ids):
+            continue
+        anchor = tp_orders[0] if tp_orders else deduped_children[0]
+        direction = _protection_implied_position_direction(anchor)
+        if direction not in {"long", "short"}:
+            continue
+        symbol = str(anchor.get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+        quantities = [
+            _safe_float(item.get("total_quantity"), 0.0) or _safe_float(item.get("remaining_quantity"), 0.0)
+            for item in deduped_children
+        ]
+        quantity = max([value for value in quantities if value > 0], default=0.0)
+        if quantity <= 0:
+            continue
+        pseudo_entry = {
+            "order_id": sorted(parent_ids)[0] if parent_ids else "",
+            "client_order_id": f"entry_{group}",
+            "symbol": symbol,
+            "conid": anchor.get("conid"),
+            "avg_price": 0.0,
+            "price": 0.0,
+            "account": anchor.get("account"),
+            "currency": anchor.get("currency") or "USD",
+            "asset_class": anchor.get("asset_class") or "STK",
+            "status": "Filled (inferred)",
+            "status_key": "",
+            "raw": anchor.get("raw") if isinstance(anchor.get("raw"), dict) else {},
+        }
+        inferred.append(
+            _inferred_position_from_entry(
+                pseudo_entry,
+                deduped_children,
+                direction=direction,
+                quantity=quantity,
+                group=group,
+            )
+        )
+        seen_groups.add(group)
+    return inferred
+
+
+def _position_inference_payload(positions: list[dict], orders: list[dict], live_open_orders: list[dict]) -> tuple[list[dict], dict]:
+    inferred = _infer_strategy_positions_from_orders(orders, live_open_orders)
+    broker_open_count = _position_counts(positions).get("open_positions", 0)
+    use_inferred_for_display = bool(inferred and broker_open_count == 0)
+    return inferred, {
+        "available": bool(inferred),
+        "source": "orders_fast" if inferred else "",
+        "method": "filled_entry_with_open_protection_orders" if inferred else "",
+        "broker_open_positions": broker_open_count,
+        "inferred_open_positions": len(inferred),
+        "display_fallback": use_inferred_for_display,
+        "reason": "broker_positions_empty" if use_inferred_for_display else "",
+    }
+
+
+def _merge_inferred_position_counts(counts: dict, inferred_positions: list[dict]) -> dict:
+    merged = dict(counts or {})
+    inferred_count = len(inferred_positions or [])
+    merged["inferred_strategy_positions"] = inferred_count
+    merged["inferred_open_positions"] = inferred_count
+    merged["effective_open_positions"] = max(int(merged.get("open_positions") or 0), inferred_count)
+    return merged
+
+
 def _build_orders_fast_ibkr_account_snapshot_payload(
     service,
     context: dict,
@@ -1052,6 +1382,7 @@ def _build_orders_fast_ibkr_account_snapshot_payload(
         ],
     )
     mark_timing("normalize_rows_ms")
+    inferred_positions, positions_inference = _position_inference_payload(positions, orders, live_open_orders)
     summary = dict(cached_full.get("summary") or {})
     summary_raw = dict(cached_full.get("summary_raw") or {})
     pnl_raw = dict(cached_full.get("pnl_raw") or {})
@@ -1068,9 +1399,13 @@ def _build_orders_fast_ibkr_account_snapshot_payload(
     errors = dict(cached_full.get("errors") or {})
     if not _summary_snapshot_available(summary):
         errors.setdefault("summary", "orders_fast_summary_cache_unavailable")
-    counts = _build_snapshot_counts(positions, orders, live_open_orders)
+    counts = _merge_inferred_position_counts(
+        _build_snapshot_counts(positions, orders, live_open_orders),
+        inferred_positions,
+    )
     if open_orders_only:
         counts = _merge_position_counts(counts, cached_counts, available=cached_position_counts_available)
+        counts = _merge_inferred_position_counts(counts, inferred_positions)
     elapsed_ms = round((time.perf_counter() - started) * 1000.0, 1)
     payload = {
         "ok": True,
@@ -1092,9 +1427,11 @@ def _build_orders_fast_ibkr_account_snapshot_payload(
         "live_order_coverage": live_open_payload.get("coverage") or {},
         "recovery_diagnostics": live_open_payload.get("diagnostics") or {},
         "counts": counts,
-        "positions_detail_available": bool((not open_orders_only) and cached_full),
+        "positions_detail_available": bool(((not open_orders_only) and cached_full) or inferred_positions),
         "positions_source": positions_source,
-        "positions_count_available": bool(((not open_orders_only) and cached_full) or cached_position_counts_available),
+        "positions_count_available": bool(((not open_orders_only) and cached_full) or cached_position_counts_available or inferred_positions),
+        "inferred_strategy_positions": inferred_positions,
+        "positions_inference": positions_inference,
         "errors": errors,
         "diagnostics": {
             "account_snapshot": {

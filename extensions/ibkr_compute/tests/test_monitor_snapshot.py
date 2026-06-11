@@ -32,6 +32,15 @@ except ModuleNotFoundError:
         def add_url_rule(self, *args, **kwargs):
             return None
 
+        def before_request(self, func):
+            return func
+
+        def after_request(self, func):
+            return func
+
+        def teardown_request(self, func):
+            return func
+
     def fake_jsonify(*args, **kwargs):
         if len(args) == 1 and not kwargs:
             return args[0]
@@ -45,6 +54,7 @@ except ModuleNotFoundError:
     fake_flask.Response = dict
     fake_flask.jsonify = fake_jsonify
     fake_flask.redirect = lambda url, code=302: {"redirect": url, "code": code}
+    fake_flask.g = types.SimpleNamespace()
     fake_flask.request = types.SimpleNamespace(get_json=lambda silent=True: {}, args={}, values={})
     sys.modules["flask"] = fake_flask
 else:
@@ -348,6 +358,42 @@ class MonitorSnapshotTest(unittest.TestCase):
         flag_codes = {item["code"] for item in flags}
         self.assertNotIn("subscription_utilization_high", flag_codes)
         self.assertNotIn("subscription_utilization_critical", flag_codes)
+
+    def test_recent_subscription_failures_are_labeled_as_quote_failures(self):
+        flags = server._build_monitor_flags(
+            {
+                "gateway": {"running": True, "reachable": True},
+                "session": {"authenticated": True},
+                "websocket": {
+                    "connected": True,
+                    "ready": True,
+                    "recent_failures": [
+                        {
+                            "conid": 8314,
+                            "symbol": "BAD",
+                            "kind": "entry_pre_submit",
+                            "error": "contract_not_found",
+                            "terminal": True,
+                        }
+                    ],
+                },
+            },
+            {
+                "subscription_limit": 70,
+                "active_subscription_count": 1,
+                "utilization_pct": 1.43,
+                "pending_subscription_count": 0,
+            },
+            {},
+            {},
+        )
+
+        failure = next(item for item in flags if item["code"] == "subscription_failures")
+        self.assertEqual("warning", failure["severity"])
+        self.assertEqual("Quote subscription failures", failure["title"])
+        self.assertIn("quote 行情订阅失败", failure["detail"])
+        self.assertIn("不是旧 5m K 线订阅", failure["detail"])
+        self.assertIn("BAD/8314 [entry_pre_submit]", failure["detail"])
 
     def test_history_cumulative_throttle_is_display_only(self):
         flags = server._build_monitor_flags(

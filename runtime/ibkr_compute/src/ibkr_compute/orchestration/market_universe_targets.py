@@ -250,7 +250,18 @@ class TradingServiceMarketUniverseTargetsMixin:
         service_mod = _service_mod()
         return max(0, self.config.get_int_for_environment("entry_pre_submit_temp_subscription_limit", service_mod.DATA_ENVIRONMENT, 8))
 
+    def _trade_target_persistent_quote_enabled(self) -> bool:
+        service_mod = _service_mod()
+        return _config_bool_for_environment(
+            getattr(self, "config", None),
+            "ibkr_trade_target_persistent_quote_enabled",
+            service_mod.DATA_ENVIRONMENT,
+            False,
+        )
+
     def _get_trade_subscription_budget(self) -> int | None:
+        if not self._trade_target_persistent_quote_enabled():
+            return 0
         target_limit = self._get_target_subscription_limit()
         total_limit = self._get_total_subscription_limit()
         trade_budget = target_limit if target_limit > 0 else None
@@ -380,11 +391,13 @@ class TradingServiceMarketUniverseTargetsMixin:
         service_mod = _service_mod()
         target_date, rows = self._today_target_rows()
         trade_budget = self._get_trade_subscription_budget()
+        persistent_trade_quotes = self._trade_target_persistent_quote_enabled()
         monitor_symbols = set(self._market_ws_symbols())
         signal_summary = self._today_signal_summary_by_symbol(target_date)
         selected_symbols = []
         selected_meta = {}
         selected_rows = []
+        subscription_rows = []
         seen = set()
 
         active_rows = [
@@ -400,35 +413,50 @@ class TradingServiceMarketUniverseTargetsMixin:
             and not self._target_blocked_by_terminal_signal(row, signal_summary)[0]
         ]
         prioritized_rows = list(active_rows)
+        self._last_target_plan_active_trade_rows = list(active_rows)
 
-        for row in prioritized_rows:
-            symbol = str(row.get("symbol", "")).upper()
-            if not symbol or symbol in seen:
-                continue
-            if symbol in monitor_symbols:
-                service_mod.logger.warning(
-                    "Skipping market context symbol %s from active trade target plan",
-                    symbol,
+        if persistent_trade_quotes:
+            for row in prioritized_rows:
+                symbol = str(row.get("symbol", "")).upper()
+                if not symbol or symbol in seen:
+                    continue
+                if symbol in monitor_symbols:
+                    service_mod.logger.warning(
+                        "Skipping market context symbol %s from active trade target plan",
+                        symbol,
+                    )
+                    continue
+                if trade_budget is not None and len(selected_rows) >= trade_budget:
+                    break
+
+                watchlist_row = self._watchlist_records.get(symbol) or {}
+                selected_symbols.append(symbol)
+                selected_rows.append(row)
+                subscription_rows.append(row)
+                selected_meta[symbol] = {
+                    "exchange": str(
+                        row.get("exchange")
+                        or watchlist_row.get("exchange")
+                        or ""
+                    ).upper(),
+                    "industry": str(
+                        watchlist_row.get("industry")
+                        or ""
+                    ),
+                }
+                seen.add(symbol)
+        else:
+            trade_symbols = sorted({str(row.get("symbol", "")).upper() for row in prioritized_rows if str(row.get("symbol", "")).strip()})
+            for row in prioritized_rows:
+                symbol = str(row.get("symbol", "")).upper()
+                if not symbol or symbol in monitor_symbols:
+                    continue
+                selected_rows.append(row)
+            if trade_symbols:
+                service_mod.logger.info(
+                    "Persistent quote subscriptions disabled for active trade targets; using on-demand quotes: symbols=%s",
+                    ",".join(trade_symbols),
                 )
-                continue
-            if trade_budget is not None and len(selected_rows) >= trade_budget:
-                break
-
-            watchlist_row = self._watchlist_records.get(symbol) or {}
-            selected_symbols.append(symbol)
-            selected_rows.append(row)
-            selected_meta[symbol] = {
-                "exchange": str(
-                    row.get("exchange")
-                    or watchlist_row.get("exchange")
-                    or ""
-                ).upper(),
-                "industry": str(
-                    watchlist_row.get("industry")
-                    or ""
-                ),
-            }
-            seen.add(symbol)
 
         for symbol in self._market_ws_symbols():
             if symbol in seen:
@@ -446,6 +474,7 @@ class TradingServiceMarketUniverseTargetsMixin:
             }
             seen.add(symbol)
 
+        self._last_target_plan_subscription_rows = list(subscription_rows)
         return target_date, selected_symbols, selected_meta, selected_rows
 
     def _mark_target_statuses(self, target_date: str, selected_rows):
@@ -453,6 +482,7 @@ class TradingServiceMarketUniverseTargetsMixin:
         safe_env = self._escaped_market_universe_data_environment()
         monitor_symbols = set(self._market_ws_symbols())
         signal_summary = self._today_signal_summary_by_symbol(target_date)
+        persistent_trade_quotes = self._trade_target_persistent_quote_enabled()
         try:
             existing = self.pb.get_all_records(
                 "ibkr_targets",
@@ -467,9 +497,12 @@ class TradingServiceMarketUniverseTargetsMixin:
             service_mod.logger.warning("Failed to load target rows for status sync: %s", exc)
             return
 
+        subscription_rows = getattr(self, "_last_target_plan_subscription_rows", None)
+        if not isinstance(subscription_rows, list):
+            subscription_rows = selected_rows
         selected_rank_by_id = {
             str(row.get("id") or ""): rank
-            for rank, row in enumerate(selected_rows, start=1)
+            for rank, row in enumerate(subscription_rows, start=1)
             if str(row.get("id") or "")
         }
         for row in existing:
@@ -487,6 +520,8 @@ class TradingServiceMarketUniverseTargetsMixin:
                         "within_subscription_budget": False,
                         "subscription_rank": 0,
                         "subscription_selected": False,
+                        "quote_subscription_mode": "market_monitor",
+                        "persistent_quote_subscription": True,
                     }
                 )
                 update_data = {"extra": extra}
@@ -509,6 +544,8 @@ class TradingServiceMarketUniverseTargetsMixin:
                     "within_subscription_budget": subscription_selected,
                     "subscription_rank": subscription_rank,
                     "subscription_selected": subscription_selected,
+                    "quote_subscription_mode": "persistent" if subscription_selected else "on_demand",
+                    "persistent_quote_subscription": bool(subscription_selected and persistent_trade_quotes),
                 }
             )
             if terminal_blocked:
@@ -524,6 +561,8 @@ class TradingServiceMarketUniverseTargetsMixin:
                         "within_subscription_budget": False,
                         "subscription_rank": 0,
                         "subscription_selected": False,
+                        "quote_subscription_mode": "disabled",
+                        "persistent_quote_subscription": False,
                     }
                 )
                 blockers = ["target_not_active", "deactivated_after_close"]
@@ -977,7 +1016,17 @@ class TradingServiceMarketUniverseTargetsMixin:
                 skipped_cooldown.append(symbol)
                 continue
             try:
-                self.ws_client.resubscribe(conid)
+                meta = self._symbol_meta.get(symbol, {}) if isinstance(getattr(self, "_symbol_meta", None), dict) else {}
+                exchange = str((meta or {}).get("exchange") or "SMART").upper() or "SMART"
+                try:
+                    self.ws_client.resubscribe(
+                        conid,
+                        symbol=symbol,
+                        exchange=exchange,
+                        kind="market_monitor" if symbol in self._market_ws_symbols() else "trade_target",
+                    )
+                except TypeError:
+                    self.ws_client.resubscribe(conid)
             except Exception:
                 service_mod.logger.warning(
                     "Realtime quote resubscribe failed: symbol=%s conid=%s reason=%s",
@@ -1068,8 +1117,11 @@ class TradingServiceMarketUniverseTargetsMixin:
                 if previous_map.get(symbol) != conid
             ]
             normalized_trade_symbols = sorted(
-                symbol for symbol in (trade_symbols or [])
-                if symbol in conid_map
+                {
+                    str(symbol or "").strip().upper()
+                    for symbol in (trade_symbols or [])
+                    if str(symbol or "").strip()
+                }
             )
 
             if removed_conids:
@@ -1085,7 +1137,12 @@ class TradingServiceMarketUniverseTargetsMixin:
             for symbol in added_symbols:
                 conid = conid_map.get(symbol)
                 if conid:
-                    self.ws_client.subscribe(conid)
+                    meta = self._symbol_meta.get(symbol, {}) if isinstance(getattr(self, "_symbol_meta", None), dict) else {}
+                    exchange = str((meta or {}).get("exchange") or "SMART").upper() or "SMART"
+                    try:
+                        self.ws_client.subscribe(conid, symbol=symbol, exchange=exchange, kind="market_monitor" if symbol in self._market_ws_symbols() else "trade_target")
+                    except TypeError:
+                        self.ws_client.subscribe(conid)
 
             self._active_subscription_map = dict(conid_map)
             self._active_subscription_symbols = sorted(conid_map.keys())
@@ -1168,11 +1225,14 @@ class TradingServiceMarketUniverseTargetsMixin:
             service_mod.logger.warning("No conids resolved for target plan (%s)", reason)
             return
 
+        active_trade_rows = getattr(self, "_last_target_plan_active_trade_rows", None)
+        if not isinstance(active_trade_rows, list):
+            active_trade_rows = selected_rows
         trade_symbols = sorted(
             {
                 str(row.get("symbol", "")).upper()
-                for row in selected_rows
-                if str(row.get("symbol", "")).upper() in conid_map
+                for row in active_trade_rows
+                if str(row.get("symbol", "")).strip()
             }
         )
         self._mark_target_statuses(target_date, selected_rows)

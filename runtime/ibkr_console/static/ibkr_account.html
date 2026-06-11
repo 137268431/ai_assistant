@@ -2124,9 +2124,20 @@
             blocker.innerHTML = `${serviceHtml}${bpHtml}`;
         }
 
+        function getInferredStrategyPositions(snapshot) {
+            return Array.isArray(snapshot?.inferred_strategy_positions)
+                ? snapshot.inferred_strategy_positions.filter((position) => Number(position?.quantity || 0) !== 0)
+                : [];
+        }
+
         function renderSummary(snapshot) {
             const summary = snapshot?.summary || {};
             const counts = snapshot?.counts || {};
+            const inferredPositions = getInferredStrategyPositions(snapshot);
+            const openPositionCount = Number(counts.effective_open_positions ?? counts.open_positions ?? 0) || 0;
+            const openPositionSub = inferredPositions.length && !(Number(counts.open_positions || 0) > 0)
+                ? `${openPositionCount} open positions · ${inferredPositions.length} inferred from orders`
+                : `${openPositionCount} open positions`;
             const bpGuard = getBuyingPowerGuard(snapshot);
             const accountTodayPnl = summary.account_today_pnl || {};
             const todayPnlOk = Boolean(accountTodayPnl.ok);
@@ -2146,7 +2157,7 @@
                     badgeToneValue: todayPnlPct,
                 },
                 { label: 'Realized', value: formatSignedNullableMoney(summary.realized_pnl), sub: 'IBKR current realized', toneValue: summary.realized_pnl },
-                { label: 'Floating', value: formatSignedNullableMoney(summary.unrealized_pnl), sub: `${counts.open_positions || 0} open positions`, toneValue: summary.unrealized_pnl },
+                { label: 'Floating', value: formatSignedNullableMoney(summary.unrealized_pnl), sub: openPositionSub, toneValue: summary.unrealized_pnl },
                 { label: 'Net Liq', value: formatMoney(summary.net_liquidation), sub: '账户净值', toneValue: summary.net_liquidation },
                 { label: 'Available', value: formatMoney(summary.available_funds), sub: '可用资金', toneValue: summary.available_funds },
                 { label: 'Buying Power', value: formatMoney(summary.buying_power), sub: '购买力', toneValue: summary.buying_power },
@@ -2169,6 +2180,8 @@
         function renderMeta(snapshot) {
             const summary = snapshot?.summary || {};
             const counts = snapshot?.counts || {};
+            const inferredOpen = Number(counts.inferred_open_positions || 0) || 0;
+            const effectiveOpen = Number(counts.effective_open_positions ?? counts.open_positions ?? 0) || 0;
             const items = [
                 ['Account', summary.account_code || snapshot?.account_id || '--'],
                 ['Type', summary.account_type || '--'],
@@ -2179,7 +2192,7 @@
                 <div class="surface-card">
                     <div class="meta-label">${escapeHtml(label)}</div>
                     <div class="meta-value">${escapeHtml(String(value))}</div>
-                    <div class="summary-sub mono">open=${escapeHtml(String(counts.open_positions || 0))} · system=${escapeHtml(String(counts.system_managed_positions || 0))} · external=${escapeHtml(String(counts.external_positions || 0))} · open_orders=${escapeHtml(String(counts.open_orders || 0))}</div>
+                    <div class="summary-sub mono">open=${escapeHtml(String(effectiveOpen))} · broker=${escapeHtml(String(counts.open_positions || 0))} · inferred=${escapeHtml(String(inferredOpen))} · open_orders=${escapeHtml(String(counts.open_orders || 0))}</div>
                 </div>
             `).join('');
         }
@@ -2319,14 +2332,31 @@
 
         function renderPositions(snapshot) {
             const allPositions = Array.isArray(snapshot?.positions) ? snapshot.positions.slice() : [];
-            const positions = allPositions.filter((position) => Number(position?.quantity || 0) !== 0);
+            const brokerPositions = allPositions.filter((position) => Number(position?.quantity || 0) !== 0);
+            const inferredPositions = getInferredStrategyPositions(snapshot);
+            const useInferredPositions = brokerPositions.length === 0 && inferredPositions.length > 0;
+            const positions = useInferredPositions ? inferredPositions : brokerPositions;
             const flatPositions = allPositions.filter((position) => (
                 Number(position?.quantity || 0) === 0
                 && String(position?.relation?.status || '').toLowerCase() === 'flat_broker_position'
             ));
             positions.sort((a, b) => Math.abs(Number(b.market_value || 0)) - Math.abs(Number(a.market_value || 0)));
-            document.getElementById('positionsMeta').textContent = `${positions.length} open · ${flatPositions.length} flat rows · Gateway snapshot`;
+            const inference = snapshot?.positions_inference || {};
+            document.getElementById('positionsMeta').textContent = useInferredPositions
+                ? `${positions.length} inferred open · broker positions empty · orders_fast`
+                : `${positions.length} open · ${flatPositions.length} flat rows · Gateway snapshot`;
             const area = document.getElementById('positionsArea');
+            const inferenceBanner = useInferredPositions ? `
+                <div class="surface-card">
+                    <div class="record-head">
+                        <div>
+                            <div class="section-title">按订单推断的策略持仓</div>
+                            <div class="section-note">Gateway positions 当前为空或未及时刷新；这里根据 Filled entry + open TP/SL 保护单推断，仅用于监控展示。broker_open=${escapeHtml(String(inference.broker_open_positions ?? 0))}</div>
+                        </div>
+                        <div class="badge-row"><span class="badge warn">INFERRED</span></div>
+                    </div>
+                </div>
+            ` : '';
             const openPositionsHtml = positions.length
                 ? `<div class="position-grid">${positions.map((position) => `
                     <div class="surface-card">
@@ -2338,11 +2368,12 @@
                             <div class="badge-row">
                                 <span class="${badgeClass(position.direction)}">${escapeHtml(String(position.direction || 'flat').toUpperCase())}</span>
                                 <span class="badge neutral">${escapeHtml(position.asset_class || 'ASSET')}</span>
+                                ${position?.inferred ? '<span class="badge warn">INFERRED</span>' : ''}
                             </div>
                         </div>
                         <div class="metric-grid">
                             <div class="metric-item"><div class="metric-label">Quantity</div><div class="metric-value">${escapeHtml(formatQty(position.quantity))}</div></div>
-                            <div class="metric-item"><div class="metric-label">Avg Cost</div><div class="metric-value">${escapeHtml(formatMoney(position.avg_cost))}</div></div>
+                            <div class="metric-item"><div class="metric-label">${position?.inferred ? 'Avg Fill' : 'Avg Cost'}</div><div class="metric-value">${escapeHtml(formatMoney(position.avg_cost))}</div></div>
                             <div class="metric-item"><div class="metric-label">Market Price</div><div class="metric-value">${escapeHtml(formatMoney(position.market_price))}</div></div>
                             <div class="metric-item"><div class="metric-label">Market Value</div><div class="metric-value">${escapeHtml(formatMoney(position.market_value))}</div></div>
                             <div class="metric-item"><div class="metric-label">Unrealized</div><div class="metric-value ${valueClass(position.unrealized_pnl)}">${escapeHtml(formatSignedMoney(position.unrealized_pnl))}</div></div>
@@ -2357,8 +2388,8 @@
                         </div>
                     </div>
                 `).join('')}</div>`
-                : '<div class="empty-state">当前没有打开仓位。这里显示的是 Gateway 直接返回的真实仓位。</div>';
-            area.innerHTML = `<div class="positions-stack">${openPositionsHtml}${renderFlatPositionsSection(flatPositions)}</div>`;
+                : '<div class="empty-state">当前没有打开仓位。这里显示的是 Gateway 直接返回的真实仓位；若订单已成交但 Gateway positions 未刷新，会在这里显示按订单推断的持仓。</div>';
+            area.innerHTML = `<div class="positions-stack">${inferenceBanner}${openPositionsHtml}${renderFlatPositionsSection(flatPositions)}</div>`;
         }
 
         function countOrdersInGroups(groups) {

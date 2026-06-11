@@ -589,6 +589,151 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertEqual("1001", payload["live_open_orders"][0]["order_id"])
         self.assertEqual("orders_fast_summary_cache_unavailable", payload["errors"]["summary"])
 
+    def test_orders_fast_snapshot_infers_strategy_position_from_filled_entry_and_open_protection(self):
+        app = _FakeApiApp()
+        lifecycle = _SnapshotLifecycle(delay=0.05)
+        service = _SnapshotService(lifecycle)
+        service.order_tracker = _FastOrderTracker(
+            [
+                {
+                    "orderId": "11329",
+                    "ticker": "STM",
+                    "conid": 123456,
+                    "acct": "DU123",
+                    "status": "Filled",
+                    "side": "SLD",
+                    "orderType": "LMT",
+                    "totalSize": 66,
+                    "filledQuantity": 66,
+                    "avgPrice": 75.10,
+                    "price": 75.10,
+                    "cOID": "entry_BATS_STM_short_20260611_134700",
+                    "currency": "USD",
+                    "secType": "STK",
+                },
+                {
+                    "orderId": "11330",
+                    "parentId": "11329",
+                    "ticker": "STM",
+                    "conid": 123456,
+                    "acct": "DU123",
+                    "status": "Submitted",
+                    "side": "BUY",
+                    "orderType": "LMT",
+                    "totalSize": 66,
+                    "price": 70.25,
+                    "cOID": "tp_BATS_STM_short_20260611_134700",
+                    "currency": "USD",
+                    "secType": "STK",
+                },
+                {
+                    "orderId": "11331",
+                    "parentId": "11329",
+                    "ticker": "STM",
+                    "conid": 123456,
+                    "acct": "DU123",
+                    "status": "Submitted",
+                    "side": "BUY",
+                    "orderType": "STP",
+                    "totalSize": 66,
+                    "auxPrice": 77.90,
+                    "cOID": "sl_BATS_STM_short_20260611_134700",
+                    "currency": "USD",
+                    "secType": "STK",
+                },
+            ]
+        )
+
+        payload = _with_fake_api_app(
+            app,
+            lambda: _build_ibkr_account_snapshot(
+                service,
+                include_pnl=False,
+                force_refresh=True,
+                allow_stale=False,
+                orders_fast=True,
+            ),
+        )
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(0, lifecycle.snapshot_calls)
+        self.assertEqual(1, len(payload["inferred_strategy_positions"]))
+        inferred = payload["inferred_strategy_positions"][0]
+        self.assertEqual("STM", inferred["symbol"])
+        self.assertEqual("short", inferred["direction"])
+        self.assertEqual(-66.0, inferred["quantity"])
+        self.assertEqual(75.10, inferred["avg_price"])
+        self.assertEqual("complete", inferred["protection_status"])
+        self.assertEqual("11330", inferred["take_profit_order_id"])
+        self.assertEqual(70.25, inferred["take_profit_price"])
+        self.assertEqual("11331", inferred["stop_loss_order_id"])
+        self.assertEqual(77.90, inferred["stop_loss_price"])
+        self.assertEqual(1, payload["counts"]["inferred_strategy_positions"])
+        self.assertEqual(1, payload["counts"]["effective_open_positions"])
+        self.assertTrue(payload["positions_detail_available"])
+        self.assertTrue(payload["positions_count_available"])
+        self.assertTrue(payload["positions_inference"]["display_fallback"])
+
+    def test_orders_fast_snapshot_infers_position_from_open_protection_pair_after_restart(self):
+        app = _FakeApiApp()
+        lifecycle = _SnapshotLifecycle(delay=0.05)
+        service = _SnapshotService(lifecycle)
+        service.order_tracker = _FastOrderTracker(
+            [
+                {
+                    "orderId": "11333",
+                    "parentId": "11332",
+                    "ticker": "WDC",
+                    "acct": "DU123",
+                    "status": "Submitted",
+                    "side": "BUY",
+                    "orderType": "LMT",
+                    "totalSize": 9,
+                    "price": 484.85,
+                    "cOID": "tp_BATS_WDC_short_20260611_0954_2_mr_sdUpper",
+                    "currency": "USD",
+                    "secType": "STK",
+                },
+                {
+                    "orderId": "11334",
+                    "parentId": "11332",
+                    "ticker": "WDC",
+                    "acct": "DU123",
+                    "status": "PreSubmitted",
+                    "side": "BUY",
+                    "orderType": "STP",
+                    "totalSize": 9,
+                    "auxPrice": 522.44,
+                    "cOID": "sl_BATS_WDC_short_20260611_0954_2_mr_sdUpper",
+                    "currency": "USD",
+                    "secType": "STK",
+                },
+            ]
+        )
+
+        payload = _with_fake_api_app(
+            app,
+            lambda: _build_ibkr_account_snapshot(
+                service,
+                include_pnl=False,
+                force_refresh=True,
+                allow_stale=False,
+                orders_fast=True,
+            ),
+        )
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(1, len(payload["inferred_strategy_positions"]))
+        inferred = payload["inferred_strategy_positions"][0]
+        self.assertEqual("WDC", inferred["symbol"])
+        self.assertEqual("short", inferred["direction"])
+        self.assertEqual(-9.0, inferred["quantity"])
+        self.assertEqual("medium", inferred["inference_confidence"])
+        self.assertEqual("complete", inferred["protection_status"])
+        self.assertEqual("11332", inferred["entry_order_id"])
+        self.assertEqual("open_protection_orders_without_filled_entry", inferred["relation"]["reason"])
+        self.assertEqual(1, payload["counts"]["effective_open_positions"])
+
     def test_orders_fast_open_only_omits_closed_history_rows(self):
         app = _FakeApiApp()
         lifecycle = _SnapshotLifecycle(delay=0.05)

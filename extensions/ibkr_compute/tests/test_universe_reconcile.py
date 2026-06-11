@@ -38,6 +38,13 @@ class DummyConfig:
     def __init__(self, values=None):
         self.values = dict(values or {})
 
+    def get_for_environment(self, key, _environment, fallback=None):
+        return self.values.get(key, fallback)
+
+    def get_bool_for_environment(self, key, _environment, fallback=False):
+        value = self.values.get(key, fallback)
+        return str(value).strip().lower() in {"true", "1", "yes", "on"} if isinstance(value, str) else bool(value)
+
     def get_int_for_environment(self, key, _environment, fallback):
         return int(self.values.get(key, fallback))
 
@@ -60,9 +67,11 @@ class DummyQuoteBook:
 class DummyWsClient:
     def __init__(self):
         self.resubscribed = []
+        self.resubscribe_meta = []
 
-    def resubscribe(self, conid):
+    def resubscribe(self, conid, **kwargs):
         self.resubscribed.append(int(conid))
+        self.resubscribe_meta.append({"conid": int(conid), **dict(kwargs)})
 
 
 class DummyResubscribeUniverse(TradingServiceMarketUniverseMixin):
@@ -232,10 +241,12 @@ class DummyMarketDataSink:
 class DummySubscriptionWs:
     def __init__(self):
         self.subscribed = []
+        self.subscribe_meta = []
         self.unsubscribed = []
 
-    def subscribe(self, conid):
+    def subscribe(self, conid, **kwargs):
         self.subscribed.append(int(conid))
+        self.subscribe_meta.append({"conid": int(conid), **dict(kwargs)})
 
     def unsubscribe(self, conid):
         self.unsubscribed.append(int(conid))
@@ -403,6 +414,8 @@ class UniverseTargetSubscriptionRuntimeSlimTest(unittest.TestCase):
             )
 
         self.assertEqual([265598], universe.ws_client.subscribed)
+        self.assertEqual("AAPL", universe.ws_client.subscribe_meta[0]["symbol"])
+        self.assertEqual("trade_target", universe.ws_client.subscribe_meta[0]["kind"])
         self.assertEqual({"AAPL": 265598}, universe._active_subscription_map)
         self.assertEqual(["AAPL"], universe._active_trade_symbols)
         self.assertEqual([{"reason": "refresh", "force": False}], universe.scheduled_warmups)
@@ -428,9 +441,13 @@ class UniverseTargetSubscriptionPlanTest(unittest.TestCase):
         target_date, symbols, _meta, selected_rows = universe._build_target_subscription_plan()
         universe._mark_target_statuses(target_date, selected_rows)
 
-        self.assertIn("AAPL", symbols)
+        self.assertNotIn("AAPL", symbols)
         self.assertIn("SPY", symbols)  # still subscribed as market context data
         self.assertEqual(["AAPL"], [row["symbol"] for row in selected_rows])
+        aapl_updates = [data for collection, record_id, data in universe.pb.updated if record_id == "target-aapl"]
+        self.assertTrue(aapl_updates)
+        self.assertEqual("on_demand", aapl_updates[-1]["extra"]["quote_subscription_mode"])
+        self.assertFalse(aapl_updates[-1]["extra"]["persistent_quote_subscription"])
         spy_updates = [data for collection, record_id, data in universe.pb.updated if record_id == "target-spy"]
         self.assertTrue(spy_updates)
         self.assertEqual("candidate", spy_updates[-1]["status"])
@@ -460,7 +477,7 @@ class UniverseTargetSubscriptionPlanTest(unittest.TestCase):
 
         _target_date, symbols, _meta, selected_rows = universe._build_target_subscription_plan()
 
-        self.assertIn("AAPL", symbols)
+        self.assertNotIn("AAPL", symbols)
         self.assertNotIn("MSFT", symbols)
         self.assertEqual(["AAPL"], [row["symbol"] for row in selected_rows])
 
@@ -486,6 +503,7 @@ class UniverseTargetSubscriptionPlanTest(unittest.TestCase):
             ]
         )
         universe.config.values["ibkr_target_subscription_limit"] = 1
+        universe.config.values["ibkr_trade_target_persistent_quote_enabled"] = "true"
 
         target_date, _symbols, _meta, selected_rows = universe._build_target_subscription_plan()
         universe._mark_target_statuses(target_date, selected_rows)
@@ -578,6 +596,19 @@ class UniverseTargetSubscriptionPlanTest(unittest.TestCase):
 
         _target_date, symbols, _meta, selected_rows = universe._build_target_subscription_plan()
 
+        self.assertNotIn("AAPL", symbols)
+        self.assertEqual(["AAPL"], [row["symbol"] for row in selected_rows])
+
+    def test_persistent_trade_quote_config_restores_trade_symbol_subscription(self):
+        universe = DummyTargetPlanUniverse(
+            [
+                {"id": "target-aapl", "symbol": "AAPL", "status": "active", "direction_bias": "long", "score": 99, "extra": {"source": "manual_page_add"}},
+            ]
+        )
+        universe.config.values["ibkr_trade_target_persistent_quote_enabled"] = "true"
+
+        _target_date, symbols, _meta, selected_rows = universe._build_target_subscription_plan()
+
         self.assertIn("AAPL", symbols)
         self.assertEqual(["AAPL"], [row["symbol"] for row in selected_rows])
 
@@ -617,11 +648,37 @@ class UniverseTargetSubscriptionPlanTest(unittest.TestCase):
         ]
         universe = DummyTargetPlanUniverse(rows)
         universe.config.values["entry_pre_submit_temp_subscription_limit"] = 2
+        universe.config.values["ibkr_trade_target_persistent_quote_enabled"] = "true"
 
         _target_date, _symbols, _meta, selected_rows = universe._build_target_subscription_plan()
 
         self.assertEqual(5, len(selected_rows))
         self.assertEqual(["SYM0", "SYM1", "SYM2", "SYM3", "SYM4"], [row["symbol"] for row in selected_rows])
+
+    def test_default_trade_quote_mode_keeps_all_active_targets_on_demand(self):
+        rows = [
+            {
+                "id": f"target-{index}",
+                "symbol": f"SYM{index}",
+                "status": "active",
+                "direction_bias": "long",
+                "score": 100 - index,
+                "extra": {"source": "daily_scan", "active_gate_passed": True},
+            }
+            for index in range(6)
+        ]
+        universe = DummyTargetPlanUniverse(rows)
+        universe.config.values["entry_pre_submit_temp_subscription_limit"] = 2
+
+        target_date, symbols, _meta, selected_rows = universe._build_target_subscription_plan()
+        universe._mark_target_statuses(target_date, selected_rows)
+
+        self.assertEqual(["SPY", "QQQ", "VIX"], symbols)
+        self.assertEqual([f"SYM{index}" for index in range(6)], [row["symbol"] for row in selected_rows])
+        rows_by_id = {row["id"]: row for row in universe.pb.rows}
+        self.assertEqual("on_demand", rows_by_id["target-0"]["extra"]["quote_subscription_mode"])
+        self.assertFalse(rows_by_id["target-0"]["extra"]["persistent_quote_subscription"])
+        self.assertFalse(rows_by_id["target-0"]["extra"]["subscription_selected"])
 
 
 class UniverseRealtimeQuoteResubscribeTest(unittest.TestCase):
@@ -653,6 +710,8 @@ class UniverseRealtimeQuoteResubscribeTest(unittest.TestCase):
         self.assertEqual(["SPY"], repaired)
         self.assertEqual([], repaired_again)
         self.assertEqual([756733], universe.ws_client.resubscribed)
+        self.assertEqual("SPY", universe.ws_client.resubscribe_meta[0]["symbol"])
+        self.assertEqual("market_monitor", universe.ws_client.resubscribe_meta[0]["kind"])
         self.assertEqual(["QQQ", "SPY", "VIX"], universe.realtime_quote_book.calls[0]["symbols"])
 
     def test_session_restore_force_resubscribes_active_market_data(self):

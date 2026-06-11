@@ -1132,6 +1132,36 @@ class TradingServiceSignalsMixin:
             return False
         return True
 
+    @staticmethod
+    def _truthy_extra_value(value) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        text = str(value or "").strip().lower()
+        return text in {"true", "1", "yes", "y", "on", "enabled"}
+
+    def _signal_has_bounded_limit_cap(self, sig: dict, extra: dict | None = None) -> bool:
+        data = sig if isinstance(sig, dict) else {}
+        extra = dict(extra if isinstance(extra, dict) else self._signal_extra(data))
+        if self._truthy_extra_value(extra.get("submitted_limit_cap_applied")):
+            return True
+        if self._truthy_extra_value(data.get("submitted_limit_cap_applied")):
+            return True
+        intent = str(extra.get("entry_limit_intent") or data.get("entry_limit_intent") or "").strip().lower()
+        plan = str(extra.get("entry_price_plan") or data.get("entry_price_plan") or "").strip().lower()
+        if intent in {"bounded_marketable", "bounded_limit", "limit_cap", "marketable_limit_cap"}:
+            return True
+        if plan in {"tv_direct_bounded_limit", "bounded_marketable_limit", "limit_cap"}:
+            return True
+        for source in (extra, data):
+            if not isinstance(source, dict):
+                continue
+            for key in ("submitted_limit_cap_bps", "tv_entry_limit_cap_bps", "entry_limit_cap_bps", "limit_cap_bps"):
+                if source.get(key) not in (None, ""):
+                    return self._safe_float(source.get(key), 0.0) > 0
+        return False
+
     def _prepare_tv_direct_entry_signal(self, sig: dict) -> tuple[bool, dict, str]:
         extra = self._signal_extra(sig)
         structural_anchor_entry = self._is_structural_anchor_entry(sig)
@@ -1145,7 +1175,13 @@ class TradingServiceSignalsMixin:
         if entry <= 0 or reference_entry <= 0 or reference_stop <= 0 or reference_target <= 0 or direction not in {"long", "short"}:
             return False, sig, "invalid_prices"
 
-        max_age_s = max(1.0, self._config_float("tv_entry_freshness_sec", 120.0))
+        default_max_age_s = max(1.0, self._config_float("tv_entry_freshness_sec", 120.0))
+        limit_max_age_s = max(
+            default_max_age_s,
+            self._config_float("tv_entry_limit_freshness_sec", 240.0),
+        )
+        bounded_limit_freshness = not structural_anchor_entry
+        max_age_s = limit_max_age_s if bounded_limit_freshness else default_max_age_s
         clock_skew_s = max(5.0, self._config_float("tv_entry_clock_skew_sec", 60.0))
         signal_dt, signal_time_source, raw_signal_time = self._tv_signal_timestamp(sig)
         now_utc = datetime.now(timezone.utc)
@@ -1156,6 +1192,9 @@ class TradingServiceSignalsMixin:
                 "status_reason": "stale_signal",
                 "signal_freshness_source": "missing",
                 "signal_freshness_max_age_s": max_age_s,
+                "signal_freshness_default_max_age_s": default_max_age_s,
+                "signal_freshness_limit_max_age_s": limit_max_age_s,
+                "signal_freshness_policy": "bounded_limit_cap" if bounded_limit_freshness else "default",
                 "tv_direct_rejected_reason": "stale_signal",
             }
             return False, sig, "stale_signal"
@@ -1168,6 +1207,9 @@ class TradingServiceSignalsMixin:
             "signal_freshness_checked_at": now_utc.isoformat(),
             "signal_freshness_age_s": round(signal_age_s, 3),
             "signal_freshness_max_age_s": max_age_s,
+            "signal_freshness_default_max_age_s": default_max_age_s,
+            "signal_freshness_limit_max_age_s": limit_max_age_s,
+            "signal_freshness_policy": "bounded_limit_cap" if bounded_limit_freshness else "default",
             "signal_clock_skew_threshold_s": clock_skew_s,
         }
         if signal_age_s < -clock_skew_s:
@@ -2378,7 +2420,10 @@ class TradingServiceSignalsMixin:
         subscriber = getattr(getattr(self, "ws_client", None), "subscribe", None)
         if callable(subscriber):
             try:
-                subscriber(normalized_conid)
+                try:
+                    subscriber(normalized_conid, symbol=normalized_symbol, kind="entry_pre_submit")
+                except TypeError:
+                    subscriber(normalized_conid)
             except Exception as exc:
                 self._entry_release_temp_quote_subscription(normalized_symbol)
                 _service_mod().logger.warning("Temporary quote subscribe failed for %s/%s: %s", normalized_symbol, normalized_conid, exc)
@@ -2655,6 +2700,17 @@ class TradingServiceSignalsMixin:
             )
 
         if live_environment and not fresh_quote:
+            if self._signal_has_bounded_limit_cap(sig, extra):
+                status_reason = "entry_guard_quote_unavailable_allowed_by_limit_cap"
+                sig["extra"] = {
+                    **extra,
+                    **diagnostics,
+                    "quote_guard_status": "unavailable_allowed_by_limit_cap",
+                    "quote_guard_missing_quote_allowed": True,
+                    "quote_guard_missing_quote_allow_reason": "bounded_limit_cap",
+                    "status_reason": status_reason,
+                }
+                return True, sig, ""
             status_reason = guard_reason or "entry_guard_no_fresh_quote"
             sig["extra"] = {**extra, **diagnostics, "status_reason": status_reason}
             return False, sig, status_reason
@@ -2868,6 +2924,7 @@ class TradingServiceSignalsMixin:
             "buying_power_snapshot_age_s": guard.get("snapshot_age_s"),
             "buying_power_snapshot_max_age_s": guard.get("snapshot_max_age_s"),
             "buying_power_snapshot_fresh": guard.get("snapshot_fresh"),
+            "buying_power_snapshot_stale_allowed": guard.get("snapshot_stale_allowed"),
         }
 
     def _merge_buying_power_snapshot_guard(self, guard: dict, snapshot_guard: dict | None) -> dict:
@@ -3015,6 +3072,62 @@ class TradingServiceSignalsMixin:
             self._config_float("ibkr_buying_power_stale_baseline_max_age_sec", 1800.0),
         )
 
+    def _buying_power_stale_safe_max_age_sec(self) -> float:
+        return max(
+            self._buying_power_max_snapshot_age_sec(),
+            self._config_float("ibkr_buying_power_stale_safe_max_age_sec", 1800.0),
+        )
+
+    def _buying_power_stale_safe_required_remaining(self, guard: dict) -> float:
+        min_usd = max(0.0, self._config_float("ibkr_buying_power_stale_safe_min_usd", 50000.0))
+        block_multiple = max(0.0, self._config_float("ibkr_buying_power_stale_safe_block_multiple", 5.0))
+        exposure_multiple = max(0.0, self._config_float("ibkr_buying_power_stale_safe_exposure_multiple", 3.0))
+        block_floor = self._safe_float((guard or {}).get("block_floor"), 0.0)
+        requested_exposure = self._safe_float((guard or {}).get("requested_exposure"), 0.0)
+        return max(
+            min_usd,
+            block_floor * block_multiple,
+            requested_exposure * exposure_multiple,
+        )
+
+    def _buying_power_stale_snapshot_can_allow(
+        self,
+        guard: dict,
+        *,
+        stale_age_s: float | None,
+        freshness_block_reason: str,
+    ) -> tuple[bool, dict]:
+        details = {
+            "stale_safe_enabled": self._config_bool("ibkr_buying_power_stale_safe_enabled", True),
+            "stale_safe_age_s": round(float(stale_age_s), 1) if stale_age_s is not None else None,
+            "stale_safe_max_age_s": round(float(self._buying_power_stale_safe_max_age_sec()), 1),
+            "stale_safe_required_remaining": round(self._buying_power_stale_safe_required_remaining(guard), 2),
+            "stale_safe_freshness_reason": str(freshness_block_reason or ""),
+        }
+        if not details["stale_safe_enabled"]:
+            details["stale_safe_block_reason"] = "disabled"
+            return False, details
+        if freshness_block_reason == "buying_power_snapshot_missing_timestamp":
+            details["stale_safe_block_reason"] = "missing_timestamp"
+            return False, details
+        if stale_age_s is None or float(stale_age_s) > self._buying_power_stale_safe_max_age_sec():
+            details["stale_safe_block_reason"] = "too_old"
+            return False, details
+        state = str((guard or {}).get("state") or "").strip().lower()
+        if state not in {"ok", "warning"}:
+            details["stale_safe_block_reason"] = f"state_{state or 'unknown'}"
+            return False, details
+        remaining_after = (guard or {}).get("remaining_after")
+        if remaining_after in (None, ""):
+            remaining_after = (guard or {}).get("remaining")
+        remaining_after_value = self._safe_float(remaining_after, -1.0)
+        details["stale_safe_remaining_after"] = round(remaining_after_value, 2)
+        if remaining_after_value < details["stale_safe_required_remaining"]:
+            details["stale_safe_block_reason"] = "remaining_after_below_safe_floor"
+            return False, details
+        details["stale_safe_block_reason"] = ""
+        return True, details
+
     @staticmethod
     def _parse_snapshot_timestamp(value) -> float:
         if value in (None, ""):
@@ -3108,6 +3221,7 @@ class TradingServiceSignalsMixin:
         freshness_block_reason = ""
         if baseline_fresh:
             account_summary = dict(baseline.get("summary") or {})
+            account_summary_source = "baseline"
             guard_source = "local_baseline"
         else:
             snapshot = self._account_buying_power_snapshot()
@@ -3140,9 +3254,11 @@ class TradingServiceSignalsMixin:
                     except Exception as exc:
                         service_mod.logger.warning("Buying-power baseline update failed: %s", exc)
                 account_summary = snapshot_summary
+                account_summary_source = "snapshot"
                 guard_source = ""
             else:
                 account_summary = snapshot_summary or dict(baseline.get("summary") or {})
+                account_summary_source = "snapshot" if snapshot_summary else "baseline" if baseline.get("summary") else ""
                 guard_source = ""
                 if account_summary and (baseline_available or snapshot_guard_available):
                     freshness_block_reason = (
@@ -3205,10 +3321,29 @@ class TradingServiceSignalsMixin:
         guard["baseline_max_age_s"] = round(float(baseline_max_age_s), 1)
         guard["snapshot_fresh"] = bool(snapshot_fresh or baseline_fresh)
         if freshness_block_reason and guard.get("enabled"):
-            guard["available"] = False
-            guard["state"] = "unavailable"
-            guard["reason"] = freshness_block_reason
-            guard["snapshot_error"] = freshness_block_reason
+            stale_age_s = snapshot_age_s if account_summary_source == "snapshot" else baseline_age_s
+            stale_allowed, stale_details = self._buying_power_stale_snapshot_can_allow(
+                guard,
+                stale_age_s=stale_age_s,
+                freshness_block_reason=freshness_block_reason,
+            )
+            guard.update(stale_details)
+            if stale_allowed:
+                guard["available"] = True
+                guard["state"] = "warning"
+                guard["reason"] = "buying_power_snapshot_stale_allowed_safe"
+                guard["snapshot_error"] = freshness_block_reason
+                guard["snapshot_stale_allowed"] = True
+                guard["snapshot_stale_allowed_reason"] = "safe_remaining_after"
+                guard["original_freshness_block_reason"] = freshness_block_reason
+                guard["source"] = guard.get("source") or (
+                    "stale_account_snapshot" if account_summary_source == "snapshot" else "stale_local_baseline"
+                )
+            else:
+                guard["available"] = False
+                guard["state"] = "unavailable"
+                guard["reason"] = freshness_block_reason
+                guard["snapshot_error"] = freshness_block_reason
         if not freshness_block_reason and exposure <= 0 and guard.get("enabled"):
             guard["state"] = "blocked"
             guard["reason"] = "buying_power_price_unavailable"
@@ -4090,6 +4225,9 @@ class TradingServiceSignalsMixin:
                 "quote_acquire_error",
                 "quote_acquire_conid",
                 "temporary_quote_subscription",
+                "quote_guard_status",
+                "quote_guard_missing_quote_allowed",
+                "quote_guard_missing_quote_allow_reason",
                 "price_drift_r",
                 "price_drift_threshold_r",
                 "price_drift_exceeds_threshold",

@@ -14,6 +14,7 @@ class FakeBroker:
         self.market_data_listeners = []
         self.order_update_listeners = []
         self.subscribed_conids = []
+        self.subscribed_requests = []
         self.unsubscribed_conids = []
 
     def add_market_data_listener(self, callback):
@@ -35,6 +36,7 @@ class FakeBroker:
 
     def subscribe_market_data(self, conid: int, symbol: str = "", exchange: str = "SMART"):
         self.subscribed_conids.append(int(conid))
+        self.subscribed_requests.append({"conid": int(conid), "symbol": symbol, "exchange": exchange})
         return int(conid)
 
     def unsubscribe_market_data(self, conid: int):
@@ -48,6 +50,7 @@ class FailingBroker(FakeBroker):
 
     def subscribe_market_data(self, conid: int, symbol: str = "", exchange: str = "SMART"):
         self.subscribed_conids.append(int(conid))
+        self.subscribed_requests.append({"conid": int(conid), "symbol": symbol, "exchange": exchange})
         raise RuntimeError(self.error)
 
 
@@ -102,15 +105,19 @@ class IBKRWebSocketClientTest(unittest.TestCase):
         client = IBKRWebSocketClient(broker=broker)
         client.start()
 
-        client.subscribe(8314)
+        client.subscribe(8314, symbol="BAD", kind="market_monitor")
         status = client.status()
 
         self.assertEqual(0, status["pending_count"])
         self.assertEqual([], status["pending_conids"])
         self.assertEqual([8314], broker.subscribed_conids)
+        self.assertEqual("BAD", broker.subscribed_requests[0]["symbol"])
+        self.assertEqual("", broker.subscribed_requests[0]["exchange"])
         self.assertIn("8314", status["subscription_last_errors"])
         self.assertTrue(status["subscription_last_errors"]["8314"]["terminal"])
         self.assertEqual(8314, status["recent_failures"][0]["conid"])
+        self.assertEqual("BAD", status["recent_failures"][0]["symbol"])
+        self.assertEqual("market_monitor", status["recent_failures"][0]["kind"])
         self.assertIn("contract_not_found", status["recent_failures"][0]["error"])
 
     def test_transient_subscription_failure_keeps_pending_for_retry(self):

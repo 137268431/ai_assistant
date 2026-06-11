@@ -41,6 +41,7 @@ class IBKRWebSocketClient:
         self._tick_subscription_types: Dict[int, str] = {}
         self._tick_last_errors: Dict[int, str] = {}
         self._subscription_last_errors: Dict[int, Dict[str, Any]] = {}
+        self._subscription_meta: Dict[int, Dict[str, Any]] = {}
         self._order_updates_enabled = False
 
     @property
@@ -99,6 +100,7 @@ class IBKRWebSocketClient:
             self._tick_subscription_types.clear()
             self._tick_last_errors.clear()
             self._subscription_last_errors.clear()
+            self._subscription_meta.clear()
             self._connected = False
             self._ready = False
         for conid in subscribed:
@@ -121,13 +123,22 @@ class IBKRWebSocketClient:
         for conid in tick_pending:
             self._send_tick_subscription(conid, self._tick_subscription_types.get(conid, "Last"))
 
-    def subscribe(self, conid: int):
+    def subscribe(self, conid: int, symbol: str = "", exchange: str = "SMART", kind: str = "quote"):
         try:
             normalized = int(conid)
         except (TypeError, ValueError):
             return
+        meta = {
+            "symbol": str(symbol or "").strip().upper(),
+            "exchange": str(exchange or "SMART").strip().upper() or "SMART",
+            "kind": str(kind or "quote").strip() or "quote",
+        }
         with self._state_lock:
             self._pending_subscriptions.add(normalized)
+            self._subscription_meta[normalized] = {
+                **self._subscription_meta.get(normalized, {}),
+                **{key: value for key, value in meta.items() if value},
+            }
         if self._running:
             self._send_subscription(normalized)
 
@@ -140,6 +151,7 @@ class IBKRWebSocketClient:
             self._pending_subscriptions.discard(normalized)
             self._subscribed_conids.discard(normalized)
             self._subscription_last_errors.pop(normalized, None)
+            self._subscription_meta.pop(normalized, None)
         try:
             self.broker.unsubscribe_market_data(normalized)
         except Exception:
@@ -214,15 +226,24 @@ class IBKRWebSocketClient:
         except Exception:
             logger.exception("Failed to unsubscribe tick-by-tick %s", normalized)
 
-    def resubscribe(self, conid: int):
+    def resubscribe(self, conid: int, symbol: str = "", exchange: str = "SMART", kind: str = "quote"):
         try:
             normalized = int(conid)
         except (TypeError, ValueError):
             return
+        meta_update = {
+            "symbol": str(symbol or "").strip().upper(),
+            "exchange": str(exchange or "SMART").strip().upper() or "SMART",
+            "kind": str(kind or "quote").strip() or "quote",
+        }
         with self._state_lock:
             self._pending_subscriptions.discard(normalized)
             self._subscribed_conids.discard(normalized)
             self._subscription_last_errors.pop(normalized, None)
+            self._subscription_meta[normalized] = {
+                **self._subscription_meta.get(normalized, {}),
+                **{key: value for key, value in meta_update.items() if value},
+            }
         try:
             self.broker.unsubscribe_market_data(normalized)
         except Exception:
@@ -238,8 +259,13 @@ class IBKRWebSocketClient:
                 self._pending_subscriptions.discard(conid)
                 self._subscription_last_errors.pop(conid, None)
                 return
+            meta = dict(self._subscription_meta.get(conid) or {})
+        symbol = str(meta.get("symbol") or "").strip().upper()
+        exchange = str(meta.get("exchange") or "SMART").strip().upper() or "SMART"
         try:
-            self.broker.subscribe_market_data(conid=conid, symbol="")
+            # Keep exchange out of the broker request so conid+symbol can use the
+            # fast contract path instead of forcing another contract-details lookup.
+            self.broker.subscribe_market_data(conid=conid, symbol=symbol, exchange="")
         except Exception as exc:
             terminal = self._is_terminal_subscription_error(exc)
             with self._state_lock:
@@ -247,11 +273,14 @@ class IBKRWebSocketClient:
                     self._pending_subscriptions.discard(conid)
                 self._subscription_last_errors[conid] = {
                     "conid": int(conid),
+                    "symbol": symbol,
+                    "exchange": exchange,
+                    "kind": str(meta.get("kind") or "quote"),
                     "error": str(exc),
                     "terminal": bool(terminal),
                     "at": time.time(),
                 }
-            logger.warning("Failed to subscribe conid=%s: %s", conid, exc)
+            logger.warning("Failed to subscribe conid=%s symbol=%s: %s", conid, symbol or "-", exc)
             return
         with self._state_lock:
             self._subscribed_conids.add(conid)
@@ -314,6 +343,7 @@ class IBKRWebSocketClient:
                     str(conid): dict(error) for conid, error in sorted(self._subscription_last_errors.items())
                 },
                 "recent_failures": recent_failures,
+                "subscription_meta": {str(conid): dict(meta) for conid, meta in sorted(self._subscription_meta.items())},
                 "tick_by_tick_pending_count": len(self._tick_pending_subscriptions),
                 "tick_by_tick_subscribed_count": len(self._tick_subscribed_conids),
                 "tick_by_tick_pending_conids": sorted(self._tick_pending_subscriptions),

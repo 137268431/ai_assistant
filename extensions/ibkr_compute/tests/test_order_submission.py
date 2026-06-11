@@ -609,6 +609,7 @@ class FakeWsClient:
         self.subscribed_count = subscribed_count
         self.pending_count = pending_count
         self.subscribed = []
+        self.subscribed_meta = []
         self.unsubscribed = []
         self.snapshots = []
 
@@ -618,8 +619,9 @@ class FakeWsClient:
             "pending_count": self.pending_count,
         }
 
-    def subscribe(self, conid):
+    def subscribe(self, conid, **kwargs):
         self.subscribed.append(int(conid))
+        self.subscribed_meta.append({"conid": int(conid), **dict(kwargs)})
         for symbol, quote in self.quotes_on_subscribe.items():
             if self.quote_book:
                 self.quote_book.set_quote(symbol, quote)
@@ -3234,6 +3236,66 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         self.assertEqual(20.0, ack_extra["submitted_limit_cap_bps"])
         self.assertEqual(100.2, ack_extra["submitted_entry_limit_price"])
 
+    def test_tv_direct_bounded_limit_uses_extended_freshness_window(self):
+        signal = self._tv_signal("AAPL", age_sec=238.0)
+        pb = FakeSignalPBClient({"id": "row-aapl", "extra": dict(signal["extra"])})
+        service = FakeSignalService(
+            signal,
+            lifecycle=FakeLifecycle(),
+            pb=pb,
+            config=FakeConfig({"tv_entry_freshness_sec": 120, "tv_entry_limit_freshness_sec": 240}),
+        )
+
+        service._process_signals()
+
+        self.assertEqual(["sig-aapl"], service.signal_router.processed)
+        self.assertEqual(1, len(service.order_placer.calls))
+        ack_extra = pb.acks[-1]["order"]["extra"]
+        self.assertEqual("bounded_limit_cap", ack_extra["signal_freshness_policy"])
+        self.assertEqual(240.0, ack_extra["signal_freshness_max_age_s"])
+        self.assertLess(ack_extra["signal_freshness_age_s"], 240.0)
+
+    def test_tv_direct_bounded_limit_expires_after_extended_freshness_window(self):
+        signal = self._tv_signal("AAPL", age_sec=241.0)
+        pb = FakeSignalPBClient({"id": "row-aapl", "extra": dict(signal["extra"])})
+        service = FakeSignalService(
+            signal,
+            lifecycle=FakeLifecycle(),
+            pb=pb,
+            config=FakeConfig({"tv_entry_freshness_sec": 120, "tv_entry_limit_freshness_sec": 240}),
+        )
+
+        service._process_signals()
+
+        self.assertEqual([], service.order_placer.calls)
+        patch = pb.updates[-1][2]
+        self.assertEqual("expired", _broker_execution(patch)["status"])
+        self.assertEqual("stale_signal", patch["extra"]["status_reason"])
+        self.assertEqual(240.0, patch["extra"]["signal_freshness_max_age_s"])
+        self.assertEqual("bounded_limit_cap", patch["extra"]["signal_freshness_policy"])
+
+    def test_tv_direct_structural_anchor_keeps_default_freshness_window(self):
+        signal = self._tv_signal("AAPL", age_sec=130.0)
+        signal["entry_price_plan"] = "structural_anchor_limit"
+        signal["extra"]["entry_price_plan"] = "structural_anchor_limit"
+        signal["raw"]["entry_price_plan"] = "structural_anchor_limit"
+        signal["raw"]["extra"] = dict(signal["extra"])
+        pb = FakeSignalPBClient({"id": "row-aapl", "extra": dict(signal["extra"])})
+        service = FakeSignalService(
+            signal,
+            lifecycle=FakeLifecycle(),
+            pb=pb,
+            config=FakeConfig({"tv_entry_freshness_sec": 120, "tv_entry_limit_freshness_sec": 240}),
+        )
+
+        service._process_signals()
+
+        self.assertEqual([], service.order_placer.calls)
+        patch = pb.updates[-1][2]
+        self.assertEqual("expired", _broker_execution(patch)["status"])
+        self.assertEqual("default", patch["extra"]["signal_freshness_policy"])
+        self.assertEqual(120.0, patch["extra"]["signal_freshness_max_age_s"])
+
     def test_tv_direct_stale_signal_is_expired_before_order_submission(self):
         signal = self._tv_signal("AAPL", age_sec=300.0)
         pb = FakeSignalPBClient({"id": "row-aapl", "extra": dict(signal["extra"])})
@@ -3705,6 +3767,38 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         self.assertEqual("entry_guard_quote_snapshot_timeout", patch["extra"]["status_reason"])
         self.assertEqual("snapshot_timeout", patch["extra"]["quote_acquire_error"])
 
+    def test_entry_guard_allows_missing_quote_for_bounded_limit_cap_signal(self):
+        signal = self._signal("AAPL")
+        signal["extra"] = {
+            **signal["extra"],
+            "entry_limit_intent": "bounded_marketable",
+            "submitted_limit_cap_applied": True,
+        }
+        signal["raw"]["extra"] = dict(signal["extra"])
+        pb = FakeSignalPBClient({"id": "row-aapl", "extra": dict(signal["extra"])})
+        ws_client = FakeWsClient(snapshot_result={"ok": False, "error": "snapshot_timeout"})
+        service = FakeSignalService(
+            signal,
+            lifecycle=FakeLifecycle(),
+            pb=pb,
+            quote_book=FakeQuoteBook({}),
+            ws_client=ws_client,
+            config=FakeConfig({"entry_pre_submit_quote_wait_sec": 0}),
+        )
+
+        service._process_signals()
+
+        self.assertEqual(["sig-aapl"], service.signal_router.processed)
+        self.assertEqual(1, len(service.order_placer.calls))
+        self.assertEqual([123], ws_client.subscribed)
+        self.assertEqual("AAPL", ws_client.subscribed_meta[-1]["symbol"])
+        self.assertEqual("entry_pre_submit", ws_client.subscribed_meta[-1]["kind"])
+        self.assertEqual(1, len(ws_client.snapshots))
+        ack_extra = pb.acks[-1]["order"]["extra"]
+        self.assertEqual("unavailable_allowed_by_limit_cap", ack_extra["quote_guard_status"])
+        self.assertTrue(ack_extra["quote_guard_missing_quote_allowed"])
+        self.assertEqual("bounded_limit_cap", ack_extra["quote_guard_missing_quote_allow_reason"])
+
     def test_buying_power_guard_blocks_signal_before_order_submission(self):
         signal = self._signal("AAPL")
         signal["shares"] = 50
@@ -3852,6 +3946,45 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         self.assertEqual("buying_power_snapshot_stale", guard["reason"])
         self.assertFalse(guard["snapshot_fresh"])
         self.assertEqual(180.0, guard["snapshot_max_age_s"])
+
+    def test_buying_power_guard_allows_safe_stale_snapshot_as_warning(self):
+        signal = self._signal("AAPL")
+        signal["shares"] = 50
+        stale_fetched_at = datetime.fromtimestamp(time.time() - 300, timezone.utc).isoformat()
+        pb = FakeSignalStatePBClient({"id": "row-aapl", "extra": {"source": "ibkr_compute"}})
+        service = FakeSignalService(
+            signal,
+            lifecycle=FakeLifecycle(),
+            pb=pb,
+            config=FakeConfig(
+                {
+                    "entry_pre_submit_guard_enabled": "false",
+                    "ibkr_buying_power_max_snapshot_age_sec": 180,
+                    "ibkr_buying_power_stale_safe_enabled": "true",
+                    "ibkr_buying_power_stale_safe_max_age_sec": 1800,
+                    "ibkr_buying_power_stale_safe_min_usd": 50000,
+                }
+            ),
+            account_snapshot={
+                "ok": True,
+                "summary": {"buying_power": 300000.0, "net_liquidation": 300000.0},
+                "buying_power_guard": {"available": True, "state": "ok", "source": "account_summary"},
+                "fetched_at": stale_fetched_at,
+                "source": "account_summary",
+            },
+        )
+
+        service._process_signals()
+
+        self.assertEqual(["sig-aapl"], service.signal_router.processed)
+        self.assertEqual(1, len(service.order_placer.calls))
+        ack_extra = pb.acks[-1]["order"]["extra"]
+        guard = ack_extra["buying_power_guard"]
+        self.assertEqual("warning", guard["state"])
+        self.assertEqual("buying_power_snapshot_stale_allowed_safe", guard["reason"])
+        self.assertTrue(guard["snapshot_stale_allowed"])
+        self.assertEqual("buying_power_snapshot_stale", guard["original_freshness_block_reason"])
+        self.assertEqual(295000.0, ack_extra["buying_power_remaining_after"])
 
     def test_buying_power_guard_blocks_without_initial_baseline_when_snapshot_unavailable(self):
         signal = self._signal("AAPL")
