@@ -74,6 +74,7 @@ TRACEABLE_CANCEL_ORDER_STATUSES = REAL_ACTIVE_ORDER_STATUSES | {
     "PENDINGSUBMIT",
     "PENDING_SUBMIT",
 }
+TERMINAL_DURING_CANCEL_ERRORS = {"order_filled_during_cancel", "order_filled_during_cancel_all"}
 REVERSE_CONFIRM_ATTEMPTS = max(1, int(os.environ.get("IBKR_REVERSE_CONFIRM_ATTEMPTS", "3") or "3"))
 REVERSE_CONFIRM_POLL_SECONDS = max(0.0, float(os.environ.get("IBKR_REVERSE_CONFIRM_POLL_SECONDS", "0.25") or 0.25))
 ADJUST_PRICE_FIELDS_BY_SIDE = {
@@ -116,8 +117,8 @@ class ReverseSignalHandler:
                 if rid in self._processed_ids:
                     continue
 
-                if self._is_cancelled_flat_not_confirmed_tv_close_candidate(r):
-                    result = self._self_heal_cancelled_flat_not_confirmed_close(r)
+                if self._is_cancelled_tv_close_self_heal_candidate(r):
+                    result = self._self_heal_cancelled_tv_close(r)
                     if result:
                         self._processed_ids.add(rid)
                         try:
@@ -181,7 +182,7 @@ class ReverseSignalHandler:
         seen = {str(row.get("id") or "") for row in records}
         for row in cancelled or []:
             rid = str(row.get("id") or "")
-            if rid in seen or not self._is_cancelled_flat_not_confirmed_tv_close_candidate(row):
+            if rid in seen or not self._is_cancelled_tv_close_self_heal_candidate(row):
                 continue
             records.append(dict(row))
             seen.add(rid)
@@ -324,6 +325,37 @@ class ReverseSignalHandler:
             or ""
         ).strip()
         return "order_submission_unconfirmed" in error, order_ids, order_ref
+
+    @classmethod
+    def _cancel_error_code(cls, result: Dict[str, Any]) -> str:
+        if not isinstance(result, dict):
+            return ""
+        confirm = cls._as_dict(result.get("confirm"))
+        return str(result.get("error") or confirm.get("error") or "").strip().lower()
+
+    @classmethod
+    def _is_terminal_during_cancel_result(cls, result: Dict[str, Any]) -> bool:
+        return cls._cancel_error_code(result) in TERMINAL_DURING_CANCEL_ERRORS
+
+    @classmethod
+    def _has_terminal_cancel_conflict_evidence(cls, signal: dict) -> bool:
+        extra = cls._signal_extra(signal)
+        if bool(extra.get("cancel_terminal_during_cancel") or extra.get("terminal_conflict_safe")):
+            return True
+        for item in extra.get("cancel_results") or []:
+            if isinstance(item, dict) and cls._is_terminal_during_cancel_result(item):
+                return True
+        text = " ".join(
+            str(value or "").strip().lower()
+            for value in (
+                signal.get("reason") if isinstance(signal, dict) else "",
+                extra.get("reason"),
+                extra.get("cancel_old_order"),
+                cls._as_dict(extra.get("reentry_blocked")).get("reason"),
+                cls._as_dict(extra.get("reverse_runtime_detail")).get("blocked_reason"),
+            )
+        )
+        return any(token in text for token in TERMINAL_DURING_CANCEL_ERRORS)
 
     @staticmethod
     def _order_status(order: Dict[str, Any]) -> str:
@@ -1307,6 +1339,29 @@ class ReverseSignalHandler:
         cancel_result = self._cancel_old_order_if_present(signal, detail)
         if cancel_result is not None and not cancel_result.get("ok"):
             return cancel_result
+        if detail.get("cancel_terminal_during_cancel"):
+            positions_result = self._get_positions_result()
+            detail["position_snapshot_after_terminal_cancel"] = self._compact_position_snapshot_result(positions_result)
+            if not positions_result.get("ok"):
+                return self._mark_retryable_blocked(
+                    detail,
+                    "position_snapshot_unavailable_after_terminal_cancel",
+                    error=str(positions_result.get("error") or ""),
+                    retry_after_s=positions_result.get("retry_after_s"),
+                    account_data_backoff_reason=positions_result.get("account_data_backoff_reason"),
+                )
+            positions = list(positions_result.get("positions") or [])
+            qty = self._position_quantity(symbol, positions)
+            detail["position_qty_after_terminal_cancel"] = qty
+            if qty == 0:
+                detail["close_old_position"] = "confirmed"
+                detail["wait_flat"] = "confirmed"
+                detail["flat_confirmation"] = {
+                    "confirmed": True,
+                    "position_qty": 0.0,
+                    "source": "broker_positions_after_terminal_cancel",
+                }
+                return self._start_cooldown_and_ready(signal, symbol, detail, "terminal_cancel_flat_ready_reentry")
 
         self._append_state(detail, "close_old_position")
         direction = "long" if qty > 0 else "short"
@@ -1521,13 +1576,28 @@ class ReverseSignalHandler:
                     cancel_errors.append(item)
         detail["cancel_results"] = cancel_results
         if cancel_errors:
-            detail["cancel_old_order"] = "failed"
-            return self._mark_blocked(
-                detail,
-                "cancel_order_failed",
-                failed_order_ids=[item.get("order_id") for item in cancel_errors],
-                errors=[item.get("error") for item in cancel_errors if item.get("error")],
-            )
+            terminal_errors = [item for item in cancel_errors if self._is_terminal_during_cancel_result(item)]
+            hard_errors = [item for item in cancel_errors if item not in terminal_errors]
+            if hard_errors:
+                detail["cancel_old_order"] = "failed"
+                if terminal_errors:
+                    detail["cancel_terminal_during_cancel"] = True
+                    detail["cancel_terminal_order_ids"] = [item.get("order_id") for item in terminal_errors]
+                return self._mark_blocked(
+                    detail,
+                    "cancel_order_failed",
+                    failed_order_ids=[item.get("order_id") for item in hard_errors],
+                    errors=[self._cancel_error_code(item) for item in hard_errors if self._cancel_error_code(item)],
+                )
+            detail["cancel_old_order"] = "terminal_during_cancel"
+            detail["cancel_terminal_during_cancel"] = True
+            detail["cancel_terminal_order_ids"] = [item.get("order_id") for item in terminal_errors]
+            detail["cancel_terminal_errors"] = [
+                self._cancel_error_code(item) for item in terminal_errors if self._cancel_error_code(item)
+            ]
+            runtime_detail = detail.setdefault("reverse_runtime_detail", {})
+            runtime_detail["cancel_terminal_during_cancel"] = True
+            runtime_detail["cancel_terminal_order_ids"] = list(detail["cancel_terminal_order_ids"])
 
         confirmed, confirmation = self._confirm_related_orders_inactive(
             trade_group_id=trade_group_id,
@@ -1538,14 +1608,19 @@ class ReverseSignalHandler:
         detail["cancel_confirmation"] = confirmation
         if not confirmed:
             detail["cancel_old_order"] = "unconfirmed"
+            reason = "cancel_terminal_inactive_not_confirmed" if detail.get("cancel_terminal_during_cancel") else "cancel_not_confirmed"
             return self._mark_retryable_blocked(
                 detail,
-                "cancel_not_confirmed",
+                reason,
                 active_order_ids=confirmation.get("active_order_ids"),
                 confirmation_source=confirmation.get("source"),
+                terminal_order_ids=detail.get("cancel_terminal_order_ids"),
             )
 
         detail["cancel_old_order"] = "confirmed"
+        if detail.get("cancel_terminal_during_cancel"):
+            detail["terminal_conflict_safe"] = True
+            detail.setdefault("reverse_runtime_detail", {})["terminal_conflict_safe"] = True
         if not ready_on_success:
             return {
                 "ok": True,
@@ -1700,13 +1775,16 @@ class ReverseSignalHandler:
     def _is_order_flow_signal(cls, signal: dict) -> bool:
         return any("order_flow" in token for token in cls._source_tokens(signal))
 
-    def _is_cancelled_flat_not_confirmed_tv_close_candidate(self, signal: dict) -> bool:
+    def _is_cancelled_tv_close_self_heal_candidate(self, signal: dict) -> bool:
         if str((signal or {}).get("status") or "").strip().lower() != "cancelled":
             return False
         if str((signal or {}).get("action_type") or "").strip().lower() != "close":
             return False
         if not self._is_tradingview_reverse_signal(signal):
             return False
+        return self._is_cancelled_flat_not_confirmed_tv_close_candidate(signal) or self._has_terminal_cancel_conflict_evidence(signal)
+
+    def _is_cancelled_flat_not_confirmed_tv_close_candidate(self, signal: dict) -> bool:
         extra = self._signal_extra(signal)
         blocked = self._as_dict(extra.get("reentry_blocked"))
         text = " ".join(
@@ -1817,19 +1895,88 @@ class ReverseSignalHandler:
                 return True
         return False
 
-    def _self_heal_cancelled_flat_not_confirmed_close(self, signal: dict) -> Optional[Dict[str, Any]]:
+    def _self_heal_cancelled_tv_close(self, signal: dict) -> Optional[Dict[str, Any]]:
         detail = self._base_reverse_detail(signal, "close")
         detail["historical_self_heal"] = {
             "enabled": True,
             "previous_status": str(signal.get("status") or ""),
             "previous_reason": str(signal.get("reason") or ""),
-            "source": "cancelled_flat_not_confirmed_tv_close",
+            "source": (
+                "cancelled_terminal_during_cancel_tv_close"
+                if self._has_terminal_cancel_conflict_evidence(signal)
+                else "cancelled_flat_not_confirmed_tv_close"
+            ),
         }
+        if self._has_terminal_cancel_conflict_evidence(signal):
+            return self._self_heal_terminal_cancel_close(
+                signal,
+                detail,
+                "historical_terminal_cancel_during_cancel",
+                pending_on_unconfirmed=False,
+            )
         return self._self_heal_close_by_flat(
             signal,
             detail,
             "historical_flat_not_confirmed",
             pending_on_unconfirmed=False,
+        )
+
+    def _self_heal_terminal_cancel_close(
+        self,
+        signal: dict,
+        detail: Dict[str, Any],
+        reason: str,
+        *,
+        pending_on_unconfirmed: bool = True,
+    ) -> Optional[Dict[str, Any]]:
+        extra = self._signal_extra(signal)
+        for key in ("cancel_results", "cancel_target", "cancel_confirmation", "cancel_terminal_order_ids"):
+            if key in extra and key not in detail:
+                detail[key] = copy.deepcopy(extra.get(key))
+        detail["cancel_terminal_during_cancel"] = True
+        detail["async_self_heal"] = {
+            "enabled": True,
+            "action": "close",
+            "confirmation": "terminal_cancel_inactive_and_flat",
+            "reason": reason,
+            "duplicate_submit_blocked": True,
+        }
+        runtime_environment = normalize_broker_mode(
+            self._signal_value(signal, "broker_mode") or self._signal_value(signal, "environment"),
+            self.environment,
+        )
+        trade_group_id, order_ids = self._cancel_self_heal_targets(signal)
+        pb_orders = self._fetch_related_orders(
+            trade_group_id=trade_group_id,
+            order_ids=order_ids,
+            environment=runtime_environment,
+        )
+        confirmed, confirmation = self._confirm_related_orders_inactive(
+            trade_group_id=trade_group_id,
+            order_ids=order_ids,
+            environment=runtime_environment,
+            pb_orders=pb_orders,
+        )
+        detail["cancel_confirmation"] = confirmation
+        if not confirmed:
+            detail["cancel_old_order"] = "unconfirmed"
+            if not pending_on_unconfirmed:
+                return None
+            return self._mark_retryable_blocked(
+                detail,
+                "cancel_terminal_inactive_not_confirmed",
+                active_order_ids=confirmation.get("active_order_ids"),
+                confirmation_source=confirmation.get("source"),
+            )
+
+        detail["cancel_old_order"] = "confirmed"
+        detail["terminal_conflict_safe"] = True
+        detail.setdefault("reverse_runtime_detail", {})["terminal_conflict_safe"] = True
+        return self._self_heal_close_by_flat(
+            signal,
+            detail,
+            str(reason or "terminal_cancel_flat_not_confirmed"),
+            pending_on_unconfirmed=pending_on_unconfirmed,
         )
 
     def _self_heal_close_by_flat(

@@ -39,6 +39,72 @@ class OrderDailyStatsTest(unittest.TestCase):
         self.assertEqual(stats["realized_net_pnl"], 97.67)
         self.assertEqual(stats["total"], 97.67)
 
+    def test_actual_realized_pnl_links_self_grouped_close_by_parent_entry(self):
+        rows = [
+            {
+                "id": "entry-lite",
+                "unique_id": "entry_BATS_LITE_short_20260610_1014_2_mr_sdUpper",
+                "order_id": "11316",
+                "broker_order_id": "11316",
+                "trade_group_id": "BATS_LITE_short_20260610_1014_2_mr_sdUpper",
+                "entry_order_unique_id": "entry_BATS_LITE_short_20260610_1014_2_mr_sdUpper",
+                "role": "entry",
+                "status": "Filled",
+                "symbol": "LITE",
+                "position_side": "short",
+            },
+            {
+                "id": "close-lite",
+                "unique_id": "close_LITE_20260610_111652",
+                "order_id": "11319",
+                "broker_order_id": "11319",
+                "trade_group_id": "close_LITE_20260610_111652",
+                "entry_order_unique_id": "close_LITE_20260610_111652",
+                "parent_order_unique_id": "entry_BATS_LITE_short_20260610_1014_2_mr_sdUpper",
+                "role": "close",
+                "status": "Filled",
+                "symbol": "LITE",
+                "position_side": "short",
+                "bar_time_ms": 1000,
+            },
+        ]
+        fills = [
+            {
+                "exec_id": "entry-lite-fill",
+                "order_id": "11316",
+                "symbol": "LITE",
+                "side": "sell",
+                "shares": 5,
+                "price": 871.74,
+                "commission": 1.090779,
+                "commission_known": True,
+                "currency": "USD",
+            },
+            {
+                "exec_id": "close-lite-fill",
+                "order_id": "11319",
+                "symbol": "LITE",
+                "side": "buy",
+                "shares": 5,
+                "price": 842.15,
+                "commission": 1.000015,
+                "commission_known": True,
+                "currency": "USD",
+                "realized_pnl": 145.859206,
+            },
+        ]
+
+        stats = build_realized_pnl_stats(rows, fills, start_ms=0, end_ms=2000)
+
+        self.assertEqual(stats["exit_count"], 1)
+        self.assertEqual(stats["missing_count"], 0)
+        self.assertEqual(stats["entry_missing_count"], 0)
+        self.assertEqual(stats["win_count"], 1)
+        self.assertEqual(stats["loss_count"], 0)
+        self.assertEqual(stats["realized_gross_pnl"], 147.95)
+        self.assertEqual(stats["commission"], 2.09)
+        self.assertEqual(stats["realized_net_pnl"], 145.86)
+
     def test_actual_realized_pnl_skips_when_commission_missing(self):
         rows = [
             {"id": "entry-1", "order_id": "1001", "trade_group_id": "tg-1", "role": "entry", "status": "Filled", "position_side": "short"},

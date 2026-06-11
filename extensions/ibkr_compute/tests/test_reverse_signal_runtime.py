@@ -191,6 +191,21 @@ class _FakeOrderModifier:
         }
 
 
+class _TerminalCancelOrderModifier(_FakeOrderModifier):
+    def __init__(self, pb, *, broker=None, results=None):
+        super().__init__(pb, broker=broker)
+        self.results = {str(key): copy.deepcopy(value) for key, value in (results or {}).items()}
+
+    def cancel_order(self, order_id, *args, **kwargs):
+        oid = str(order_id)
+        self.cancelled.append(oid)
+        result = copy.deepcopy(self.results.get(oid, {"ok": True, "order_id": oid, "status": "CANCELLED"}))
+        result.setdefault("order_id", oid)
+        if result.get("ok"):
+            self.pb.set_order_status(oid, str(result.get("status") or "Canceled"))
+        return result
+
+
 class _FakeOrderLifecycle:
     def __init__(self, position_snapshots=None, position_results=None):
         self.position_snapshots = [copy.deepcopy(item) for item in (position_snapshots or [])]
@@ -354,6 +369,177 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
         self.assertTrue(extra["auto_reentry_disabled"])
         self.assertEqual("tv_exit_confirmed", pb.acks[0]["detail"]["result_status"])
         self.assertEqual("tv_exit_confirmed_no_reentry", pb.acks[0]["reason"])
+
+    def test_tv_close_treats_filled_during_cancel_as_safe_when_flat_and_orders_inactive(self):
+        reverse = {
+            "id": "rev-terminal-flat",
+            "symbol": "AAPL",
+            "conid": 123,
+            "source": "tradingview",
+            "action_type": "close",
+            "status": "pending",
+            "environment": "live",
+            "priority": 10,
+            "bar_time_ms": 1,
+            "extra": {
+                "trade_group_id": "grp-1",
+                "origin_signal_id": "sig-old",
+                "new_direction": "short",
+            },
+        }
+        orders = [
+            {"id": "entry", "broker_order_id": "1001", "order_id": "1001", "trade_group_id": "grp-1", "role": "entry", "status": "Submitted", "environment": "live"},
+            {"id": "tp", "broker_order_id": "1002", "order_id": "1002", "trade_group_id": "grp-1", "role": "take_profit", "status": "Submitted", "environment": "live"},
+            {"id": "sl", "broker_order_id": "1003", "order_id": "1003", "trade_group_id": "grp-1", "role": "stop_loss", "status": "Submitted", "environment": "live"},
+        ]
+        signals = [
+            {
+                "id": "sig-row-old",
+                "signal_id": "sig-old",
+                "environment": "live",
+                "symbol": "AAPL",
+                "direction": "long",
+                "status": "protected_active",
+                "extra": {"execution_by_mode": {"live": {"status": "protected_active"}}},
+            }
+        ]
+        pb = _FakePB(reverse_rows=[reverse], order_rows=orders, signal_rows=signals)
+        modifier = _TerminalCancelOrderModifier(
+            pb,
+            broker=_FakeBroker(open_orders=[]),
+            results={
+                "1001": {"ok": False, "error": "order_filled_during_cancel", "order": {"orderId": "1001", "status": "Filled"}},
+                "1002": {"ok": True, "status": "CANCELLED", "order": {"orderId": "1002", "status": "Cancelled"}},
+                "1003": {"ok": False, "error": "order_filled_during_cancel", "order": {"orderId": "1003", "status": "Filled"}},
+            },
+        )
+        lifecycle = _FakeOrderLifecycle([[{"ticker": "AAPL", "position": 0}]])
+        placer = _FakeOrderPlacer()
+
+        ReverseSignalHandler(
+            pb,
+            order_placer=placer,
+            order_modifier=modifier,
+            order_lifecycle=lifecycle,
+            environment="live",
+        ).check_and_process()
+
+        updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        extra = updated["extra"]
+        self.assertEqual("confirmed", updated["status"])
+        self.assertEqual(["1001", "1002", "1003"], modifier.cancelled)
+        self.assertEqual([], placer.calls)
+        self.assertTrue(extra["cancel_terminal_during_cancel"])
+        self.assertTrue(extra["terminal_conflict_safe"])
+        self.assertEqual("confirmed", extra["cancel_old_order"])
+        self.assertEqual("skipped_flat", extra["close_old_position"])
+        self.assertEqual("confirmed", extra["wait_flat"])
+        self.assertFalse(extra["blocked"])
+        self.assertEqual("tv_exit_confirmed_no_reentry", pb.acks[0]["reason"])
+
+    def test_tv_close_terminal_cancel_conflict_stays_pending_when_order_still_open(self):
+        reverse = {
+            "id": "rev-terminal-pending",
+            "symbol": "AAPL",
+            "conid": 123,
+            "source": "tradingview",
+            "action_type": "close",
+            "status": "pending",
+            "environment": "live",
+            "priority": 10,
+            "bar_time_ms": 1,
+            "extra": {"trade_group_id": "grp-1", "origin_signal_id": "sig-old"},
+        }
+        orders = [
+            {"id": "entry", "broker_order_id": "1001", "order_id": "1001", "trade_group_id": "grp-1", "role": "entry", "status": "Submitted", "environment": "live"},
+        ]
+        signals = [
+            {
+                "id": "sig-row-old",
+                "signal_id": "sig-old",
+                "environment": "live",
+                "symbol": "AAPL",
+                "status": "protected_active",
+                "extra": {"execution_by_mode": {"live": {"status": "protected_active"}}},
+            }
+        ]
+        pb = _FakePB(reverse_rows=[reverse], order_rows=orders, signal_rows=signals)
+        modifier = _TerminalCancelOrderModifier(
+            pb,
+            broker=_FakeBroker(open_orders=[{"orderId": "1001", "status": "Submitted", "orderRef": "grp-1"}]),
+            results={"1001": {"ok": False, "error": "order_filled_during_cancel", "order": {"orderId": "1001", "status": "Filled"}}},
+        )
+        lifecycle = _FakeOrderLifecycle([[{"ticker": "AAPL", "position": 0}]])
+        placer = _FakeOrderPlacer()
+
+        ReverseSignalHandler(
+            pb,
+            order_placer=placer,
+            order_modifier=modifier,
+            order_lifecycle=lifecycle,
+            environment="live",
+        ).check_and_process()
+
+        updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        extra = updated["extra"]
+        self.assertEqual("pending", updated["status"])
+        self.assertIn("cancel_terminal_inactive_not_confirmed", updated["reason"])
+        self.assertEqual("pending_retry", extra["result_status"])
+        self.assertTrue(extra["cancel_terminal_during_cancel"])
+        self.assertFalse(extra.get("terminal_conflict_safe", False))
+        self.assertEqual([], placer.calls)
+        self.assertEqual("pending", pb.acks[0]["status"])
+
+    def test_true_cancel_failure_still_blocks_tv_close(self):
+        reverse = {
+            "id": "rev-cancel-rejected",
+            "symbol": "AAPL",
+            "conid": 123,
+            "source": "tradingview",
+            "action_type": "close",
+            "status": "pending",
+            "environment": "live",
+            "priority": 10,
+            "bar_time_ms": 1,
+            "extra": {"trade_group_id": "grp-1", "origin_signal_id": "sig-old"},
+        }
+        orders = [
+            {"id": "entry", "broker_order_id": "1001", "order_id": "1001", "trade_group_id": "grp-1", "role": "entry", "status": "Submitted", "environment": "live"},
+        ]
+        signals = [
+            {
+                "id": "sig-row-old",
+                "signal_id": "sig-old",
+                "environment": "live",
+                "symbol": "AAPL",
+                "status": "protected_active",
+                "extra": {"execution_by_mode": {"live": {"status": "protected_active"}}},
+            }
+        ]
+        pb = _FakePB(reverse_rows=[reverse], order_rows=orders, signal_rows=signals)
+        modifier = _TerminalCancelOrderModifier(
+            pb,
+            results={"1001": {"ok": False, "error": "cancel_rejected", "order": {"orderId": "1001", "status": "Submitted"}}},
+        )
+        lifecycle = _FakeOrderLifecycle([[{"ticker": "AAPL", "position": 0}]])
+        placer = _FakeOrderPlacer()
+
+        ReverseSignalHandler(
+            pb,
+            order_placer=placer,
+            order_modifier=modifier,
+            order_lifecycle=lifecycle,
+            environment="live",
+        ).check_and_process()
+
+        updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        extra = updated["extra"]
+        self.assertEqual("cancelled", updated["status"])
+        self.assertIn("cancel_order_failed", updated["reason"])
+        self.assertEqual("reentry_blocked", extra["result_status"])
+        self.assertEqual("cancel_order_failed", extra["reentry_blocked"]["reason"])
+        self.assertEqual([], placer.calls)
+        self.assertEqual("cancelled", pb.acks[0]["status"])
 
     def test_cancel_without_traceable_order_expires_without_gateway(self):
         reverse = {
@@ -1753,6 +1939,53 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
         self.assertEqual("confirmed", extra["wait_flat"])
         self.assertTrue(extra["flat_confirmation"]["confirmed"])
         self.assertTrue(extra["historical_self_heal"]["enabled"])
+        self.assertEqual("confirmed", pb.acks[0]["status"])
+
+    def test_historical_cancelled_terminal_cancel_tv_close_self_heals_when_safe(self):
+        reverse = {
+            "id": "rev-historical-terminal",
+            "symbol": "AAPL",
+            "source": "tradingview",
+            "action_type": "close",
+            "status": "cancelled",
+            "reason": "reverse blocked: cancel_order_failed",
+            "environment": "live",
+            "priority": 10,
+            "bar_time_ms": 1,
+            "extra": {
+                "cancel_old_order": "failed",
+                "cancel_target": {"trade_group_id": "grp-1", "order_ids": ["1001", "1002"]},
+                "cancel_results": [
+                    {"order_id": "1001", "ok": False, "error": "order_filled_during_cancel"},
+                    {"order_id": "1002", "ok": True, "status": "CANCELLED"},
+                ],
+                "reentry_blocked": {"reason": "cancel_order_failed"},
+            },
+        }
+        orders = [
+            {"id": "entry", "broker_order_id": "1001", "order_id": "1001", "trade_group_id": "grp-1", "role": "entry", "status": "Filled", "environment": "live"},
+            {"id": "tp", "broker_order_id": "1002", "order_id": "1002", "trade_group_id": "grp-1", "role": "take_profit", "status": "Cancelled", "environment": "live"},
+        ]
+        pb = _FakePB(reverse_rows=[reverse], order_rows=orders)
+        modifier = _FakeOrderModifier(pb, broker=_FakeBroker(open_orders=[]))
+        lifecycle = _FakeOrderLifecycle([[{"ticker": "AAPL", "position": 0}]])
+
+        ReverseSignalHandler(
+            pb,
+            order_modifier=modifier,
+            order_lifecycle=lifecycle,
+            environment="live",
+        ).check_and_process()
+
+        updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        extra = updated["extra"]
+        self.assertEqual("confirmed", updated["status"])
+        self.assertEqual([], modifier.cancelled)
+        self.assertTrue(extra["historical_self_heal"]["enabled"])
+        self.assertEqual("cancelled_terminal_during_cancel_tv_close", extra["historical_self_heal"]["source"])
+        self.assertTrue(extra["terminal_conflict_safe"])
+        self.assertEqual("confirmed", extra["cancel_old_order"])
+        self.assertEqual("confirmed", extra["wait_flat"])
         self.assertEqual("confirmed", pb.acks[0]["status"])
 
     def test_non_tv_pending_execution_action_expires_without_broker_actions(self):

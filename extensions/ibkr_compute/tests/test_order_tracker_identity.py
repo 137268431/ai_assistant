@@ -429,6 +429,64 @@ class OrderTrackerIdentityTest(unittest.TestCase):
         self.assertEqual("DELL_20260602_1000_mr_U", upsert["signal_id"])
         self.assertEqual("DELL_short_20260602_101500", upsert["extra"]["linked_trade_group_id"])
 
+    def test_existing_parent_linked_close_repairs_self_group_fields(self):
+        pb_client = FakePBClient(
+            rows=[
+                {
+                    "id": "order-close",
+                    "unique_id": "close_LITE_20260610_111652",
+                    "symbol": "LITE",
+                    "environment": "paper",
+                    "role": "close",
+                    "status": "Submitted",
+                    "broker_order_id": "11319",
+                    "trade_group_id": "close_LITE_20260610_111652",
+                    "entry_order_unique_id": "close_LITE_20260610_111652",
+                    "parent_order_unique_id": "entry_BATS_LITE_short_20260610_1014_2_mr_sdUpper",
+                    "signal_id": "",
+                },
+                {
+                    "id": "order-entry",
+                    "unique_id": "entry_BATS_LITE_short_20260610_1014_2_mr_sdUpper",
+                    "symbol": "LITE",
+                    "environment": "paper",
+                    "role": "entry",
+                    "status": "Filled",
+                    "broker_order_id": "11316",
+                    "trade_group_id": "BATS_LITE_short_20260610_1014_2_mr_sdUpper",
+                    "entry_order_unique_id": "entry_BATS_LITE_short_20260610_1014_2_mr_sdUpper",
+                    "signal_id": "LITE_20260610_1014_mr_U",
+                    "direction": "short",
+                    "quantity": 5,
+                    "filled_qty": 5,
+                },
+            ]
+        )
+        tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="paper")
+
+        tracker._sync_to_pb(
+            {
+                "orderId": "11319",
+                "ticker": "LITE",
+                "side": "BUY",
+                "orderType": "LMT",
+                "totalSize": 5,
+                "filledQuantity": 5,
+                "avgPrice": 842.15,
+                "price": 842.15,
+                "status": "Filled",
+                "cOID": "close_LITE_20260610_111652",
+            }
+        )
+
+        self.assertEqual(1, len(pb_client.upserts))
+        upsert = pb_client.upserts[0]
+        self.assertEqual("close", upsert["role"])
+        self.assertEqual("BATS_LITE_short_20260610_1014_2_mr_sdUpper", upsert["trade_group_id"])
+        self.assertEqual("entry_BATS_LITE_short_20260610_1014_2_mr_sdUpper", upsert["entry_order_unique_id"])
+        self.assertEqual("entry_BATS_LITE_short_20260610_1014_2_mr_sdUpper", upsert["parent_order_unique_id"])
+        self.assertEqual("LITE_20260610_1014_mr_U", upsert["signal_id"])
+
     def test_sync_exit_order_keeps_position_side_from_chain_identity(self):
         pb_client = FakePBClient()
         tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="live")

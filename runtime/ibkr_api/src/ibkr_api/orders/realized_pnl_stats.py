@@ -15,6 +15,7 @@ CLOSE_ROLES = {"close", "manual_close", "market_close", "close_order", "reverse_
 TAKE_PROFIT_ORDER_TYPES = {"takeprofit", "takeprofitorder", "take_profit", "tp"}
 STOP_LOSS_ORDER_TYPES = {"stoploss", "stoplossorder", "stop_loss", "sl", "stop"}
 CLOSE_ORDER_TYPES = {"mkt", "market", "marketclose", "close", "market_close"}
+CLOSE_REFERENCE_PREFIXES = ("close_", "manual_close_", "market_close_")
 EPSILON = 0.0000001
 
 
@@ -143,6 +144,125 @@ def _order_group_key(row: dict[str, Any], index: int) -> str:
         if value:
             return value
     return to_text(_row_value(row, "id") or _row_value(row, "unique_id")) or f"row-{index}"
+
+
+def _row_identity(row: dict[str, Any]) -> str:
+    return to_text(_row_value(row, "id") or _row_value(row, "unique_id") or id(row))
+
+
+def _append_unique(values: list[str], value: Any) -> None:
+    text = to_text(value)
+    if text and text not in values:
+        values.append(text)
+
+
+def _looks_like_close_reference(value: Any) -> bool:
+    return to_text(value).lower().startswith(CLOSE_REFERENCE_PREFIXES)
+
+
+def _is_close_self_reference(row: dict[str, Any], value: Any) -> bool:
+    text = to_text(value)
+    if not text or _lifecycle_role(row) != "close":
+        return False
+    unique_id = to_text(_row_value(row, "unique_id") or _row_value(row, "coid"))
+    return text == unique_id or _looks_like_close_reference(text)
+
+
+def _entry_aliases(row: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for field in (
+        "unique_id",
+        "entry_order_unique_id",
+        "trade_group_id",
+        "linked_trade_group_id",
+        "signal_id",
+        "broker_order_id",
+        "order_id",
+        "ib_order_id",
+        "orderId",
+    ):
+        _append_unique(values, _row_value(row, field))
+    return values
+
+
+def _build_entry_index(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    grouped_entries: dict[str, list[dict[str, Any]]] = {}
+    group_aliases: dict[str, list[str]] = {}
+    group_seen: dict[str, set[str]] = {}
+
+    for index, row in enumerate(rows):
+        if not _is_entry(row):
+            continue
+        group_key = (
+            to_text(_row_value(row, "trade_group_id"))
+            or to_text(_row_value(row, "entry_order_unique_id"))
+            or to_text(_row_value(row, "unique_id"))
+            or f"entry-{index}"
+        )
+        row_id = _row_identity(row)
+        if row_id not in group_seen.setdefault(group_key, set()):
+            group_seen[group_key].add(row_id)
+            grouped_entries.setdefault(group_key, []).append(row)
+        aliases = group_aliases.setdefault(group_key, [])
+        _append_unique(aliases, group_key)
+        for alias in _entry_aliases(row):
+            _append_unique(aliases, alias)
+
+    index: dict[str, list[dict[str, Any]]] = {}
+    alias_seen: dict[str, set[str]] = {}
+    for group_key, entries in grouped_entries.items():
+        for alias in group_aliases.get(group_key, []):
+            bucket = index.setdefault(alias, [])
+            seen = alias_seen.setdefault(alias, set())
+            for entry in entries:
+                row_id = _row_identity(entry)
+                if row_id in seen:
+                    continue
+                seen.add(row_id)
+                bucket.append(entry)
+    return index
+
+
+def _exit_entry_aliases(row: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    role = _lifecycle_role(row)
+    fields = (
+        (
+            "parent_order_unique_id",
+            "linked_entry_order_unique_id",
+            "entry_order_unique_id",
+            "linked_trade_group_id",
+            "trade_group_id",
+            "signal_id",
+            "parent_order_id",
+            "parentId",
+        )
+        if role == "close"
+        else (
+            "entry_order_unique_id",
+            "parent_order_unique_id",
+            "linked_entry_order_unique_id",
+            "trade_group_id",
+            "linked_trade_group_id",
+            "signal_id",
+            "parent_order_id",
+            "parentId",
+        )
+    )
+    for field in fields:
+        value = _row_value(row, field)
+        if _is_close_self_reference(row, value):
+            continue
+        _append_unique(values, value)
+    return values
+
+
+def _entry_orders_for_exit(row: dict[str, Any], entry_index: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    for alias in _exit_entry_aliases(row):
+        entries = entry_index.get(alias)
+        if entries:
+            return list(entries)
+    return []
 
 
 def _order_ids(row: dict[str, Any] | None) -> list[str]:
@@ -338,115 +458,113 @@ def build_realized_pnl_stats(
     stats = empty_realized_pnl_stats()
     order_rows = [dict(row) for row in (orders or []) if isinstance(row, dict)]
     fill_index = _build_fill_index(fills)
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    for index, row in enumerate(order_rows):
-        grouped.setdefault(_order_group_key(row, index), []).append(row)
+    entry_index = _build_entry_index(order_rows)
 
-    for group_orders in grouped.values():
-        entry_orders = [row for row in group_orders if _is_entry(row)]
-        exit_orders = [row for row in group_orders if _is_exit(row)]
-        for exit_order in exit_orders:
-            order_ms = _order_time_ms(exit_order)
-            if int(start_ms or 0) > 0 and order_ms > 0 and order_ms < int(start_ms):
-                continue
-            if int(end_ms or 0) > 0 and order_ms > 0 and order_ms >= int(end_ms):
-                continue
+    for exit_order in order_rows:
+        if not _is_exit(exit_order):
+            continue
+        order_ms = _order_time_ms(exit_order)
+        if int(start_ms or 0) > 0 and order_ms > 0 and order_ms < int(start_ms):
+            continue
+        if int(end_ms or 0) > 0 and order_ms > 0 and order_ms >= int(end_ms):
+            continue
 
-            primary_entry = entry_orders[0] if entry_orders else None
-            estimated = _stored_or_computed_estimated_pnl(exit_order, primary_entry)
-            if estimated is not None:
-                stats["estimated_total"] += estimated
-                stats["estimated_exit_count"] += 1
-            else:
-                stats["estimated_missing_count"] += 1
+        entry_orders = _entry_orders_for_exit(exit_order, entry_index)
+        primary_entry = entry_orders[0] if entry_orders else None
+        estimated = _stored_or_computed_estimated_pnl(exit_order, primary_entry)
+        if estimated is not None:
+            stats["estimated_total"] += estimated
+            stats["estimated_exit_count"] += 1
+        else:
+            stats["estimated_missing_count"] += 1
 
-            if not entry_orders:
-                stats["entry_missing_count"] += 1
-                stats["missing_count"] += 1
-                continue
+        if not entry_orders:
+            stats["entry_missing_count"] += 1
+            stats["missing_count"] += 1
+            continue
 
-            entry_fills = _fills_for_orders(fill_index, entry_orders)
-            exit_fills = _fills_for_orders(fill_index, [exit_order])
-            if not entry_fills or not exit_fills:
-                stats["fill_missing_count"] += 1
-                stats["missing_count"] += 1
-                continue
+        entry_fills = _fills_for_orders(fill_index, entry_orders)
+        exit_fills = _fills_for_orders(fill_index, [exit_order])
+        if not entry_fills or not exit_fills:
+            stats["fill_missing_count"] += 1
+            stats["missing_count"] += 1
+            continue
 
-            if any(_fill_shares(fill) <= 0 or _fill_price(fill) <= 0 for fill in [*entry_fills, *exit_fills]):
-                stats["fill_missing_count"] += 1
-                stats["missing_count"] += 1
-                continue
+        if any(_fill_shares(fill) <= 0 or _fill_price(fill) <= 0 for fill in [*entry_fills, *exit_fills]):
+            stats["fill_missing_count"] += 1
+            stats["missing_count"] += 1
+            continue
 
-            if not all(_commission_known(fill) for fill in [*entry_fills, *exit_fills]):
-                stats["commission_missing_count"] += 1
-                stats["missing_count"] += 1
-                continue
+        if not all(_commission_known(fill) for fill in [*entry_fills, *exit_fills]):
+            stats["commission_missing_count"] += 1
+            stats["missing_count"] += 1
+            continue
 
-            currencies = {_fill_currency(fill) for fill in [*entry_fills, *exit_fills] if _fill_currency(fill)}
-            if len(currencies) > 1:
-                stats["currency_mismatch_count"] += 1
-                stats["missing_count"] += 1
-                continue
+        currencies = {_fill_currency(fill) for fill in [*entry_fills, *exit_fills] if _fill_currency(fill)}
+        if len(currencies) > 1:
+            stats["currency_mismatch_count"] += 1
+            stats["missing_count"] += 1
+            continue
 
-            multipliers: list[float] = []
-            unsupported = False
-            for fill in [*entry_fills, *exit_fills]:
-                multiplier, supported = _fill_multiplier(fill)
-                if not supported:
-                    unsupported = True
-                    break
-                multipliers.append(multiplier)
-            if unsupported or not multipliers:
-                stats["unsupported_asset_count"] += 1
-                stats["missing_count"] += 1
-                continue
-            multiplier = multipliers[0]
+        multipliers: list[float] = []
+        unsupported = False
+        for fill in [*entry_fills, *exit_fills]:
+            multiplier, supported = _fill_multiplier(fill)
+            if not supported:
+                unsupported = True
+                break
+            multipliers.append(multiplier)
+        if unsupported or not multipliers:
+            stats["unsupported_asset_count"] += 1
+            stats["missing_count"] += 1
+            continue
+        multiplier = multipliers[0]
 
-            trade_side = _trade_side(entry_orders, exit_fills, entry_fills)
-            if trade_side not in {"long", "short"}:
-                stats["fill_missing_count"] += 1
-                stats["missing_count"] += 1
-                continue
+        trade_side = _trade_side(entry_orders, exit_fills, entry_fills)
+        if trade_side not in {"long", "short"}:
+            stats["fill_missing_count"] += 1
+            stats["missing_count"] += 1
+            continue
 
-            entry_qty = sum(_fill_shares(fill) for fill in entry_fills)
-            exit_qty = sum(_fill_shares(fill) for fill in exit_fills)
-            if entry_qty <= 0 or exit_qty <= 0:
-                stats["fill_missing_count"] += 1
-                stats["missing_count"] += 1
-                continue
+        entry_qty = sum(_fill_shares(fill) for fill in entry_fills)
+        exit_qty = sum(_fill_shares(fill) for fill in exit_fills)
+        if entry_qty <= 0 or exit_qty <= 0:
+            stats["fill_missing_count"] += 1
+            stats["missing_count"] += 1
+            continue
 
-            entry_value = sum(_fill_shares(fill) * _fill_price(fill) * multiplier for fill in entry_fills)
-            exit_value = sum(_fill_shares(fill) * _fill_price(fill) * multiplier for fill in exit_fills)
-            entry_value_for_exit = (entry_value / entry_qty) * exit_qty
-            gross_pnl = entry_value_for_exit - exit_value if trade_side == "short" else exit_value - entry_value_for_exit
-            entry_commission = sum(_fill_commission(fill) for fill in entry_fills) * min(exit_qty / entry_qty, 1.0)
-            exit_commission = sum(_fill_commission(fill) for fill in exit_fills)
-            commission = entry_commission + exit_commission
-            net_pnl = gross_pnl - commission
+        entry_value = sum(_fill_shares(fill) * _fill_price(fill) * multiplier for fill in entry_fills)
+        exit_value = sum(_fill_shares(fill) * _fill_price(fill) * multiplier for fill in exit_fills)
+        entry_value_for_exit = (entry_value / entry_qty) * exit_qty
+        gross_pnl = entry_value_for_exit - exit_value if trade_side == "short" else exit_value - entry_value_for_exit
+        entry_commission = sum(_fill_commission(fill) for fill in entry_fills) * min(exit_qty / entry_qty, 1.0)
+        exit_commission = sum(_fill_commission(fill) for fill in exit_fills)
+        commission = entry_commission + exit_commission
+        net_pnl = gross_pnl - commission
 
-            ibkr_realized = sum(
-                _fill_number(fill, "realized_pnl", "realizedPNL", "realizedPnl")
-                for fill in exit_fills
-                if _fill_number(fill, "realized_pnl", "realizedPNL", "realizedPnl") != 0
-            )
-            if ibkr_realized and abs(ibkr_realized - net_pnl) > max(0.05, abs(net_pnl) * 0.005):
-                stats["ibkr_realized_pnl_mismatch_count"] += 1
+        ibkr_realized = sum(
+            _fill_number(fill, "realized_pnl", "realizedPNL", "realizedPnl")
+            for fill in exit_fills
+            if _fill_number(fill, "realized_pnl", "realizedPNL", "realizedPnl") != 0
+        )
+        if ibkr_realized and abs(ibkr_realized - net_pnl) > max(0.05, abs(net_pnl) * 0.005):
+            stats["ibkr_realized_pnl_mismatch_count"] += 1
 
-            stats["exit_count"] += 1
-            stats["realized_gross_pnl"] += gross_pnl
-            stats["realized_net_pnl"] += net_pnl
-            stats["commission"] += commission
-            stats["entry_commission"] += entry_commission
-            stats["exit_commission"] += exit_commission
-            stats["commission_fill_count"] += len(entry_fills) + len(exit_fills)
-            if net_pnl > EPSILON:
-                stats["win_count"] += 1
-                stats["profit_amount"] += net_pnl
-            elif net_pnl < -EPSILON:
-                stats["loss_count"] += 1
-                stats["loss_amount"] += net_pnl
-            else:
-                stats["flat_count"] += 1
+        stats["exit_count"] += 1
+        stats["realized_gross_pnl"] += gross_pnl
+        stats["realized_net_pnl"] += net_pnl
+        stats["commission"] += commission
+        stats["entry_commission"] += entry_commission
+        stats["exit_commission"] += exit_commission
+        stats["commission_fill_count"] += len(entry_fills) + len(exit_fills)
+        if net_pnl > EPSILON:
+            stats["win_count"] += 1
+            stats["profit_amount"] += net_pnl
+        elif net_pnl < -EPSILON:
+            stats["loss_count"] += 1
+            stats["loss_amount"] += net_pnl
+        else:
+            stats["flat_count"] += 1
 
     for key in (
         "realized_net_pnl",

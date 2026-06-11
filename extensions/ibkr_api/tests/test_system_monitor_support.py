@@ -1423,6 +1423,46 @@ class SystemMonitorSupportTest(unittest.TestCase):
         self.assertEqual(summary["actions"]["tv_failed_count"], 0)
         self.assertEqual(summary["actions"]["tv_failed_raw_count"], 0)
 
+    def test_tv_flow_safe_terminal_cancel_conflict_is_not_execution_failure(self):
+        pb = _FakePocketBase(
+            {
+                "tv_webhook_events": [],
+                "ibkr_signals": [],
+                "ibkr_reverse_signals": [
+                    {
+                        "id": "rev_terminal_safe",
+                        "symbol": "HUBS",
+                        "status": "cancelled",
+                        "source": "tradingview",
+                        "environment": "paper",
+                        "action_type": "close",
+                        "reason": "reverse blocked: cancel_order_failed",
+                        "created": "2026-06-02 13:55:00Z",
+                        "updated": "2026-06-02 13:56:00Z",
+                        "extra": {
+                            "result_status": "reentry_blocked",
+                            "cancel_terminal_during_cancel": True,
+                            "terminal_conflict_safe": True,
+                            "reentry_blocked": {"reason": "cancel_order_failed"},
+                        },
+                    }
+                ],
+            }
+        )
+
+        summary = build_tv_flow_monitor_summary(
+            pb,
+            data_environment="live",
+            runtime_environment="paper",
+            config_map={"tv_flow_failed_lookback_min": "120", "eod_close_time": "15:55"},
+            now_ms=_utc_ms(2026, 6, 2, 14, 0),
+        )
+
+        self.assertEqual(summary["status"], "ok")
+        self.assertNotIn("tv_flow_execution_action_failed", {item["code"] for item in summary["flags"]})
+        self.assertEqual(summary["actions"]["tv_failed_count"], 0)
+        self.assertEqual(summary["actions"]["tv_failed_raw_count"], 0)
+
     def test_tv_flow_async_reconcile_states_are_not_execution_failures(self):
         pb = _FakePocketBase(
             {

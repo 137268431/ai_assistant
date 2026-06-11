@@ -2511,6 +2511,31 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
         self.assertEqual(103.0, close_row["extra"]["entry_price_for_pnl"])
         self.assertEqual(10.5, close_row["extra"]["position_snapshot"]["unrealized_pnl"])
 
+    def test_unlinked_market_close_does_not_self_link_close_reference(self):
+        pb_client = FakeOrderPBClient()
+        broker = FakeMarketCloseBroker()
+        placer = OrderPlacer(pb_client=pb_client, broker=broker, account_id="DU123")
+
+        result = placer.place_market_close(
+            conid=123,
+            symbol="NFLX",
+            direction="short",
+            quantity=7,
+            order_type="marketable_limit",
+            limit_price=101.25,
+            source="manual_close",
+            position_snapshot={"market_price": 101.5},
+        )
+
+        self.assertTrue(result["ok"])
+        close_row = pb_client.upserts[-1]
+        self.assertEqual("close_NFLX_20260506_101500", close_row["unique_id"])
+        self.assertEqual("", close_row["trade_group_id"])
+        self.assertEqual("", close_row["entry_order_unique_id"])
+        self.assertEqual("", close_row["parent_order_unique_id"])
+        self.assertEqual("", close_row["extra"]["linked_trade_group_id"])
+        self.assertEqual("", close_row["extra"]["linked_entry_order_unique_id"])
+
     def test_overnight_close_defaults_to_smart_include_overnight(self):
         pb_client = FakeOrderPBClient()
         broker = FakeMarketCloseBroker()

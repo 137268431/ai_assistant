@@ -544,6 +544,8 @@ def _is_failed_processed_tv_action(row: dict[str, Any]) -> bool:
     result_status = _to_text(row.get("result_status") or extra.get("result_status")).lower()
     execution_state = _to_text(extra.get("execution_state")).lower()
     reason = _to_text(row.get("reason") or extra.get("reason")).lower()
+    if bool(extra.get("terminal_conflict_safe") or runtime_detail.get("terminal_conflict_safe")):
+        return False
     if (
         _to_text(extra.get("invalidated_by") or runtime_detail.get("invalidated_by")) == "real_order_preflight"
         and bool(extra.get("gateway_request_blocked") or runtime_detail.get("gateway_request_blocked"))

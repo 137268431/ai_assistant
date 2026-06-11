@@ -92,6 +92,10 @@ class OrderPlacer:
         return bool(value)
 
     @staticmethod
+    def _looks_like_close_order_ref(value: Any) -> bool:
+        return str(value or "").strip().lower().startswith(("close_", "manual_close_", "market_close_"))
+
+    @staticmethod
     def _escape_filter_value(value: Any) -> str:
         return str(value or "").replace("\\", "\\\\").replace('"', '\\"')
 
@@ -1424,10 +1428,12 @@ class OrderPlacer:
             direction = str(kwargs.get("direction") or "").strip().lower()
             trade_group_id = str(kwargs.get("trade_group_id") or "").strip()
             entry_order_unique_id = str(kwargs.get("entry_order_unique_id") or "").strip()
-            if not trade_group_id:
-                trade_group_id = entry_order_unique_id or close_coid
-            if not entry_order_unique_id:
-                entry_order_unique_id = trade_group_id or close_coid
+            if self._looks_like_close_order_ref(trade_group_id):
+                trade_group_id = ""
+            if self._looks_like_close_order_ref(entry_order_unique_id):
+                entry_order_unique_id = ""
+            if not trade_group_id and entry_order_unique_id:
+                trade_group_id = entry_order_unique_id
             submission_unconfirmed = bool(kwargs.get("submission_unconfirmed"))
             position_snapshot = dict(kwargs.get("position_snapshot") or {})
             position_avg_cost = 0.0
@@ -1485,7 +1491,7 @@ class OrderPlacer:
                 "broker_order_id": broker_order_id,
                 "trade_group_id": trade_group_id,
                 "entry_order_unique_id": entry_order_unique_id,
-                "parent_order_unique_id": entry_order_unique_id if entry_order_unique_id != (close_coid or broker_order_id) else "",
+                "parent_order_unique_id": entry_order_unique_id,
                 "sibling_order_unique_id": "",
                 "role": "close",
                 "relation_status": (

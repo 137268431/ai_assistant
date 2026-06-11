@@ -414,6 +414,10 @@ class OrderTracker:
         return ""
 
     @classmethod
+    def _looks_like_close_order_ref(cls, value: Any) -> bool:
+        return cls._normalize_text(value).lower().startswith(("close_", "manual_close_", "market_close_"))
+
+    @classmethod
     def _infer_position_side(
         cls,
         *,
@@ -1152,6 +1156,31 @@ class OrderTracker:
             ],
         )
         return None
+
+    def _find_pb_entry_by_unique_id(
+        self,
+        unique_id: str,
+        *,
+        runtime_environment: str,
+    ) -> Optional[Dict[str, Any]]:
+        normalized_unique_id = self._normalize_text(unique_id)
+        if not normalized_unique_id or not getattr(self, "pb_client", None):
+            return None
+        try:
+            rows = self.pb_client.get_records(
+                "orders",
+                filter=(
+                    f'unique_id = "{self._escape_filter_value(normalized_unique_id)}" && '
+                    f'environment = "{self._escape_filter_value(runtime_environment)}" && '
+                    f'role = "entry"'
+                ),
+                sort="-updated,-created",
+                per_page=1,
+            )
+        except Exception as exc:
+            logger.debug("PB entry lookup by unique_id failed: unique_id=%s error=%s", normalized_unique_id, exc)
+            return None
+        return dict(rows[0]) if rows else None
 
     def _find_pb_entry_for_close_order(
         self,
@@ -1910,6 +1939,34 @@ class OrderTracker:
                     entry_order_unique_id = str(existing_order.get("entry_order_unique_id") or entry_order_unique_id or canonical_unique_id).strip()
                     parent_order_unique_id = str(existing_order.get("parent_order_unique_id") or "").strip()
                     role = str(existing_order.get("role") or role).strip() or role
+                    parent_linked_close = (
+                        role == "close"
+                        and bool(parent_order_unique_id)
+                        and (
+                            self._looks_like_close_order_ref(trade_group_id)
+                            or self._looks_like_close_order_ref(entry_order_unique_id)
+                            or trade_group_id == canonical_unique_id
+                            or entry_order_unique_id == canonical_unique_id
+                        )
+                    )
+                    if parent_linked_close:
+                        linked_close_entry = self._find_pb_entry_by_unique_id(
+                            parent_order_unique_id,
+                            runtime_environment=runtime_environment,
+                        )
+                        if linked_close_entry:
+                            trade_group_id = str(
+                                linked_close_entry.get("trade_group_id")
+                                or linked_close_entry.get("entry_order_unique_id")
+                                or parent_order_unique_id
+                                or trade_group_id
+                            ).strip()
+                            entry_order_unique_id = str(
+                                linked_close_entry.get("entry_order_unique_id")
+                                or parent_order_unique_id
+                                or entry_order_unique_id
+                            ).strip()
+                            signal_id = str(linked_close_entry.get("signal_id") or signal_id or "").strip()
                     self_linked_close = (
                         role == "close"
                         and not parent_order_unique_id
@@ -1918,7 +1975,7 @@ class OrderTracker:
                             not trade_group_id
                             or trade_group_id == entry_order_unique_id
                             or trade_group_id == canonical_unique_id
-                            or trade_group_id.lower().startswith("close_")
+                            or self._looks_like_close_order_ref(trade_group_id)
                         )
                     )
                     if self_linked_close and not parent_id:
