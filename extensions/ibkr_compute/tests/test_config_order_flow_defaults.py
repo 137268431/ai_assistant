@@ -67,7 +67,16 @@ TV_PRIMARY_DEFAULTS = {
     "tv_entry_requires_authorized_symbol": "true",
     "tv_primary_trade_universe_symbols": "",
     "tv_webhook_async_route_enabled": "true",
+    "tv_entry_window_enforce_enabled": "true",
+    "tv_entry_primary_start": "09:45",
+    "tv_entry_primary_end": "11:30",
+    "tv_entry_closing_start": "14:00",
+    "tv_entry_quality_end": "15:15",
     "tv_quality_window_rank_enforce_enabled": "false",
+    "tv_quality_window_min_activity_score": "80",
+    "tv_quality_window_min_signal_quality_score": "85",
+    "tv_closing_quality_window_min_activity_score": "90",
+    "tv_closing_quality_window_min_signal_quality_score": "90",
     "tv_risk_update_seq_guard_enabled": "true",
     "tv_risk_update_require_monotonic_seq": "true",
     "tv_risk_update_never_widen_stop": "true",
@@ -145,6 +154,20 @@ def _seed_config_values() -> dict[str, tuple[str, str]]:
     return {key: (value, default_value) for key, value, default_value in rows}
 
 
+def _migration_tv_primary_values() -> dict[str, str]:
+    migration_path = REPO_ROOT / "extensions" / "pocketbase" / "migrations" / "1780100000_created_tv_webhook_events.js"
+    text = migration_path.read_text(encoding="utf-8")
+    rows = re.findall(r'\["([^"]+)",\s*"([^"]+)",\s*"[^"]*",\s*"[^"]*",\s*[^,\]]+,\s*"[^"]*"\]', text)
+    return {key: value for key, value in rows}
+
+
+def _continuous_entry_migration_values() -> dict[str, str]:
+    migration_path = REPO_ROOT / "extensions" / "pocketbase" / "migrations" / "1781137000_update_tv_entry_continuous_layered_window.js"
+    text = migration_path.read_text(encoding="utf-8")
+    rows = re.findall(r'\["([^"]+)",\s*"([^"]+)",\s*"[^"]*",\s*"[^"]*",\s*[^,\]]+,\s*"[^"]*"\]', text)
+    return {key: value for key, value in rows}
+
+
 def test_order_flow_defaults_disable_local_confirmation_but_keep_hard_stop_guard() -> None:
     Config, _ = _load_config_modules()
 
@@ -216,6 +239,28 @@ def test_tv_primary_seed_values_match_defaults() -> None:
         assert seed_default.lower() == expected.lower()
     for key in DEPRECATED_PAPER_RISK_CONFIG_KEYS:
         assert key not in seed_values
+
+
+def test_tv_primary_migration_values_match_continuous_entry_defaults() -> None:
+    initial_migration_values = _migration_tv_primary_values()
+    update_migration_values = _continuous_entry_migration_values()
+    keys = {
+        "tv_entry_window_enforce_enabled",
+        "tv_entry_primary_start",
+        "tv_entry_primary_end",
+        "tv_entry_closing_start",
+        "tv_entry_quality_end",
+        "tv_quality_window_min_activity_score",
+        "tv_quality_window_min_signal_quality_score",
+        "tv_closing_quality_window_min_activity_score",
+        "tv_closing_quality_window_min_signal_quality_score",
+    }
+
+    for key in keys:
+        assert key in initial_migration_values
+        assert initial_migration_values[key].lower() == TV_PRIMARY_DEFAULTS[key].lower()
+        assert key in update_migration_values
+        assert update_migration_values[key].lower() == TV_PRIMARY_DEFAULTS[key].lower()
 
 
 def test_gateway_order_serial_defaults_match_seed_values() -> None:

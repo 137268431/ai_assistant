@@ -418,6 +418,13 @@ def _event_time_hhmm(payload: dict[str, Any]) -> tuple[int, int]:
                 return int(text[:2]), int(text[3:5])
             except Exception:
                 pass
+    bar_close_ms = _payload_bar_close_ms(payload)
+    if bar_close_ms > 0:
+        try:
+            event_dt = datetime.fromtimestamp(bar_close_ms / 1000.0, ET or timezone.utc)
+            return event_dt.hour, event_dt.minute
+        except Exception:
+            pass
     bar_open_ms = _payload_bar_open_ms(payload)
     if bar_open_ms > 0:
         try:
@@ -958,6 +965,9 @@ def _base_extra(
         "entry_anchor_distance_bps",
         "entry_order_ttl_bars",
         "entry_order_expires_bar_index",
+        "entry_window_model",
+        "entry_window_stage",
+        "entry_cutoff_time",
         "entry_limit_intent",
         "entry_price_plan",
         "risk_model",
@@ -1416,9 +1426,10 @@ def _entry_window_status(
     if not _config_bool(config_value, "tv_entry_window_enforce_enabled", True, environment):
         return True, "disabled"
     current = _event_time_hhmm(payload)
-    primary_start = _parse_hhmm(_config(config_value, "tv_entry_primary_start", "09:40", environment), "09:40")
+    primary_start = _parse_hhmm(_config(config_value, "tv_entry_primary_start", "09:45", environment), "09:45")
     primary_end = _parse_hhmm(_config(config_value, "tv_entry_primary_end", "11:30", environment), "11:30")
-    quality_end = _parse_hhmm(_config(config_value, "tv_entry_quality_end", "14:30", environment), "14:30")
+    closing_start = _parse_hhmm(_config(config_value, "tv_entry_closing_start", "14:00", environment), "14:00")
+    quality_end = _parse_hhmm(_config(config_value, "tv_entry_quality_end", "15:15", environment), "15:15")
     if current < primary_start:
         validation = validation_status or {}
         if validation.get("authorized"):
@@ -1428,8 +1439,10 @@ def _entry_window_status(
         return False, "outside_tv_entry_window"
     if current <= primary_end:
         return True, "primary"
-    if current <= quality_end:
+    if current < closing_start:
         return True, "quality"
+    if current <= quality_end:
+        return True, "closing_quality"
     return False, "no_new_entry_after"
 
 
@@ -1535,10 +1548,22 @@ def _route_entry(
             admission_reason = "legacy_active_target" if requires_target else "legacy_target_check_disabled"
 
     target_extra = _as_object((target or {}).get("extra"))
-    if window == "quality":
+    if window in {"quality", "closing_quality"}:
         rank_gate_enabled = _config_bool(config_value, "tv_quality_window_rank_enforce_enabled", False, environment)
-        min_activity = _float(_config(config_value, "tv_quality_window_min_activity_score", "80", environment), 80.0)
-        min_quality = _float(_config(config_value, "tv_quality_window_min_signal_quality_score", "85", environment), 85.0)
+        min_activity_key = (
+            "tv_closing_quality_window_min_activity_score"
+            if window == "closing_quality"
+            else "tv_quality_window_min_activity_score"
+        )
+        min_quality_key = (
+            "tv_closing_quality_window_min_signal_quality_score"
+            if window == "closing_quality"
+            else "tv_quality_window_min_signal_quality_score"
+        )
+        min_activity_default = "90" if window == "closing_quality" else "80"
+        min_quality_default = "90" if window == "closing_quality" else "85"
+        min_activity = _float(_config(config_value, min_activity_key, min_activity_default, environment), _float(min_activity_default, 90.0))
+        min_quality = _float(_config(config_value, min_quality_key, min_quality_default, environment), _float(min_quality_default, 90.0))
         if rank_gate_enabled and _int(target_extra.get("activity_rank"), 999999) > _config_int(config_value, "tv_quality_window_max_rank", 5, environment):
             raise TvPrimaryError("quality_window_rank_too_low", 200)
         if _float(payload.get("activity_score"), _float(target_extra.get("activity_score"), 0.0)) < min_activity:
@@ -1570,6 +1595,9 @@ def _route_entry(
     extra = {
         **_base_extra(payload, event_id, event_type),
         "execution_window": window,
+        "entry_window_model": _text(payload.get("entry_window_model")) or "continuous_layered_v1",
+        "entry_window_stage": _text(payload.get("entry_window_stage")) or window,
+        "entry_cutoff_time": _text(payload.get("entry_cutoff_time")) or _config(config_value, "tv_entry_quality_end", "15:15", broker_mode),
         "admission_reason": admission_reason,
         "authorized_symbol": authorized_symbol,
         "authorized_symbol_source": authorized_source,

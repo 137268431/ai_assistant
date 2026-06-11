@@ -8,6 +8,11 @@ strategy(title="Signal Strategy Core[Glory]", overlay=true, max_labels_count=500
 string STRATEGY_VERSION = "SSC_v1_20260611_ema_death_continuation"
 string SCRIPT_TAG = "Signal_Strategy_Core[Glory]"
 string TP_SL_MODEL = "structure_first_atr_buffer_v1"
+string ENTRY_WINDOW_MODEL = "continuous_layered_v1"
+int ENTRY_PRIMARY_START_MIN = 9 * 60 + 45
+int ENTRY_PRIMARY_END_MIN = 11 * 60 + 30
+int ENTRY_CLOSING_START_MIN = 14 * 60
+int ENTRY_CUTOFF_MIN = 15 * 60 + 15
 
 // -----------------------------------------------------------------------------
 // Inputs
@@ -101,8 +106,10 @@ obvRsiLen = input.int(10, "OBV RSI length", minval=1, group="06 Oscillators")
 
 tradingSession = input.session("0945-1530", "Trading session", group="07 TV Primary Events")
 useIntradayEntryWindows = input.bool(true, "Use intraday entry windows", group="07 TV Primary Events")
-morningEntrySession = input.session("0945-1130", "Morning entry window", group="07 TV Primary Events")
-afternoonEntrySession = input.session("1430-1530", "Afternoon entry window", group="07 TV Primary Events")
+entrySession = input.session("0945-1515", "Continuous entry window", group="07 TV Primary Events")
+primaryEntrySession = input.session("0945-1130", "Primary entry layer", group="07 TV Primary Events")
+qualityEntrySession = input.session("1130-1400", "Quality entry layer", group="07 TV Primary Events")
+closingQualityEntrySession = input.session("1400-1515", "Closing quality entry layer", group="07 TV Primary Events")
 enableAlerts = input.bool(true, "Emit TV-primary alert() payloads", group="07 TV Primary Events")
 preAlertThreshold = input.int(65, "Pre-alert activity score", minval=1, maxval=99, group="07 TV Primary Events")
 enableEodForceClose = input.bool(true, "Mirror system EOD force close", group="07 TV Primary Events")
@@ -145,10 +152,19 @@ bool showDtpTrendLine = showDtpLine or displayIndicatorMode or displayDebugMode
 bool showComponentMarkers = showDebugComponents or displayDebugMode
 
 bool confirmed = barstate.isconfirmed
+int entryCloseEtMinutes = hour(time_close, "America/New_York") * 60 + minute(time_close, "America/New_York")
+bool inContinuousEntryCloseWindow = entryCloseEtMinutes >= ENTRY_PRIMARY_START_MIN and entryCloseEtMinutes <= ENTRY_CUTOFF_MIN
+bool inPrimaryEntryCloseWindow = entryCloseEtMinutes >= ENTRY_PRIMARY_START_MIN and entryCloseEtMinutes <= ENTRY_PRIMARY_END_MIN
+bool inQualityEntryCloseWindow = entryCloseEtMinutes > ENTRY_PRIMARY_END_MIN and entryCloseEtMinutes < ENTRY_CLOSING_START_MIN
+bool inClosingQualityEntryCloseWindow = entryCloseEtMinutes >= ENTRY_CLOSING_START_MIN and entryCloseEtMinutes <= ENTRY_CUTOFF_MIN
 bool inSession = not na(time(timeframe.period, tradingSession, syminfo.timezone))
-bool inMorningEntryWindow = not na(time(timeframe.period, morningEntrySession, syminfo.timezone))
-bool inAfternoonEntryWindow = not na(time(timeframe.period, afternoonEntrySession, syminfo.timezone))
-bool inEntryWindow = not useIntradayEntryWindows or inMorningEntryWindow or inAfternoonEntryWindow
+bool inContinuousEntryWindow = not na(time(timeframe.period, entrySession, syminfo.timezone)) and inContinuousEntryCloseWindow
+bool inPrimaryEntryWindow = not na(time(timeframe.period, primaryEntrySession, syminfo.timezone)) and inPrimaryEntryCloseWindow
+bool inQualityEntryWindow = not na(time(timeframe.period, qualityEntrySession, syminfo.timezone)) and inQualityEntryCloseWindow
+bool inClosingQualityEntryWindow = not na(time(timeframe.period, closingQualityEntrySession, syminfo.timezone)) and inClosingQualityEntryCloseWindow
+bool inEntryWindow = not useIntradayEntryWindows or inContinuousEntryWindow
+string entryWindowStage = not useIntradayEntryWindows ? "disabled" : inPrimaryEntryWindow ? "primary" : inQualityEntryWindow ? "quality" : inClosingQualityEntryWindow ? "closing_quality" : "no_new_entry"
+bool lateQualityEntryWindow = entryWindowStage == "quality" or entryWindowStage == "closing_quality"
 bool canTrade = confirmed and inSession
 bool canOpenEntry = canTrade and inEntryWindow
 int dailyTime = time("D")
@@ -496,10 +512,10 @@ waitComponentText(string value) =>
     missingText == "齐" ? "组件齐" : "等 " + missingText
 
 filterDisplayName(string reason) =>
-    reason == "entry_time_blocked" ? "非优先入场时段" : reason == "entry_anchor_unavailable" ? "无有效结构挂单价" : reason == "post_reversal_anchor_unqualified" ? "反转顺势锚点不足" : reason == "mr_dtp_phase_blocked" ? "MR逆DTP未转弱" : reason == "mr_anchor_unqualified" ? "MR锚点依据不足" : reason == "mr_reversal_confirm_missing" ? "MR缺少反转确认" : reason == "mr_target_space_too_small" ? "MR均值空间不足" : reason == "structure_tp_sl_unavailable" ? "结构止盈止损不足" : reason == "mr_ema_cross_missing" ? "MR缺少EMA反转" : reason == "mr_component_stale" ? "MR组件过期" : reason == "candidate_filtered" ? "候选未执行" : reason == "dtp_bearish_early" ? "DTP偏空初期" : reason == "dtp_bullish_early" ? "DTP偏多初期" : reason == "dtp_bearish_early_or_confirmed" ? "DTP偏空" : reason == "dtp_bullish_early_or_confirmed" ? "DTP偏多" : reason == "ema_weak" ? "EMA弱" : reason == "low_volatility" ? "低波动" : reason == "profit_space_too_small" ? "获利空间不足" : reason == "mtf_5m_15m_opposite" ? "MTF反向" : reason == "long_short_conflict" ? "多空冲突" : reason == "" ? "过滤" : reason
+    reason == "entry_time_blocked" ? "非连续入场窗口" : reason == "entry_anchor_unavailable" ? "无有效结构挂单价" : reason == "post_reversal_anchor_unqualified" ? "反转顺势锚点不足" : reason == "mr_dtp_phase_blocked" ? "MR逆DTP未转弱" : reason == "mr_anchor_unqualified" ? "MR锚点依据不足" : reason == "mr_reversal_confirm_missing" ? "MR缺少反转确认" : reason == "mr_target_space_too_small" ? "MR均值空间不足" : reason == "structure_tp_sl_unavailable" ? "结构止盈止损不足" : reason == "mr_ema_cross_missing" ? "MR缺少EMA反转" : reason == "mr_component_stale" ? "MR组件过期" : reason == "candidate_filtered" ? "候选未执行" : reason == "dtp_bearish_early" ? "DTP偏空初期" : reason == "dtp_bullish_early" ? "DTP偏多初期" : reason == "dtp_bearish_early_or_confirmed" ? "DTP偏空" : reason == "dtp_bullish_early_or_confirmed" ? "DTP偏多" : reason == "ema_weak" ? "EMA弱" : reason == "low_volatility" ? "低波动" : reason == "profit_space_too_small" ? "获利空间不足" : reason == "mtf_5m_15m_opposite" ? "MTF反向" : reason == "long_short_conflict" ? "多空冲突" : reason == "" ? "过滤" : reason
 
 filterActionText(string reason, string direction) =>
-    reason == "entry_time_blocked" ? "不在优先日内窗口，等下一窗口" : reason == "entry_anchor_unavailable" ? "结构价离现价太远/无依据，放弃追价" : reason == "post_reversal_anchor_unqualified" ? "死叉/金叉后只接受EMA/前高低/日内结构锚点" : reason == "mr_dtp_phase_blocked" ? "MR逆DTP强趋势，等DTP转弱/中性再做回归" : reason == "mr_anchor_unqualified" ? "MR只接受SD外轨/前高低/EMA结构锚点" : reason == "mr_reversal_confirm_missing" ? "逆趋势转弱MR需要EMA反转交叉 + 分形/背离" : reason == "mr_target_space_too_small" ? "均值目标不可用或获利空间不足" : reason == "structure_tp_sl_unavailable" ? "没有真实结构TP/SL，不用ATR硬凑目标" : reason == "mr_ema_cross_missing" ? "MR缺少EMA20/50反转确认，等金叉/死叉" : reason == "mr_component_stale" ? "MR组件过期，等新分形/背离/交叉" : reason == "candidate_filtered" ? "候选未进入下单分支，检查窗口/方向/数量条件" : reason == "dtp_bearish_early" ? "DTP偏空初期，等过初期" : reason == "dtp_bullish_early" ? "DTP偏多初期，等过初期" : reason == "dtp_bearish_early_or_confirmed" ? "DTP偏空，等转弱/中性/多" : reason == "dtp_bullish_early_or_confirmed" ? "DTP偏多，等转弱/中性/空" : reason == "ema_weak" ? "EMA偏弱，等快慢线走强" : reason == "low_volatility" ? "ATR%低于入场阈值，等波动恢复" : reason == "profit_space_too_small" ? "等更大空间" : reason == "mtf_5m_15m_opposite" ? "5m+15m 同时反向，等MTF转中性/同向" : reason == "long_short_conflict" ? "多空冲突，等单边明确" : reason == "" ? "过滤" + directionDisplayName(direction) + "，等条件恢复" : filterDisplayName(reason)
+    reason == "entry_time_blocked" ? "不在09:45-15:15连续入场窗口，新仓等待下一交易日/下一窗口" : reason == "entry_anchor_unavailable" ? "结构价离现价太远/无依据，放弃追价" : reason == "post_reversal_anchor_unqualified" ? "死叉/金叉后只接受EMA/前高低/日内结构锚点" : reason == "mr_dtp_phase_blocked" ? "MR逆DTP强趋势，等DTP转弱/中性再做回归" : reason == "mr_anchor_unqualified" ? "MR只接受SD外轨/前高低/EMA结构锚点" : reason == "mr_reversal_confirm_missing" ? "逆趋势转弱MR需要EMA反转交叉 + 分形/背离" : reason == "mr_target_space_too_small" ? "均值目标不可用或获利空间不足" : reason == "structure_tp_sl_unavailable" ? "没有真实结构TP/SL，不用ATR硬凑目标" : reason == "mr_ema_cross_missing" ? "MR缺少EMA20/50反转确认，等金叉/死叉" : reason == "mr_component_stale" ? "MR组件过期，等新分形/背离/交叉" : reason == "candidate_filtered" ? "候选未进入下单分支，检查窗口/方向/数量条件" : reason == "dtp_bearish_early" ? "DTP偏空初期，等过初期" : reason == "dtp_bullish_early" ? "DTP偏多初期，等过初期" : reason == "dtp_bearish_early_or_confirmed" ? "DTP偏空，等转弱/中性/多" : reason == "dtp_bullish_early_or_confirmed" ? "DTP偏多，等转弱/中性/空" : reason == "ema_weak" ? "EMA偏弱，等快慢线走强" : reason == "low_volatility" ? "ATR%低于入场阈值，等波动恢复" : reason == "profit_space_too_small" ? "等更大空间" : reason == "mtf_5m_15m_opposite" ? "5m+15m 同时反向，等MTF转中性/同向" : reason == "long_short_conflict" ? "多空冲突，等单边明确" : reason == "" ? "过滤" + directionDisplayName(direction) + "，等条件恢复" : filterDisplayName(reason)
 
 dtpPhaseDisplayName(string phase) =>
     phase == "early" ? "初期" : phase == "confirmed" ? "确认" : phase == "mature" ? "成熟" : phase == "weakening" ? "转弱" : "中性"
@@ -1279,7 +1295,7 @@ bool longPostReversalAnchorQualified = not setupLongPostLowerBreakout or longPos
 bool shortPostReversalAnchorQualified = not setupShortPostUpperBreakdown or shortPostReversalStructuralAnchorQualified
 bool emaWeak = math.abs(calcSlope(emaFast, emaSlopeLookback)) < emaMinAngle or math.abs(slopeSlow) < emaMinAngle or not spacingOk
 bool weakTrendOrLowVolContext = (useVolatilityFilter and atrPct < minAtrPctForEntry * weakTrendAtrPctMultiplier) or emaWeak
-float effectiveMinStructureRewardRiskForEntry = structureContextMinRewardRisk(weakTrendOrLowVolContext)
+float effectiveMinStructureRewardRiskForEntry = math.max(structureContextMinRewardRisk(weakTrendOrLowVolContext), lateQualityEntryWindow ? minWeakTrendRewardRiskForEntry : minStructureRewardRiskForEntry)
 float longQtyCandidate = longEntryCandidate > 0.0 ? math.max(1.0, math.floor(positionAmount / longEntryCandidate)) : 0.0
 float longAtrStopCandidate = longEntryCandidate - atrVal * slAtrMult
 float longRiskStopCandidate = longQtyCandidate > 0.0 ? longEntryCandidate - effectiveMaxLegRisk / longQtyCandidate : longAtrStopCandidate
@@ -1728,6 +1744,9 @@ buildEntryPayload(string eventIdValue, string signalIdValue, string tradeGroupId
      jsonNum("entry_anchor_distance_bps", anchorDistanceBps) +
      jsonInt("entry_order_ttl_bars", entryOrderTtlBars) +
      jsonInt("entry_order_expires_bar_index", entryExpiresBar) +
+     jsonStr("entry_window_model", ENTRY_WINDOW_MODEL) +
+     jsonStr("entry_window_stage", entryWindowStage) +
+     jsonStr("entry_cutoff_time", "15:15") +
      jsonStr("risk_model", structuralAnchorMode ? "setup_aware_structural_v1" : "tv_direct_bounded_limit_v1") +
      jsonNum("stop_loss", stopPrice) +
      jsonNum("take_profit", targetPrice) +

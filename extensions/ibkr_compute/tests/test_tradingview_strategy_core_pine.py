@@ -221,6 +221,36 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertIn('jsonNum("min_net_roi_pct_for_entry", effectiveMinNetRoiPctForEntry)', source)
         self.assertIn('jsonNum("min_structure_reward_risk_for_entry", minRewardRiskValue)', source)
 
+    def test_entry_windows_are_continuous_layered_and_serialized(self):
+        source = self.source
+
+        self.assertIn('string ENTRY_WINDOW_MODEL = "continuous_layered_v1"', source)
+        self.assertIn("int ENTRY_PRIMARY_START_MIN = 9 * 60 + 45", source)
+        self.assertIn("int ENTRY_PRIMARY_END_MIN = 11 * 60 + 30", source)
+        self.assertIn("int ENTRY_CLOSING_START_MIN = 14 * 60", source)
+        self.assertIn("int ENTRY_CUTOFF_MIN = 15 * 60 + 15", source)
+        self.assertIn('tradingSession = input.session("0945-1530", "Trading session", group="07 TV Primary Events")', source)
+        self.assertIn('entrySession = input.session("0945-1515", "Continuous entry window", group="07 TV Primary Events")', source)
+        self.assertIn('primaryEntrySession = input.session("0945-1130", "Primary entry layer", group="07 TV Primary Events")', source)
+        self.assertIn('qualityEntrySession = input.session("1130-1400", "Quality entry layer", group="07 TV Primary Events")', source)
+        self.assertIn('closingQualityEntrySession = input.session("1400-1515", "Closing quality entry layer", group="07 TV Primary Events")', source)
+        self.assertIn('int entryCloseEtMinutes = hour(time_close, "America/New_York") * 60 + minute(time_close, "America/New_York")', source)
+        self.assertIn("bool inContinuousEntryCloseWindow = entryCloseEtMinutes >= ENTRY_PRIMARY_START_MIN and entryCloseEtMinutes <= ENTRY_CUTOFF_MIN", source)
+        self.assertIn("bool inContinuousEntryWindow = not na(time(timeframe.period, entrySession, syminfo.timezone)) and inContinuousEntryCloseWindow", source)
+        self.assertIn("bool inEntryWindow = not useIntradayEntryWindows or inContinuousEntryWindow", source)
+        self.assertIn('string entryWindowStage = not useIntradayEntryWindows ? "disabled" : inPrimaryEntryWindow ? "primary" : inQualityEntryWindow ? "quality" : inClosingQualityEntryWindow ? "closing_quality" : "no_new_entry"', source)
+        self.assertIn('bool lateQualityEntryWindow = entryWindowStage == "quality" or entryWindowStage == "closing_quality"', source)
+        self.assertIn('lateQualityEntryWindow ? minWeakTrendRewardRiskForEntry : minStructureRewardRiskForEntry', source)
+        self.assertIn('jsonStr("entry_window_model", ENTRY_WINDOW_MODEL)', source)
+        self.assertIn('jsonStr("entry_window_stage", entryWindowStage)', source)
+        self.assertIn('jsonStr("entry_cutoff_time", "15:15")', source)
+        self.assertIn("bool pendingEntryWindowExpired = confirmed and activePendingEntry and strategy.position_size == 0 and not inEntryWindow", source)
+        self.assertIn("不在09:45-15:15连续入场窗口，新仓等待下一交易日/下一窗口", source)
+        self.assertNotIn("morningEntrySession", source)
+        self.assertNotIn("afternoonEntrySession", source)
+        self.assertNotIn("Morning entry window", source)
+        self.assertNotIn("Afternoon entry window", source)
+
     def test_structure_first_tp_sl_uses_atr_only_as_buffer_and_filter(self):
         source = self.source
 

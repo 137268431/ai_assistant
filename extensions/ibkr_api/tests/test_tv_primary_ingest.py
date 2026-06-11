@@ -216,6 +216,54 @@ def _mtf_payload(status="warn", score=72.5, block_reason="none"):
 
 
 class TvPrimaryIngestTests(unittest.TestCase):
+    def _process_entry_at(self, us_time, *, event_id, activity_score=91, quality_score=91, bar_time=None, bar_close=None):
+        pb = _FakePB()
+
+        def config_value(key, default, environment):
+            values = {
+                "tv_entry_requires_active_target": "FALSE",
+                "tv_entry_requires_authorized_symbol": "FALSE",
+                "tv_entry_window_enforce_enabled": "TRUE",
+                "tv_entry_primary_start": "09:45",
+                "tv_entry_primary_end": "11:30",
+                "tv_entry_closing_start": "14:00",
+                "tv_entry_quality_end": "15:15",
+                "tv_quality_window_min_activity_score": "80",
+                "tv_quality_window_min_signal_quality_score": "85",
+                "tv_closing_quality_window_min_activity_score": "90",
+                "tv_closing_quality_window_min_signal_quality_score": "90",
+            }
+            return values.get(key, _config_value(key, default, environment))
+
+        payload = {
+            "source": "tv",
+            "event_type": "entry",
+            "event_id": event_id,
+            "signal_id": event_id,
+            "symbol": "AMD",
+            "direction": "long",
+            "entry_price": 122.50,
+            "quantity": 8,
+            "stop_loss": 120.40,
+            "take_profit": 127.90,
+            "market_date": "2026-05-29",
+            "environment": "paper",
+            "broker_mode": "paper",
+            "market_data_mode": "live",
+            "activity_score": activity_score,
+            "quality_score": quality_score,
+            **_mtf_payload(status="pass", score=100.0),
+        }
+        if us_time is not None:
+            payload["us_time"] = f"2026-05-29 {us_time}:00"
+        if bar_time is not None:
+            payload["bar_time_ms"] = _et_ms(f"2026-05-29 {bar_time}:00")
+        if bar_close is not None:
+            payload["bar_close_ms"] = _et_ms(f"2026-05-29 {bar_close}:00")
+
+        response, status = _process(pb, payload, config_value=config_value)
+        return pb, response, status
+
     def test_latency_trace_records_pine_api_pb_and_route_segments(self):
         pb = _LatencyFakePB()
         payload = {
@@ -616,6 +664,84 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(response["rejected"])
         self.assertEqual(response["reason"], "outside_tv_entry_window")
+        self.assertEqual(len(pb.records["ibkr_signals"]), 0)
+        self.assertEqual(pb.records[TV_EVENT_COLLECTION][0]["status"], "rejected")
+
+    def test_continuous_entry_window_routes_primary_quality_and_closing_layers(self):
+        primary_pb, primary_response, primary_status = self._process_entry_at("09:45", event_id="tv-entry-window-primary")
+        quality_pb, quality_response, quality_status = self._process_entry_at(
+            "11:31",
+            event_id="tv-entry-window-quality",
+            activity_score=88,
+            quality_score=90,
+        )
+        closing_pb, closing_response, closing_status = self._process_entry_at(
+            "14:30",
+            event_id="tv-entry-window-closing",
+            activity_score=90,
+            quality_score=90,
+        )
+
+        self.assertEqual(primary_status, 200)
+        self.assertTrue(primary_response["ok"])
+        primary_extra = primary_pb.records["ibkr_signals"][0]["extra"]
+        self.assertEqual(primary_extra["execution_window"], "primary")
+        self.assertEqual(primary_extra["entry_window_model"], "continuous_layered_v1")
+        self.assertEqual(primary_extra["entry_window_stage"], "primary")
+        self.assertEqual(primary_extra["entry_cutoff_time"], "15:15")
+        self.assertEqual(primary_pb.records[TV_EVENT_COLLECTION][0]["status"], "routed")
+
+        self.assertEqual(quality_status, 200)
+        self.assertTrue(quality_response["ok"])
+        self.assertEqual(quality_pb.records["ibkr_signals"][0]["extra"]["execution_window"], "quality")
+        self.assertEqual(quality_pb.records["ibkr_signals"][0]["extra"]["entry_window_stage"], "quality")
+
+        self.assertEqual(closing_status, 200)
+        self.assertTrue(closing_response["ok"])
+        self.assertEqual(closing_pb.records["ibkr_signals"][0]["extra"]["execution_window"], "closing_quality")
+        self.assertEqual(closing_pb.records["ibkr_signals"][0]["extra"]["entry_window_stage"], "closing_quality")
+
+    def test_continuous_entry_window_rejects_early_late_and_weak_closing_entries(self):
+        early_pb, early_response, early_status = self._process_entry_at("09:44", event_id="tv-entry-window-early")
+        weak_pb, weak_response, weak_status = self._process_entry_at(
+            "14:30",
+            event_id="tv-entry-window-closing-weak",
+            activity_score=88,
+            quality_score=89,
+        )
+        late_pb, late_response, late_status = self._process_entry_at("15:16", event_id="tv-entry-window-late")
+
+        self.assertEqual(early_status, 200)
+        self.assertTrue(early_response["rejected"])
+        self.assertEqual(early_response["reason"], "outside_tv_entry_window")
+        self.assertEqual(len(early_pb.records["ibkr_signals"]), 0)
+        self.assertEqual(early_pb.records[TV_EVENT_COLLECTION][0]["status"], "rejected")
+
+        self.assertEqual(weak_status, 200)
+        self.assertTrue(weak_response["rejected"])
+        self.assertEqual(weak_response["reason"], "activity_score_too_low_for_late_window")
+        self.assertEqual(len(weak_pb.records["ibkr_signals"]), 0)
+        self.assertEqual(weak_pb.records[TV_EVENT_COLLECTION][0]["status"], "rejected")
+
+        self.assertEqual(late_status, 200)
+        self.assertTrue(late_response["rejected"])
+        self.assertEqual(late_response["reason"], "no_new_entry_after")
+        self.assertEqual(len(late_pb.records["ibkr_signals"]), 0)
+        self.assertEqual(late_pb.records[TV_EVENT_COLLECTION][0]["status"], "rejected")
+
+    def test_continuous_entry_window_without_us_time_uses_bar_close_for_cutoff(self):
+        pb, response, status = self._process_entry_at(
+            None,
+            event_id="tv-entry-window-bar-close-late",
+            activity_score=90,
+            quality_score=90,
+            bar_time="15:14",
+            bar_close="15:16",
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(response["rejected"])
+        self.assertEqual(response["reason"], "no_new_entry_after")
         self.assertEqual(len(pb.records["ibkr_signals"]), 0)
         self.assertEqual(pb.records[TV_EVENT_COLLECTION][0]["status"], "rejected")
 
