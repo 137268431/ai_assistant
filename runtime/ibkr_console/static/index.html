@@ -114,7 +114,19 @@
                                     <span class="candidate" id="todayTargetsCandidate">-</span>
                                 </div>
                             </div>
-                            <div class="home-stat-subline" id="todayTargetsSdSummary">
+                            <div class="home-stat-subline home-stat-detail" id="todayTargetsStageSummary">
+                                <span class="candidate">入选观察 <span id="todayTargetsAdmittedObserve">-</span></span>
+                                <span class="home-stat-separator">/</span>
+                                <span class="long">交易候选 <span id="todayTargetsSignalCandidate">-</span></span>
+                                <span class="home-stat-separator">/</span>
+                                <span>可执行 <span id="todayTargetsExecutionEligible">-</span></span>
+                            </div>
+                            <div class="home-stat-subline home-stat-detail" id="todayTargetsSourceSummary">
+                                <span class="candidate">来源 <span id="todayTargetsSourcePrimary">-</span></span>
+                            </div>
+                            <div class="home-stat-subline home-stat-detail" id="todayTargetsSdSummary">
+                                <span id="todayTargetsSdBreakdown">SD窗口 <span id="todayTargetsSdTotal">-</span></span>
+                                <span class="home-stat-separator">·</span>
                                 <span class="candidate">SD上轨 <span id="todayTargetsSdUpper">-</span></span>
                                 <span class="home-stat-separator">/</span>
                                 <span class="long">SD下轨 <span id="todayTargetsSdLower">-</span></span>
@@ -279,6 +291,24 @@
         let latestTodayTargetsPayload = null;
         let latestDashboardPayload = null;
         let responsiveListenerBound = false;
+        const TARGET_STAGE_CN_LABELS = {
+            admitted_observe: '入选观察',
+            signal_candidate: '交易候选',
+            execution_active: '执行中'
+        };
+        const ADMISSION_SOURCE_CN_LABELS = {
+            sd_window: 'SD窗口',
+            ema_pullback: 'EMA慢线',
+            dtp_touch: 'DTP关键位',
+            structure_breakout: '结构突破',
+            tradingview: 'TradingView',
+            daily_scan: 'Daily Scan',
+            intraday_window_admission: '盘中窗口',
+            manual: '手动',
+            screener: '筛选器',
+            legacy_target: '历史目标',
+            unknown: '未知'
+        };
 
         function escapeHtml(value) {
             return String(value ?? '')
@@ -636,18 +666,102 @@
             return { targetActiveCount, targetCandidateCount, executionActiveCount };
         }
 
+        function setTextById(id, value) {
+            const el = document.getElementById(id);
+            if (el) el.textContent = value;
+        }
+
+        function normalizeCountMap(value) {
+            const counts = {};
+            if (!value || typeof value !== 'object' || Array.isArray(value)) return counts;
+            Object.entries(value).forEach(([key, count]) => {
+                const normalizedKey = String(key || '').trim();
+                const normalizedCount = Number(count || 0);
+                if (normalizedKey && Number.isFinite(normalizedCount) && normalizedCount > 0) {
+                    counts[normalizedKey] = normalizedCount;
+                }
+            });
+            return counts;
+        }
+
+        function getCandidateStageCounts(summary = {}) {
+            const counts = normalizeCountMap(summary.candidate_stage_counts || summary.target_stage_counts || {});
+            return {
+                admittedObserve: Number(summary.admitted_observe_count ?? counts.admitted_observe ?? 0),
+                signalCandidate: Number(summary.signal_candidate_count ?? counts.signal_candidate ?? 0),
+                executionStage: Number(summary.execution_stage_count ?? counts.execution_active ?? 0),
+                executionEligible: Number(summary.execution_eligible_count ?? 0)
+            };
+        }
+
+        function getSdBreakdown(summary = {}) {
+            const breakdown = summary.sd_window_breakdown && typeof summary.sd_window_breakdown === 'object'
+                ? summary.sd_window_breakdown
+                : {};
+            const upper = Number(breakdown.upper ?? summary.tv_sd_upper_touch_count ?? 0);
+            const lower = Number(breakdown.lower ?? summary.tv_sd_lower_touch_count ?? 0);
+            const total = Number(breakdown.total ?? summary.tv_sd_touch_count ?? (upper + lower));
+            const intervalLabel = String(breakdown.interval_label || summary.tv_sd_touch_interval_label || 'TV').trim() || 'TV';
+            return { upper, lower, total, intervalLabel };
+        }
+
+        function displayAdmissionSource(source, labels = {}) {
+            const key = String(source || '').trim();
+            if (!key) return ADMISSION_SOURCE_CN_LABELS.unknown;
+            return ADMISSION_SOURCE_CN_LABELS[key] || labels[key] || key.replace(/_/g, ' ');
+        }
+
+        function displayTargetStage(stage, label = '') {
+            const key = String(stage || '').trim();
+            return TARGET_STAGE_CN_LABELS[key] || String(label || '').trim() || key.replace(/_/g, ' ') || TARGET_STAGE_CN_LABELS.admitted_observe;
+        }
+
+        function getCandidateSourceEntries(summary = {}, limit = 3) {
+            const labels = summary.candidate_source_labels || summary.admission_source_labels || {};
+            const counts = normalizeCountMap(summary.candidate_source_counts || summary.admission_source_counts || {});
+            const sdBreakdown = getSdBreakdown(summary);
+            if (!Object.keys(counts).length && sdBreakdown.total > 0) {
+                counts.sd_window = sdBreakdown.total;
+            }
+            return Object.entries(counts)
+                .sort((a, b) => (b[1] - a[1]) || a[0].localeCompare(b[0]))
+                .slice(0, limit)
+                .map(([source, count]) => ({
+                    source,
+                    label: displayAdmissionSource(source, labels),
+                    count
+                }));
+        }
+
+        function formatSourceEntries(entries, emptyText = '暂无') {
+            if (!entries.length) return emptyText;
+            return entries.map((entry) => `${entry.label} ${formatNumber(entry.count, 0)}`).join(' / ');
+        }
+
+        function stageTone(stage) {
+            if (stage === 'execution_active') return 'long';
+            if (stage === 'signal_candidate') return 'candidate';
+            return 'neutral';
+        }
+
         function renderTargetSummary(summary = {}, marketDate = getUsDate(), targetUrl = buildPageUrl('/ibkr_screener.html', { tab: 'targets' })) {
             const { targetActiveCount, targetCandidateCount, executionActiveCount } = getTargetDisplayCounts(summary);
-            const sdUpperCount = Number(summary.tv_sd_upper_touch_count || 0);
-            const sdLowerCount = Number(summary.tv_sd_lower_touch_count || 0);
-            const sdIntervalLabel = String(summary.tv_sd_touch_interval_label || 'TV').trim() || 'TV';
+            const stageCounts = getCandidateStageCounts(summary);
+            const sdBreakdown = getSdBreakdown(summary);
+            const sourceEntries = getCandidateSourceEntries(summary);
+            const sourceCopy = formatSourceEntries(sourceEntries);
             document.getElementById('todayTargetsActive').textContent = formatNumber(executionActiveCount, 0);
             document.getElementById('todayTargetsCandidate').textContent = formatNumber(targetCandidateCount, 0);
-            document.getElementById('todayTargetsSdUpper').textContent = formatNumber(sdUpperCount, 0);
-            document.getElementById('todayTargetsSdLower').textContent = formatNumber(sdLowerCount, 0);
-            document.getElementById('todayTargetsFoot').textContent = `执行中 / CANDIDATE · 目标ACTIVE ${formatNumber(targetActiveCount, 0)} · ${sdIntervalLabel}`;
+            setTextById('todayTargetsAdmittedObserve', formatNumber(stageCounts.admittedObserve, 0));
+            setTextById('todayTargetsSignalCandidate', formatNumber(stageCounts.signalCandidate, 0));
+            setTextById('todayTargetsExecutionEligible', formatNumber(stageCounts.executionEligible, 0));
+            setTextById('todayTargetsSourcePrimary', sourceCopy);
+            setTextById('todayTargetsSdTotal', formatNumber(sdBreakdown.total, 0));
+            document.getElementById('todayTargetsSdUpper').textContent = formatNumber(sdBreakdown.upper, 0);
+            document.getElementById('todayTargetsSdLower').textContent = formatNumber(sdBreakdown.lower, 0);
+            document.getElementById('todayTargetsFoot').textContent = `执行中 / CANDIDATE · 目标ACTIVE ${formatNumber(targetActiveCount, 0)} · 来源 ${sourceCopy}`;
             document.getElementById('targetsSummaryLink').href = targetUrl;
-            document.getElementById('targetsSummaryLink').title = `执行中 ${formatNumber(executionActiveCount, 0)}；目标池 ACTIVE ${formatNumber(targetActiveCount, 0)}；Candidate ${formatNumber(targetCandidateCount, 0)}。执行中按今日 open signal 统计，已取消/已终止/已平仓不再占用首页主数字。`;
+            document.getElementById('targetsSummaryLink').title = `执行中 ${formatNumber(executionActiveCount, 0)}；目标池 ACTIVE ${formatNumber(targetActiveCount, 0)}；Candidate ${formatNumber(targetCandidateCount, 0)}；入选观察 ${formatNumber(stageCounts.admittedObserve, 0)}；交易候选 ${formatNumber(stageCounts.signalCandidate, 0)}；可执行 ${formatNumber(stageCounts.executionEligible, 0)}；来源 ${sourceCopy}；SD ${sdBreakdown.intervalLabel} 上轨 ${formatNumber(sdBreakdown.upper, 0)} / 下轨 ${formatNumber(sdBreakdown.lower, 0)}。`;
             setCardTone('targetsSummaryLink', executionActiveCount > 0 ? 'long' : (targetCandidateCount > 0 || targetActiveCount > 0 ? 'candidate' : 'neutral'));
             renderOverviewMeta(marketDate);
         }
@@ -714,7 +828,10 @@
             renderTodayTargetsTimeTip(latestTodayTargetsPayload);
 
             const { targetActiveCount, targetCandidateCount, executionActiveCount } = getTargetDisplayCounts(summary);
-            metaEl.textContent = `共 ${summary.total || 0} 条 · 执行中 ${executionActiveCount} · 目标active ${targetActiveCount} · candidate ${targetCandidateCount} · SD上轨 ${summary.tv_sd_upper_touch_count || 0} · SD下轨 ${summary.tv_sd_lower_touch_count || 0}`;
+            const stageCounts = getCandidateStageCounts(summary);
+            const sdBreakdown = getSdBreakdown(summary);
+            const sourceCopy = formatSourceEntries(getCandidateSourceEntries(summary, 2));
+            metaEl.textContent = `共 ${summary.total || 0} 条 · 执行中 ${executionActiveCount} · 目标active ${targetActiveCount} · candidate ${targetCandidateCount} · 入选观察 ${stageCounts.admittedObserve} · 交易候选 ${stageCounts.signalCandidate} · 可执行 ${stageCounts.executionEligible} · 来源 ${sourceCopy} · SD上轨 ${sdBreakdown.upper} · SD下轨 ${sdBreakdown.lower}`;
 
             if (!items.length) {
                 setSectionState('homeTargets', 'empty');
@@ -731,6 +848,10 @@
             listEl.innerHTML = visibleItems.map((row) => {
                 const reasons = Array.isArray(row.operable_reasons) ? row.operable_reasons.slice(0, 3) : [];
                 const signalUrl = buildTargetSignalUrl(row.symbol || '', marketDate);
+                const targetStage = String(row.target_stage || '').trim();
+                const stageLabel = displayTargetStage(targetStage, row.target_stage_label || '');
+                const sourceKey = String(row.admission_source || row.candidate_source || '').trim();
+                const sourceLabel = displayAdmissionSource(sourceKey, summary.candidate_source_labels || summary.admission_source_labels || {});
                 return `
                     <article class="home-target-card">
                         <div class="home-target-top">
@@ -741,6 +862,8 @@
                             <div class="home-target-badges">
                                 <span class="home-status-badge ${escapeHtml(row.status || 'neutral')}">${escapeHtml((row.status || '--').toUpperCase())}</span>
                                 <span class="home-status-badge ${escapeHtml(row.direction_bias || 'neutral')}">${escapeHtml((row.direction_bias || 'neutral').toUpperCase())}</span>
+                                <span class="home-status-badge ${escapeHtml(stageTone(targetStage))}">${escapeHtml(stageLabel)}</span>
+                                <span class="home-status-badge neutral">${escapeHtml(sourceLabel)}</span>
                             </div>
                         </div>
                         <div class="home-target-copy">${escapeHtml(row.scan_reason || row.note || '--')}</div>
@@ -792,9 +915,14 @@
                 renderTodayTargetsTimeTip();
                 document.getElementById('todayTargetsActive').textContent = '--';
                 document.getElementById('todayTargetsCandidate').textContent = '--';
+                setTextById('todayTargetsAdmittedObserve', '--');
+                setTextById('todayTargetsSignalCandidate', '--');
+                setTextById('todayTargetsExecutionEligible', '--');
+                setTextById('todayTargetsSourcePrimary', '--');
+                setTextById('todayTargetsSdTotal', '--');
                 document.getElementById('todayTargetsSdUpper').textContent = '--';
                 document.getElementById('todayTargetsSdLower').textContent = '--';
-                document.getElementById('todayTargetsFoot').textContent = '执行中 / CANDIDATE · 目标ACTIVE --';
+                document.getElementById('todayTargetsFoot').textContent = '执行中 / CANDIDATE · 目标ACTIVE -- · 来源 --';
                 setCardTone('targetsSummaryLink', 'neutral');
             }
         }

@@ -750,6 +750,31 @@ class UniverseRoutesTest(unittest.TestCase):
                 "score": 70,
                 "extra": {"source": "tradingview"},
             },
+            {
+                "id": "target-amzn",
+                "symbol": "AMZN",
+                "environment": "live",
+                "date": "2026-05-29",
+                "status": "candidate",
+                "direction_bias": "long",
+                "score": 74,
+                "extra": {"source": "daily_scan", "target_stage": "admitted_observe", "admission_source": "ema_pullback"},
+            },
+            {
+                "id": "target-googl",
+                "symbol": "GOOGL",
+                "environment": "live",
+                "date": "2026-05-29",
+                "status": "candidate",
+                "direction_bias": "long",
+                "score": 76,
+                "extra": {
+                    "source": "daily_scan",
+                    "candidate_kind": "setup_building",
+                    "signal_candidate_gate_passed": True,
+                    "admission_source": "structure_breakout",
+                },
+            },
         ]
         pb._all_records["tv_webhook_events"] = [
             {
@@ -840,11 +865,33 @@ class UniverseRoutesTest(unittest.TestCase):
         self.assertEqual(2, summary["tv_sd_touch_count"])
         self.assertEqual("TV 2m", summary["tv_sd_touch_interval_label"])
         self.assertEqual("tv_pre_alert_window_activation", summary["tv_sd_touch_basis"])
+        self.assertEqual(3, summary["admitted_observe_count"])
+        self.assertEqual(2, summary["signal_candidate_count"])
+        self.assertEqual(0, summary["execution_stage_count"])
+        self.assertEqual(3, summary["candidate_stage_counts"]["admitted_observe"])
+        self.assertEqual(2, summary["candidate_stage_counts"]["signal_candidate"])
+        self.assertEqual(2, summary["candidate_source_counts"]["sd_window"])
+        self.assertEqual(1, summary["candidate_source_counts"]["tradingview"])
+        self.assertEqual(1, summary["candidate_source_counts"]["ema_pullback"])
+        self.assertEqual(1, summary["candidate_source_counts"]["structure_breakout"])
+        self.assertEqual(1, summary["sd_window_breakdown"]["upper"])
+        self.assertEqual(1, summary["sd_window_breakdown"]["lower"])
+        self.assertEqual(2, summary["sd_window_breakdown"]["total"])
         by_symbol = {item["symbol"]: item for item in payload["items"]}
         self.assertEqual("lower", by_symbol["AAPL"]["tv_sd_touch"]["side"])
         self.assertEqual("aapl-window-lower-new", by_symbol["AAPL"]["tv_sd_touch"]["event_id"])
+        self.assertEqual("sd_window", by_symbol["AAPL"]["admission_source"])
+        self.assertEqual("sd_window", by_symbol["AAPL"]["candidate_source"])
+        self.assertEqual("admitted_observe", by_symbol["AAPL"]["target_stage"])
         self.assertEqual("upper", by_symbol["MSFT"]["tv_sd_touch"]["side"])
+        self.assertEqual("signal_candidate", by_symbol["MSFT"]["target_stage"])
         self.assertEqual({}, by_symbol["NVDA"]["tv_sd_touch"])
+        self.assertEqual("tradingview", by_symbol["NVDA"]["admission_source"])
+        self.assertEqual("ema_pullback", by_symbol["AMZN"]["admission_source"])
+        self.assertEqual("Admitted Observe", by_symbol["AMZN"]["target_stage_label"])
+        self.assertEqual("signal_candidate", by_symbol["GOOGL"]["target_stage"])
+        self.assertEqual("structure_breakout", by_symbol["GOOGL"]["admission_source"])
+        self.assertEqual("Structure Breakout", by_symbol["GOOGL"]["admission_source_label"])
 
     def test_today_targets_demotes_active_after_terminal_latest_signal(self):
         pb = _MinimalPB()

@@ -61,6 +61,254 @@ SUBMITTED_SIGNAL_STATUSES = {"submitted", "submitted_waiting_fill"}
 PROTECTED_ACTIVE_SIGNAL_STATUSES = {"protected_active", "filled_repricing_protection", "filled_position"}
 PROTECTION_INCOMPLETE_SIGNAL_STATUSES = {"protection_incomplete", "protection_reprice_failed"}
 ENTRY_MISSED_SIGNAL_STATUSES = {"entry_missed_limit_cap"}
+TARGET_STAGE_LABELS = {
+    "admitted_observe": "Admitted Observe",
+    "signal_candidate": "Signal Candidate",
+    "execution_active": "Execution Active",
+}
+ADMISSION_SOURCE_LABELS = {
+    "sd_window": "SD Window",
+    "ema_pullback": "EMA Pullback",
+    "dtp_touch": "DTP Touch",
+    "structure_breakout": "Structure Breakout",
+    "tradingview": "TradingView",
+    "daily_scan": "Daily Scan",
+    "intraday_window_admission": "Intraday Window",
+    "manual": "Manual",
+    "screener": "Screener",
+    "legacy_target": "Legacy Target",
+    "unknown": "Unknown",
+}
+SIGNAL_CANDIDATE_KINDS = {
+    "candidate",
+    "context_active",
+    "execution_candidate",
+    "entry_candidate",
+    "setup_building",
+    "signal_candidate",
+    "signal_window",
+    "trade_candidate",
+}
+TRUTHY_TEXTS = {"1", "true", "yes", "y", "active", "passed", "pass", "ready", "ok"}
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return to_text(value).lower() in TRUTHY_TEXTS
+
+
+def _normalized_token(value: Any) -> str:
+    return to_text(value).strip().lower().replace(" ", "_").replace("-", "_")
+
+
+def _first_extra_value(extra: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = extra.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _first_list_text(value: Any) -> str:
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            text = to_text(item)
+            if text:
+                return text
+        return ""
+    return to_text(value)
+
+
+def _normalize_target_stage_key(value: Any) -> str:
+    stage = _normalized_token(value)
+    if not stage:
+        return ""
+    if stage in {"observe", "observation", "admitted", "admitted_observe", "admission", "watch"}:
+        return "admitted_observe"
+    if stage in {
+        "candidate",
+        "entry_candidate",
+        "execution_candidate",
+        "setup_building",
+        "signal",
+        "signal_candidate",
+        "trade_candidate",
+        "trading_candidate",
+    }:
+        return "signal_candidate"
+    if stage in {"active", "execution", "execution_active", "open_signal", "submitted", "protected_active"}:
+        return "execution_active"
+    return stage if stage in TARGET_STAGE_LABELS else ""
+
+
+def _normalize_target_stage(
+    target_extra: dict[str, Any],
+    *,
+    target_status: str,
+    execution_active: bool,
+    execution_eligible: bool,
+    has_open_signal: bool,
+    latest_signal_status: str,
+) -> str:
+    if execution_active or has_open_signal or signal_status_is_open(latest_signal_status):
+        return "execution_active"
+
+    explicit_stage = _normalize_target_stage_key(
+        _first_extra_value(
+            target_extra,
+            "target_stage",
+            "candidate_stage",
+            "admission_stage",
+            "workflow_stage",
+        )
+    )
+    if explicit_stage:
+        return explicit_stage
+
+    if execution_eligible:
+        return "signal_candidate"
+
+    candidate_kind = _normalized_token(
+        _first_extra_value(
+            target_extra,
+            "candidate_kind",
+            "setup_kind",
+            "setup_type",
+            "target_kind",
+            "admission_kind",
+        )
+    )
+    strategy_policy = target_extra.get("strategy_policy") if isinstance(target_extra.get("strategy_policy"), dict) else {}
+    policy_setup_type = _normalized_token(strategy_policy.get("setup_type"))
+    if candidate_kind in SIGNAL_CANDIDATE_KINDS or policy_setup_type in SIGNAL_CANDIDATE_KINDS:
+        return "signal_candidate"
+
+    if any(
+        _truthy(target_extra.get(key))
+        for key in (
+            "active_gate_passed",
+            "candidate_gate_passed",
+            "context_active",
+            "context_gate_passed",
+            "entry_gate_passed",
+            "signal_candidate_gate_passed",
+            "signal_window_active",
+        )
+    ):
+        return "signal_candidate"
+
+    if target_status == "active":
+        return "signal_candidate"
+    return "admitted_observe"
+
+
+def _normalize_source_key(value: Any) -> str:
+    source = _normalized_token(value)
+    if not source:
+        return ""
+    if source in {
+        "sd",
+        "sd_touch",
+        "sd_window",
+        "sd_window_activation",
+        "tv_sd",
+        "tv_sd_window",
+        "tv_pre_alert_window_activation",
+        "window_activation",
+    }:
+        return "sd_window"
+    if source in {"ema", "ema_slow", "ema_slow_line", "ema_pullback", "ema_retest", "slow_ema"}:
+        return "ema_pullback"
+    if source in {"dtp", "dtp_touch", "daily_trading_plan", "key_level", "key_level_touch"}:
+        return "dtp_touch"
+    if source in {"breakout", "structure", "structure_break", "structure_breakout", "range_breakout"}:
+        return "structure_breakout"
+    if source in {"tv", "tv_webhook", "webhook_tv", "trading_view", "tradingview"}:
+        return "tradingview"
+    if source in {"manual_add", "manual_edit", "manual_page", "manual_page_add"}:
+        return "manual"
+    if source in {"ibkr_screener", "screener_targets_tab"}:
+        return "screener"
+    return source
+
+
+def _normalize_admission_source(target_extra: dict[str, Any], *, tv_sd_touch: dict[str, Any]) -> str:
+    if tv_sd_touch.get("side"):
+        return "sd_window"
+
+    raw_source = _first_extra_value(
+        target_extra,
+        "admission_source",
+        "first_admission_source",
+        "last_admission_source",
+        "admission_trigger_family",
+        "candidate_source",
+        "target_source",
+    )
+    if raw_source in (None, ""):
+        raw_source = _first_list_text(target_extra.get("admission_sources") or target_extra.get("candidate_sources"))
+    if raw_source in (None, ""):
+        raw_source = target_extra.get("source")
+
+    source = _normalize_source_key(raw_source)
+    if source:
+        return source
+
+    strategy_policy = target_extra.get("strategy_policy") if isinstance(target_extra.get("strategy_policy"), dict) else {}
+    policy_source = _normalize_source_key(strategy_policy.get("setup_type") or strategy_policy.get("source"))
+    if policy_source:
+        return policy_source
+    return "legacy_target"
+
+
+def _target_stage_label(stage: str) -> str:
+    return TARGET_STAGE_LABELS.get(stage, stage.replace("_", " ").title() if stage else TARGET_STAGE_LABELS["admitted_observe"])
+
+
+def _admission_source_label(source: str) -> str:
+    return ADMISSION_SOURCE_LABELS.get(source, source.replace("_", " ").title() if source else ADMISSION_SOURCE_LABELS["unknown"])
+
+
+def _sorted_counts(counts: dict[str, int]) -> dict[str, int]:
+    return dict(sorted(((key, int(value)) for key, value in counts.items()), key=lambda item: (-item[1], item[0])))
+
+
+def _candidate_breakdown_summary(
+    stage_counts: dict[str, int] | None = None,
+    source_counts: dict[str, int] | None = None,
+    tv_sd_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    stage_counts = _sorted_counts(dict(stage_counts or {}))
+    for stage in TARGET_STAGE_LABELS:
+        stage_counts.setdefault(stage, 0)
+    source_counts = _sorted_counts(dict(source_counts or {}))
+    sd_summary = tv_sd_summary if isinstance(tv_sd_summary, dict) else _empty_tv_sd_touch_summary()
+    source_labels = dict(ADMISSION_SOURCE_LABELS)
+    for source in source_counts:
+        source_labels.setdefault(source, _admission_source_label(source))
+    return {
+        "admitted_observe_count": int(stage_counts.get("admitted_observe", 0)),
+        "signal_candidate_count": int(stage_counts.get("signal_candidate", 0)),
+        "execution_stage_count": int(stage_counts.get("execution_active", 0)),
+        "candidate_stage_counts": stage_counts,
+        "target_stage_counts": dict(stage_counts),
+        "candidate_stage_labels": dict(TARGET_STAGE_LABELS),
+        "target_stage_labels": dict(TARGET_STAGE_LABELS),
+        "candidate_source_counts": source_counts,
+        "admission_source_counts": dict(source_counts),
+        "candidate_source_labels": source_labels,
+        "admission_source_labels": dict(source_labels),
+        "sd_window_breakdown": {
+            "upper": int(sd_summary.get("tv_sd_upper_touch_count") or 0),
+            "lower": int(sd_summary.get("tv_sd_lower_touch_count") or 0),
+            "total": int(sd_summary.get("tv_sd_touch_count") or 0),
+            "interval_label": to_text(sd_summary.get("tv_sd_touch_interval_label")) or "TV",
+            "basis": to_text(sd_summary.get("tv_sd_touch_basis")) or TV_SD_TOUCH_BASIS,
+        },
+    }
 
 
 def _empty_tv_sd_touch_summary() -> dict[str, Any]:
@@ -332,6 +580,7 @@ def build_today_targets_response(
                 "observe_only_count": 0,
                 "watch_only_count": 0,
                 **_empty_tv_sd_touch_summary(),
+                **_candidate_breakdown_summary(tv_sd_summary=_empty_tv_sd_touch_summary()),
             },
             "filters": filters,
             "filtered_summary": {"total": 0, "ready_count": 0, "signaled_count": 0, "needs_action_count": 0},
@@ -491,6 +740,8 @@ def build_today_targets_response(
     execution_eligible_count = 0
     observe_only_count = 0
     watch_only_count = 0
+    candidate_stage_counts: dict[str, int] = {}
+    candidate_source_counts: dict[str, int] = {}
 
     for symbol in ordered_symbols:
         target = target_by_symbol.get(symbol)
@@ -594,6 +845,21 @@ def build_today_targets_response(
             "within_subscription_budget": bool(target_extra.get("within_subscription_budget")),
             "tv_sd_touch": dict(tv_sd_touch_by_symbol.get(symbol) or {}),
         }
+        target_stage = _normalize_target_stage(
+            target_extra,
+            target_status=target_status,
+            execution_active=execution_active,
+            execution_eligible=bool(execution_meta.get("execution_eligible")),
+            has_open_signal=has_open_signal,
+            latest_signal_status=latest_signal_status,
+        )
+        admission_source = _normalize_admission_source(target_extra, tv_sd_touch=row["tv_sd_touch"])
+        row["target_stage"] = target_stage
+        row["target_stage_label"] = _target_stage_label(target_stage)
+        row["admission_source"] = admission_source
+        row["admission_source_label"] = _admission_source_label(admission_source)
+        row["candidate_source"] = admission_source
+        row["candidate_source_label"] = row["admission_source_label"]
         tradability_score, assessment_notes = build_tradability_assessment(row)
         row["tradability_score"] = tradability_score
         row["operable_reasons"] = pick_reason_list(assessment_notes, screener_snapshot.get("operable_reasons") if isinstance(screener_snapshot.get("operable_reasons"), list) else [])
@@ -659,6 +925,8 @@ def build_today_targets_response(
             observe_only_count += 1
         if "watch_only" in row["execution_blockers"]:
             watch_only_count += 1
+        candidate_stage_counts[row["target_stage"]] = candidate_stage_counts.get(row["target_stage"], 0) + 1
+        candidate_source_counts[row["admission_source"]] = candidate_source_counts.get(row["admission_source"], 0) + 1
         items.append(row)
 
     filtered_items = [row for row in sort_rows(items, to_text(filters.get("sort_by"))) if matches_filters(row, filters)]
@@ -705,6 +973,7 @@ def build_today_targets_response(
             "observe_only_count": observe_only_count,
             "watch_only_count": watch_only_count,
             **tv_sd_touch_summary,
+            **_candidate_breakdown_summary(candidate_stage_counts, candidate_source_counts, tv_sd_touch_summary),
         },
         "filters": filters,
         "filtered_summary": filtered_summary,

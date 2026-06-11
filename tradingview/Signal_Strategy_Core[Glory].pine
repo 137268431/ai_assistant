@@ -132,6 +132,7 @@ string TIMEFRAME_STACK = enableMtf ? "entry=" + timeframe.period + ";confirm=" +
 displayPreset = input.string("核心交易流程", "Display preset", options=["核心交易流程", "指标辅助", "调试全量"], group="08 Display")
 showFlowLabels = input.bool(true, "Show activation/prep/entry labels", group="08 Display")
 showSignalDiagnostics = input.bool(true, "Show raw/filtered signal diagnostics", group="08 Display")
+labelDetailMode = input.string("compact_tooltip", "Flow label detail mode", options=["compact_tooltip", "full_labels", "off"], group="08 Display")
 flowLabelTransparency = input.int(30, "Flow label background transparency", minval=0, maxval=100, group="08 Display")
 showStatusPanel = input.bool(true, "Show status panel", group="08 Display")
 showBands = input.bool(true, "Show SD bands", group="08 Display")
@@ -144,6 +145,8 @@ showEmaCrossMarkers = input.bool(true, "Show EMA20/50 cross markers", group="08 
 
 bool displayIndicatorMode = displayPreset == "指标辅助"
 bool displayDebugMode = displayPreset == "调试全量"
+bool flowLabelsVisible = showFlowLabels and labelDetailMode != "off"
+bool compactFlowLabelMode = labelDetailMode == "compact_tooltip"
 bool showEmaFastSlowLines = showEma or displayIndicatorMode or displayDebugMode
 bool showEmaContextLines = displayIndicatorMode or displayDebugMode
 bool showBandLines = showBands or displayIndicatorMode or displayDebugMode
@@ -603,6 +606,12 @@ flowStatusColor(string state, string direction) =>
 
 flowLabelStyle(string direction) =>
     direction == "short" ? label.style_label_down : label.style_label_up
+
+flowLabelText(string compactText, string detailText) =>
+    compactFlowLabelMode ? compactText : detailText
+
+flowLabelTooltip(string detailText) =>
+    compactFlowLabelMode ? detailText : ""
 
 // -----------------------------------------------------------------------------
 // Core indicators
@@ -2049,9 +2058,11 @@ if exitedNow
     lastExitTimeText := str.format_time(time_close, "HH:mm", "America/New_York")
     if enableAlerts
         alert(buildExitPayload(eventId("exit", exitReason), activePositionId, exitReason, exitPrice), alert.freq_all)
-    if showFlowLabels
+    if flowLabelsVisible
         float exitY = activeDirection == -1 ? low - atrVal * 3.6 : high + atrVal * 3.6
-        label.new(bar_index, exitY, exitPnlLabelText(exitReason, lastExitTimeText, exitPrice, lastExitPnl, lastExitPnlPct), style=activeDirection == -1 ? label.style_label_up : label.style_label_down, color=exitPnlLabelColor(lastExitPnl), textcolor=color.white, size=size.normal)
+        string exitDetailText = exitPnlLabelText(exitReason, lastExitTimeText, exitPrice, lastExitPnl, lastExitPnlPct)
+        string exitCompactText = exitReasonDisplayName(exitReason) + "\n" + fmtSignedMoney(lastExitPnl)
+        label.new(bar_index, exitY, flowLabelText(exitCompactText, exitDetailText), style=activeDirection == -1 ? label.style_label_up : label.style_label_down, color=exitPnlLabelColor(lastExitPnl), textcolor=color.white, size=size.normal, tooltip=flowLabelTooltip(exitDetailText))
     pendingExitReason := ""
     activePositionId := ""
     activeSignalId := ""
@@ -2088,9 +2099,12 @@ if pendingFilledNow
     activeInitialRisk := activeDirection == 1 ? activeEntry - activeStop : activeStop - activeEntry
     activeRunnerExtreme := activeDirection == 1 ? high : low
     activeEntryBar := bar_index
-    if showFlowLabels
+    if flowLabelsVisible
         float fillY = activeDirection == -1 ? high + atrVal * 3.0 : low - atrVal * 3.0
-        label.new(bar_index, fillY, "TV模拟成交\n" + directionDisplayName(activeDirection == -1 ? "short" : "long") + "\n" + setupDisplayName(activeSetup) + "\nfill " + str.tostring(activeEntry, "#.##") + "\nIBKR成交以后端为准", style=activeDirection == -1 ? label.style_label_down : label.style_label_up, color=flowLabelColor("entry", activeDirection == -1 ? "short" : "long"), textcolor=color.white, size=size.small)
+        string fillDirection = activeDirection == -1 ? "short" : "long"
+        string fillDetailText = "TV模拟成交\n" + directionDisplayName(fillDirection) + "\n" + setupDisplayName(activeSetup) + "\nfill " + str.tostring(activeEntry, "#.##") + "\nIBKR成交以后端为准"
+        string fillCompactText = "成交" + directionDisplayName(fillDirection) + "\n" + str.tostring(activeEntry, "#.##")
+        label.new(bar_index, fillY, flowLabelText(fillCompactText, fillDetailText), style=activeDirection == -1 ? label.style_label_down : label.style_label_up, color=flowLabelColor("entry", fillDirection), textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(fillDetailText))
 
 int eodCloseHourNow = hour(time_close, "America/New_York")
 int eodCloseMinuteNow = minute(time_close, "America/New_York")
@@ -2121,9 +2135,12 @@ if pendingCancelNow
         strategy.cancel("TV-L")
     if activeDirection == -1
         strategy.cancel("TV-S")
-    if showFlowLabels
+    if flowLabelsVisible
         float ttlY = activeDirection == -1 ? high + atrVal * 2.8 : low - atrVal * 2.8
-        label.new(bar_index, ttlY, "信号撤销\n" + cancelReasonDisplayName(pendingCancelReason) + "\n" + setupDisplayName(activeSetup) + "\nref " + str.tostring(activeReferenceEntry, "#.##") + " / plan " + str.tostring(activeEntry, "#.##") + "\n锚点: " + activeEntryAnchorReason, style=activeDirection == -1 ? label.style_label_down : label.style_label_up, color=flowLabelColor("blocked", activeDirection == -1 ? "short" : "long"), textcolor=color.white, size=size.small)
+        string cancelDirection = activeDirection == -1 ? "short" : "long"
+        string cancelDetailText = "信号撤销\n" + cancelReasonDisplayName(pendingCancelReason) + "\n" + setupDisplayName(activeSetup) + "\nref " + str.tostring(activeReferenceEntry, "#.##") + " / plan " + str.tostring(activeEntry, "#.##") + "\n锚点: " + activeEntryAnchorReason
+        string cancelCompactText = "撤销" + directionDisplayName(cancelDirection) + "\n" + cancelReasonDisplayName(pendingCancelReason)
+        label.new(bar_index, ttlY, flowLabelText(cancelCompactText, cancelDetailText), style=activeDirection == -1 ? label.style_label_down : label.style_label_up, color=flowLabelColor("blocked", cancelDirection), textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(cancelDetailText))
     activePositionId := ""
     activeSignalId := ""
     activeTradeGroupId := ""
@@ -2184,19 +2201,22 @@ if isNewTradingDay
     lastBlockVisualKey := ""
     eodForceCloseDay := na
 
-if showFlowLabels and lowerCandidateNotice
-    label.new(bar_index, low - atrVal * 1.4, "已入选候选池\n" + syminfo.ticker + " · SD窗口开启\nSD下轨候选\n非开仓点，等组件", style=label.style_label_up, color=flowLabelColor("activate_lower", "long"), textcolor=color.white, size=size.small)
+if flowLabelsVisible and lowerCandidateNotice
+    string lowerActivateDetailText = "已入选候选池\n" + syminfo.ticker + " · SD窗口开启\nSD下轨候选\n非开仓点，等组件"
+    label.new(bar_index, low - atrVal * 1.4, flowLabelText("候选池\nSD下轨", lowerActivateDetailText), style=label.style_label_up, color=flowLabelColor("activate_lower", "long"), textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(lowerActivateDetailText))
 
-if showFlowLabels and upperCandidateNotice
-    label.new(bar_index, high + atrVal * 1.4, "已入选候选池\n" + syminfo.ticker + " · SD窗口开启\nSD上轨候选\n非开仓点，等组件", style=label.style_label_down, color=flowLabelColor("activate_upper", "short"), textcolor=color.white, size=size.small)
+if flowLabelsVisible and upperCandidateNotice
+    string upperActivateDetailText = "已入选候选池\n" + syminfo.ticker + " · SD窗口开启\nSD上轨候选\n非开仓点，等组件"
+    label.new(bar_index, high + atrVal * 1.4, flowLabelText("候选池\nSD上轨", upperActivateDetailText), style=label.style_label_down, color=flowLabelColor("activate_upper", "short"), textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(upperActivateDetailText))
 
 bool observeNow = preAlertNow
-bool prepareVisualNow = showFlowLabels and observeNow
+bool prepareVisualNow = flowLabelsVisible and observeNow
 string prepareVisualKey = activityGrade + ":" + candidateDirection + ":" + candidateSetup + ":" + missingComponents + ":" + str.tostring(activityScore, "#")
 if prepareVisualNow and prepareVisualKey != lastPrepareVisualKey
     float prepareY = candidateDirection == "short" ? high + atrVal * 2.4 : low - atrVal * 2.4
-    string prepareText = "观察" + directionDisplayName(candidateDirection) + "\n" + setupDisplayName(candidateSetup) + "\n组件: " + candidateComponentText + "\nMTF: " + mtfSummaryForDirection(candidateDirection) + "\n下一步: " + candidateWaitText
-    label.new(bar_index, prepareY, prepareText, style=flowLabelStyle(candidateDirection), color=color.new(color.orange, flowLabelTransparency), textcolor=color.white, size=size.normal)
+    string prepareDetailText = "观察" + directionDisplayName(candidateDirection) + "\n" + setupDisplayName(candidateSetup) + "\n组件: " + candidateComponentText + "\nMTF: " + mtfSummaryForDirection(candidateDirection) + "\n下一步: " + candidateWaitText
+    string prepareCompactText = "观察" + directionDisplayName(candidateDirection) + "\n" + candidateWaitText
+    label.new(bar_index, prepareY, flowLabelText(prepareCompactText, prepareDetailText), style=flowLabelStyle(candidateDirection), color=color.new(color.orange, flowLabelTransparency), textcolor=color.white, size=size.normal, tooltip=flowLabelTooltip(prepareDetailText))
     lastPrepareVisualKey := prepareVisualKey
 if not prepareVisualNow and activityScore == 0
     lastPrepareVisualKey := ""
@@ -2204,7 +2224,7 @@ if not prepareVisualNow and activityScore == 0
 bool diagnosticLongCandidate = canTrade and flatForEntry and longRaw and not enterLong
 bool diagnosticShortCandidate = canTrade and flatForEntry and shortRaw and not enterShort
 bool blockedNow = diagnosticLongCandidate or diagnosticShortCandidate
-bool blockedVisualNow = showFlowLabels and showSignalDiagnostics and blockedNow
+bool blockedVisualNow = flowLabelsVisible and showSignalDiagnostics and blockedNow
 string blockedDirection = diagnosticLongCandidate and (not diagnosticShortCandidate or candidateDirection == "long") ? "long" : "short"
 string blockedSetup = blockedDirection == "long" ? longSetup : shortSetup
 string blockedReasonRaw = conflict ? "long_short_conflict" : blockedDirection == "long" ? blockLongReason : blockShortReason
@@ -2228,8 +2248,10 @@ string blockedProfitLabelText = (blockedProfitSpaceText == "" ? "\n" + blockedPr
 string blockedVisualKey = blockedDirection + ":" + blockedSetup + ":" + blockedReason + ":" + blockedComponentText + ":" + mtfStatusForDirection(blockedDirection) + ":" + mtfBlockReasonForDirection(blockedDirection) + ":" + str.tostring(dtpDir, "#") + ":" + dtpPhase + ":" + (blockedProfitSpaceEntryBlocked ? blockedProfitSpaceFailureReason : "none")
 if blockedVisualNow and blockedVisualKey != lastBlockVisualKey
     float blockedY = blockedDirection == "short" ? high + atrVal * 4.0 : low - atrVal * 4.0
-    string blockedText = "信号过滤\n" + directionDisplayName(blockedDirection) + " · " + setupDisplayName(blockedSetup) + "\n" + entryWindowDiagnosticsText() + "\n组件: " + blockedComponentText + "\n原因: " + filterDisplayName(blockedReason) + "\n" + filterActionText(blockedReason, blockedDirection) + "\n" + mtfSummaryForDirection(blockedDirection) + "\n" + dtpEntryFilterText(blockedDirection, dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + blockedMrRegimeText + blockedProfitLabelText + blockedAnchorText
-    label.new(bar_index, blockedY, blockedText, style=flowLabelStyle(blockedDirection), color=flowLabelColor("blocked", blockedDirection), textcolor=color.white, size=size.small)
+    string blockedDetailText = "信号过滤\n" + directionDisplayName(blockedDirection) + " · " + setupDisplayName(blockedSetup) + "\n" + entryWindowDiagnosticsText() + "\n组件: " + blockedComponentText + "\n原因: " + filterDisplayName(blockedReason) + "\n" + filterActionText(blockedReason, blockedDirection) + "\n" + mtfSummaryForDirection(blockedDirection) + "\n" + dtpEntryFilterText(blockedDirection, dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + blockedMrRegimeText + blockedProfitLabelText + blockedAnchorText
+    string blockedCompactReasonText = blockedProfitSpaceEntryBlocked ? "获利不足" : filterDisplayName(blockedReason)
+    string blockedCompactText = "过滤" + directionDisplayName(blockedDirection) + "\n" + blockedCompactReasonText
+    label.new(bar_index, blockedY, flowLabelText(blockedCompactText, blockedDetailText), style=flowLabelStyle(blockedDirection), color=flowLabelColor("blocked", blockedDirection), textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(blockedDetailText))
     lastBlockVisualKey := blockedVisualKey
 if not blockedNow and not longRaw and not shortRaw
     lastBlockVisualKey := ""
@@ -2278,10 +2300,12 @@ if enterLong
         string divSourceForEntry = bullDivSource == "" ? bullDivSourceNow : bullDivSource
         strategy.entry("TV-L", strategy.long, qty=qty, limit=submittedLimitPrice, comment=entryComment("long", longSetup))
         strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment="平多 · TP/SL", comment_profit="平多 · TP止盈", comment_loss="平多 · SL止损")
-        if showFlowLabels
+        if flowLabelsVisible
             string mrLine = longSetup == "mr_sdLower" ? "\nMR: " + mrRegimeDisplayName(longMrRegime) + " / 均值TP " + str.tostring(targetPrice, "#.##") : ""
             string profitLine = profitSpaceSummaryText(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr, longStructureRewardRisk) + profitSpaceCheckpointText(longRunnerCandidate, longCheckpointNetProfit, longCheckpointCostPctOfReward, longCheckpointTargetDistanceAtr)
-            label.new(bar_index, low - atrVal * 3.1, "信号已发出\n提交限价做多\n" + setupDisplayName(longSetup) + "\n" + entryWindowDiagnosticsText() + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("long") + "\n" + dtpEntryFilterText("long", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + mrLine + "\n" + profitLine + "\nref " + str.tostring(longReferenceEntry, "#.##") + " / plan " + str.tostring(entryPrice, "#.##") + " / 复查 " + str.tostring(entryOrderTtlBars, "#") + "bar\n锚点: " + activeEntryAnchorReason, style=label.style_label_up, color=flowLabelColor("entry", "long"), textcolor=color.white, size=size.normal)
+            string longEntryDetailText = "信号已发出\n提交限价做多\n" + setupDisplayName(longSetup) + "\n" + entryWindowDiagnosticsText() + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("long") + "\n" + dtpEntryFilterText("long", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + mrLine + "\n" + profitLine + "\nref " + str.tostring(longReferenceEntry, "#.##") + " / plan " + str.tostring(entryPrice, "#.##") + " / 复查 " + str.tostring(entryOrderTtlBars, "#") + "bar\n锚点: " + activeEntryAnchorReason
+            string longEntryCompactText = "入场做多\nplan " + str.tostring(entryPrice, "#.##")
+            label.new(bar_index, low - atrVal * 3.1, flowLabelText(longEntryCompactText, longEntryDetailText), style=label.style_label_up, color=flowLabelColor("entry", "long"), textcolor=color.white, size=size.normal, tooltip=flowLabelTooltip(longEntryDetailText))
         lowerPostReversalUsed := setupLongPostLowerBreakout ? true : lowerPostReversalUsed
         lowerWindowUsed := longSetup == "mr_sdLower" ? true : lowerWindowUsed
         upperWindowUsed := longSetup == "trend_sdUpper" ? true : upperWindowUsed
@@ -2336,10 +2360,12 @@ if enterShort
         string divSourceForEntry = bearDivSource == "" ? bearDivSourceNow : bearDivSource
         strategy.entry("TV-S", strategy.short, qty=qty, limit=submittedLimitPrice, comment=entryComment("short", shortSetup))
         strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment="平空 · TP/SL", comment_profit="平空 · TP止盈", comment_loss="平空 · SL止损")
-        if showFlowLabels
+        if flowLabelsVisible
             string mrLine = shortSetup == "mr_sdUpper" ? "\nMR: " + mrRegimeDisplayName(shortMrRegime) + " / 均值TP " + str.tostring(targetPrice, "#.##") : ""
             string profitLine = profitSpaceSummaryText(shortExpectedNetProfit, shortExpectedNetRoiPct, shortCostPctOfReward, shortTargetDistanceAtr, shortStructureRewardRisk) + profitSpaceCheckpointText(shortRunnerCandidate, shortCheckpointNetProfit, shortCheckpointCostPctOfReward, shortCheckpointTargetDistanceAtr)
-            label.new(bar_index, high + atrVal * 3.1, "信号已发出\n提交限价做空\n" + setupDisplayName(shortSetup) + "\n" + entryWindowDiagnosticsText() + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("short") + "\n" + dtpEntryFilterText("short", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + mrLine + "\n" + profitLine + "\nref " + str.tostring(shortReferenceEntry, "#.##") + " / plan " + str.tostring(entryPrice, "#.##") + " / 复查 " + str.tostring(entryOrderTtlBars, "#") + "bar\n锚点: " + activeEntryAnchorReason, style=label.style_label_down, color=flowLabelColor("entry", "short"), textcolor=color.white, size=size.normal)
+            string shortEntryDetailText = "信号已发出\n提交限价做空\n" + setupDisplayName(shortSetup) + "\n" + entryWindowDiagnosticsText() + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("short") + "\n" + dtpEntryFilterText("short", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + mrLine + "\n" + profitLine + "\nref " + str.tostring(shortReferenceEntry, "#.##") + " / plan " + str.tostring(entryPrice, "#.##") + " / 复查 " + str.tostring(entryOrderTtlBars, "#") + "bar\n锚点: " + activeEntryAnchorReason
+            string shortEntryCompactText = "入场做空\nplan " + str.tostring(entryPrice, "#.##")
+            label.new(bar_index, high + atrVal * 3.1, flowLabelText(shortEntryCompactText, shortEntryDetailText), style=label.style_label_down, color=flowLabelColor("entry", "short"), textcolor=color.white, size=size.normal, tooltip=flowLabelTooltip(shortEntryDetailText))
         upperPostReversalUsed := setupShortPostUpperBreakdown ? true : upperPostReversalUsed
         emaDeathContinuationShortUsed := setupShortEmaDeathContinuation ? true : emaDeathContinuationShortUsed
         upperWindowUsed := shortSetup == "mr_sdUpper" ? true : upperWindowUsed
@@ -2443,9 +2469,11 @@ if eodCloseNow
     lastExitTimeText := str.format_time(time_close, "HH:mm", "America/New_York")
     if enableAlerts
         alert(buildExitPayload(eventId("exit", "force_flat_eod"), eodPositionId, "force_flat_eod", eodExitPrice), alert.freq_all)
-    if showFlowLabels
+    if flowLabelsVisible
         float eodY = eodDirection == -1 ? low - atrVal * 3.6 : high + atrVal * 3.6
-        label.new(bar_index, eodY, exitPnlLabelText("force_flat_eod", lastExitTimeText, eodExitPrice, lastExitPnl, lastExitPnlPct), style=eodDirection == -1 ? label.style_label_up : label.style_label_down, color=exitPnlLabelColor(lastExitPnl), textcolor=color.white, size=size.normal)
+        string eodDetailText = exitPnlLabelText("force_flat_eod", lastExitTimeText, eodExitPrice, lastExitPnl, lastExitPnlPct)
+        string eodCompactText = "EOD强平\n" + fmtSignedMoney(lastExitPnl)
+        label.new(bar_index, eodY, flowLabelText(eodCompactText, eodDetailText), style=eodDirection == -1 ? label.style_label_up : label.style_label_down, color=exitPnlLabelColor(lastExitPnl), textcolor=color.white, size=size.normal, tooltip=flowLabelTooltip(eodDetailText))
     pendingExitReason := ""
     activePositionId := ""
     activeSignalId := ""

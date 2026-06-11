@@ -27,7 +27,15 @@ async function collectHomeOverviewIssues(page, mobile = false) {
   return page.evaluate(({ isMobileViewport, requiredRows }) => {
     const issues = [];
     const tip = document.getElementById('todayTargetsTimeTip');
+    const stageSummary = document.getElementById('todayTargetsStageSummary');
+    const admittedObserve = document.getElementById('todayTargetsAdmittedObserve');
+    const signalCandidate = document.getElementById('todayTargetsSignalCandidate');
+    const executionEligible = document.getElementById('todayTargetsExecutionEligible');
+    const sourceSummary = document.getElementById('todayTargetsSourceSummary');
+    const sourcePrimary = document.getElementById('todayTargetsSourcePrimary');
     const sdSummary = document.getElementById('todayTargetsSdSummary');
+    const sdBreakdown = document.getElementById('todayTargetsSdBreakdown');
+    const sdTotal = document.getElementById('todayTargetsSdTotal');
     const sdUpper = document.getElementById('todayTargetsSdUpper');
     const sdLower = document.getElementById('todayTargetsSdLower');
     const badge = document.querySelector('.home-panel-tip-badge');
@@ -48,7 +56,10 @@ async function collectHomeOverviewIssues(page, mobile = false) {
     const positionsFoot = document.getElementById('positionsFoot');
 
     const tipText = String(tip?.textContent || '').trim();
+    const stageSummaryText = String(stageSummary?.textContent || '').trim();
+    const sourceSummaryText = String(sourceSummary?.textContent || '').trim();
     const sdSummaryText = String(sdSummary?.textContent || '').trim();
+    const sdBreakdownText = String(sdBreakdown?.textContent || '').trim();
     const badgeText = String(badge?.textContent || '').trim();
     const tipStyle = tipCard ? window.getComputedStyle(tipCard) : null;
     const stackSummaryText = String(stackSummary?.textContent || '').trim();
@@ -71,9 +82,26 @@ async function collectHomeOverviewIssues(page, mobile = false) {
     const positionsFootText = String(positionsFoot?.textContent || '').trim();
 
     if (!tip) issues.push('missing_targets_time_tip');
+    if (!stageSummary) issues.push('missing_targets_stage_summary');
+    if (!admittedObserve) issues.push('missing_targets_admitted_observe');
+    if (!signalCandidate) issues.push('missing_targets_signal_candidate');
+    if (!executionEligible) issues.push('missing_targets_execution_eligible');
+    if (!sourceSummary) issues.push('missing_targets_source_summary');
+    if (!sourcePrimary) issues.push('missing_targets_source_primary');
     if (!sdSummary) issues.push('missing_targets_sd_summary');
+    if (!sdBreakdown) issues.push('missing_targets_sd_breakdown');
+    if (!sdTotal) issues.push('missing_targets_sd_total');
     if (!sdUpper) issues.push('missing_targets_sd_upper');
     if (!sdLower) issues.push('missing_targets_sd_lower');
+    if (stageSummary && (!stageSummaryText.includes('入选观察') || !stageSummaryText.includes('交易候选') || !stageSummaryText.includes('可执行'))) {
+      issues.push(`targets_stage_summary_text:${stageSummaryText || 'empty'}`);
+    }
+    if (sourceSummary && !sourceSummaryText.includes('来源')) {
+      issues.push(`targets_source_summary_text:${sourceSummaryText || 'empty'}`);
+    }
+    if (sdBreakdown && !sdBreakdownText.includes('SD窗口')) {
+      issues.push(`targets_sd_breakdown_text:${sdBreakdownText || 'empty'}`);
+    }
     if (sdSummary && (!sdSummaryText.includes('SD上轨') || !sdSummaryText.includes('SD下轨'))) {
       issues.push(`targets_sd_summary_text:${sdSummaryText || 'empty'}`);
     }
