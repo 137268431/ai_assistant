@@ -2945,6 +2945,19 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
             "risk_per_share": 2.0,
             "reward_risk": 2.0,
             "atr": 1.25,
+            "tp_sl_model": "structure_first_atr_buffer_v1",
+            "rr_basis": "structure_stop_to_structure_target",
+            "atr_role": "buffer_and_filter_only",
+            "structure_stop_available": True,
+            "structure_target_available": True,
+            "target_is_structure": True,
+            "structure_stop_source": "support_with_atr_buffer",
+            "structure_target_source": "next_resistance_structure",
+            "structure_stop_loss": 98.0,
+            "structure_take_profit": 104.0,
+            "structure_risk_per_share": 2.0,
+            "structure_reward_per_share": 4.0,
+            "structure_reward_risk": 2.0,
         }
         signal["extra"] = extra
         signal["raw"]["extra"] = dict(extra)
@@ -3046,6 +3059,13 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         self.assertEqual(100.0, ack_extra["reference_entry"])
         self.assertEqual(100.15, ack_extra["submitted_entry_limit_price"])
         self.assertTrue(ack_extra["final_protection_from_fill"])
+        self.assertEqual("structure_first_atr_buffer_v1", ack_extra["tp_sl_model"])
+        self.assertEqual("buffer_and_filter_only", ack_extra["atr_role"])
+        self.assertEqual("structure_stop_to_structure_target", ack_extra["rr_basis"])
+        self.assertTrue(ack_extra["target_is_structure"])
+        self.assertEqual(2.0, ack_extra["structure_reward_risk"])
+        self.assertEqual(98.0, ack_extra["structure_stop_loss"])
+        self.assertEqual(104.0, ack_extra["structure_take_profit"])
 
     def test_tv_direct_independent_plan_metadata_stays_on_single_leg_bracket(self):
         signal = self._tv_signal("AAPL")

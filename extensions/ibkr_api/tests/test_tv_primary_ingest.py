@@ -433,8 +433,31 @@ class TvPrimaryIngestTests(unittest.TestCase):
                 "expected_net_profit": 61.5,
                 "expected_net_roi_pct": 1.24,
                 "cost_pct_of_reward": 4.2,
+                "gross_risk": 16.8,
+                "structure_risk_per_share": 2.10,
+                "structure_reward_per_share": 5.40,
+                "structure_reward_risk": 2.57,
+                "gross_reward_risk": 2.57,
+                "net_reward_risk": 3.66,
+                "risk_per_share": 2.10,
+                "reward_risk": 2.57,
+                "configured_reward_risk": 1.5,
                 "target_distance_atr": 3.0,
                 "min_net_roi_pct_for_entry": 1.0,
+                "min_structure_reward_risk_for_entry": 1.5,
+                "tp_sl_model": "structure_first_atr_buffer_v1",
+                "rr_basis": "structure_stop_to_structure_target",
+                "atr_role": "buffer_and_filter_only",
+                "atr_buffer_mult": 0.2,
+                "atr_buffer_amount": 0.25,
+                "structure_stop_available": True,
+                "structure_target_available": True,
+                "target_is_structure": True,
+                "risk_cap_stop_applied": False,
+                "structure_stop_source": "support_with_atr_buffer",
+                "structure_target_source": "next_resistance_structure",
+                "structure_stop_loss": 120.40,
+                "structure_take_profit": 127.90,
                 **_mtf_payload(status="pass", score=100.0),
             },
             config_value=config_value,
@@ -454,8 +477,31 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertEqual(saved["extra"]["expected_net_profit"], 61.5)
         self.assertEqual(saved["extra"]["expected_net_roi_pct"], 1.24)
         self.assertEqual(saved["extra"]["cost_pct_of_reward"], 4.2)
+        self.assertEqual(saved["extra"]["gross_risk"], 16.8)
+        self.assertEqual(saved["extra"]["structure_risk_per_share"], 2.10)
+        self.assertEqual(saved["extra"]["structure_reward_per_share"], 5.40)
+        self.assertEqual(saved["extra"]["structure_reward_risk"], 2.57)
+        self.assertEqual(saved["extra"]["gross_reward_risk"], 2.57)
+        self.assertEqual(saved["extra"]["net_reward_risk"], 3.66)
+        self.assertEqual(saved["extra"]["risk_per_share"], 2.10)
+        self.assertEqual(saved["extra"]["reward_risk"], 2.57)
+        self.assertEqual(saved["extra"]["configured_reward_risk"], 1.5)
         self.assertEqual(saved["extra"]["target_distance_atr"], 3.0)
         self.assertEqual(saved["extra"]["min_net_roi_pct_for_entry"], 1.0)
+        self.assertEqual(saved["extra"]["min_structure_reward_risk_for_entry"], 1.5)
+        self.assertEqual(saved["extra"]["tp_sl_model"], "structure_first_atr_buffer_v1")
+        self.assertEqual(saved["extra"]["rr_basis"], "structure_stop_to_structure_target")
+        self.assertEqual(saved["extra"]["atr_role"], "buffer_and_filter_only")
+        self.assertEqual(saved["extra"]["atr_buffer_mult"], 0.2)
+        self.assertEqual(saved["extra"]["atr_buffer_amount"], 0.25)
+        self.assertTrue(saved["extra"]["structure_stop_available"])
+        self.assertTrue(saved["extra"]["structure_target_available"])
+        self.assertTrue(saved["extra"]["target_is_structure"])
+        self.assertFalse(saved["extra"]["risk_cap_stop_applied"])
+        self.assertEqual(saved["extra"]["structure_stop_source"], "support_with_atr_buffer")
+        self.assertEqual(saved["extra"]["structure_target_source"], "next_resistance_structure")
+        self.assertEqual(saved["extra"]["structure_stop_loss"], 120.40)
+        self.assertEqual(saved["extra"]["structure_take_profit"], 127.90)
         self.assertEqual(pb.records[TV_EVENT_COLLECTION][-1]["status"], "routed")
 
     def test_entry_uses_trade_watchlist_as_authorized_universe_without_active_rank(self):
