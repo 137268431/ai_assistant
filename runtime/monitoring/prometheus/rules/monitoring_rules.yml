@@ -103,6 +103,17 @@ groups:
       summary: Disk free space is below 15%
       description: instance={{ $labels.instance }} mountpoint={{ $labels.mountpoint
         }}.
+  - alert: IBKRSystemdServiceRestarted
+    expr: label_replace(label_replace(label_replace(changes(node_systemd_unit_start_time_seconds{name=~"ibkr-(api|runtime|compute|scheduler|backtest|console|gateway)\\.service"}[10m])
+      > 0, "target_service", "$1", "name", "(.*)\\.service"), "environment", "host",
+      "name", ".*"), "service", "ibkr-stack", "name", ".*")
+    for: 0m
+    labels:
+      severity: warning
+    annotations:
+      summary: IBKR systemd service restarted
+      description: IBKR 服务 {{ $labels.target_service }} 在最近 10 分钟内发生重启，可能导致
+        Gateway/session/WebSocket 短暂恢复窗口；如同时出现 critical 告警，请优先检查运行态恢复。
   - alert: HTTPServer5xxHigh
     expr: (sum by (service, route) (rate(ibkr_http_server_requests_total{status_class="5xx"}[5m]))
       / clamp_min(sum by (service, route) (rate(ibkr_http_server_requests_total[5m])),

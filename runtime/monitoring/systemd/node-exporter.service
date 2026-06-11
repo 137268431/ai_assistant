@@ -8,7 +8,7 @@ Wants=network-online.target
 Type=simple
 User=node_exporter
 Group=node_exporter
-ExecStart=/opt/monitoring/bin/node_exporter --web.listen-address=127.0.0.1:9100 --collector.systemd --collector.processes
+ExecStart=/opt/monitoring/bin/node_exporter --web.listen-address=127.0.0.1:9100 --collector.systemd --collector.systemd.enable-start-time-metrics --collector.systemd.enable-restarts-metrics --collector.processes
 Restart=on-failure
 RestartSec=10
 NoNewPrivileges=true
