@@ -84,6 +84,8 @@ entryMaxAnchorAtr = input.float(0.60, "Max anchor distance (x ATR)", step=0.05, 
 entryMaxAnchorBps = input.float(80.0, "Max anchor distance (bps)", step=5.0, minval=1.0, maxval=1000.0, group="05 Risk")
 entryFallbackAtr = input.float(0.25, "Fallback entry offset (x ATR)", step=0.05, minval=0.0, maxval=3.0, group="05 Risk")
 entryOrderTtlBars = input.int(1, "Entry order review bars", minval=1, maxval=20, group="05 Risk")
+pendingTrendInvalidationBufferAtr = input.float(0.20, "Pending trend invalidation buffer (x ATR)", step=0.05, minval=0.0, maxval=2.0, group="05 Risk")
+pendingTrendRecheckBars = input.int(2, "Pending trend soft invalid recheck bars", minval=1, maxval=10, group="05 Risk")
 structuralSlBufferAtr = input.float(0.20, "Structural SL buffer (x ATR)", step=0.05, minval=0.0, maxval=3.0, group="05 Risk")
 mrCheckpointR = input.float(0.60, "MR checkpoint lock trigger (R)", step=0.05, minval=0.10, maxval=5.0, group="05 Risk")
 mrCheckpointLockR = input.float(0.05, "MR checkpoint lock offset (R)", step=0.01, minval=0.0, maxval=2.0, group="05 Risk")
@@ -305,7 +307,7 @@ exitReasonDisplayName(string reason) =>
     reason == "take_profit" ? "TP止盈" : reason == "runner_stop" ? "跟踪止盈" : reason == "stop_loss" ? "SL止损" : reason == "mr_time_stop" ? "MR超时退出" : reason == "mr_structure_invalidated" ? "MR结构失效" : reason == "entry_ttl_expired" ? "挂单过期" : reason == "force_flat_eod" or reason == "eod" ? "EOD强平" : reason == "strategy_closed" ? "策略退出" : reason
 
 cancelReasonDisplayName(string reason) =>
-    reason == "entry_ttl_expired" ? "挂单过期" : reason == "entry_window_expired" ? "入场窗口结束" : reason == "setup_window_expired" ? "结构窗口失效" : reason == "entry_anchor_invalidated" ? "结构价失效" : reason == "trend_invalidated" ? "趋势失效" : reason == "opposite_signal_or_conflict" ? "反向/冲突信号" : reason == "pending_eod_cancel" ? "EOD撤销挂单" : reason
+    reason == "entry_ttl_expired" ? "挂单过期" : reason == "entry_window_expired" ? "入场窗口结束" : reason == "setup_window_expired" ? "结构窗口失效" : reason == "entry_anchor_invalidated" ? "结构价失效" : reason == "trend_invalidated" ? "趋势硬裂化" : reason == "soft_trend_recheck_failed" ? "软失效复查失败" : reason == "opposite_signal_or_conflict" ? "反向/冲突信号" : reason == "pending_eod_cancel" ? "EOD撤销挂单" : reason
 
 fmtSignedMoney(float value) =>
     na(value) ? "--" : (value >= 0.0 ? "+$" : "-$") + str.tostring(math.abs(value), "#.##")
@@ -2026,6 +2028,9 @@ buildCancelPayload(string eventIdValue, string positionIdValue, string cancelRea
      jsonStr("entry_anchor_reason", activeEntryAnchorReason == "" ? "none" : activeEntryAnchorReason) +
      jsonInt("entry_order_ttl_bars", entryOrderTtlBars) +
      jsonInt("entry_order_expires_bar_index", activeEntryOrderExpiresBar) +
+     jsonBool("plan_price_locked", true) +
+     jsonStr("pending_plan_policy", "lock_original_plan") +
+     jsonNum("pending_trend_invalidation_buffer_atr", pendingTrendInvalidationBufferAtr) +
      jsonBool("tv_position_filled", strategy.position_size != 0) +
      jsonNum("close", close) +
      jsonNum("atr", atrRaw) +
@@ -2162,14 +2167,28 @@ bool pendingOppositeShortActionable = confirmed and activePendingEntry and strat
 bool pendingActionableConflict = confirmed and activePendingEntry and strategy.position_size == 0 and longActionable and shortActionable
 bool pendingOppositeOrConflict = pendingActionableConflict or pendingOppositeLongActionable or pendingOppositeShortActionable
 bool pendingEodCancel = confirmed and enableEodForceClose and activePendingEntry and strategy.position_size == 0 and eodCloseTimeReached and (na(eodForceCloseDay) or eodForceCloseDay != dailyTime)
-bool pendingLongEmaHardReversed = emaFast < emaSlow and close < emaSlow
-bool pendingShortEmaHardReversed = emaFast > emaSlow and close > emaSlow
-bool pendingTrendInvalidated = confirmed and activePendingEntry and strategy.position_size == 0 and (activeDirection == 1 ? dtpDir == -1 or mtfLongStatus == "block" or pendingLongEmaHardReversed : activeDirection == -1 ? dtpDir == 1 or mtfShortStatus == "block" or pendingShortEmaHardReversed : true)
+bool pendingSameDirectionContinuation = confirmed and activePendingEntry and strategy.position_size == 0 and (activeDirection == 1 ? longRaw : activeDirection == -1 ? shortRaw : false)
+float pendingTrendInvalidationBuffer = atrRaw * pendingTrendInvalidationBufferAtr
+bool pendingLongEmaSoftReversed = emaFast < emaSlow or close < emaSlow
+bool pendingShortEmaSoftReversed = emaFast > emaSlow or close > emaSlow
+bool pendingLongEmaBufferBroken = emaFast < emaSlow and close < emaSlow - pendingTrendInvalidationBuffer
+bool pendingShortEmaBufferBroken = emaFast > emaSlow and close > emaSlow + pendingTrendInvalidationBuffer
+bool pendingLongTrendSupportFailed = dtpDir == -1 or mtfLongStatus == "block"
+bool pendingShortTrendSupportFailed = dtpDir == 1 or mtfShortStatus == "block"
+bool pendingLongSoftInvalidated = pendingLongTrendSupportFailed or pendingLongEmaSoftReversed
+bool pendingShortSoftInvalidated = pendingShortTrendSupportFailed or pendingShortEmaSoftReversed
+bool pendingLongHardInvalidated = pendingLongEmaBufferBroken and pendingLongTrendSupportFailed
+bool pendingShortHardInvalidated = pendingShortEmaBufferBroken and pendingShortTrendSupportFailed
+bool pendingHardInvalidated = confirmed and activePendingEntry and strategy.position_size == 0 and (activeDirection == 1 ? pendingLongHardInvalidated : activeDirection == -1 ? pendingShortHardInvalidated : true)
+bool pendingSoftInvalidated = confirmed and activePendingEntry and strategy.position_size == 0 and not pendingHardInvalidated and (activeDirection == 1 ? pendingLongSoftInvalidated : activeDirection == -1 ? pendingShortSoftInvalidated : false)
+bool pendingSoftRecheckFailed = pendingEntryExpired and pendingSoftInvalidated and not pendingSameDirectionContinuation
+bool pendingTrendInvalidated = pendingHardInvalidated
 bool pendingTrendStillValid = confirmed and activePendingEntry and strategy.position_size == 0 and not pendingTrendInvalidated
-bool pendingEntryRenewNow = pendingEntryExpired and pendingTrendStillValid and not pendingEodCancel and not pendingEntryWindowExpired and not pendingAnchorInvalidated and not pendingOppositeOrConflict
+bool pendingEntryRenewNow = pendingEntryExpired and pendingTrendStillValid and not pendingSoftRecheckFailed and not pendingEodCancel and not pendingEntryWindowExpired and not pendingAnchorInvalidated and not pendingOppositeOrConflict
 if pendingEntryRenewNow
-    activeEntryOrderExpiresBar := bar_index + entryOrderTtlBars
-string pendingCancelReason = pendingEodCancel ? "pending_eod_cancel" : pendingOppositeOrConflict ? "opposite_signal_or_conflict" : pendingEntryWindowExpired ? "entry_window_expired" : pendingAnchorInvalidated ? "entry_anchor_invalidated" : pendingTrendInvalidated ? "trend_invalidated" : pendingEntryExpired and not pendingEntryRenewNow ? "entry_ttl_expired" : ""
+    int pendingRenewBars = pendingSoftInvalidated ? pendingTrendRecheckBars : entryOrderTtlBars
+    activeEntryOrderExpiresBar := bar_index + pendingRenewBars
+string pendingCancelReason = pendingEodCancel ? "pending_eod_cancel" : pendingOppositeOrConflict ? "opposite_signal_or_conflict" : pendingEntryWindowExpired ? "entry_window_expired" : pendingAnchorInvalidated ? "entry_anchor_invalidated" : pendingTrendInvalidated ? "trend_invalidated" : pendingSoftRecheckFailed ? "soft_trend_recheck_failed" : pendingEntryExpired and not pendingEntryRenewNow ? "entry_ttl_expired" : ""
 bool pendingCancelNow = pendingCancelReason != ""
 if pendingCancelNow
     if enableAlerts and not activeCancelSent
@@ -2182,7 +2201,11 @@ if pendingCancelNow
     if flowLabelsVisible
         float ttlY = activeDirection == -1 ? high + atrVal * 2.8 : low - atrVal * 2.8
         string cancelDirection = activeDirection == -1 ? "short" : "long"
-        string cancelDetailText = "信号撤销\n" + cancelReasonDisplayName(pendingCancelReason) + "\n" + setupDisplayName(activeSetup) + "\nref " + str.tostring(activeReferenceEntry, "#.##") + " / plan " + str.tostring(activeEntry, "#.##") + "\n锚点: " + activeEntryAnchorReason
+        string pendingSupportFailedText = activeDirection == -1 ? (dtpDir == 1 and mtfShortStatus == "block" ? "DTP转多 + MTF阻挡" : dtpDir == 1 ? "DTP转多" : mtfShortStatus == "block" ? "MTF阻挡" : "EMA破位") : activeDirection == 1 ? (dtpDir == -1 and mtfLongStatus == "block" ? "DTP转空 + MTF阻挡" : dtpDir == -1 ? "DTP转空" : mtfLongStatus == "block" ? "MTF阻挡" : "EMA破位") : "无方向"
+        string cancelPrimaryText = pendingCancelReason == "trend_invalidated" ? "趋势硬裂化" : cancelReasonDisplayName(pendingCancelReason)
+        string cancelSecondaryReason = pendingCancelReason == "trend_invalidated" ? "EMA破位 + " + pendingSupportFailedText : pendingCancelReason == "soft_trend_recheck_failed" ? "软失效持续且无同向趋势续期" : pendingOppositeOrConflict ? "反向/冲突信号" : pendingAnchorInvalidated ? "结构锚点明显失效" : pendingEntryWindowExpired ? "入场窗口结束" : pendingEodCancel ? "EOD保护" : pendingEntryExpired ? "复查到期未续期" : ""
+        string cancelSecondaryText = cancelSecondaryReason == "" ? "" : "\n次因: " + cancelSecondaryReason
+        string cancelDetailText = "信号撤销\n" + cancelReasonDisplayName(pendingCancelReason) + "\n" + setupDisplayName(activeSetup) + "\n主因: " + cancelPrimaryText + cancelSecondaryText + "\nref " + str.tostring(activeReferenceEntry, "#.##") + " / plan " + str.tostring(activeEntry, "#.##") + "\nplan锁定: 原计划价未重算\n锚点: " + activeEntryAnchorReason
         string cancelCompactText = "撤销 " + decisionDirectionTag(cancelDirection) + "·" + decisionSetupTag(activeSetup) + "\n" + cancelReasonDisplayName(pendingCancelReason)
         label.new(bar_index, ttlY, flowLabelText(cancelCompactText, cancelDetailText), style=activeDirection == -1 ? label.style_label_down : label.style_label_up, color=flowLabelColor("blocked", cancelDirection), textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(cancelDetailText))
     activePositionId := ""
