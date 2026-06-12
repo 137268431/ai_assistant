@@ -100,6 +100,48 @@ def _normalize_snapshot_rows(
     return positions, orders, live_open_orders, live_open_payload
 
 
+def _first_refresh_time(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _with_position_refresh_metadata(
+    positions: list[dict],
+    *,
+    updated_at: str,
+    source: str,
+    cache_age_s: Any = None,
+) -> list[dict]:
+    refreshed: list[dict] = []
+    for position in positions or []:
+        item = dict(position or {})
+        raw = item.get("raw") if isinstance(item.get("raw"), dict) else {}
+        position_updated_at = _first_refresh_time(
+            item.get("price_updated_at"),
+            item.get("market_data_updated_at"),
+            item.get("updated_at"),
+            raw.get("price_updated_at"),
+            raw.get("market_data_updated_at"),
+            raw.get("updated_at"),
+            raw.get("last_updated"),
+            raw.get("timestamp"),
+            updated_at,
+        )
+        if position_updated_at:
+            item.setdefault("updated_at", position_updated_at)
+            item.setdefault("market_data_updated_at", position_updated_at)
+            item.setdefault("price_updated_at", position_updated_at)
+        if source:
+            item["position_snapshot_source"] = str(source)
+        if cache_age_s not in (None, ""):
+            item["position_cache_age_s"] = cache_age_s
+        refreshed.append(item)
+    return refreshed
+
+
 def _summary_number_optional(summary_map: dict, *keys: str) -> tuple[float | None, str, dict | None]:
     for key in keys:
         lookup_key = str(key).strip().lower()
@@ -562,6 +604,9 @@ def _build_buying_power_payload_from_full_snapshot(full_snapshot: dict, context:
             "summary_raw": dict(payload.get("summary_raw") or {}),
             "errors": dict(payload.get("errors") or {}),
             "fetched_at": payload.get("fetched_at") or datetime.now(timezone.utc).isoformat(),
+            "summary_fetched_at": payload.get("summary_fetched_at") or payload.get("fetched_at") or datetime.now(timezone.utc).isoformat(),
+            "summary_cache_age_s": payload.get("summary_cache_age_s") or payload.get("cache_age_s"),
+            "buying_power_fetched_at": payload.get("buying_power_fetched_at") or payload.get("summary_fetched_at") or payload.get("fetched_at") or datetime.now(timezone.utc).isoformat(),
             "source": "account_snapshot",
             "snapshot_source": payload.get("source") or "account_snapshot",
             "stale": stale,
@@ -576,7 +621,9 @@ def _build_buying_power_payload_from_full_snapshot(full_snapshot: dict, context:
 def _build_buying_power_payload_from_summary_raw(service, context: dict, summary_raw: dict, summary_error: str = "") -> dict:
     if not isinstance(summary_raw, dict):
         summary_raw = {}
+    fetched_at = datetime.now(timezone.utc).isoformat()
     summary = _build_snapshot_summary(summary_raw, context["account_id"], [], {})
+    summary["summary_updated_at"] = fetched_at
     if not _summary_snapshot_available(summary):
         summary = _mask_unavailable_summary_values(summary)
     guard = build_buying_power_guard(
@@ -605,7 +652,9 @@ def _build_buying_power_payload_from_summary_raw(service, context: dict, summary
         "buying_power_guard": guard,
         "summary_raw": summary_raw,
         "errors": {"summary": summary_error},
-        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "fetched_at": fetched_at,
+        "summary_fetched_at": fetched_at,
+        "buying_power_fetched_at": fetched_at,
         "source": "account_summary",
         "account_data_pacing": _account_data_pacing_status(context["service_status"]),
     }
@@ -739,6 +788,201 @@ def _stale_buying_power_snapshot_after_error(api_app, cache_key: tuple, error: s
     errors = payload.get("errors") if isinstance(payload.get("errors"), dict) else {}
     payload["errors"] = {**errors, "refresh": payload["refresh_error"]}
     return _decorate_account_snapshot_health(payload, reason=payload["refresh_error"])
+
+
+def _build_account_pnl_refresh_payload(
+    service,
+    context: dict,
+    pnl_raw: dict | None,
+    pnl_error: str = "",
+    *,
+    state: str = "",
+    source: str = "account_pnl",
+    retry_after_s: float = 0.0,
+    hard_blocked: bool = False,
+    in_flight_request: dict | None = None,
+) -> dict:
+    raw = dict(pnl_raw or {}) if isinstance(pnl_raw, dict) else {}
+    error = str(pnl_error or "").strip()
+    if raw.get("error") and not bool(raw.get("ok", True)):
+        error = error or str(raw.get("error") or "")
+        raw = {}
+    fetched_at = datetime.now(timezone.utc).isoformat()
+    today_pnl = _build_account_today_pnl({}, "USD", raw)
+    if isinstance(today_pnl, dict):
+        today_pnl["updated_at"] = fetched_at
+    refresh_state = state or ("refreshed" if bool(today_pnl.get("ok")) else "failed")
+    summary = {
+        "daily_pnl": today_pnl.get("net"),
+        "today_pnl": today_pnl.get("net"),
+        "daily_pnl_available": bool(today_pnl.get("ok")),
+        "account_today_pnl": today_pnl,
+        "pnl_updated_at": fetched_at,
+    }
+    if error and not today_pnl.get("message"):
+        today_pnl["message"] = error
+    payload = {
+        "ok": bool(today_pnl.get("ok")) and not error,
+        "environment": context["runtime_environment"],
+        "account_id": context["account_id"],
+        "service_running": bool(getattr(service, "is_running", False)),
+        "service_starting": bool(getattr(service, "is_starting", False)),
+        "session_authenticated": bool((context["service_status"].get("session") or {}).get("authenticated")),
+        "gateway_running": bool((context["service_status"].get("gateway") or {}).get("running")),
+        "websocket_ready": bool((context["service_status"].get("websocket") or {}).get("ready")),
+        "summary": summary,
+        "pnl_raw": raw,
+        "include_pnl": True,
+        "errors": {"pnl": error},
+        "fetched_at": fetched_at,
+        "summary_fetched_at": fetched_at,
+        "pnl_fetched_at": fetched_at,
+        "account_pnl_fetched_at": fetched_at,
+        "source": source,
+        "account_pnl_source": str(raw.get("source") or source),
+        "pnl_refresh_state": refresh_state,
+        "last_pnl_refresh_error": error,
+        "retry_after_s": round(max(0.0, _safe_float(retry_after_s, 0.0)), 1),
+        "hard_blocked": bool(hard_blocked),
+        "account_data_pacing": _account_data_pacing_status(context["service_status"]),
+    }
+    if in_flight_request:
+        payload["in_flight_request"] = dict(in_flight_request)
+    return payload
+
+
+def _stale_account_pnl_snapshot_after_error(api_app, cache_key: tuple, error: str) -> dict:
+    cached = load_cached_snapshot(api_app, cache_key, allow_stale=True)
+    if not isinstance(cached, dict) or not cached:
+        return {}
+    payload = dict(cached)
+    payload["stale"] = True
+    payload["cache_state"] = "stale_after_error"
+    payload["pnl_refresh_state"] = "stale_after_error"
+    payload["last_pnl_refresh_error"] = str(error or "").strip() or "account_pnl_refresh_unavailable"
+    errors = payload.get("errors") if isinstance(payload.get("errors"), dict) else {}
+    payload["errors"] = {**errors, "pnl": payload["last_pnl_refresh_error"]}
+    return payload
+
+
+def _build_ibkr_account_pnl_snapshot(service, *, force_refresh: bool = False) -> dict:
+    context = build_snapshot_context(service, include_pnl=True, fast_status=True)
+    api_app = context["api_app"]
+    cache_key = (context["runtime_environment"], f"{context['account_id']}::account_pnl", True)
+
+    cached = load_cached_snapshot(api_app, cache_key, allow_stale=bool(force_refresh))
+    if cached and not force_refresh:
+        return cached
+
+    refresh_lock = get_snapshot_refresh_lock(api_app, cache_key)
+    if force_refresh and refresh_lock.locked():
+        stale_payload = _stale_account_pnl_snapshot_after_error(api_app, cache_key, "account_pnl_refresh_in_flight")
+        if stale_payload:
+            stale_payload["in_flight_request"] = {"kind": "account_pnl", "source": "snapshot_refresh_lock"}
+            stale_payload["hard_blocked"] = True
+            stale_payload["pnl_refresh_state"] = "in_flight"
+            return stale_payload
+        return _build_account_pnl_refresh_payload(
+            service,
+            context,
+            {},
+            "account_pnl_refresh_in_flight",
+            state="in_flight",
+            source="account_pnl_refresh_in_flight",
+            hard_blocked=True,
+            in_flight_request={"kind": "account_pnl", "source": "snapshot_refresh_lock"},
+        )
+
+    with refresh_lock:
+        cached = load_cached_snapshot(api_app, cache_key, allow_stale=bool(force_refresh))
+        if cached and not force_refresh:
+            return cached
+
+        circuit = _account_data_circuit_status(context.get("service_status") or {})
+        if bool(circuit.get("active")):
+            stale_payload = _stale_account_pnl_snapshot_after_error(api_app, cache_key, "account_data_circuit_open")
+            if stale_payload:
+                stale_payload["account_data_circuit"] = dict(circuit or {})
+                stale_payload["hard_blocked"] = True
+                stale_payload["retry_after_s"] = _safe_float(circuit.get("remaining_s"), 0.0)
+                return stale_payload
+            return _build_account_pnl_refresh_payload(
+                service,
+                context,
+                {},
+                "account_data_circuit_open",
+                state="blocked",
+                source="account_data_circuit",
+                retry_after_s=_safe_float(circuit.get("remaining_s"), 0.0),
+                hard_blocked=True,
+            )
+
+        gate = _account_data_request_gate_status(context.get("service_status") or {})
+        owner_kind = str(gate.get("owner_kind") or "").strip()
+        if force_refresh and owner_kind:
+            owner_age_s = _safe_float(gate.get("owner_age_s"), 0.0)
+            serial_timeout_s = _safe_float(gate.get("serial_timeout_s"), 30.0)
+            retry_after_s = max(1.0, serial_timeout_s - owner_age_s) if serial_timeout_s > owner_age_s else 1.0
+            stale_payload = _stale_account_pnl_snapshot_after_error(api_app, cache_key, "account_data_request_in_flight")
+            if stale_payload:
+                stale_payload["in_flight_request"] = dict(gate)
+                stale_payload["hard_blocked"] = True
+                stale_payload["pnl_refresh_state"] = "in_flight"
+                stale_payload["retry_after_s"] = round(retry_after_s, 1)
+                return stale_payload
+            return _build_account_pnl_refresh_payload(
+                service,
+                context,
+                {},
+                "account_data_request_in_flight",
+                state="in_flight",
+                source="account_data_request_gate",
+                retry_after_s=retry_after_s,
+                hard_blocked=True,
+                in_flight_request=gate,
+            )
+
+        pacing = _account_data_pacing_status(context["service_status"])
+        pnl_blocked, pnl_retry_after, pnl_reason = _pacing_kind_blocked(pacing, "account_pnl")
+        if pnl_blocked:
+            stale_payload = _stale_account_pnl_snapshot_after_error(api_app, cache_key, "account_pnl_pacing_blocked")
+            if stale_payload:
+                stale_payload["hard_blocked"] = True
+                stale_payload["pnl_refresh_state"] = "stale_after_pacing"
+                stale_payload["retry_after_s"] = pnl_retry_after
+                stale_payload["account_pnl_pacing"] = _pacing_kind_status(pacing, "account_pnl")
+                return stale_payload
+            return _build_account_pnl_refresh_payload(
+                service,
+                context,
+                {},
+                pnl_reason or "account_pnl_pacing_blocked",
+                state="blocked",
+                source="account_pnl_pacing",
+                retry_after_s=pnl_retry_after,
+                hard_blocked=True,
+            )
+
+        pnl_getter = getattr(getattr(service, "order_lifecycle", None), "get_account_pnl", None)
+        if not callable(pnl_getter):
+            return _build_account_pnl_refresh_payload(service, context, {}, "account_pnl_unavailable", state="failed")
+        try:
+            pnl_raw = pnl_getter(context["account_id"])
+            pnl_error = ""
+        except Exception as exc:
+            pnl_raw = {}
+            pnl_error = str(exc) or "account_pnl_refresh_failed"
+
+        payload = _build_account_pnl_refresh_payload(service, context, pnl_raw, pnl_error)
+        if bool((payload.get("summary") or {}).get("daily_pnl_available")):
+            store_cached_snapshot(api_app, cache_key, payload)
+            return load_cached_snapshot(api_app, cache_key, allow_stale=False) or payload
+        stale_payload = _stale_account_pnl_snapshot_after_error(
+            api_app,
+            cache_key,
+            payload.get("last_pnl_refresh_error") or (payload.get("summary") or {}).get("account_today_pnl", {}).get("message"),
+        )
+        return stale_payload or payload
 
 
 def _build_ibkr_account_buying_power_snapshot(service, *, force_refresh: bool = False) -> dict:
@@ -952,6 +1196,86 @@ def _stale_snapshot_after_error(payload: dict, error: str) -> dict:
     return _decorate_account_snapshot_health(result, reason=result["refresh_error"])
 
 
+def _blocked_account_snapshot_payload(
+    service,
+    context: dict,
+    cache_key: tuple,
+    reason: str,
+    *,
+    retry_after_s: float = 0.0,
+    in_flight_request: dict | None = None,
+    circuit: dict | None = None,
+    pacing: dict | None = None,
+    pacing_kind: str = "",
+) -> dict:
+    normalized_reason = str(reason or "account_snapshot_refresh_blocked").strip()
+    api_app = context["api_app"]
+    cached = load_cached_snapshot(api_app, cache_key, allow_stale=True)
+    if cached:
+        payload = _stale_snapshot_after_error(cached, normalized_reason)
+    else:
+        payload = _account_snapshot_error_payload(context, normalized_reason)
+    payload["hard_blocked"] = True
+    payload["last_refresh_error"] = normalized_reason
+    payload["retry_after_s"] = round(max(0.0, _safe_float(retry_after_s, 0.0)), 1)
+    if in_flight_request:
+        payload["in_flight_request"] = dict(in_flight_request)
+    if circuit:
+        payload["account_data_circuit"] = dict(circuit)
+    if pacing:
+        payload["account_data_pacing"] = dict(pacing)
+    if pacing_kind:
+        payload[f"{pacing_kind}_pacing"] = _pacing_kind_status(pacing or {}, pacing_kind)
+    return _decorate_account_snapshot_health(payload, reason=normalized_reason)
+
+
+def _account_snapshot_force_refresh_guard_payload(service, context: dict, cache_key: tuple) -> dict:
+    service_status = context.get("service_status") if isinstance(context.get("service_status"), dict) else {}
+    circuit = _account_data_circuit_status(service_status)
+    if bool(circuit.get("active")):
+        return _blocked_account_snapshot_payload(
+            service,
+            context,
+            cache_key,
+            "account_data_circuit_open",
+            retry_after_s=_safe_float(circuit.get("remaining_s"), 0.0),
+            circuit=circuit,
+        )
+
+    gate = _account_data_request_gate_status(service_status)
+    owner_kind = str(gate.get("owner_kind") or "").strip()
+    if owner_kind:
+        owner_age_s = _safe_float(gate.get("owner_age_s"), 0.0)
+        serial_timeout_s = _safe_float(gate.get("serial_timeout_s"), 30.0)
+        retry_after_s = max(1.0, serial_timeout_s - owner_age_s) if serial_timeout_s > owner_age_s else 1.0
+        return _blocked_account_snapshot_payload(
+            service,
+            context,
+            cache_key,
+            "account_data_request_in_flight",
+            retry_after_s=retry_after_s,
+            in_flight_request=gate,
+        )
+
+    pacing = _account_data_pacing_status(service_status)
+    pacing_kinds = ["account_snapshot", "account_summary", "account_positions"]
+    if bool(context.get("include_pnl")):
+        pacing_kinds.append("account_pnl")
+    for kind in pacing_kinds:
+        blocked, retry_after, reason = _pacing_kind_blocked(pacing, kind)
+        if blocked:
+            return _blocked_account_snapshot_payload(
+                service,
+                context,
+                cache_key,
+                reason or f"{kind}_pacing_blocked",
+                retry_after_s=retry_after,
+                pacing=pacing,
+                pacing_kind=kind,
+            )
+    return {}
+
+
 def _account_snapshot_error_payload(context: dict, error: str) -> dict:
     message = str(error or "").strip() or "account_snapshot_unavailable"
     service_status = context["service_status"] if isinstance(context.get("service_status"), dict) else {}
@@ -1022,6 +1346,13 @@ def _build_fresh_ibkr_account_snapshot_payload(service, context: dict) -> dict:
         live_open_payload,
         fallback_ids,
     )
+    fetched_at = datetime.now(timezone.utc).isoformat()
+    positions = _with_position_refresh_metadata(
+        positions,
+        updated_at=fetched_at,
+        source="account_snapshot",
+        cache_age_s=0.0,
+    )
     inferred_positions, positions_inference = _position_inference_payload(positions, orders, live_open_orders)
 
     summary = _build_snapshot_summary(
@@ -1030,6 +1361,11 @@ def _build_fresh_ibkr_account_snapshot_payload(service, context: dict) -> dict:
         positions,
         snapshot_sources.get("pnl_raw") if isinstance(snapshot_sources.get("pnl_raw"), dict) else {},
     )
+    summary["summary_updated_at"] = fetched_at
+    if isinstance(summary.get("account_today_pnl"), dict):
+        summary["account_today_pnl"]["updated_at"] = fetched_at
+    if bool(context["include_pnl"]):
+        summary["pnl_updated_at"] = fetched_at
     if not _summary_snapshot_available(summary):
         summary = _mask_unavailable_summary_values(summary)
         source_errors = dict(snapshot_sources["errors"])
@@ -1066,10 +1402,16 @@ def _build_fresh_ibkr_account_snapshot_payload(service, context: dict) -> dict:
         ),
         "positions_detail_available": True,
         "positions_source": "account_snapshot",
+        "summary_fetched_at": fetched_at,
+        "positions_fetched_at": fetched_at,
+        "positions_cache_age_s": 0.0,
+        "orders_fetched_at": fetched_at,
+        "pnl_fetched_at": fetched_at if bool(context["include_pnl"]) else "",
+        "account_pnl_fetched_at": fetched_at if bool(context["include_pnl"]) else "",
         "inferred_strategy_positions": inferred_positions,
         "positions_inference": positions_inference,
         "errors": snapshot_sources["errors"],
-        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "fetched_at": fetched_at,
         "source": "account_snapshot",
         "account_data_pacing": _account_data_pacing_status(context["service_status"]),
     }
@@ -1570,15 +1912,43 @@ def _build_orders_fast_ibkr_account_snapshot_payload(
         ],
     )
     mark_timing("normalize_rows_ms")
+    fetched_at = datetime.now(timezone.utc).isoformat()
+    positions_fetched_at = _first_refresh_time(
+        cached_full.get("positions_fetched_at"),
+        cached_full.get("fetched_at"),
+    )
+    positions_cache_age_s = cached_full.get("cache_age_s")
+    if positions_cache_age_s in (None, ""):
+        positions_cache_age_s = cached_full.get("positions_cache_age_s")
+    positions = _with_position_refresh_metadata(
+        positions,
+        updated_at=positions_fetched_at,
+        source=positions_source,
+        cache_age_s=positions_cache_age_s,
+    )
     inferred_positions, positions_inference = _position_inference_payload(positions, orders, live_open_orders)
     summary_source = "snapshot_cache" if cached_full else "buying_power_cache" if cached_buying_power else "unavailable"
     summary_cache_state = str((cached_full or cached_buying_power).get("cache_state") or "") if (cached_full or cached_buying_power) else ""
     summary_cache_age_s = (cached_full or cached_buying_power).get("cache_age_s") if (cached_full or cached_buying_power) else None
+    summary_fetched_at = _first_refresh_time(
+        (cached_full or cached_buying_power).get("summary_fetched_at"),
+        (cached_full or cached_buying_power).get("fetched_at"),
+    ) if (cached_full or cached_buying_power) else ""
+    pnl_fetched_at = _first_refresh_time(
+        cached_full.get("pnl_fetched_at"),
+        cached_full.get("account_pnl_fetched_at"),
+        cached_full.get("fetched_at"),
+    )
     summary = dict(cached_full.get("summary") or cached_buying_power.get("summary") or {})
     summary_raw = dict(cached_full.get("summary_raw") or cached_buying_power.get("summary_raw") or {})
     pnl_raw = dict(cached_full.get("pnl_raw") or cached_buying_power.get("pnl_raw") or {})
     if not summary:
         summary = _build_snapshot_summary(summary_raw, context["account_id"], positions, pnl_raw)
+    summary.setdefault("summary_updated_at", summary_fetched_at)
+    if pnl_fetched_at:
+        summary.setdefault("pnl_updated_at", pnl_fetched_at)
+        if isinstance(summary.get("account_today_pnl"), dict):
+            summary["account_today_pnl"].setdefault("updated_at", pnl_fetched_at)
     guard = dict(cached_full.get("buying_power_guard") or cached_buying_power.get("buying_power_guard") or {})
     if not guard:
         guard = build_buying_power_guard(
@@ -1632,9 +2002,16 @@ def _build_orders_fast_ibkr_account_snapshot_payload(
                 "open_orders_only": bool(open_orders_only),
             }
         },
-        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "fetched_at": fetched_at,
         "source": "account_snapshot_orders_fast",
         "summary_source": summary_source,
+        "summary_fetched_at": summary_fetched_at,
+        "summary_cache_age_s": summary_cache_age_s,
+        "positions_fetched_at": positions_fetched_at,
+        "positions_cache_age_s": positions_cache_age_s,
+        "orders_fetched_at": fetched_at,
+        "pnl_fetched_at": pnl_fetched_at,
+        "account_pnl_fetched_at": pnl_fetched_at,
         "account_data_pacing": _account_data_pacing_status(context["service_status"]),
         "snapshot_profile": "orders_fast",
         "orders_fast": True,
@@ -1652,8 +2029,11 @@ def _build_orders_fast_ibkr_account_snapshot_payload(
             "positions_omitted": bool(open_orders_only),
             "positions_count_available": bool(cached_position_counts_available),
             "summary_source": summary_source,
+            "summary_fetched_at": summary_fetched_at,
             "summary_cache_state": summary_cache_state,
             "summary_cache_age_s": summary_cache_age_s,
+            "positions_fetched_at": positions_fetched_at,
+            "positions_cache_age_s": positions_cache_age_s,
             "status_source": "fast_runtime_state",
             "skipped_account_data_fetch": True,
             "elapsed_ms": elapsed_ms,
@@ -1697,11 +2077,25 @@ def _build_ibkr_account_snapshot(
             return _apply_reservation_overlay_to_account_payload(service, cached) if apply_reservation_overlay else cached
 
     refresh_lock = get_snapshot_refresh_lock(api_app, cache_key)
+    if force_refresh and refresh_lock.locked():
+        blocked = _blocked_account_snapshot_payload(
+            service,
+            context,
+            cache_key,
+            "account_snapshot_refresh_in_flight",
+            retry_after_s=1.0,
+            in_flight_request={"kind": "account_snapshot", "source": "snapshot_refresh_lock"},
+        )
+        return _apply_reservation_overlay_to_account_payload(service, blocked) if apply_reservation_overlay else blocked
     with refresh_lock:
         if not force_refresh:
             cached = load_cached_snapshot(api_app, cache_key, allow_stale=allow_stale)
             if cached:
                 return _apply_reservation_overlay_to_account_payload(service, cached) if apply_reservation_overlay else cached
+        else:
+            blocked = _account_snapshot_force_refresh_guard_payload(service, context, cache_key)
+            if blocked:
+                return _apply_reservation_overlay_to_account_payload(service, blocked) if apply_reservation_overlay else blocked
         try:
             payload = _build_fresh_ibkr_account_snapshot_payload(service, context)
         except Exception as exc:
@@ -1742,6 +2136,7 @@ def _build_ibkr_account_snapshot(
 
 __all__ = [
     "_build_ibkr_account_buying_power_snapshot",
+    "_build_ibkr_account_pnl_snapshot",
     "_build_ibkr_account_snapshot",
     "refresh_account_snapshot_cache",
 ]

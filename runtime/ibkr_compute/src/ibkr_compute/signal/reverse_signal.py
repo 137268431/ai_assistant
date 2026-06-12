@@ -1412,6 +1412,18 @@ class ReverseSignalHandler:
                 )
                 if pending is not None:
                     return pending
+            close_error = str((result or {}).get("error") or "").strip()
+            if close_error == "close_limit_price_unavailable":
+                detail["safe_blocked_no_quote"] = True
+                runtime_detail = detail.setdefault("reverse_runtime_detail", {})
+                runtime_detail["safe_blocked_no_quote"] = True
+                runtime_detail["close_quote_unavailable"] = True
+                return self._mark_blocked(
+                    detail,
+                    "close_limit_price_unavailable",
+                    error=close_error,
+                    safe_blocked_no_quote=True,
+                )
             return self._mark_blocked(
                 detail,
                 "close_order_failed",
@@ -3580,7 +3592,20 @@ class ReverseSignalHandler:
                 )
                 side_detail["confirmation"] = confirmation
                 side_detail["ok"] = bool(confirmed)
-                side_detail["reason"] = "confirmed" if confirmed else "adjust_price_not_confirmed"
+                terminal_child_order = bool(
+                    confirmation.get("terminal_child_order")
+                    or confirmation.get("terminal_conflict_safe")
+                )
+                if terminal_child_order:
+                    side_detail["terminal_child_order"] = True
+                    side_detail["terminal_conflict_safe"] = True
+                side_detail["reason"] = (
+                    "confirmed"
+                    if confirmed
+                    else "adjust_child_order_terminal"
+                    if terminal_child_order
+                    else "adjust_price_not_confirmed"
+                )
                 if confirmed:
                     succeeded_sides.append(side)
                 else:
@@ -3612,6 +3637,25 @@ class ReverseSignalHandler:
                 failed_sides=failed_sides,
             )
         if failed_sides:
+            terminal_sides = [
+                side
+                for side in failed_sides
+                if bool((results.get(side) or {}).get("terminal_conflict_safe"))
+            ]
+            if terminal_sides and len(terminal_sides) == len(failed_sides):
+                detail["adjust_bracket"] = "terminal_child_order"
+                detail["terminal_conflict_safe"] = True
+                runtime_detail = detail.setdefault("reverse_runtime_detail", {})
+                runtime_detail["terminal_conflict_safe"] = True
+                runtime_detail["terminal_sides"] = terminal_sides
+                detail["adjust_bracket_result"]["terminal_sides"] = terminal_sides
+                return self._mark_blocked(
+                    detail,
+                    "adjust_child_order_terminal",
+                    terminal_sides=terminal_sides,
+                    succeeded_sides=succeeded_sides,
+                    terminal_conflict_safe=True,
+                )
             unconfirmed_sides = [
                 side
                 for side in failed_sides
@@ -3877,6 +3921,41 @@ class ReverseSignalHandler:
             "inspected_orders": inspected,
         }
 
+    @classmethod
+    def _terminal_adjust_child_order_detail(
+        cls,
+        details: List[Dict[str, Any]],
+        *,
+        order_id: str,
+        side: str,
+    ) -> Dict[str, Any]:
+        inspected: List[Dict[str, Any]] = []
+        for detail in details or []:
+            for item in (detail or {}).get("inspected_orders") or []:
+                if isinstance(item, dict):
+                    inspected.append(dict(item))
+        if not inspected:
+            return {}
+        if any(bool(item.get("active")) for item in inspected):
+            return {}
+        terminal_orders = [
+            item
+            for item in inspected
+            if cls._status_key(item.get("status")) in INACTIVE_ORDER_STATUSES
+            and cls._status_key(item.get("status"))
+        ]
+        if not terminal_orders or len(terminal_orders) != len(inspected):
+            return {}
+        return {
+            "source": "terminal_child_order",
+            "reason": "adjust_child_order_terminal",
+            "terminal_child_order": True,
+            "terminal_conflict_safe": True,
+            "order_id": str(order_id or ""),
+            "side": side,
+            "terminal_orders": terminal_orders[-5:],
+        }
+
     def _confirm_adjust_child_order_target_price(
         self,
         signal: dict,
@@ -3964,6 +4043,14 @@ class ReverseSignalHandler:
 
         confirmation["attempts"] = REVERSE_CONFIRM_ATTEMPTS
         confirmation["details"] = last_details[-3:]
+        terminal_detail = self._terminal_adjust_child_order_detail(
+            [confirmation.get("modify_result")] + last_details,
+            order_id=order_id,
+            side=side,
+        )
+        if terminal_detail:
+            confirmation.update(terminal_detail)
+            return False, confirmation
         confirmation["reason"] = "active_child_order_target_price_not_confirmed"
         return False, confirmation
 

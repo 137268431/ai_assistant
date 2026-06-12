@@ -67,10 +67,10 @@ breakevenOffsetR = input.float(0.05, "Breakeven offset (R)", step=0.01, minval=0
 useVolatilityFilter = input.bool(true, "Block low-volatility entries", group="05 Risk")
 minAtrPctForEntry = input.float(0.08, "Minimum ATR% for entry", step=0.01, minval=0.0, group="05 Risk")
 useProfitSpaceFilter = input.bool(true, "Block insufficient profit space", group="05 Risk")
-minNetProfitForEntry = input.float(100.0, "Minimum net profit ($)", step=5.0, minval=0.0, group="05 Risk")
-minNetRoiPctForEntry = input.float(2.0, "Minimum net ROI (%)", step=0.1, minval=0.0, group="05 Risk")
+minNetProfitForEntry = input.float(50.0, "Minimum net profit ($)", step=5.0, minval=0.0, group="05 Risk")
+minNetRoiPctForEntry = input.float(1.0, "Minimum net ROI (%)", step=0.1, minval=0.0, group="05 Risk")
 maxCostPctOfReward = input.float(15.0, "Maximum cost / reward (%)", step=1.0, minval=0.0, group="05 Risk")
-minTargetAtrMultipleForEntry = input.float(2.0, "Minimum target distance (x ATR)", step=0.25, minval=0.0, group="05 Risk")
+minTargetAtrMultipleForEntry = input.float(1.0, "Minimum target distance (x ATR)", step=0.25, minval=0.0, group="05 Risk")
 minStructureRewardRiskForEntry = input.float(1.5, "Minimum structure reward/risk", step=0.1, minval=0.1, group="05 Risk")
 minWeakTrendRewardRiskForEntry = input.float(2.0, "Minimum weak/low-vol structure R/R", step=0.1, minval=0.1, group="05 Risk")
 weakTrendAtrPctMultiplier = input.float(1.25, "Weak/low-vol ATR% threshold multiplier", step=0.05, minval=1.0, maxval=5.0, group="05 Risk")
@@ -89,8 +89,8 @@ mrCheckpointR = input.float(0.60, "MR checkpoint lock trigger (R)", step=0.05, m
 mrCheckpointLockR = input.float(0.05, "MR checkpoint lock offset (R)", step=0.01, minval=0.0, maxval=2.0, group="05 Risk")
 mrTimeStopBars = input.int(10, "MR time stop bars", minval=1, maxval=100, group="05 Risk")
 mrTimeStopMinMfeR = input.float(0.35, "MR time stop min MFE (R)", step=0.05, minval=0.0, maxval=5.0, group="05 Risk")
-float profitSpaceMinNetProfitFloor = 100.0
-float profitSpaceMinNetRoiPctFloor = 2.0
+float profitSpaceMinNetProfitFloor = 50.0
+float profitSpaceMinNetRoiPctFloor = 1.0
 float effectiveMaxPlanRisk = maxLossPerTrade
 float effectiveMaxLegRisk = scalePlanEnabled ? math.min(maxLegRisk, effectiveMaxPlanRisk / 2.0) : maxLossPerTrade
 float effectiveMinNetProfitForEntry = math.max(minNetProfitForEntry, profitSpaceMinNetProfitFloor)
@@ -297,6 +297,9 @@ setupDisplayName(string setup) =>
 
 directionDisplayName(string direction) =>
     direction == "short" ? "做空" : "做多"
+
+closeDirectionTag(int direction) =>
+    direction == -1 ? "平空" : direction == 1 ? "平多" : "平仓"
 
 exitReasonDisplayName(string reason) =>
     reason == "take_profit" ? "TP止盈" : reason == "runner_stop" ? "跟踪止盈" : reason == "stop_loss" ? "SL止损" : reason == "mr_time_stop" ? "MR超时退出" : reason == "mr_structure_invalidated" ? "MR结构失效" : reason == "entry_ttl_expired" ? "挂单过期" : reason == "force_flat_eod" or reason == "eod" ? "EOD强平" : reason == "strategy_closed" ? "策略退出" : reason
@@ -808,7 +811,7 @@ profitSpaceBlockedStatusText(float netProfit, float netRoiPct, float costPct, fl
     "获利空间不足: " + profitSpaceNetProfitCompareText(netProfit) + " / " + profitSpaceNetRoiCompareText(netRoiPct) + " / " + profitSpaceCostCompareText(costPct) + " / " + profitSpaceRewardRiskCompareText(rewardRisk, minRewardRisk) + " / " + profitSpaceTargetAtrCompareText(targetAtrMultiple)
 
 decisionDirectionTag(string direction) =>
-    direction == "short" ? "S" : "L"
+    direction == "short" ? "空" : "多"
 
 decisionSetupTag(string setup) =>
     setup == "trend_sdUpper" ? "SD↑顺势" : setup == "trend_sdLowerBreakout" ? "SD↓突破" : setup == "mr_sdLower" ? "SD↓回归" : setup == "trend_sdUpperBreakdown" ? "SD↑跌破" : setup == "trend_emaDeathContinuation" ? "EMA死叉" : setup == "mr_sdUpper" ? "SD↑回归" : setup == "trend_sdLower" ? "SD↓顺势" : setup
@@ -828,9 +831,13 @@ decisionProfitMetricLine(float rewardRisk, float targetAtrMultiple) =>
 decisionRiskLine(float entryPrice, float stopPrice, float targetPrice, float rewardRisk, float targetAtrMultiple) =>
     na(stopPrice) or stopPrice <= 0.0 ? "无结构SL" : na(targetPrice) or targetPrice <= 0.0 ? "无结构TP" : decisionProfitMetricLine(rewardRisk, targetAtrMultiple) + " " + decisionStopPctText(entryPrice, stopPrice)
 
+profitFailureDisplayName(string profitFailureReason) =>
+    profitFailureReason == "structure_stop_unavailable" ? "无结构SL" : profitFailureReason == "structure_target_unavailable" ? "无结构TP" : profitFailureReason == "net_profit_below_min" ? "净利不足" : profitFailureReason == "net_roi_below_min" ? "ROI不足" : profitFailureReason == "cost_pct_above_max" ? "成本过高" : profitFailureReason == "reward_risk_below_min" ? "R不足" : profitFailureReason == "target_atr_below_min" ? "TP太近" : ""
+
 decisionBlockReason(string reason, string profitFailureReason) =>
-    string profitReasonText = profitFailureReason == "structure_stop_unavailable" ? "无结构SL" : profitFailureReason == "structure_target_unavailable" ? "无结构TP" : profitFailureReason == "net_profit_below_min" ? "净利不足" : profitFailureReason == "net_roi_below_min" ? "ROI不足" : profitFailureReason == "cost_pct_above_max" ? "成本过高" : profitFailureReason == "reward_risk_below_min" ? "R不足" : profitFailureReason == "target_atr_below_min" ? "TP太近" : ""
-    profitReasonText != "" and profitFailureReason != "pass" and profitFailureReason != "disabled" and profitFailureReason != "none" ? profitReasonText : filterDisplayName(reason)
+    string profitReasonText = profitFailureDisplayName(profitFailureReason)
+    bool profitIsPrimary = reason == "profit_space_too_small" or reason == "mr_target_space_too_small"
+    profitIsPrimary and profitReasonText != "" and profitFailureReason != "pass" and profitFailureReason != "disabled" and profitFailureReason != "none" ? profitReasonText : filterDisplayName(reason)
 
 decisionComponentLine(string progressText, string waitText) =>
     progressText + " " + waitText
@@ -1307,6 +1314,8 @@ float longPlannedEntryRaw = structuralAnchorMode ? longStructuralEntryRaw : long
 float shortPlannedEntryRaw = structuralAnchorMode ? shortStructuralEntryRaw : shortReferenceEntry
 float longEntryCandidate = structuralAnchorMode ? roundStructuralEntryLimitToTick(limitByHardCap(longReferenceEntry, longPlannedEntryRaw, 1), 1) : longReferenceEntry
 float shortEntryCandidate = structuralAnchorMode ? roundStructuralEntryLimitToTick(limitByHardCap(shortReferenceEntry, shortPlannedEntryRaw, -1), -1) : shortReferenceEntry
+bool longEntryAnchorTouched = structuralAnchorMode and not na(longEntryCandidate) and low <= longEntryCandidate
+bool shortEntryAnchorTouched = structuralAnchorMode and not na(shortEntryCandidate) and high >= shortEntryCandidate
 string longEntryAnchorReason = ""
 longEntryAnchorReason := structuralAnchorMode and anchorNear(longEntryCandidate, lastPivotLow, atrRaw) ? appendAnchorReason(longEntryAnchorReason, "前低支撑") : longEntryAnchorReason
 longEntryAnchorReason := structuralAnchorMode and anchorNear(longEntryCandidate, recentLow, atrRaw) ? appendAnchorReason(longEntryAnchorReason, "近期低点") : longEntryAnchorReason
@@ -1317,6 +1326,7 @@ longEntryAnchorReason := structuralAnchorMode and anchorNear(longEntryCandidate,
 longEntryAnchorReason := structuralAnchorMode and anchorNear(longEntryCandidate, longSupportMid, atrRaw) ? appendAnchorReason(longEntryAnchorReason, "信号K中点") : longEntryAnchorReason
 longEntryAnchorReason := structuralAnchorMode and anchorNear(longEntryCandidate, longSupportSd, atrRaw) ? appendAnchorReason(longEntryAnchorReason, "SD下轨接近") : longEntryAnchorReason
 longEntryAnchorReason := structuralAnchorMode and longEntryAnchorReason == "" and anchorNear(longEntryCandidate, longFallbackEntry, atrRaw) ? "ATR回撤备选" : longEntryAnchorReason
+longEntryAnchorReason := longEntryAnchorTouched ? appendAnchorReason(longEntryAnchorReason, "锚点已触及") : longEntryAnchorReason
 string shortEntryAnchorReason = ""
 shortEntryAnchorReason := structuralAnchorMode and anchorNear(shortEntryCandidate, lastPivotHigh, atrRaw) ? appendAnchorReason(shortEntryAnchorReason, "前高压力") : shortEntryAnchorReason
 shortEntryAnchorReason := structuralAnchorMode and anchorNear(shortEntryCandidate, recentHigh, atrRaw) ? appendAnchorReason(shortEntryAnchorReason, "近期高点") : shortEntryAnchorReason
@@ -1327,10 +1337,11 @@ shortEntryAnchorReason := structuralAnchorMode and anchorNear(shortEntryCandidat
 shortEntryAnchorReason := structuralAnchorMode and anchorNear(shortEntryCandidate, shortResistanceMid, atrRaw) ? appendAnchorReason(shortEntryAnchorReason, "信号K中点") : shortEntryAnchorReason
 shortEntryAnchorReason := structuralAnchorMode and anchorNear(shortEntryCandidate, shortResistanceSd, atrRaw) ? appendAnchorReason(shortEntryAnchorReason, "SD上轨接近") : shortEntryAnchorReason
 shortEntryAnchorReason := structuralAnchorMode and shortEntryAnchorReason == "" and anchorNear(shortEntryCandidate, shortFallbackEntry, atrRaw) ? "ATR反抽备选" : shortEntryAnchorReason
+shortEntryAnchorReason := shortEntryAnchorTouched ? appendAnchorReason(shortEntryAnchorReason, "锚点已触及") : shortEntryAnchorReason
 string longEntryAnchorSource = structuralAnchorMode ? "support_anchor" : "marketable_cap"
 string shortEntryAnchorSource = structuralAnchorMode ? "resistance_anchor" : "marketable_cap"
-bool longEntryAnchorAllowed = not structuralAnchorMode or (entryAnchorValid(longReferenceEntry, longEntryCandidate, atrRaw) and longEntryCandidate <= longReferenceEntry)
-bool shortEntryAnchorAllowed = not structuralAnchorMode or (entryAnchorValid(shortReferenceEntry, shortEntryCandidate, atrRaw) and shortEntryCandidate >= shortReferenceEntry)
+bool longEntryAnchorAllowed = not structuralAnchorMode or ((longEntryAnchorTouched or entryAnchorValid(longReferenceEntry, longEntryCandidate, atrRaw)) and longEntryCandidate <= longReferenceEntry)
+bool shortEntryAnchorAllowed = not structuralAnchorMode or ((shortEntryAnchorTouched or entryAnchorValid(shortReferenceEntry, shortEntryCandidate, atrRaw)) and shortEntryCandidate >= shortReferenceEntry)
 bool longMrStructuralAnchorQualified = not structuralAnchorMode or anchorNear(longEntryCandidate, lastPivotLow, atrRaw) or anchorNear(longEntryCandidate, recentLow, atrRaw) or anchorNear(longEntryCandidate, sessionLow, atrRaw) or anchorNear(longEntryCandidate, longSupportEmaFast, atrRaw) or anchorNear(longEntryCandidate, longSupportEmaSlow, atrRaw) or anchorNear(longEntryCandidate, sdSignalLower, atrRaw)
 bool shortMrStructuralAnchorQualified = not structuralAnchorMode or anchorNear(shortEntryCandidate, lastPivotHigh, atrRaw) or anchorNear(shortEntryCandidate, recentHigh, atrRaw) or anchorNear(shortEntryCandidate, sessionHigh, atrRaw) or anchorNear(shortEntryCandidate, shortResistanceEmaFast, atrRaw) or anchorNear(shortEntryCandidate, shortResistanceEmaSlow, atrRaw) or anchorNear(shortEntryCandidate, sdSignalUpper, atrRaw)
 bool longPostReversalStructuralAnchorQualified = not structuralAnchorMode or anchorNear(longEntryCandidate, lastPivotLow, atrRaw) or anchorNear(longEntryCandidate, recentLow, atrRaw) or anchorNear(longEntryCandidate, sessionLow, atrRaw) or anchorNear(longEntryCandidate, longSupportEmaFast, atrRaw) or anchorNear(longEntryCandidate, longSupportEmaSlow, atrRaw) or anchorNear(longEntryCandidate, low, atrRaw) or anchorNear(longEntryCandidate, longSupportMid, atrRaw)
@@ -2091,9 +2102,10 @@ if exitedNow
         alert(buildExitPayload(eventId("exit", exitReason), activePositionId, exitReason, exitPrice), alert.freq_all)
     if flowLabelsVisible
         float exitY = activeDirection == -1 ? low - atrVal * 3.6 : high + atrVal * 3.6
-        string exitDetailText = exitPnlLabelText(exitReason, lastExitTimeText, exitPrice, lastExitPnl, lastExitPnlPct)
+        string exitDirectionText = closeDirectionTag(activeDirection)
+        string exitDetailText = exitDirectionText + " · " + exitPnlLabelText(exitReason, lastExitTimeText, exitPrice, lastExitPnl, lastExitPnlPct)
         float exitR = activeInitialRisk > 0.0 ? exitPnlPerShare / activeInitialRisk : na
-        string exitCompactText = exitReasonDisplayName(exitReason) + "\n" + fmtSignedMoney(lastExitPnl) + decisionExitRText(exitR)
+        string exitCompactText = exitDirectionText + "·" + exitReasonDisplayName(exitReason) + "\n" + fmtSignedMoney(lastExitPnl) + decisionExitRText(exitR)
         label.new(bar_index, exitY, flowLabelText(exitCompactText, exitDetailText), style=activeDirection == -1 ? label.style_label_up : label.style_label_down, color=exitPnlLabelColor(lastExitPnl), textcolor=color.white, size=size.normal, tooltip=flowLabelTooltip(exitDetailText))
     pendingExitReason := ""
     activePositionId := ""
@@ -2235,11 +2247,11 @@ if isNewTradingDay
 
 if flowLabelsVisible and lowerCandidateNotice
     string lowerActivateDetailText = "已入选候选池\n" + syminfo.ticker + " · SD窗口开启\nSD下轨候选\n非开仓点，等组件"
-    label.new(bar_index, low - atrVal * 1.4, flowLabelText("候选 L·SD↓\n等组件", lowerActivateDetailText), style=label.style_label_up, color=flowLabelColor("activate_lower", "long"), textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(lowerActivateDetailText))
+    label.new(bar_index, low - atrVal * 1.4, flowLabelText("候选 多·SD↓\n等组件", lowerActivateDetailText), style=label.style_label_up, color=flowLabelColor("activate_lower", "long"), textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(lowerActivateDetailText))
 
 if flowLabelsVisible and upperCandidateNotice
     string upperActivateDetailText = "已入选候选池\n" + syminfo.ticker + " · SD窗口开启\nSD上轨候选\n非开仓点，等组件"
-    label.new(bar_index, high + atrVal * 1.4, flowLabelText("候选 S·SD↑\n等组件", upperActivateDetailText), style=label.style_label_down, color=flowLabelColor("activate_upper", "short"), textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(upperActivateDetailText))
+    label.new(bar_index, high + atrVal * 1.4, flowLabelText("候选 空·SD↑\n等组件", upperActivateDetailText), style=label.style_label_down, color=flowLabelColor("activate_upper", "short"), textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(upperActivateDetailText))
 
 bool observeNow = preAlertNow
 bool prepareVisualNow = flowLabelsVisible and observeNow
@@ -2279,10 +2291,12 @@ string blockedMrRegimeText = setupIsMr(blockedSetup) ? "\nMR: " + mrRegimeDispla
 string blockedProfitLabelText = (blockedProfitSpaceText == "" ? "\n" + blockedProfitSummary : blockedProfitSpaceText) + blockedProfitCheckpointText
 float blockedStructureRewardRisk = blockedDirection == "long" ? longStructureRewardRisk : shortStructureRewardRisk
 float blockedTargetDistanceAtr = blockedDirection == "long" ? longTargetDistanceAtr : shortTargetDistanceAtr
+string blockedProfitSecondaryReason = blockedProfitSpaceEntryBlocked ? profitFailureDisplayName(blockedProfitSpaceFailureReason) : ""
+string blockedSecondaryText = blockedProfitSecondaryReason != "" and blockedReason != "profit_space_too_small" and blockedReason != "mr_target_space_too_small" ? "\n次因: " + blockedProfitSecondaryReason : ""
 string blockedVisualKey = blockedDirection + ":" + blockedSetup + ":" + blockedReason + ":" + blockedComponentText + ":" + mtfStatusForDirection(blockedDirection) + ":" + mtfBlockReasonForDirection(blockedDirection) + ":" + str.tostring(dtpDir, "#") + ":" + dtpPhase + ":" + (blockedProfitSpaceEntryBlocked ? blockedProfitSpaceFailureReason : "none")
 if blockedVisualNow and blockedVisualKey != lastBlockVisualKey
     float blockedY = blockedDirection == "short" ? high + atrVal * 4.0 : low - atrVal * 4.0
-    string blockedDetailText = "信号过滤\n" + directionDisplayName(blockedDirection) + " · " + setupDisplayName(blockedSetup) + "\n" + entryWindowDiagnosticsText() + "\n组件: " + blockedComponentText + "\n原因: " + filterDisplayName(blockedReason) + "\n" + filterActionText(blockedReason, blockedDirection) + "\n" + mtfSummaryForDirection(blockedDirection) + "\n" + dtpEntryFilterText(blockedDirection, dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + blockedMrRegimeText + blockedProfitLabelText + blockedAnchorText
+    string blockedDetailText = "信号过滤\n" + directionDisplayName(blockedDirection) + " · " + setupDisplayName(blockedSetup) + "\n" + entryWindowDiagnosticsText() + "\n组件: " + blockedComponentText + "\n主因: " + filterDisplayName(blockedReason) + blockedSecondaryText + "\n" + filterActionText(blockedReason, blockedDirection) + "\n" + mtfSummaryForDirection(blockedDirection) + "\n" + dtpEntryFilterText(blockedDirection, dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + blockedMrRegimeText + blockedProfitLabelText + blockedAnchorText
     string blockedCompactReasonText = decisionBlockReason(blockedReason, blockedProfitSpaceEntryBlocked ? blockedProfitSpaceFailureReason : "none")
     string blockedCompactMetricText = blockedProfitSpaceEntryBlocked ? " / " + decisionProfitMetricLine(blockedStructureRewardRisk, blockedTargetDistanceAtr) : ""
     string blockedCompactText = "过滤 " + decisionDirectionTag(blockedDirection) + "·" + decisionSetupTag(blockedSetup) + "\n" + blockedCompactReasonText + blockedCompactMetricText
@@ -2339,7 +2353,7 @@ if enterLong
             string mrLine = longSetup == "mr_sdLower" ? "\nMR: " + mrRegimeDisplayName(longMrRegime) + " / 均值TP " + str.tostring(targetPrice, "#.##") : ""
             string profitLine = profitSpaceSummaryText(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr, longStructureRewardRisk) + profitSpaceCheckpointText(longRunnerCandidate, longCheckpointNetProfit, longCheckpointCostPctOfReward, longCheckpointTargetDistanceAtr)
             string longEntryDetailText = "信号已发出\n提交限价做多\n" + setupDisplayName(longSetup) + "\n" + entryWindowDiagnosticsText() + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("long") + "\n" + dtpEntryFilterText("long", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + mrLine + "\n" + profitLine + "\nref " + str.tostring(longReferenceEntry, "#.##") + " / plan " + str.tostring(entryPrice, "#.##") + " / 复查 " + str.tostring(entryOrderTtlBars, "#") + "bar\n锚点: " + activeEntryAnchorReason
-            string longEntryCompactText = "入场 L·" + decisionSetupTag(longSetup) + " " + str.tostring(entryPrice, "#.##") + "\n" + decisionRiskLine(entryPrice, stopPrice, targetPrice, longStructureRewardRisk, longTargetDistanceAtr)
+            string longEntryCompactText = "入场 多·" + decisionSetupTag(longSetup) + " " + str.tostring(entryPrice, "#.##") + "\n" + decisionRiskLine(entryPrice, stopPrice, targetPrice, longStructureRewardRisk, longTargetDistanceAtr)
             label.new(bar_index, low - atrVal * 3.1, flowLabelText(longEntryCompactText, longEntryDetailText), style=label.style_label_up, color=flowLabelColor("entry", "long"), textcolor=color.white, size=size.normal, tooltip=flowLabelTooltip(longEntryDetailText))
         lowerPostReversalUsed := setupLongPostLowerBreakout ? true : lowerPostReversalUsed
         lowerWindowUsed := longSetup == "mr_sdLower" ? true : lowerWindowUsed
@@ -2399,7 +2413,7 @@ if enterShort
             string mrLine = shortSetup == "mr_sdUpper" ? "\nMR: " + mrRegimeDisplayName(shortMrRegime) + " / 均值TP " + str.tostring(targetPrice, "#.##") : ""
             string profitLine = profitSpaceSummaryText(shortExpectedNetProfit, shortExpectedNetRoiPct, shortCostPctOfReward, shortTargetDistanceAtr, shortStructureRewardRisk) + profitSpaceCheckpointText(shortRunnerCandidate, shortCheckpointNetProfit, shortCheckpointCostPctOfReward, shortCheckpointTargetDistanceAtr)
             string shortEntryDetailText = "信号已发出\n提交限价做空\n" + setupDisplayName(shortSetup) + "\n" + entryWindowDiagnosticsText() + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("short") + "\n" + dtpEntryFilterText("short", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + mrLine + "\n" + profitLine + "\nref " + str.tostring(shortReferenceEntry, "#.##") + " / plan " + str.tostring(entryPrice, "#.##") + " / 复查 " + str.tostring(entryOrderTtlBars, "#") + "bar\n锚点: " + activeEntryAnchorReason
-            string shortEntryCompactText = "入场 S·" + decisionSetupTag(shortSetup) + " " + str.tostring(entryPrice, "#.##") + "\n" + decisionRiskLine(entryPrice, stopPrice, targetPrice, shortStructureRewardRisk, shortTargetDistanceAtr)
+            string shortEntryCompactText = "入场 空·" + decisionSetupTag(shortSetup) + " " + str.tostring(entryPrice, "#.##") + "\n" + decisionRiskLine(entryPrice, stopPrice, targetPrice, shortStructureRewardRisk, shortTargetDistanceAtr)
             label.new(bar_index, high + atrVal * 3.1, flowLabelText(shortEntryCompactText, shortEntryDetailText), style=label.style_label_down, color=flowLabelColor("entry", "short"), textcolor=color.white, size=size.normal, tooltip=flowLabelTooltip(shortEntryDetailText))
         upperPostReversalUsed := setupShortPostUpperBreakdown ? true : upperPostReversalUsed
         emaDeathContinuationShortUsed := setupShortEmaDeathContinuation ? true : emaDeathContinuationShortUsed
@@ -2506,9 +2520,10 @@ if eodCloseNow
         alert(buildExitPayload(eventId("exit", "force_flat_eod"), eodPositionId, "force_flat_eod", eodExitPrice), alert.freq_all)
     if flowLabelsVisible
         float eodY = eodDirection == -1 ? low - atrVal * 3.6 : high + atrVal * 3.6
-        string eodDetailText = exitPnlLabelText("force_flat_eod", lastExitTimeText, eodExitPrice, lastExitPnl, lastExitPnlPct)
+        string eodDirectionText = closeDirectionTag(eodDirection)
+        string eodDetailText = eodDirectionText + " · " + exitPnlLabelText("force_flat_eod", lastExitTimeText, eodExitPrice, lastExitPnl, lastExitPnlPct)
         float eodR = activeInitialRisk > 0.0 ? eodPnlPerShare / activeInitialRisk : na
-        string eodCompactText = "EOD强平\n" + fmtSignedMoney(lastExitPnl) + decisionExitRText(eodR)
+        string eodCompactText = eodDirectionText + "·EOD强平\n" + fmtSignedMoney(lastExitPnl) + decisionExitRText(eodR)
         label.new(bar_index, eodY, flowLabelText(eodCompactText, eodDetailText), style=eodDirection == -1 ? label.style_label_up : label.style_label_down, color=exitPnlLabelColor(lastExitPnl), textcolor=color.white, size=size.normal, tooltip=flowLabelTooltip(eodDetailText))
     pendingExitReason := ""
     activePositionId := ""

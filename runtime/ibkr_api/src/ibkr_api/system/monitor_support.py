@@ -536,6 +536,69 @@ def _filter_pending_signal_rows_for_broker(
     return filtered, stats
 
 
+def _is_safe_close_quote_unavailable(extra: dict[str, Any], runtime_detail: dict[str, Any]) -> bool:
+    if bool(extra.get("safe_blocked_no_quote") or runtime_detail.get("safe_blocked_no_quote")):
+        return True
+    close_result = _as_object(extra.get("close_result") or runtime_detail.get("close_result"))
+    if _to_text(close_result.get("error")).lower() != "close_limit_price_unavailable":
+        return False
+    # This is a deliberate safety block: do not downgrade to market order when
+    # no bid/ask/last/position price is available.
+    return True
+
+
+def _is_terminal_adjust_confirmation(confirmation: dict[str, Any]) -> bool:
+    if bool(confirmation.get("terminal_conflict_safe") or confirmation.get("terminal_child_order")):
+        return True
+    terminal_statuses = {
+        "API_CANCELLED",
+        "CANCELLED",
+        "CANCELED",
+        "CLOSED",
+        "EXECUTED",
+        "EXPIRED",
+        "FILLED",
+        "INACTIVE",
+        "REJECTED",
+    }
+    inspected = [
+        _as_object(item)
+        for item in (confirmation.get("inspected_orders") or [])
+        if isinstance(item, dict)
+    ]
+    if not inspected:
+        for detail in confirmation.get("details") or []:
+            detail_obj = _as_object(detail)
+            inspected.extend(
+                _as_object(item)
+                for item in (detail_obj.get("inspected_orders") or [])
+                if isinstance(item, dict)
+            )
+    if not inspected or any(bool(item.get("active")) for item in inspected):
+        return False
+    statuses = {
+        _to_text(item.get("status")).upper().replace("-", "_").replace(" ", "_")
+        for item in inspected
+    }
+    statuses.discard("")
+    return bool(statuses) and statuses.issubset(terminal_statuses)
+
+
+def _is_safe_terminal_adjust(extra: dict[str, Any], runtime_detail: dict[str, Any]) -> bool:
+    if bool(extra.get("terminal_conflict_safe") or runtime_detail.get("terminal_conflict_safe")):
+        return True
+    result = _as_object(extra.get("adjust_bracket_result") or runtime_detail.get("adjust_bracket_result"))
+    if result.get("terminal_sides"):
+        return True
+    adjust_results = _as_object(extra.get("adjust_results") or runtime_detail.get("adjust_results"))
+    for value in adjust_results.values():
+        item = _as_object(value)
+        confirmation = _as_object(item.get("confirmation"))
+        if bool(item.get("terminal_conflict_safe")) or _is_terminal_adjust_confirmation(confirmation):
+            return True
+    return False
+
+
 def _is_failed_processed_tv_action(row: dict[str, Any]) -> bool:
     extra = _as_object(row.get("extra"))
     runtime_detail = _as_object(extra.get("reverse_runtime_detail"))
@@ -545,6 +608,10 @@ def _is_failed_processed_tv_action(row: dict[str, Any]) -> bool:
     execution_state = _to_text(extra.get("execution_state")).lower()
     reason = _to_text(row.get("reason") or extra.get("reason")).lower()
     if bool(extra.get("terminal_conflict_safe") or runtime_detail.get("terminal_conflict_safe")):
+        return False
+    if _is_safe_close_quote_unavailable(extra, runtime_detail):
+        return False
+    if _is_safe_terminal_adjust(extra, runtime_detail):
         return False
     if (
         _to_text(extra.get("invalidated_by") or runtime_detail.get("invalidated_by")) == "real_order_preflight"
@@ -730,7 +797,12 @@ def build_tv_flow_monitor_summary(
         if _is_within_lookback(row, observed_ms, failed_lookback_ms)
     ]
     tv_signal_pending_raw = [row for row in pending_signal_rows if _is_tv_action(row)]
-    tv_reverse_pending_raw = [row for row in pending_reverse_rows if _is_tv_action(row)]
+    tv_reverse_pending_raw = [
+        row
+        for row in pending_reverse_rows
+        if _is_tv_action(row)
+        and not _is_safe_terminal_adjust(_as_object(row.get("extra")), _as_object(_as_object(row.get("extra")).get("reverse_runtime_detail")))
+    ]
     non_tv_signal_pending = [row for row in pending_signal_rows if not _is_tv_action(row)]
     non_tv_reverse_pending = [row for row in pending_reverse_rows if not _is_tv_action(row)]
     tv_reverse_failed_raw = _latest_rows(

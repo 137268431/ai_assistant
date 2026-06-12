@@ -166,7 +166,9 @@
         let refreshTimer = null;
         let latestSnapshot = null;
         let buyingPowerRefreshInFlight = false;
+        let pnlRefreshInFlight = false;
         let lastBuyingPowerAutoRefreshAt = 0;
+        let lastPnlAutoRefreshAt = 0;
         let actionBusy = false;
         let ticketDrawerOpen = false;
         const DEFAULT_TICKET_PRICE_STEP = 0.01;
@@ -365,6 +367,90 @@
             });
         }
 
+        function formatAgeLabel(value) {
+            const num = Number(value);
+            if (!Number.isFinite(num) || num < 0) return '';
+            if (num < 60) return `${Math.round(num)}s old`;
+            if (num < 3600) return `${Math.round(num / 60)}m old`;
+            return `${(num / 3600).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}h old`;
+        }
+
+        function firstTimeValue(...values) {
+            for (const value of values) {
+                if (value === null || value === undefined || value === '') continue;
+                const text = String(value).trim();
+                if (text) return text;
+            }
+            return '';
+        }
+
+        function freshnessText(updatedAt, cacheAge = null, fallback = '--') {
+            const timeText = formatTimeLabel(updatedAt);
+            const parsedMs = parseTimeValue(updatedAt);
+            const computedAge = parsedMs > 0 ? Math.max(0, (Date.now() - parsedMs) / 1000) : null;
+            const ageText = formatAgeLabel(firstDefined(cacheAge, computedAge));
+            if (timeText === '--') return fallback;
+            return ageText ? `${timeText} · ${ageText}` : timeText;
+        }
+
+        function getSnapshotFreshness(snapshot, kind = 'snapshot') {
+            const data = snapshot || {};
+            if (kind === 'positions') {
+                return {
+                    updatedAt: firstTimeValue(data.positions_fetched_at, data.positions_updated_at, data.fetched_at),
+                    cacheAge: firstDefined(data.positions_cache_age_s, data.cache_age_s),
+                    source: data.positions_source || data.source || '',
+                };
+            }
+            if (kind === 'pnl') {
+                const today = data.summary?.account_today_pnl || {};
+                return {
+                    updatedAt: firstTimeValue(today.updated_at, data.account_pnl_fetched_at, data.pnl_fetched_at, data.summary?.pnl_updated_at, data.fetched_at),
+                    cacheAge: firstDefined(data.pnl_cache_age_s, data.summary_cache_age_s, data.cache_age_s),
+                    source: data.account_pnl_source || today.source || data.summary_source || data.source || '',
+                };
+            }
+            if (kind === 'summary') {
+                return {
+                    updatedAt: firstTimeValue(data.summary_fetched_at, data.summary?.summary_updated_at, data.fetched_at),
+                    cacheAge: firstDefined(data.summary_cache_age_s, data.cache_age_s),
+                    source: data.summary_source || data.source || '',
+                };
+            }
+            if (kind === 'orders') {
+                return {
+                    updatedAt: firstTimeValue(data.orders_fetched_at, data.fetched_at),
+                    cacheAge: firstDefined(data.orders_cache_age_s, data.cache_age_s),
+                    source: data.orders_fast ? 'orders_fast' : data.source || '',
+                };
+            }
+            return {
+                updatedAt: firstTimeValue(data.fetched_at),
+                cacheAge: data.cache_age_s,
+                source: data.source || '',
+            };
+        }
+
+        function formatFreshness(snapshot, kind = 'snapshot', fallback = '--') {
+            const freshness = getSnapshotFreshness(snapshot, kind);
+            return freshnessText(freshness.updatedAt, freshness.cacheAge, fallback);
+        }
+
+        function positionPriceFreshness(position, snapshot) {
+            return freshnessText(
+                firstTimeValue(
+                    position?.price_updated_at,
+                    position?.market_data_updated_at,
+                    position?.updated_at,
+                    position?.raw?.updated_at,
+                    position?.raw?.last_updated,
+                    getSnapshotFreshness(snapshot, 'positions').updatedAt
+                ),
+                firstDefined(position?.position_cache_age_s, getSnapshotFreshness(snapshot, 'positions').cacheAge),
+                '--'
+            );
+        }
+
         function summarizeHeaderValue(value, maxLength = 28) {
             const text = String(value || '').trim();
             if (!text) return '';
@@ -481,11 +567,65 @@
             if (bpSnapshot.buying_power_guard && typeof bpSnapshot.buying_power_guard === 'object') {
                 base.buying_power_guard = { ...(base.buying_power_guard || {}), ...bpSnapshot.buying_power_guard };
             }
-            ['summary_available', 'summary_source', 'buying_power_refresh_state', 'retry_after_s', 'hard_blocked', 'in_flight_request', 'last_refresh_error', 'account_snapshot_health', 'account_data_policy', 'account_data_pacing'].forEach((key) => {
+            ['summary_available', 'summary_source', 'summary_fetched_at', 'summary_cache_age_s', 'buying_power_fetched_at', 'buying_power_refresh_state', 'retry_after_s', 'hard_blocked', 'in_flight_request', 'last_refresh_error', 'account_snapshot_health', 'account_data_policy', 'account_data_pacing'].forEach((key) => {
                 if (bpSnapshot[key] !== undefined) base[key] = bpSnapshot[key];
             });
             base.buying_power_snapshot = bpSnapshot;
             return base;
+        }
+
+        function mergePnlSnapshot(baseSnapshot, pnlSnapshot) {
+            if (!pnlSnapshot || typeof pnlSnapshot !== 'object') return baseSnapshot;
+            const base = baseSnapshot && typeof baseSnapshot === 'object' ? { ...baseSnapshot } : {};
+            const mergedSummary = { ...(base.summary || {}) };
+            if (pnlSnapshot.summary && typeof pnlSnapshot.summary === 'object') {
+                Object.entries(pnlSnapshot.summary).forEach(([key, value]) => {
+                    if (value !== null && value !== undefined && value !== '') mergedSummary[key] = value;
+                });
+            }
+            base.summary = mergedSummary;
+            ['pnl_raw', 'include_pnl', 'pnl_refresh_state', 'last_pnl_refresh_error', 'account_pnl_source', 'summary_fetched_at', 'pnl_fetched_at', 'account_pnl_fetched_at', 'retry_after_s', 'hard_blocked', 'in_flight_request', 'account_data_pacing'].forEach((key) => {
+                if (pnlSnapshot[key] !== undefined) base[key] = pnlSnapshot[key];
+            });
+            base.pnl_snapshot = pnlSnapshot;
+            return base;
+        }
+
+        function shouldPreserveSnapshotOnBlockedRefresh(snapshot, previousSnapshot) {
+            if (!previousSnapshot || !snapshot || typeof snapshot !== 'object') return false;
+            if (!snapshot.hard_blocked && snapshot.ok !== false) return false;
+            const hasPositions = Array.isArray(snapshot.positions) && snapshot.positions.length > 0;
+            const hasOrders = Array.isArray(snapshot.orders) && snapshot.orders.length > 0;
+            const hasSummary = snapshot.summary && Object.keys(snapshot.summary || {}).length > 0;
+            return !hasPositions && !hasOrders && !hasSummary;
+        }
+
+        function mergeBlockedRefreshStatus(baseSnapshot, blockedSnapshot) {
+            const base = baseSnapshot && typeof baseSnapshot === 'object' ? { ...baseSnapshot } : {};
+            ['hard_blocked', 'retry_after_s', 'in_flight_request', 'last_refresh_error', 'refresh_error', 'account_snapshot_health', 'account_data_policy', 'account_data_pacing', 'account_data_circuit'].forEach((key) => {
+                if (blockedSnapshot?.[key] !== undefined) base[key] = blockedSnapshot[key];
+            });
+            const blockedErrors = blockedSnapshot?.errors && typeof blockedSnapshot.errors === 'object' ? blockedSnapshot.errors : {};
+            base.errors = { ...(base.errors || {}), refresh: blockedErrors.refresh || blockedSnapshot?.last_refresh_error || blockedSnapshot?.refresh_error || 'account_snapshot_refresh_blocked' };
+            base.refresh_attempt = {
+                ok: false,
+                hard_blocked: Boolean(blockedSnapshot?.hard_blocked),
+                retry_after_s: Number(blockedSnapshot?.retry_after_s || 0),
+                error: blockedErrors.refresh || blockedSnapshot?.last_refresh_error || blockedSnapshot?.refresh_error || 'account_snapshot_refresh_blocked',
+                fetched_at: blockedSnapshot?.fetched_at || new Date().toISOString(),
+            };
+            return base;
+        }
+
+        function accountPnlStatusText(snapshot = latestSnapshot) {
+            const today = snapshot?.summary?.account_today_pnl || {};
+            const freshness = formatFreshness(snapshot, 'pnl');
+            if (today.ok) return `PNL 已同步 · ${freshness}`;
+            if (snapshot?.in_flight_request && (snapshot?.pnl_refresh_state === 'in_flight' || snapshot?.last_pnl_refresh_error === 'account_data_request_in_flight')) {
+                const kind = snapshot.in_flight_request.owner_kind || snapshot.in_flight_request.kind || 'account_data';
+                return `PNL 获取中：${kind}`;
+            }
+            return `PNL 未同步 · ${today.message || snapshot?.last_pnl_refresh_error || '等待自动重试'}`;
         }
 
         function buyingPowerStatusText(snapshot = latestSnapshot) {
@@ -2225,8 +2365,11 @@
             const todayPnlOk = Boolean(accountTodayPnl.ok);
             const todayRawField = accountTodayPnl.raw_field || 'DailyPnL';
             const todayPnlSource = accountTodayPnl.source || '';
+            const summaryFresh = formatFreshness(snapshot, 'summary');
+            const pnlFresh = formatFreshness(snapshot, 'pnl');
+            const positionsFresh = formatFreshness(snapshot, 'positions');
             const todayPnlSub = todayPnlOk
-                ? `${todayPnlSource === 'broker_req_pnl' ? 'IBKR PnL stream' : 'IBKR Daily PnL'} · ${todayRawField}`
+                ? `${todayPnlSource === 'broker_req_pnl' ? 'IBKR PnL stream' : 'IBKR Daily PnL'} · ${todayRawField} · updated ${pnlFresh}`
                 : (accountTodayPnl.message || 'IBKR Daily PnL unavailable');
             const todayPnlPct = todayPnlOk ? getTodayPnlNetLiqPct(accountTodayPnl, summary) : null;
             const bpStatus = buyingPowerStatusText(snapshot);
@@ -2240,14 +2383,14 @@
                     badge: todayPnlPct === null ? '' : `${formatSignedPercent(todayPnlPct)} NetLiq`,
                     badgeToneValue: todayPnlPct,
                 },
-                { label: 'Realized', value: formatSignedNullableMoney(summary.realized_pnl), sub: 'IBKR current realized', toneValue: summary.realized_pnl },
-                { label: 'Floating', value: formatSignedNullableMoney(summary.unrealized_pnl), sub: openPositionSub, toneValue: summary.unrealized_pnl },
-                { label: 'Net Liq', value: formatMoney(summary.net_liquidation), sub: hasSummaryValue(summary, ['net_liquidation']) ? '账户净值' : bpStatus, toneValue: summary.net_liquidation },
-                { label: 'Available', value: formatMoney(summary.available_funds), sub: hasSummaryValue(summary, ['available_funds']) ? '可用资金' : bpStatus, toneValue: summary.available_funds },
-                { label: 'Buying Power', value: formatMoney(summary.buying_power), sub: hasSummaryValue(summary, ['buying_power']) ? '购买力' : bpStatus, toneValue: summary.buying_power },
-                { label: 'Remaining BP', value: formatMoney(remainingBp), sub: `当前剩余购买力 · ${formatPercent(firstDefined(summary.remaining_buying_power_pct_net_liq, bpGuard.remaining_pct_net_liq))} NetLiq · ${bpStatus}`, toneValue: remainingBp },
-                { label: 'Cash', value: formatMoney(summary.total_cash_value), sub: '现金余额', toneValue: summary.total_cash_value },
-                { label: 'Gross Exposure', value: formatMoney(summary.gross_position_value), sub: '持仓市值', toneValue: summary.gross_position_value },
+                { label: 'Realized', value: formatSignedNullableMoney(summary.realized_pnl), sub: `IBKR AccountSummary RealizedPnL · updated ${summaryFresh}`, toneValue: summary.realized_pnl },
+                { label: 'Floating', value: formatSignedNullableMoney(summary.unrealized_pnl), sub: `${openPositionSub} · positions updated ${positionsFresh}`, toneValue: summary.unrealized_pnl },
+                { label: 'Net Liq', value: formatMoney(summary.net_liquidation), sub: hasSummaryValue(summary, ['net_liquidation']) ? `账户净值 · updated ${summaryFresh}` : bpStatus, toneValue: summary.net_liquidation },
+                { label: 'Available', value: formatMoney(summary.available_funds), sub: hasSummaryValue(summary, ['available_funds']) ? `可用资金 · updated ${summaryFresh}` : bpStatus, toneValue: summary.available_funds },
+                { label: 'Buying Power', value: formatMoney(summary.buying_power), sub: hasSummaryValue(summary, ['buying_power']) ? `购买力 · updated ${summaryFresh}` : bpStatus, toneValue: summary.buying_power },
+                { label: 'Remaining BP', value: formatMoney(remainingBp), sub: `当前剩余购买力 · ${formatPercent(firstDefined(summary.remaining_buying_power_pct_net_liq, bpGuard.remaining_pct_net_liq))} NetLiq · updated ${summaryFresh} · ${bpStatus}`, toneValue: remainingBp },
+                { label: 'Cash', value: formatMoney(summary.total_cash_value), sub: `现金余额 · updated ${summaryFresh}`, toneValue: summary.total_cash_value },
+                { label: 'Gross Exposure', value: formatMoney(summary.gross_position_value), sub: `持仓市值 · updated ${positionsFresh}`, toneValue: summary.gross_position_value },
             ];
             document.getElementById('summaryGrid').innerHTML = cards.map((card) => `
                 <div class="summary-card ${card.label === 'Remaining BP' && bpGuard.state === 'blocked' ? 'danger' : card.label === 'Remaining BP' && bpGuard.state === 'warning' ? 'warn' : ''}">
@@ -2277,7 +2420,7 @@
                 <div class="surface-card">
                     <div class="meta-label">${escapeHtml(label)}</div>
                     <div class="meta-value">${escapeHtml(String(value))}</div>
-                    <div class="summary-sub mono">open=${escapeHtml(String(effectiveOpen))} · broker=${escapeHtml(String(counts.open_positions || 0))} · inferred=${escapeHtml(String(inferredOpen))} · open_orders=${escapeHtml(String(counts.open_orders || 0))}</div>
+                    <div class="summary-sub mono">open=${escapeHtml(String(effectiveOpen))} · broker=${escapeHtml(String(counts.open_positions || 0))} · inferred=${escapeHtml(String(inferredOpen))} · open_orders=${escapeHtml(String(counts.open_orders || 0))} · snapshot=${escapeHtml(formatFreshness(snapshot, 'snapshot'))}</div>
                 </div>
             `).join('');
         }
@@ -2427,9 +2570,11 @@
             ));
             positions.sort((a, b) => Math.abs(Number(b.market_value || 0)) - Math.abs(Number(a.market_value || 0)));
             const inference = snapshot?.positions_inference || {};
+            const positionsFresh = formatFreshness(snapshot, 'positions');
+            const positionsSource = snapshot?.positions_source || (snapshot?.orders_fast ? 'snapshot_cache' : 'Gateway snapshot');
             document.getElementById('positionsMeta').textContent = useInferredPositions
-                ? `${positions.length} inferred open · broker positions empty · orders_fast`
-                : `${positions.length} open · ${flatPositions.length} flat rows · Gateway snapshot`;
+                ? `${positions.length} inferred open · broker positions empty · orders_fast · updated ${positionsFresh}`
+                : `${positions.length} open · ${flatPositions.length} flat rows · ${positionsSource} · updated ${positionsFresh}`;
             const area = document.getElementById('positionsArea');
             const inferenceBanner = useInferredPositions ? `
                 <div class="surface-card">
@@ -2448,7 +2593,7 @@
                         <div class="record-head">
                             <div>
                                 <div class="record-symbol">${escapeHtml(position.symbol || '--')}</div>
-                                <div class="summary-sub mono">conid=${escapeHtml(String(position.conid || '--'))} · acct=${escapeHtml(position.account || '--')}</div>
+                                <div class="summary-sub mono">conid=${escapeHtml(String(position.conid || '--'))} · acct=${escapeHtml(position.account || '--')} · price_updated=${escapeHtml(positionPriceFreshness(position, snapshot))}</div>
                             </div>
                             <div class="badge-row">
                                 <span class="${badgeClass(position.direction)}">${escapeHtml(String(position.direction || 'flat').toUpperCase())}</span>
@@ -2460,6 +2605,7 @@
                             <div class="metric-item"><div class="metric-label">Quantity</div><div class="metric-value">${escapeHtml(formatQty(position.quantity))}</div></div>
                             <div class="metric-item"><div class="metric-label">${position?.inferred ? 'Avg Fill' : 'Avg Cost'}</div><div class="metric-value">${escapeHtml(formatMoney(position.avg_cost))}</div></div>
                             <div class="metric-item"><div class="metric-label">Market Price</div><div class="metric-value">${escapeHtml(formatMoney(position.market_price))}</div></div>
+                            <div class="metric-item"><div class="metric-label">Price Updated</div><div class="metric-value">${escapeHtml(positionPriceFreshness(position, snapshot))}</div></div>
                             <div class="metric-item"><div class="metric-label">Market Value</div><div class="metric-value">${escapeHtml(formatMoney(position.market_value))}</div></div>
                             <div class="metric-item"><div class="metric-label">Unrealized</div><div class="metric-value ${valueClass(position.unrealized_pnl)}">${escapeHtml(formatSignedMoney(position.unrealized_pnl))}</div></div>
                             <div class="metric-item"><div class="metric-label">Unrealized %</div><div class="metric-value ${valueClass(positionUnrealizedPct(position))}">${escapeHtml(positionUnrealizedPct(position) === null ? '--' : formatPercent(positionUnrealizedPct(position), 2))}</div></div>
@@ -3214,40 +3360,101 @@
             }
         }
 
+        async function refreshAccountPnl(force = false, options = {}) {
+            if (!initAuth()) return null;
+            if (pnlRefreshInFlight) return null;
+            if (!force) lastPnlAutoRefreshAt = Date.now();
+            pnlRefreshInFlight = true;
+            const refreshInfo = document.getElementById('refreshInfo');
+            const previousInfo = refreshInfo?.textContent || '';
+            if (force && refreshInfo) refreshInfo.textContent = '正在刷新 PNL...';
+            try {
+                const payload = await requestAccountJson('/api/custom/ibkr/account_snapshot', {
+                    timeoutMs: 22000,
+                    timeoutLabel: 'PNL 刷新',
+                    force: true,
+                    cacheProfile: 'runtimeStatus',
+                    params: {
+                        refresh_scope: 'pnl',
+                        account_pnl_refresh: '1',
+                        include_pnl: '1',
+                        ...(force ? { force: '1', cache_bust: '1', prefer_live_on_force: '1' } : { prefer_stale: '1' }),
+                    },
+                });
+                latestSnapshot = mergePnlSnapshot(latestSnapshot, payload);
+                renderBlocker(latestSnapshot);
+                renderSummary(latestSnapshot);
+                renderMeta(latestSnapshot);
+                renderTicketPreview();
+                if (refreshInfo) refreshInfo.textContent = accountPnlStatusText(latestSnapshot);
+                if (force) showToast(payload?.hard_blocked ? accountPnlStatusText(payload) : 'PNL 刷新已完成');
+                return payload;
+            } catch (error) {
+                if (refreshInfo) refreshInfo.textContent = force ? `PNL 刷新失败：${error.message || error}` : previousInfo;
+                if (force) showToast(`PNL 刷新失败: ${error.message || error}`);
+                return null;
+            } finally {
+                pnlRefreshInFlight = false;
+            }
+        }
+
         async function loadAccountSnapshot(showFeedback = false) {
             if (!initAuth()) return;
             const refreshInfo = document.getElementById('refreshInfo');
             refreshInfo.textContent = '刷新中...';
-            const fastSnapshot = true;
+            const fastSnapshot = !showFeedback;
+            const previousSnapshot = latestSnapshot;
             try {
                 const snapshot = await requestAccountJson('/api/custom/ibkr/account_snapshot', {
                     timeoutMs: fastSnapshot ? 8000 : 20000,
                     timeoutLabel: fastSnapshot ? '账户快速快照' : '账户快照',
                     force: showFeedback,
                     cacheProfile: 'runtimeStatus',
-                    params: {
-                        snapshot_profile: 'orders_fast',
-                        orders_fast: '1',
-                        ...(showFeedback ? { cache_bust: '1', prefer_live_on_force: '1' } : { prefer_stale: '1' }),
-                    },
+                    params: fastSnapshot
+                        ? {
+                            snapshot_profile: 'orders_fast',
+                            orders_fast: '1',
+                            prefer_stale: '1',
+                        }
+                        : {
+                            refresh_scope: 'account_snapshot',
+                            manual_refresh: '1',
+                            include_pnl: '1',
+                            force: '1',
+                            cache_bust: '1',
+                            prefer_live_on_force: '1',
+                        },
                 });
-                latestSnapshot = snapshot;
-                renderBlocker(snapshot);
-                renderSummary(snapshot);
-                renderMeta(snapshot);
-                renderPositions(snapshot);
-                renderOrders(snapshot);
-                renderHistoryOrders(snapshot);
+                const displaySnapshot = shouldPreserveSnapshotOnBlockedRefresh(snapshot, previousSnapshot)
+                    ? mergeBlockedRefreshStatus(previousSnapshot, snapshot)
+                    : snapshot;
+                latestSnapshot = displaySnapshot;
+                renderBlocker(displaySnapshot);
+                renderSummary(displaySnapshot);
+                renderMeta(displaySnapshot);
+                renderPositions(displaySnapshot);
+                renderOrders(displaySnapshot);
+                renderHistoryOrders(displaySnapshot);
                 renderTicketPreview();
-                setPageRefreshTime(snapshot.fetched_at || new Date());
-                refreshInfo.textContent = snapshot?.summary_available === false
-                    ? buyingPowerStatusText(snapshot)
-                    : (fastSnapshot || snapshot?.orders_fast ? '账户状态已快速加载' : '账户状态已加载');
+                setPageRefreshTime(displaySnapshot.fetched_at || new Date());
+                const positionsFresh = formatFreshness(displaySnapshot, 'positions');
+                const summaryFresh = formatFreshness(displaySnapshot, 'summary');
+                const blockedReason = displaySnapshot?.refresh_attempt?.error || displaySnapshot?.last_refresh_error || '';
+                refreshInfo.textContent = displaySnapshot?.refresh_attempt?.hard_blocked
+                    ? `账户刷新受保护：${blockedReason || 'account_data_request_blocked'} · 继续显示上次数据 · 持仓 ${positionsFresh}`
+                    : displaySnapshot?.summary_available === false
+                    ? buyingPowerStatusText(displaySnapshot)
+                    : (fastSnapshot || displaySnapshot?.orders_fast
+                        ? `账户状态已快速加载 · 持仓 ${positionsFresh}`
+                        : `账户状态已刷新 · 持仓 ${positionsFresh} · 账户 ${summaryFresh}`);
                 void loadAccountTargetSummary(Boolean(showFeedback));
-                if (snapshot?.summary_available === false && !buyingPowerRefreshInFlight && (Date.now() - lastBuyingPowerAutoRefreshAt) > 60000) {
+                if (displaySnapshot?.summary_available === false && !buyingPowerRefreshInFlight && (Date.now() - lastBuyingPowerAutoRefreshAt) > 60000) {
                     void refreshBuyingPower(false, { silent: true });
                 }
-                if (showFeedback) showToast('账户状态已刷新');
+                if (!displaySnapshot?.summary?.account_today_pnl?.ok && !pnlRefreshInFlight && (Date.now() - lastPnlAutoRefreshAt) > 60000) {
+                    void refreshAccountPnl(false, { silent: true });
+                }
+                if (showFeedback) showToast(displaySnapshot?.refresh_attempt?.hard_blocked ? `刷新受保护：${blockedReason || '请稍后重试'}` : '账户状态已刷新');
             } catch (error) {
                 renderBlocker({ errors: { summary: error.message } });
                 renderAccountTopSection(null);
@@ -3590,6 +3797,7 @@
         window.closePosition = closePosition;
         window.loadAccountSnapshot = loadAccountSnapshot;
         window.refreshBuyingPower = refreshBuyingPower;
+        window.refreshAccountPnl = refreshAccountPnl;
         window.goRuntime = goRuntime;
         window.viewSignal = viewSignal;
         window.viewTradeGroup = viewTradeGroup;
