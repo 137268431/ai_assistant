@@ -375,6 +375,7 @@ class IBKRTradingService(
 
         self._running = False
         self._starting = False
+        self._runtime_started_at = 0.0
         self._state_lock = threading.Lock()
         self._signal_thread = None
         self._account_snapshot_thread = None

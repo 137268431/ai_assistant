@@ -248,11 +248,11 @@ groups:
   - alert: AccountSnapshotUnavailable
     expr: |
       (
-        max by (service, environment) (max_over_time(ibkr_account_snapshot_available{source=~"account_snapshot|account_summary"}[10m])) == 0
+        max by (service, environment) (max_over_time(ibkr_account_snapshot_available{source=~"account_snapshot|account_summary|account_snapshot_orders_fast"}[10m])) == 0
       )
       and on (service, environment)
       (
-        max by (service, environment) (ibkr_account_snapshot_age_seconds{source=~"account_snapshot|account_summary"}) > 900
+        max by (service, environment) (ibkr_account_snapshot_age_seconds{source=~"account_snapshot|account_summary|account_snapshot_orders_fast"}) > 900
       )
     for: 5m
     labels:
@@ -264,25 +264,32 @@ groups:
   - alert: AccountSnapshotRefreshFailing
     expr: |
       (
-        max by (service, environment) (max_over_time(ibkr_account_snapshot_refresh_ok{source=~"account_snapshot|account_summary"}[10m])) == 0
+        max by (service, environment) (max_over_time(ibkr_account_snapshot_refresh_ok{source=~"account_snapshot|account_summary|account_snapshot_orders_fast"}[10m])) == 0
       )
       and on (service, environment)
       (
-        max by (service, environment) (max_over_time(ibkr_account_snapshot_available{source=~"account_snapshot|account_summary"}[10m])) == 1
+        max by (service, environment) (max_over_time(ibkr_account_snapshot_available{source=~"account_snapshot|account_summary|account_snapshot_orders_fast"}[10m])) == 0
       )
     for: 10m
     labels:
       severity: warning
     annotations:
       summary: Account snapshot refresh is failing
-      description: 账户快照刷新连续失败，但当前仍有可用缓存；请关注 IBKR account summary/snapshot 链路。service={{ $labels.service }} environment={{
+      description: 账户快照刷新连续失败，且 full/fast/account_summary 当前都不可用；仅在交易安全数据真的不可用时告警。service={{ $labels.service }} environment={{
         $labels.environment }}.
   - alert: AccountDataCircuitActive
-    expr: max_over_time(ibkr_account_data_circuit_active[5m]) == 1
+    expr: |
+      (
+        max by (service, environment) (max_over_time(ibkr_account_data_circuit_active[5m])) == 1
+      )
+      and on (service, environment)
+      (
+        max by (service, environment) (max_over_time(ibkr_account_snapshot_available{source=~"account_snapshot|account_summary|account_snapshot_orders_fast"}[5m])) == 0
+      )
     for: 5m
     labels:
       severity: warning
     annotations:
       summary: Account data request circuit breaker is active
-      description: 账户数据请求熔断持续打开；这是请求保护诊断，不等同于购买力一定不可用。购买力是否可用请看 AccountBuyingPowerGuardUnavailable / AccountSnapshotUnavailable。service={{
+      description: 账户数据请求熔断持续打开，且当前没有可用 full/fast/account_summary 安全数据；单纯 circuit 打开只作为面板诊断。service={{
         $labels.service }} environment={{ $labels.environment }}.

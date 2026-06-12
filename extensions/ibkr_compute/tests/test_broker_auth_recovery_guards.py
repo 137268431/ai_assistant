@@ -65,8 +65,8 @@ class BrokerReadyGuardTest(unittest.TestCase):
         app._ensure_ready = mock.Mock(return_value={"ready": True})
         app.reqPositions = mock.Mock()
 
-        for _ in range(4):
-            app._record_account_data_issue("positions", "positions_timeout")
+        for kind in ("positions", "open_orders", "account_summary", "executions"):
+            app._record_account_data_issue(kind, f"{kind}_timeout")
 
         with self.assertRaisesRegex(TimeoutError, "account_data_circuit_open"):
             app.request_positions(timeout=1)
@@ -74,10 +74,36 @@ class BrokerReadyGuardTest(unittest.TestCase):
         app.reqPositions.assert_not_called()
         self.assertTrue(app.status()["account_data_circuit"]["active"])
 
+    def test_duplicate_account_data_timeouts_are_deduped_for_circuit(self):
+        app = _IBGatewayApp("127.0.0.1", 4001, 31)
+
+        for _ in range(4):
+            app._record_account_data_issue("positions", "positions_timeout")
+
+        circuit = app.status()["account_data_circuit"]
+        self.assertFalse(circuit["active"])
+        self.assertEqual(1, circuit["recent_failure_count"])
+        self.assertEqual("timeout", circuit["recent_failures"][0]["family"])
+
+    def test_account_data_control_flow_reasons_do_not_trip_circuit(self):
+        app = _IBGatewayApp("127.0.0.1", 4001, 31)
+
+        for reason in (
+            "request_positions:broker_not_ready:status_code=401:ready_timeout",
+            "account_data_pacing_cooldown:positions:reason=min_interval:retry_after_s=30.0",
+            "account_data_circuit_open:positions_timeout:retry_after_s=60.0",
+        ):
+            for _ in range(4):
+                app._record_account_data_issue("positions", reason)
+
+        circuit = app.status()["account_data_circuit"]
+        self.assertFalse(circuit["active"])
+        self.assertEqual(0, circuit["recent_failure_count"])
+
     def test_account_data_circuit_clears_after_success(self):
         app = _IBGatewayApp("127.0.0.1", 4001, 31)
-        for _ in range(4):
-            app._record_account_data_issue("account_summary", "account_summary_timeout")
+        for kind in ("positions", "open_orders", "account_summary", "executions"):
+            app._record_account_data_issue(kind, f"{kind}_timeout")
 
         self.assertTrue(app.status()["account_data_circuit"]["active"])
 
@@ -92,8 +118,9 @@ class BrokerReadyGuardTest(unittest.TestCase):
             app.error(-1, 2100, "API client has been unsubscribed from account data.")
 
         circuit = app.status()["account_data_circuit"]
-        self.assertTrue(circuit["active"])
-        self.assertEqual(4, circuit["recent_failure_count"])
+        self.assertFalse(circuit["active"])
+        self.assertEqual(1, circuit["recent_failure_count"])
+        self.assertEqual("subscription", circuit["recent_failures"][0]["family"])
 
     def test_expected_account_update_unsubscribe_does_not_trip_circuit(self):
         app = _IBGatewayApp("127.0.0.1", 4001, 31)
@@ -203,8 +230,8 @@ class BrokerReadyGuardTest(unittest.TestCase):
         app._account_cache_store(("positions",), [{"ticker": "AAPL", "position": 3}], ttl_seconds=0.01)
         time.sleep(0.02)
 
-        for _ in range(4):
-            app._record_account_data_issue("positions", "positions_timeout")
+        for kind in ("positions", "open_orders", "account_summary", "executions"):
+            app._record_account_data_issue(kind, f"{kind}_timeout")
 
         positions = app.request_positions(timeout=1)
 

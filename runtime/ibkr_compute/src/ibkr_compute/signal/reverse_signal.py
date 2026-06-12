@@ -191,7 +191,8 @@ class ReverseSignalHandler:
     def _filter_pending_reverse_records(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Keep P0 actions intact, but coalesce low-priority TV bracket adjustments."""
         records = self._filter_latest_adjust_bracket_records(records)
-        return self._expire_or_hold_adjust_bracket_retries(records)
+        records = self._expire_or_hold_adjust_bracket_retries(records)
+        return self._cap_adjust_bracket_records_per_cycle(records)
 
     @staticmethod
     def _escape_filter_value(value: str) -> str:
@@ -2276,6 +2277,13 @@ class ReverseSignalHandler:
         except (TypeError, ValueError):
             return 900.0
 
+    @staticmethod
+    def _adjust_bracket_max_process_per_cycle() -> int:
+        try:
+            return max(0, int(os.environ.get("IBKR_ADJUST_BRACKET_MAX_PROCESS_PER_CYCLE", "8") or "8"))
+        except (TypeError, ValueError):
+            return 8
+
     @classmethod
     def _adjust_bracket_retry_delay(cls, attempts: int) -> float:
         schedule = cls._adjust_bracket_backoff_schedule()
@@ -2515,6 +2523,27 @@ class ReverseSignalHandler:
                 )
                 continue
             kept.append(row)
+        return kept
+
+    def _cap_adjust_bracket_records_per_cycle(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        max_adjust = self._adjust_bracket_max_process_per_cycle()
+        if max_adjust <= 0:
+            return list(records or [])
+        kept: List[Dict[str, Any]] = []
+        adjust_seen = 0
+        held = 0
+        for row in records or []:
+            action = str((row or {}).get("action_type") or "").strip().lower()
+            if action != "adjust_bracket":
+                kept.append(row)
+                continue
+            adjust_seen += 1
+            if adjust_seen <= max_adjust:
+                kept.append(row)
+            else:
+                held += 1
+        if held:
+            logger.info("Held %s adjust_bracket records due per-cycle cap=%s", held, max_adjust)
         return kept
 
     def _finalize_stale_adjust_bracket(

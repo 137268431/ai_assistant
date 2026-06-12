@@ -3,6 +3,7 @@ import re
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "src"
 if str(SRC_ROOT) not in sys.path:
@@ -1099,6 +1100,52 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
         self.assertEqual("confirmed", by_id["rev-adjust-latest"]["status"])
         self.assertEqual("adjust_bracket_confirmed", by_id["rev-adjust-latest"]["reason"])
         self.assertEqual(1, len(pb.acks))
+
+    def test_adjust_bracket_per_cycle_cap_holds_excess_without_cancelling(self):
+        rows = []
+        for index, symbol in enumerate(["AAPL", "MSFT", "NVDA", "TSLA"], start=1):
+            rows.append(
+                {
+                    "id": f"rev-adjust-{index}",
+                    "symbol": symbol,
+                    "source": "tradingview",
+                    "action_type": "adjust_bracket",
+                    "status": "pending",
+                    "environment": "live",
+                    "priority": 10,
+                    "bar_time_ms": index,
+                    "extra": {
+                        "event_type": "risk_update",
+                        "reverse_kind": "tv_risk_update",
+                        "origin_signal_id": f"tv-entry-{index}",
+                        "sl_order_id": f"sl-{index}",
+                        "new_sl": 100.0 + index,
+                    },
+                }
+            )
+        rows.append(
+            {
+                "id": "rev-close",
+                "symbol": "AMZN",
+                "source": "tradingview",
+                "action_type": "close",
+                "status": "pending",
+                "environment": "live",
+                "priority": 1,
+                "bar_time_ms": 0,
+                "extra": {},
+            }
+        )
+        pb = _FakePB(reverse_rows=rows)
+        handler = ReverseSignalHandler(pb, environment="live")
+
+        with mock.patch.dict("os.environ", {"IBKR_ADJUST_BRACKET_MAX_PROCESS_PER_CYCLE": "2"}):
+            filtered = handler._filter_pending_reverse_records(rows)
+
+        adjust_ids = [row["id"] for row in filtered if row["action_type"] == "adjust_bracket"]
+        self.assertEqual(["rev-adjust-1", "rev-adjust-2"], adjust_ids)
+        self.assertIn("rev-close", [row["id"] for row in filtered])
+        self.assertEqual([], pb.updates)
 
     def test_adjust_bracket_confirms_explicit_noop_runner_activation(self):
         reverse = {

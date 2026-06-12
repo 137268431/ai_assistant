@@ -374,6 +374,28 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertEqual(31.4, details["account_lifecycle_backoff_remaining_s"])
         self.assertEqual("account_data_circuit_open:account_summary", details["account_lifecycle_backoff_reason"])
 
+    def test_account_snapshot_refresh_uses_orders_fast_during_startup_warmup(self):
+        service = _RefreshService()
+        service._runtime_started_at = time.time()
+
+        needed, details = service._account_snapshot_refresh_orders_fast_needed()
+
+        self.assertTrue(needed)
+        self.assertTrue(details["startup_warmup_active"])
+        self.assertGreater(details["startup_warmup_remaining_s"], 0)
+
+    def test_account_snapshot_refresh_uses_orders_fast_when_account_data_gate_busy(self):
+        service = _RefreshService()
+        gate = {"owner_kind": "positions", "owner_age_s": 12.5, "serial_timeout_s": 30.0}
+        service.broker.payload["account_data_request_gate"] = gate
+
+        needed, details = service._account_snapshot_refresh_orders_fast_needed()
+
+        self.assertTrue(needed)
+        self.assertTrue(details["account_data_guard_active"])
+        self.assertTrue(details["account_data_gate_active"])
+        self.assertEqual("positions", details["account_data_gate_owner_kind"])
+
     def test_order_history_defaults_to_cached_broker_and_pb_today_rows(self):
         class _HistoryTracker:
             def __init__(self):

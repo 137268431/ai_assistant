@@ -2185,6 +2185,7 @@ class TradingServiceRuntimeOpsMixin:
             self._startup_trigger_login = False
             self._startup_status_message_id = ""
         self._running = False
+        self._runtime_started_at = 0.0
         self._last_session_authenticated = False
         self._auth_probe_stop.set()
         self._resource_monitor_stop.set()

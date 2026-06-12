@@ -213,6 +213,7 @@ EXECUTIONS_CACHE_TTL_SECONDS = _env_float("IBKR_EXECUTIONS_CACHE_TTL_SEC", 3.0, 
 ACCOUNT_DATA_STALE_CACHE_TTL_SECONDS = _env_float("IBKR_ACCOUNT_DATA_STALE_CACHE_TTL_SEC", 1800.0, minimum=0.0)
 ACCOUNT_DATA_SERIAL_TIMEOUT_SECONDS = _env_float("IBKR_ACCOUNT_DATA_SERIAL_TIMEOUT_SEC", 30.0, minimum=0.1)
 ACCOUNT_DATA_PACING_COOLDOWN_SECONDS = _env_float("IBKR_ACCOUNT_DATA_PACING_COOLDOWN_SEC", 900.0, minimum=5.0)
+ACCOUNT_DATA_CIRCUIT_DEDUP_SECONDS = _env_float("IBKR_ACCOUNT_DATA_CIRCUIT_DEDUP_SEC", 30.0, minimum=0.0)
 ACCOUNT_SUMMARY_MIN_INTERVAL_SECONDS = _env_float(
     "IBKR_ACCOUNT_SUMMARY_MIN_INTERVAL_SEC",
     900.0,
@@ -417,12 +418,29 @@ class _IBGatewayApp(EWrapper, EClient):
         if normalized_kind not in ACCOUNT_DATA_REQUEST_KINDS:
             return
         normalized_reason = str(reason or "account_data_request_failed").strip() or "account_data_request_failed"
+        failure_family = self._account_data_failure_family(normalized_reason)
+        if not failure_family:
+            return
         now = time.time()
         with self._state_lock:
+            dedup_window = max(0.0, float(ACCOUNT_DATA_CIRCUIT_DEDUP_SECONDS or 0.0))
+            if dedup_window > 0:
+                for item in reversed(self._account_data_failures[-20:]):
+                    if now - float(item.get("ts", 0) or 0) > dedup_window:
+                        continue
+                    if str(item.get("kind") or "") == normalized_kind and str(item.get("family") or "") == failure_family:
+                        logger.debug(
+                            "Deduped account data issue kind=%s family=%s reason=%s",
+                            normalized_kind,
+                            failure_family,
+                            normalized_reason,
+                        )
+                        return
             self._account_data_failures.append(
                 {
                     "kind": normalized_kind,
                     "reason": normalized_reason,
+                    "family": failure_family,
                     "at": datetime.fromtimestamp(now, ET).isoformat(),
                     "ts": now,
                 }
@@ -432,6 +450,33 @@ class _IBGatewayApp(EWrapper, EClient):
                 self._account_data_circuit_until = now + ACCOUNT_DATA_CIRCUIT_COOLDOWN_SECONDS
                 self._account_data_circuit_reason = normalized_reason
                 self._account_data_circuit_last_trip_at = now
+
+    @staticmethod
+    def _account_data_failure_family(reason: str) -> str:
+        text = str(reason or "").strip().lower()
+        if not text:
+            return "account_data_request_failed"
+        # Startup readiness and local pacing are control-flow states, not proof
+        # that the IB account-data channel is broken.
+        ignored_tokens = (
+            "broker_not_ready",
+            "ready_timeout",
+            "stale_not_ready",
+            "connect_failed",
+            "account_data_pacing_cooldown",
+            "account_data_circuit_open",
+            "min_interval",
+        )
+        if any(token in text for token in ignored_tokens):
+            return ""
+        if "timeout" in text:
+            return "timeout"
+        if "unsubscribed" in text or "unsubscribe" in text:
+            return "subscription"
+        if "request limit" in text or "maximum number of account summary requests exceeded" in text:
+            return "pacing_limit"
+        head = text.split(":", 1)[0].split("=", 1)[0]
+        return head[:80] or "account_data_request_failed"
 
     def _record_account_data_success(self, kind: str) -> None:
         normalized_kind = str(kind or "").strip().lower()

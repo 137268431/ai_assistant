@@ -22,6 +22,13 @@ def _env_float(name: str, default: float) -> float:
         return max(1.0, float(default))
 
 
+def _env_nonnegative_float(name: str, default: float) -> float:
+    try:
+        return max(0.0, float(os.environ.get(name, default) or default))
+    except Exception:
+        return max(0.0, float(default))
+
+
 def _safe_float(value, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -50,6 +57,26 @@ def _account_data_circuit_from_status(status: dict) -> dict:
     return dict(circuit) if circuit else {}
 
 
+def _account_data_gate_from_status(status: dict) -> dict:
+    payload = status if isinstance(status, dict) else {}
+    gate = payload.get("account_data_request_gate") if isinstance(payload.get("account_data_request_gate"), dict) else {}
+    if gate:
+        return dict(gate)
+    broker = payload.get("broker") if isinstance(payload.get("broker"), dict) else {}
+    gate = broker.get("account_data_request_gate") if isinstance(broker.get("account_data_request_gate"), dict) else {}
+    return dict(gate) if gate else {}
+
+
+def _account_data_pacing_from_status(status: dict) -> dict:
+    payload = status if isinstance(status, dict) else {}
+    pacing = payload.get("account_data_pacing") if isinstance(payload.get("account_data_pacing"), dict) else {}
+    if pacing:
+        return dict(pacing)
+    broker = payload.get("broker") if isinstance(payload.get("broker"), dict) else {}
+    pacing = broker.get("account_data_pacing") if isinstance(broker.get("account_data_pacing"), dict) else {}
+    return dict(pacing) if pacing else {}
+
+
 class TradingServiceAccountSnapshotRefreshMixin:
     def _account_snapshot_refresh_enabled(self) -> bool:
         service_mod = _service_mod()
@@ -75,6 +102,11 @@ class TradingServiceAccountSnapshotRefreshMixin:
             "account_data_circuit_active": False,
             "account_data_circuit_remaining_s": 0.0,
             "account_data_circuit_reason": "",
+            "account_data_gate_active": False,
+            "account_data_gate_owner_kind": "",
+            "account_data_gate_owner_age_s": 0.0,
+            "account_data_pacing_blocked": False,
+            "account_data_pacing_blocked_kinds": [],
             "account_lifecycle_backoff_remaining_s": 0.0,
             "account_lifecycle_backoff_reason": "",
             "order_tracker_backoff_remaining_s": 0.0,
@@ -82,18 +114,41 @@ class TradingServiceAccountSnapshotRefreshMixin:
         }
 
         for component_name in ("broker", "gateway_manager"):
-            circuit = _account_data_circuit_from_status(_component_status(getattr(self, component_name, None)))
+            component_status = _component_status(getattr(self, component_name, None))
+            circuit = _account_data_circuit_from_status(component_status)
             if not circuit:
-                continue
-            remaining_s = _safe_float(circuit.get("remaining_s"), 0.0)
-            if bool(circuit.get("active")) or remaining_s > 0:
-                details["account_data_circuit_active"] = True
-                details["account_data_circuit_remaining_s"] = max(
-                    details["account_data_circuit_remaining_s"],
-                    remaining_s,
+                circuit = {}
+            else:
+                remaining_s = _safe_float(circuit.get("remaining_s"), 0.0)
+                if bool(circuit.get("active")) or remaining_s > 0:
+                    details["account_data_circuit_active"] = True
+                    details["account_data_circuit_remaining_s"] = max(
+                        details["account_data_circuit_remaining_s"],
+                        remaining_s,
+                    )
+                    if not details["account_data_circuit_reason"]:
+                        details["account_data_circuit_reason"] = str(circuit.get("reason") or component_name)
+
+            gate = _account_data_gate_from_status(component_status)
+            owner_kind = str(gate.get("owner_kind") or "").strip()
+            if owner_kind:
+                details["account_data_gate_active"] = True
+                details["account_data_gate_owner_kind"] = details["account_data_gate_owner_kind"] or owner_kind
+                details["account_data_gate_owner_age_s"] = max(
+                    details["account_data_gate_owner_age_s"],
+                    _safe_float(gate.get("owner_age_s"), 0.0),
                 )
-                if not details["account_data_circuit_reason"]:
-                    details["account_data_circuit_reason"] = str(circuit.get("reason") or component_name)
+
+            pacing = _account_data_pacing_from_status(component_status)
+            by_kind = pacing.get("by_kind") if isinstance(pacing.get("by_kind"), dict) else {}
+            blocked_kinds = set(details["account_data_pacing_blocked_kinds"])
+            for kind in ("positions", "open_orders", "open_orders_all", "account_summary", "account_pnl"):
+                item = by_kind.get(kind) if isinstance(by_kind.get(kind), dict) else {}
+                if bool(item.get("blocked")) or _safe_float(item.get("retry_after_s"), 0.0) > 0:
+                    blocked_kinds.add(kind)
+            if blocked_kinds:
+                details["account_data_pacing_blocked"] = True
+                details["account_data_pacing_blocked_kinds"] = sorted(blocked_kinds)
 
         for attr_name, detail_prefix in (
             ("order_lifecycle", "account_lifecycle"),
@@ -112,10 +167,28 @@ class TradingServiceAccountSnapshotRefreshMixin:
 
         details["account_data_guard_active"] = bool(
             details["account_data_circuit_active"]
+            or details["account_data_gate_active"]
+            or details["account_data_pacing_blocked"]
             or details["account_lifecycle_backoff_remaining_s"] > 0
             or details["order_tracker_backoff_remaining_s"] > 0
         )
         return details
+
+    def _account_snapshot_refresh_warmup_state(self) -> dict:
+        grace_s = _env_nonnegative_float("IBKR_ACCOUNT_SNAPSHOT_STARTUP_WARMUP_SEC", 90.0)
+        starting = bool(getattr(self, "_starting", False))
+        started_at = _safe_float(getattr(self, "_runtime_started_at", 0.0), 0.0)
+        now = time.time()
+        remaining_s = grace_s if starting and grace_s > 0 else 0.0
+        if not starting and grace_s > 0 and started_at > 0:
+            remaining_s = max(0.0, grace_s - max(0.0, now - started_at))
+        active = bool(starting or remaining_s > 0)
+        return {
+            "startup_warmup_active": active,
+            "startup_warmup_remaining_s": round(remaining_s, 1) if active else 0.0,
+            "startup_warmup_grace_s": grace_s,
+            "service_starting": starting,
+        }
 
     def _account_snapshot_refresh_orders_fast_needed(self) -> tuple[bool, dict]:
         details = {
@@ -124,6 +197,7 @@ class TradingServiceAccountSnapshotRefreshMixin:
             "cached_open_orders": 0,
             "buying_power_reservations": 0,
         }
+        details.update(self._account_snapshot_refresh_warmup_state())
         details.update(self._account_snapshot_refresh_account_data_guard())
         scheduler = getattr(getattr(self, "order_placer", None), "symbol_scheduler", None)
         status_fn = getattr(scheduler, "status", None)
@@ -161,7 +235,7 @@ class TradingServiceAccountSnapshotRefreshMixin:
             except Exception:
                 details["buying_power_reservations"] = 0
 
-        needed = bool(details.get("account_data_guard_active")) or any(
+        needed = bool(details.get("startup_warmup_active") or details.get("account_data_guard_active")) or any(
             int(value or 0) > 0
             for key, value in details.items()
             if key in {
@@ -199,7 +273,11 @@ class TradingServiceAccountSnapshotRefreshMixin:
                 fast_status=True,
             )
             if isinstance(payload, dict):
-                payload["refresh_profile"] = "orders_fast_during_order_pressure"
+                payload["refresh_profile"] = (
+                    "orders_fast_during_startup_warmup"
+                    if bool(orders_fast_reason.get("startup_warmup_active"))
+                    else "orders_fast_during_order_pressure"
+                )
                 payload["refresh_profile_reason"] = orders_fast_reason
         else:
             payload = refresh_account_snapshot_cache(self, include_pnl=False)
@@ -207,7 +285,24 @@ class TradingServiceAccountSnapshotRefreshMixin:
             payload["refresh_reason"] = reason
             try:
                 set_account_snapshot_metrics(payload, source="account_snapshot")
-                buying_power_payload = _build_ibkr_account_buying_power_snapshot(self)
+                if payload.get("source"):
+                    set_account_snapshot_metrics(payload, source=str(payload.get("source") or ""))
+                if use_orders_fast:
+                    payload_guard = payload.get("buying_power_guard") if isinstance(payload.get("buying_power_guard"), dict) else {}
+                    buying_power_payload = {
+                        "ok": bool(payload_guard.get("available", payload.get("summary_available"))),
+                        "environment": payload.get("environment"),
+                        "account_id": payload.get("account_id"),
+                        "summary": dict(payload.get("summary") or {}),
+                        "buying_power_guard": dict(payload_guard),
+                        "source": payload.get("source") or "account_snapshot_orders_fast",
+                        "account_snapshot_health": dict(payload.get("account_snapshot_health") or {}),
+                        "cache_state": payload.get("cache_state"),
+                        "stale": payload.get("stale"),
+                        "fetched_at": payload.get("fetched_at"),
+                    }
+                else:
+                    buying_power_payload = _build_ibkr_account_buying_power_snapshot(self)
                 set_account_snapshot_metrics(buying_power_payload, source="")
                 if isinstance(buying_power_payload, dict):
                     payload["buying_power_metrics"] = {
