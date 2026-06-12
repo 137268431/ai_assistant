@@ -474,14 +474,15 @@ class MissingProtectionAutoRepairTest(unittest.TestCase):
         self.assertEqual("stale_protection_prices", entry_row["extra"]["protection_state"])
         self.assertEqual("stale_stop_loss_price", entry_row["extra"]["protection_repair_skip_reason"])
 
-    def test_live_mode_does_not_auto_repair_by_default(self):
+    def test_live_mode_auto_repairs_by_default(self):
         lifecycle, pb, placer, position = self._lifecycle(environment="live")
 
         issues = lifecycle._detect_missing_protection_after_fill([position], open_orders=[])
 
         self.assertEqual(1, len(issues))
-        self.assertEqual([], placer.calls)
-        self.assertEqual("auto_repair_disabled", issues[0]["repair_result"]["reason"])
+        self.assertEqual(1, len(placer.calls))
+        self.assertFalse(placer.calls[0]["use_paper"])
+        self.assertTrue(issues[0]["repair_result"]["ok"])
 
 
 class RuntimeSignalLifecycleTest(unittest.TestCase):
@@ -970,6 +971,34 @@ class RuntimeSignalLifecycleTest(unittest.TestCase):
         self.assertEqual(row["status"], "protection_incomplete")
         self.assertEqual(["stop_loss"], row["extra"]["missing_protection_roles"])
         self.assertEqual(["Submitted"], row["extra"]["protection_order_statuses"]["take_profit"])
+        self.assertTrue(row["extra"]["safety_cancel_recommended"])
+
+    def test_entry_fill_revalidates_stale_protected_active_signal(self):
+        service = _FakeService()
+        service.pb.signals["sig-row-1"]["status"] = "protected_active"
+        service.pb.signals["sig-row-1"]["extra"].update(
+            {
+                "protection_complete": True,
+                "protection_incomplete": False,
+            }
+        )
+
+        service._on_order_fill(
+            {
+                "orderId": "1001",
+                "ticker": "AAPL",
+                "side": "BUY",
+                "orderType": "LMT",
+                "status": "FILLED",
+                "cOID": "entry_SIG_1",
+            }
+        )
+
+        row = service.pb.signals["sig-row-1"]
+        self.assertEqual("protection_incomplete", row["status"])
+        self.assertFalse(row["extra"]["protection_complete"])
+        self.assertTrue(row["extra"]["protection_incomplete"])
+        self.assertEqual(["take_profit", "stop_loss"], row["extra"]["missing_protection_roles"])
         self.assertTrue(row["extra"]["safety_cancel_recommended"])
 
     def test_entry_fill_requires_live_open_protection_when_tracker_present(self):

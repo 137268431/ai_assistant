@@ -1212,8 +1212,6 @@ class TradingServiceRuntimeOpsMixin:
             )
             if closed_role:
                 return closed_role
-            if current_status in {"protected_active", "filled_position"}:
-                return ""
             protection_status = self._signal_protection_status(
                 signal_id=signal_id,
                 environment=broker_environment,

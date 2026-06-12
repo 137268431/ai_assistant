@@ -461,7 +461,7 @@ directionComponentsReady(bool fractalReady, bool divReady, bool emaCrossReady) =
 
 componentLineText(string setup, bool windowReady, bool emaReady, bool fractalReady, bool divReady, bool emaCrossReady) =>
     string windowLabel = setup == "trend_sdUpperBreakdown" ? "上轨记忆" : setup == "trend_sdLowerBreakout" ? "下轨记忆" : setup == "trend_emaDeathContinuation" ? "弱势结构" : setupUsesUpperWindow(setup) ? "上轨窗" : "下轨窗"
-    string emaLabel = setup == "trend_sdUpper" ? "多EMA触碰" : setup == "trend_sdLower" ? "空EMA/回抽" : ""
+    string emaLabel = setup == "trend_sdUpper" ? "多EMA/贴轨" : setup == "trend_sdLower" ? "空EMA/回抽" : ""
     string fractalLabel = setupUsesBullSide(setup) ? "多分形" : "空分形"
     string divLabel = setupUsesBullSide(setup) ? "多背离" : "空背离"
     string emaCrossLabel = setupUsesBullSide(setup) ? "金叉" : "死叉"
@@ -504,7 +504,7 @@ compactMissingText(string value) =>
     missingText := str.replace_all(missingText, "weak_structure", "弱势结构")
     missingText := str.replace_all(missingText, "upper_sd_memory", "上轨记忆")
     missingText := str.replace_all(missingText, "lower_sd_memory", "下轨记忆")
-    missingText := str.replace_all(missingText, "ema_bull_touch", "多EMA")
+    missingText := str.replace_all(missingText, "ema_bull_touch", "多EMA/贴轨")
     missingText := str.replace_all(missingText, "ema_bear_touch", "空EMA/回抽")
     missingText := str.replace_all(missingText, "bull_fractal", "多分形")
     missingText := str.replace_all(missingText, "bear_fractal", "空分形")
@@ -737,6 +737,23 @@ int mtfTf2EmaDir = enableMtf ? request.security(syminfo.tickerid, mtfConfirmTf2,
 int mtfTf2DtpDir = enableMtf ? request.security(syminfo.tickerid, mtfConfirmTf2, mtfDtpDirValue(), barmerge.gaps_off, barmerge.lookahead_off) : 0
 int mtfTf3EmaDir = enableMtf ? request.security(syminfo.tickerid, mtfConfirmTf3, mtfEmaDirValue(), barmerge.gaps_off, barmerge.lookahead_off) : 0
 int mtfTf3DtpDir = enableMtf ? request.security(syminfo.tickerid, mtfConfirmTf3, mtfDtpDirValue(), barmerge.gaps_off, barmerge.lookahead_off) : 0
+string mtfTf1LongState = mtfStateForDirection("long", mtfTf1EmaDir, mtfTf1DtpDir)
+string mtfTf2LongState = mtfStateForDirection("long", mtfTf2EmaDir, mtfTf2DtpDir)
+string mtfTf3LongState = mtfStateForDirection("long", mtfTf3EmaDir, mtfTf3DtpDir)
+string mtfTf1ShortState = mtfStateForDirection("short", mtfTf1EmaDir, mtfTf1DtpDir)
+string mtfTf2ShortState = mtfStateForDirection("short", mtfTf2EmaDir, mtfTf2DtpDir)
+string mtfTf3ShortState = mtfStateForDirection("short", mtfTf3EmaDir, mtfTf3DtpDir)
+float mtfLongScore = mtfScoreForStates(mtfTf1LongState, mtfTf2LongState, mtfTf3LongState)
+float mtfShortScore = mtfScoreForStates(mtfTf1ShortState, mtfTf2ShortState, mtfTf3ShortState)
+string mtfLongStatus = mtfStatusForStates(mtfTf1LongState, mtfTf2LongState, mtfTf3LongState)
+string mtfShortStatus = mtfStatusForStates(mtfTf1ShortState, mtfTf2ShortState, mtfTf3ShortState)
+string mtfLongBlockReason = mtfBlockReasonForStates(mtfTf1LongState, mtfTf2LongState)
+string mtfShortBlockReason = mtfBlockReasonForStates(mtfTf1ShortState, mtfTf2ShortState)
+bool mtfLongBlock = mtfLongStatus == "block"
+bool mtfShortBlock = mtfShortStatus == "block"
+bool dtpBullDominant = dtpDir == 1 and (dtpPhase == "early" or dtpPhase == "confirmed" or dtpPhase == "mature")
+bool dtpBearDominant = dtpDir == -1 and (dtpPhase == "early" or dtpPhase == "confirmed" or dtpPhase == "mature")
+bool dtpWeakeningOrNeutral = dtpPhase == "weakening" or dtpDir == 0
 
 float atrVal = maFunc(ta.tr(true), atrLength) * atrMultiplier
 float atrRaw = atrMultiplier != 0.0 ? atrVal / atrMultiplier : atrVal
@@ -983,6 +1000,8 @@ var bool lowerPostReversalUsed = false
 var bool upperBullTouchSeen = false
 var string upperBullTouchLine = ""
 var int upperBullTouchBar = na
+var bool upperBullContinuationSeen = false
+var int upperBullContinuationBar = na
 var bool upperBullFractalSeen = false
 var int upperBullFractalBar = na
 var bool upperBearFractalSeen = false
@@ -1040,6 +1059,8 @@ if isNewTradingDay
     upperBullTouchSeen := false
     upperBullTouchLine := ""
     upperBullTouchBar := na
+    upperBullContinuationSeen := false
+    upperBullContinuationBar := na
     upperBullFractalSeen := false
     upperBullFractalBar := na
     upperBearFractalSeen := false
@@ -1135,6 +1156,8 @@ if upperActivationEvent
     upperBullTouchSeen := false
     upperBullTouchLine := ""
     upperBullTouchBar := na
+    upperBullContinuationSeen := false
+    upperBullContinuationBar := na
     upperBullFractalSeen := false
     upperBullFractalBar := na
     upperBearFractalSeen := false
@@ -1153,6 +1176,10 @@ bool lowerWindowValid = lowerWindowActive and not lowerWindowUsed and not na(low
 bool upperWindowValid = upperWindowActive and not upperWindowUsed and not na(upperWindowStart) and not upperWindowHardExpired and bar_index > upperWindowStart and bar_index - upperWindowStart <= mrWindowBars
 bool lowerMrWindowValid = lowerWindowValid and not lowerWindowMeanExpired and not lowerWindowMeanTouched
 bool upperMrWindowValid = upperWindowValid and not upperWindowMeanExpired and not upperWindowMeanTouched
+bool bullTrendContinuationContext = dtpBullDominant and emaFast >= emaSlow and close >= emaSlow and close >= sdReg and not mtfLongBlock
+bool bearTrendContinuationContext = dtpBearDominant and emaFast <= emaSlow and close <= emaSlow and close <= sdReg and not mtfShortBlock
+bool bearishReversalContext = dtpWeakeningOrNeutral or dtpBearDominant or (close < emaSlow and (emaFast < emaSlow or close < sdReg or mtfLongBlock))
+bool upperBullContinuationNow = confirmed and upperWindowValid and bullTrendContinuationContext and (high >= sdSignalUpper or close >= sdSignalUpper - atrRaw * entryAnchorZoneAtr)
 
 string lowerBearPullbackLineNow = ""
 lowerBearPullbackLineNow := pullbackNearResistance(high, close, emaFast, atrRaw) ? appendSource(lowerBearPullbackLineNow, "pullback_ema20") : lowerBearPullbackLineNow
@@ -1188,6 +1215,9 @@ if upperWindowActive and not upperWindowUsed
         upperBullTouchSeen := true
         upperBullTouchLine := bullTouchLine
         upperBullTouchBar := bar_index
+    if upperBullContinuationNow
+        upperBullContinuationSeen := true
+        upperBullContinuationBar := bar_index
     if fractalBull
         upperBullFractalSeen := true
         upperBullFractalBar := bar_index
@@ -1232,6 +1262,7 @@ if bearDivSeen and not na(bearDivBar) and bar_index - bearDivBar > divMaxBars
     bearDivBar := na
 
 bool upperBullTouchFresh = upperBullTouchSeen and componentFresh(upperBullTouchBar)
+bool upperBullContinuationFresh = upperBullContinuationSeen and componentFresh(upperBullContinuationBar)
 bool lowerBearTouchFresh = lowerBearTouchSeen and componentFresh(lowerBearTouchBar)
 bool upperBullFractalFresh = upperBullFractalSeen and componentFresh(upperBullFractalBar)
 bool lowerBullFractalFresh = lowerBullFractalSeen and componentFresh(lowerBullFractalBar)
@@ -1246,6 +1277,10 @@ bool trendBearEmaCrossFresh = trendBearEmaCrossSeen and componentFresh(trendBear
 bool bullDivFresh = bullDivSeen and componentFresh(bullDivBar)
 bool bearDivFresh = bearDivSeen and componentFresh(bearDivBar)
 bool lowerBearPullbackFresh = lowerBearPullbackSeen and componentFresh(lowerBearPullbackBar)
+bool upperBullTrendTriggerFresh = upperBullTouchFresh or upperBullContinuationFresh
+bool upperBullTrendTriggerSeen = upperBullTouchSeen or upperBullContinuationSeen
+string upperBullTrendTriggerLine = upperBullContinuationFresh ? "sd_upper_continuation" : upperBullTouchFresh ? upperBullTouchLine : upperBullContinuationSeen ? "sd_upper_continuation" : upperBullTouchLine
+upperBullTrendTriggerLine := upperBullTrendTriggerLine == "" ? "none" : upperBullTrendTriggerLine
 bool lowerBearTrendTriggerFresh = lowerBearTouchFresh or lowerBearPullbackFresh
 bool lowerBearTrendTriggerSeen = lowerBearTouchSeen or lowerBearPullbackSeen
 string lowerBearTrendTriggerLine = lowerBearPullbackFresh ? lowerBearPullbackLine : lowerBearTouchFresh ? lowerBearTouchLine : lowerBearPullbackSeen ? lowerBearPullbackLine : lowerBearTouchLine
@@ -1266,12 +1301,12 @@ int shortEmaDeathContinuationDirectionComponents = directionComponentCount(trend
 bool longTrendUpperStructureOk = emaFast >= emaSlow and close >= sdReg and close >= emaSlow
 bool shortTrendLowerStructureOk = emaFast <= emaSlow and close <= sdReg and close <= emaSlow
 bool shortEmaDeathContinuationStructureOk = emaFast < emaSlow and close < emaSlow and close < sdReg
-bool setupLongTrendUpper = upperWindowValid and upperBullTouchFresh and longTrendUpperDirectionComponents >= 2 and longTrendUpperStructureOk
+bool setupLongTrendUpper = upperWindowValid and (upperBullTouchFresh or upperBullContinuationFresh) and longTrendUpperDirectionComponents >= 2 and longTrendUpperStructureOk
 bool setupLongMrLower = lowerMrWindowValid and longMrLowerDirectionComponents >= 2
 bool setupLongPostLowerBreakout = lowerSdExtremeFresh and not lowerPostReversalUsed and emaFast > emaSlow and close > emaSlow and lowerBullEmaCrossFresh and (lowerBullFractalFresh or bullDivFresh) and longPostLowerBreakoutDirectionComponents >= 2
-bool setupShortMrUpper = upperMrWindowValid and shortMrUpperDirectionComponents >= 2
+bool setupShortMrUpper = upperMrWindowValid and shortMrUpperDirectionComponents >= 2 and (not dtpBullDominant or bearishReversalContext)
 bool setupShortPostUpperBreakdown = upperSdExtremeFresh and not upperPostReversalUsed and emaFast < emaSlow and close < emaSlow and upperBearEmaCrossFresh and (upperBearFractalFresh or bearDivFresh) and shortPostUpperBreakdownDirectionComponents >= 2
-bool setupShortEmaDeathContinuation = not emaDeathContinuationShortUsed and not setupShortPostUpperBreakdown and shortEmaDeathContinuationStructureOk and trendBearEmaCrossFresh and (trendBearFractalFresh or bearDivFresh) and shortEmaDeathContinuationDirectionComponents >= 2
+bool setupShortEmaDeathContinuation = not emaDeathContinuationShortUsed and not setupShortPostUpperBreakdown and shortEmaDeathContinuationStructureOk and (not dtpBullDominant or bearishReversalContext) and trendBearEmaCrossFresh and (trendBearFractalFresh or bearDivFresh) and shortEmaDeathContinuationDirectionComponents >= 2
 bool setupShortTrendLowerTouch = lowerWindowValid and lowerBearTouchFresh and shortTrendLowerDirectionComponents >= 2 and shortTrendLowerStructureOk
 bool setupShortTrendLowerPullback = lowerWindowValid and lowerBearPullbackFresh and shortTrendLowerDirectionComponents >= 2 and shortTrendLowerStructureOk
 bool setupShortTrendLower = setupShortTrendLowerTouch or setupShortTrendLowerPullback
@@ -1286,7 +1321,7 @@ bool longRaw = allowLong and (longSignalCandidate or longStaleCandidate)
 bool shortRaw = allowShort and (shortSignalCandidate or shortStaleCandidate)
 string longSetup = setupLongPostLowerBreakout ? "trend_sdLowerBreakout" : setupLongTrendUpper ? "trend_sdUpper" : setupLongMrLower or longStaleCandidate ? "mr_sdLower" : "none"
 string shortSetup = setupShortPostUpperBreakdown ? "trend_sdUpperBreakdown" : setupShortEmaDeathContinuation ? "trend_emaDeathContinuation" : setupShortMrUpper or shortStaleCandidate ? "mr_sdUpper" : setupShortTrendLower ? "trend_sdLower" : "none"
-string longReason = setupLongPostLowerBreakout ? "SD lower breakout long: prior lower SD + EMA golden cross + 2 of 3 bull direction components" : setupLongTrendUpper ? "SD upper trend-continuation long: EMA touch + 2 of 3 bull direction components" : setupLongMrLower ? "SD lower mean-reversion long: fresh 2 of 3 bull direction components" : longStaleCandidate ? "SD lower mean-reversion long blocked: stale MR components" : "none"
+string longReason = setupLongPostLowerBreakout ? "SD lower breakout long: prior lower SD + EMA golden cross + 2 of 3 bull direction components" : setupLongTrendUpper ? "SD upper trend-continuation long: EMA touch/upper-band continuation + 2 of 3 bull direction components" : setupLongMrLower ? "SD lower mean-reversion long: fresh 2 of 3 bull direction components" : longStaleCandidate ? "SD lower mean-reversion long blocked: stale MR components" : "none"
 string shortReason = setupShortPostUpperBreakdown ? "SD upper breakdown short: prior upper SD + EMA death cross + 2 of 3 bear direction components" : setupShortEmaDeathContinuation ? "EMA death continuation short: weak structure + EMA death cross + bear fractal/divergence" : setupShortMrUpper ? "SD upper mean-reversion short: fresh 2 of 3 bear direction components" : shortStaleCandidate ? "SD upper mean-reversion short blocked: stale MR components" : setupShortTrendLowerPullback ? "SD lower trend-continuation short: pullback resistance + 2 of 3 bear direction components" : setupShortTrendLowerTouch ? "SD lower trend-continuation short: EMA touch + 2 of 3 bear direction components" : "none"
 string longMrRegime = mrRegimeText("long", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter, sdSlopeAtr)
 string shortMrRegime = mrRegimeText("short", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter, sdSlopeAtr)
@@ -1433,21 +1468,6 @@ float shortCheckpointTargetDistanceAtr = profitSpaceTargetAtrMultiple(shortEntry
 bool shortProfitSpaceAllowed = profitSpaceEntryAllowed(shortExpectedNetProfit, shortExpectedNetRoiPct, shortCostPctOfReward, shortTargetDistanceAtr, shortStructureRewardRisk, shortStructureStopAvailable, shortStructureTargetAvailable, effectiveMinStructureRewardRiskForEntry)
 bool shortProfitSpaceEntryBlocked = useProfitSpaceFilter and shortRaw and not shortProfitSpaceAllowed
 
-string mtfTf1LongState = mtfStateForDirection("long", mtfTf1EmaDir, mtfTf1DtpDir)
-string mtfTf2LongState = mtfStateForDirection("long", mtfTf2EmaDir, mtfTf2DtpDir)
-string mtfTf3LongState = mtfStateForDirection("long", mtfTf3EmaDir, mtfTf3DtpDir)
-string mtfTf1ShortState = mtfStateForDirection("short", mtfTf1EmaDir, mtfTf1DtpDir)
-string mtfTf2ShortState = mtfStateForDirection("short", mtfTf2EmaDir, mtfTf2DtpDir)
-string mtfTf3ShortState = mtfStateForDirection("short", mtfTf3EmaDir, mtfTf3DtpDir)
-float mtfLongScore = mtfScoreForStates(mtfTf1LongState, mtfTf2LongState, mtfTf3LongState)
-float mtfShortScore = mtfScoreForStates(mtfTf1ShortState, mtfTf2ShortState, mtfTf3ShortState)
-string mtfLongStatus = mtfStatusForStates(mtfTf1LongState, mtfTf2LongState, mtfTf3LongState)
-string mtfShortStatus = mtfStatusForStates(mtfTf1ShortState, mtfTf2ShortState, mtfTf3ShortState)
-string mtfLongBlockReason = mtfBlockReasonForStates(mtfTf1LongState, mtfTf2LongState)
-string mtfShortBlockReason = mtfBlockReasonForStates(mtfTf1ShortState, mtfTf2ShortState)
-bool mtfLongBlock = mtfLongStatus == "block"
-bool mtfShortBlock = mtfShortStatus == "block"
-
 bool blockLong = false
 string blockLongReason = ""
 if longStaleCandidate
@@ -1542,12 +1562,12 @@ bool conflict = longRaw and shortRaw
 bool longActionable = longSignalCandidate and not blockLong
 bool shortActionable = shortSignalCandidate and not blockShort
 
-int scoreLongTrendUpper = math.min(100, (upperWindowValid ? 25 : 0) + (upperBullTouchSeen ? 25 : 0) + (upperBullFractalSeen ? 25 : 0) + (bullDivSeen ? 25 : 0) + (upperBullEmaCrossSeen ? 25 : 0))
+int scoreLongTrendUpper = math.min(100, (upperWindowValid ? 20 : 0) + ((upperBullTouchSeen or upperBullContinuationSeen) ? 30 : 0) + (upperBullFractalSeen ? 25 : 0) + (bullDivSeen ? 25 : 0) + (upperBullEmaCrossSeen ? 25 : 0))
 int scoreLongPostLowerBreakout = math.min(100, (lowerSdExtremeFresh ? 34 : 0) + (lowerBullFractalSeen ? 33 : 0) + (bullDivSeen ? 33 : 0) + (lowerBullEmaCrossSeen ? 33 : 0))
 int scoreLongMrLower = math.min(100, (lowerMrWindowValid ? 34 : 0) + (lowerBullFractalSeen ? 33 : 0) + (bullDivSeen ? 33 : 0) + (lowerBullEmaCrossSeen ? 33 : 0))
-int scoreShortPostUpperBreakdown = math.min(100, (upperSdExtremeFresh ? 34 : 0) + (upperBearFractalSeen ? 33 : 0) + (bearDivSeen ? 33 : 0) + (upperBearEmaCrossSeen ? 33 : 0))
-int scoreShortEmaDeathContinuation = math.min(100, (shortEmaDeathContinuationStructureOk ? 34 : 0) + (trendBearFractalSeen ? 33 : 0) + (bearDivSeen ? 33 : 0) + (trendBearEmaCrossSeen ? 33 : 0))
-int scoreShortMrUpper = math.min(100, (upperMrWindowValid ? 34 : 0) + (upperBearFractalSeen ? 33 : 0) + (bearDivSeen ? 33 : 0) + (upperBearEmaCrossSeen ? 33 : 0))
+int scoreShortPostUpperBreakdown = dtpBullDominant and not bearishReversalContext ? 0 : math.min(100, (upperSdExtremeFresh ? 34 : 0) + (upperBearFractalSeen ? 33 : 0) + (bearDivSeen ? 33 : 0) + (upperBearEmaCrossSeen ? 33 : 0))
+int scoreShortEmaDeathContinuation = shortEmaDeathContinuationStructureOk and (not dtpBullDominant or bearishReversalContext) ? math.min(100, 34 + (trendBearFractalSeen ? 33 : 0) + (bearDivSeen ? 33 : 0) + (trendBearEmaCrossSeen ? 33 : 0)) : 0
+int scoreShortMrUpper = dtpBullDominant and not bearishReversalContext ? 0 : math.min(100, (upperMrWindowValid ? 34 : 0) + (upperBearFractalSeen ? 33 : 0) + (bearDivSeen ? 33 : 0) + (upperBearEmaCrossSeen ? 33 : 0))
 int scoreShortTrendLower = math.min(100, (lowerWindowValid ? 25 : 0) + (lowerBearTrendTriggerSeen ? 25 : 0) + (lowerBearFractalSeen ? 25 : 0) + (bearDivSeen ? 25 : 0) + (lowerBearEmaCrossSeen ? 25 : 0))
 int activityScore = math.max(math.max(math.max(scoreLongTrendUpper, scoreLongPostLowerBreakout), scoreLongMrLower), math.max(math.max(math.max(scoreShortPostUpperBreakdown, scoreShortEmaDeathContinuation), scoreShortMrUpper), scoreShortTrendLower))
 string candidateSetup = activityScore == 0 ? "none" : activityScore == scoreLongPostLowerBreakout ? "trend_sdLowerBreakout" : activityScore == scoreLongTrendUpper ? "trend_sdUpper" : activityScore == scoreLongMrLower ? "mr_sdLower" : activityScore == scoreShortPostUpperBreakdown ? "trend_sdUpperBreakdown" : activityScore == scoreShortEmaDeathContinuation ? "trend_emaDeathContinuation" : activityScore == scoreShortMrUpper ? "mr_sdUpper" : "trend_sdLower"
@@ -1557,7 +1577,7 @@ string activityGrade = activityScore >= 100 ? "ready" : activityScore >= preAler
 string missingComponents = ""
 if candidateSetup == "trend_sdUpper"
     missingComponents := not upperWindowValid ? appendSource(missingComponents, "upper_window") : missingComponents
-    missingComponents := not upperBullTouchSeen ? appendSource(missingComponents, "ema_bull_touch") : missingComponents
+    missingComponents := not upperBullTrendTriggerSeen ? appendSource(missingComponents, "ema_bull_touch") : missingComponents
     if longTrendUpperDirectionComponents < 2
         missingComponents := not upperBullFractalSeen ? appendSource(missingComponents, "bull_fractal") : missingComponents
         missingComponents := not bullDivSeen ? appendSource(missingComponents, "bull_divergence") : missingComponents
@@ -2258,8 +2278,8 @@ if lowerCandidateNotice or upperCandidateNotice
 
 bool candidateUpperWindowReady = candidateSetup == "trend_sdUpperBreakdown" ? upperSdExtremeFresh : candidateSetup == "mr_sdUpper" ? upperMrWindowValid : upperWindowValid
 bool candidateLowerWindowReady = candidateSetup == "trend_sdLowerBreakout" ? lowerSdExtremeFresh : candidateSetup == "trend_emaDeathContinuation" ? shortEmaDeathContinuationStructureOk : candidateSetup == "mr_sdLower" ? lowerMrWindowValid : lowerWindowValid
-string candidateComponentText = componentSummaryForSetup(candidateSetup, candidateUpperWindowReady, candidateLowerWindowReady, upperBullTouchSeen, lowerBearTrendTriggerSeen, upperBullFractalSeen, lowerBullFractalSeen, upperBearFractalSeen, lowerBearFractalSeen, trendBearFractalSeen, upperBullEmaCrossSeen, lowerBullEmaCrossSeen, upperBearEmaCrossSeen, lowerBearEmaCrossSeen, trendBearEmaCrossSeen, bullDivSeen, bearDivSeen)
-string candidateProgressText = componentProgressForSetup(candidateSetup, candidateUpperWindowReady, candidateLowerWindowReady, upperBullTouchSeen, lowerBearTrendTriggerSeen, upperBullFractalSeen, lowerBullFractalSeen, upperBearFractalSeen, lowerBearFractalSeen, trendBearFractalSeen, upperBullEmaCrossSeen, lowerBullEmaCrossSeen, upperBearEmaCrossSeen, lowerBearEmaCrossSeen, trendBearEmaCrossSeen, bullDivSeen, bearDivSeen)
+string candidateComponentText = componentSummaryForSetup(candidateSetup, candidateUpperWindowReady, candidateLowerWindowReady, upperBullTrendTriggerSeen, lowerBearTrendTriggerSeen, upperBullFractalSeen, lowerBullFractalSeen, upperBearFractalSeen, lowerBearFractalSeen, trendBearFractalSeen, upperBullEmaCrossSeen, lowerBullEmaCrossSeen, upperBearEmaCrossSeen, lowerBearEmaCrossSeen, trendBearEmaCrossSeen, bullDivSeen, bearDivSeen)
+string candidateProgressText = componentProgressForSetup(candidateSetup, candidateUpperWindowReady, candidateLowerWindowReady, upperBullTrendTriggerSeen, lowerBearTrendTriggerSeen, upperBullFractalSeen, lowerBullFractalSeen, upperBearFractalSeen, lowerBearFractalSeen, trendBearFractalSeen, upperBullEmaCrossSeen, lowerBullEmaCrossSeen, upperBearEmaCrossSeen, lowerBearEmaCrossSeen, trendBearEmaCrossSeen, bullDivSeen, bearDivSeen)
 string candidateWaitText = waitComponentText(missingComponents)
 var string lastPrepareVisualKey = ""
 var string lastBlockVisualKey = ""
@@ -2273,15 +2293,18 @@ if flowLabelsVisible and lowerCandidateNotice
     label.new(bar_index, low - atrVal * 1.4, flowLabelText("候选 多·SD↓\n等组件", lowerActivateDetailText), style=label.style_label_up, color=flowLabelColor("activate_lower", "long"), textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(lowerActivateDetailText))
 
 if flowLabelsVisible and upperCandidateNotice
-    string upperActivateDetailText = "已入选候选池\n" + syminfo.ticker + " · SD窗口开启\nSD上轨候选\n非开仓点，等组件"
-    label.new(bar_index, high + atrVal * 1.4, flowLabelText("候选 空·SD↑\n等组件", upperActivateDetailText), style=label.style_label_down, color=flowLabelColor("activate_upper", "short"), textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(upperActivateDetailText))
+    string upperActivateDecisionText = dtpBullDominant ? "\n方向裁决: DTP强多，SD上轨优先顺势多" : ""
+    string upperActivateDetailText = "已入选候选池\n" + syminfo.ticker + " · SD窗口开启\nSD上轨候选\n非开仓点，等组件" + upperActivateDecisionText
+    string upperActivateCompactText = dtpBullDominant ? "候选 多·SD↑\n顺势优先" : "候选 空·SD↑\n等组件"
+    label.new(bar_index, high + atrVal * 1.4, flowLabelText(upperActivateCompactText, upperActivateDetailText), style=label.style_label_down, color=flowLabelColor("activate_upper", dtpBullDominant ? "long" : "short"), textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(upperActivateDetailText))
 
 bool observeNow = preAlertNow
 bool prepareVisualNow = flowLabelsVisible and observeNow
 string prepareVisualKey = activityGrade + ":" + candidateDirection + ":" + candidateSetup + ":" + missingComponents + ":" + str.tostring(activityScore, "#")
 if prepareVisualNow and prepareVisualKey != lastPrepareVisualKey
     float prepareY = candidateDirection == "short" ? high + atrVal * 2.4 : low - atrVal * 2.4
-    string prepareDetailText = "观察" + directionDisplayName(candidateDirection) + "\n" + setupDisplayName(candidateSetup) + "\n组件: " + candidateComponentText + "\nMTF: " + mtfSummaryForDirection(candidateDirection) + "\n下一步: " + candidateWaitText
+    string candidateDirectionDecisionText = bullTrendContinuationContext and candidateSetup == "trend_sdUpper" ? "\n方向裁决: DTP强多，SD上轨优先顺势多" : ""
+    string prepareDetailText = "观察" + directionDisplayName(candidateDirection) + "\n" + setupDisplayName(candidateSetup) + candidateDirectionDecisionText + "\n组件: " + candidateComponentText + "\nMTF: " + mtfSummaryForDirection(candidateDirection) + "\n下一步: " + candidateWaitText
     string prepareCompactText = "观察 " + decisionDirectionTag(candidateDirection) + "·" + decisionSetupTag(candidateSetup) + "\n" + decisionComponentLine(candidateProgressText, candidateWaitText)
     label.new(bar_index, prepareY, flowLabelText(prepareCompactText, prepareDetailText), style=flowLabelStyle(candidateDirection), color=color.new(color.orange, flowLabelTransparency), textcolor=color.white, size=size.normal, tooltip=flowLabelTooltip(prepareDetailText))
     lastPrepareVisualKey := prepareVisualKey
@@ -2302,7 +2325,7 @@ string blockedProfitSpaceText = blockedProfitSpaceEntryBlocked ? (blockedDirecti
 string blockedProfitStatusText = blockedProfitSpaceEntryBlocked ? (blockedDirection == "long" ? profitSpaceBlockedStatusText(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr, longStructureRewardRisk, effectiveMinStructureRewardRiskForEntry) : profitSpaceBlockedStatusText(shortExpectedNetProfit, shortExpectedNetRoiPct, shortCostPctOfReward, shortTargetDistanceAtr, shortStructureRewardRisk, effectiveMinStructureRewardRiskForEntry)) : ""
 bool blockedUpperWindowReady = blockedSetup == "trend_sdUpperBreakdown" ? upperSdExtremeFresh : blockedSetup == "mr_sdUpper" ? upperMrWindowValid : upperWindowValid
 bool blockedLowerWindowReady = blockedSetup == "trend_sdLowerBreakout" ? lowerSdExtremeFresh : blockedSetup == "trend_emaDeathContinuation" ? shortEmaDeathContinuationStructureOk : blockedSetup == "mr_sdLower" ? lowerMrWindowValid : lowerWindowValid
-string blockedComponentText = componentSummaryForSetup(blockedSetup, blockedUpperWindowReady, blockedLowerWindowReady, upperBullTouchSeen, lowerBearTrendTriggerSeen, upperBullFractalSeen, lowerBullFractalSeen, upperBearFractalSeen, lowerBearFractalSeen, trendBearFractalSeen, upperBullEmaCrossSeen, lowerBullEmaCrossSeen, upperBearEmaCrossSeen, lowerBearEmaCrossSeen, trendBearEmaCrossSeen, bullDivSeen, bearDivSeen)
+string blockedComponentText = componentSummaryForSetup(blockedSetup, blockedUpperWindowReady, blockedLowerWindowReady, upperBullTrendTriggerSeen, lowerBearTrendTriggerSeen, upperBullFractalSeen, lowerBullFractalSeen, upperBearFractalSeen, lowerBearFractalSeen, trendBearFractalSeen, upperBullEmaCrossSeen, lowerBullEmaCrossSeen, upperBearEmaCrossSeen, lowerBearEmaCrossSeen, trendBearEmaCrossSeen, bullDivSeen, bearDivSeen)
 float blockedReferenceEntry = blockedDirection == "long" ? longReferenceEntry : shortReferenceEntry
 float blockedEntryCandidate = blockedDirection == "long" ? longEntryCandidate : shortEntryCandidate
 string blockedAnchorReason = blockedDirection == "long" ? longEntryAnchorReason : shortEntryAnchorReason
@@ -2374,8 +2397,9 @@ if enterLong
         strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment="平多 · TP/SL", comment_profit="平多 · TP止盈", comment_loss="平多 · SL止损")
         if flowLabelsVisible
             string mrLine = longSetup == "mr_sdLower" ? "\nMR: " + mrRegimeDisplayName(longMrRegime) + " / 均值TP " + str.tostring(targetPrice, "#.##") : ""
+            string directionDecisionLine = longSetup == "trend_sdUpper" and bullTrendContinuationContext ? "\n方向裁决: DTP强多，SD上轨优先顺势多" : ""
             string profitLine = profitSpaceSummaryText(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr, longStructureRewardRisk) + profitSpaceCheckpointText(longRunnerCandidate, longCheckpointNetProfit, longCheckpointCostPctOfReward, longCheckpointTargetDistanceAtr)
-            string longEntryDetailText = "信号已发出\n提交限价做多\n" + setupDisplayName(longSetup) + "\n" + entryWindowDiagnosticsText() + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("long") + "\n" + dtpEntryFilterText("long", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + mrLine + "\n" + profitLine + "\nref " + str.tostring(longReferenceEntry, "#.##") + " / plan " + str.tostring(entryPrice, "#.##") + " / 复查 " + str.tostring(entryOrderTtlBars, "#") + "bar\n锚点: " + activeEntryAnchorReason
+            string longEntryDetailText = "信号已发出\n提交限价做多\n" + setupDisplayName(longSetup) + directionDecisionLine + "\n" + entryWindowDiagnosticsText() + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("long") + "\n" + dtpEntryFilterText("long", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + mrLine + "\n" + profitLine + "\nref " + str.tostring(longReferenceEntry, "#.##") + " / plan " + str.tostring(entryPrice, "#.##") + " / 复查 " + str.tostring(entryOrderTtlBars, "#") + "bar\n锚点: " + activeEntryAnchorReason
             string longEntryCompactText = "入场 多·" + decisionSetupTag(longSetup) + " " + str.tostring(entryPrice, "#.##") + "\n" + decisionRiskLine(entryPrice, stopPrice, targetPrice, longStructureRewardRisk, longTargetDistanceAtr)
             label.new(bar_index, low - atrVal * 3.1, flowLabelText(longEntryCompactText, longEntryDetailText), style=label.style_label_up, color=flowLabelColor("entry", "long"), textcolor=color.white, size=size.normal, tooltip=flowLabelTooltip(longEntryDetailText))
         lowerPostReversalUsed := setupLongPostLowerBreakout ? true : lowerPostReversalUsed
@@ -2385,7 +2409,7 @@ if enterLong
         bullDivSource := ""
         bullDivBar := na
         if enableAlerts
-            string touchLine = longSetup == "trend_sdUpper" ? upperBullTouchLine : longSetup == "trend_sdLowerBreakout" ? "post_sd_lower_breakout" : "none"
+            string touchLine = longSetup == "trend_sdUpper" ? upperBullTrendTriggerLine : longSetup == "trend_sdLowerBreakout" ? "post_sd_lower_breakout" : "none"
             alert(buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, activePlanId, "long", longSetup, longReason, qty, longReferenceEntry, entryPrice, submittedLimitPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode, longStructureStopAvailable, longStructureTargetAvailable, longRiskCapStopApplied, longStopSource, structureTargetSourceForSetup(longSetup, "long"), longEntryAnchorSource, activeEntryAnchorReason, entryExpiresBar, divSourceForEntry, touchLine), alert.freq_all)
 
 if enterShort

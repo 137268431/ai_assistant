@@ -167,7 +167,7 @@ class ReverseSignalHandler:
             sort="-priority,-bar_time_ms",
             per_page=50,
         )
-        records = [dict(row) for row in (pending or [])]
+        records = self._filter_pending_reverse_records([dict(row) for row in (pending or [])])
         try:
             cancelled = self.pb_client.get_records(
                 REVERSE_SIGNAL_COLLECTION,
@@ -187,6 +187,11 @@ class ReverseSignalHandler:
             records.append(dict(row))
             seen.add(rid)
         return records
+
+    def _filter_pending_reverse_records(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Keep P0 actions intact, but coalesce low-priority TV bracket adjustments."""
+        records = self._filter_latest_adjust_bracket_records(records)
+        return self._expire_or_hold_adjust_bracket_retries(records)
 
     @staticmethod
     def _escape_filter_value(value: str) -> str:
@@ -2218,7 +2223,8 @@ class ReverseSignalHandler:
 
         if unconfirmed_sides or missing_sides:
             detail["adjust_bracket"] = "pending_confirmation"
-            return self._mark_retryable_blocked(
+            return self._mark_adjust_bracket_retryable(
+                signal,
                 detail,
                 "adjust_bracket_not_confirmed",
                 unconfirmed_sides=unconfirmed_sides,
@@ -2241,6 +2247,351 @@ class ReverseSignalHandler:
         return self._config_bool_prefer(
             ("tv_risk_update_missing_child_order_retry_pending", "tv_risk_update_retry_missing_child_orders"),
             True,
+        )
+
+    @staticmethod
+    def _adjust_bracket_backoff_schedule() -> List[float]:
+        raw = str(os.environ.get("IBKR_ADJUST_BRACKET_RETRY_BACKOFF_SECONDS", "30,60,180") or "")
+        values: List[float] = []
+        for part in raw.split(","):
+            try:
+                value = float(part.strip())
+            except (TypeError, ValueError):
+                continue
+            if value >= 0:
+                values.append(value)
+        return values or [30.0, 60.0, 180.0]
+
+    @staticmethod
+    def _adjust_bracket_max_retry_attempts() -> int:
+        try:
+            return max(1, int(os.environ.get("IBKR_ADJUST_BRACKET_RETRY_MAX_ATTEMPTS", "5") or "5"))
+        except (TypeError, ValueError):
+            return 5
+
+    @staticmethod
+    def _adjust_bracket_stale_seconds() -> float:
+        try:
+            return max(0.0, float(os.environ.get("IBKR_ADJUST_BRACKET_RETRY_STALE_SECONDS", "900") or "900"))
+        except (TypeError, ValueError):
+            return 900.0
+
+    @classmethod
+    def _adjust_bracket_retry_delay(cls, attempts: int) -> float:
+        schedule = cls._adjust_bracket_backoff_schedule()
+        index = max(0, min(len(schedule) - 1, int(attempts or 1) - 1))
+        return float(schedule[index])
+
+    @classmethod
+    def _parse_timestamp(cls, value: Any) -> Optional[float]:
+        timestamp, _kind = cls._timestamp_from_value(value)
+        return timestamp
+
+    @classmethod
+    def _realistic_timestamp_from_value(cls, value: Any) -> Optional[float]:
+        timestamp = cls._parse_timestamp(value)
+        # Avoid treating tiny test bar indexes like real epoch timestamps.
+        if timestamp is None or timestamp < 1_500_000_000:
+            return None
+        return timestamp
+
+    @classmethod
+    def _reverse_event_timestamp(cls, signal: dict) -> float:
+        extra = cls._signal_extra(signal)
+        for payload in (signal or {}, extra):
+            for key in ("updated", "updated_at", "processed_time", "created", "created_at", "received_at"):
+                timestamp = cls._parse_timestamp((payload or {}).get(key))
+                if timestamp is not None:
+                    return float(timestamp)
+        for payload in (signal or {}, extra):
+            for key in ("bar_time_ms", "event_time_ms", "received_at_ms", "created_at_ms"):
+                timestamp = cls._parse_timestamp((payload or {}).get(key))
+                if timestamp is not None:
+                    return float(timestamp)
+        return 0.0
+
+    @classmethod
+    def _reverse_real_age_seconds(cls, signal: dict, *, now: Optional[float] = None) -> Optional[float]:
+        extra = cls._signal_extra(signal)
+        for payload in (signal or {}, extra):
+            for key in (
+                "processed_time",
+                "updated",
+                "updated_at",
+                "created",
+                "created_at",
+                "received_at",
+                "ingested_at",
+            ):
+                timestamp = cls._realistic_timestamp_from_value((payload or {}).get(key))
+                if timestamp is not None:
+                    return max(0.0, float(now if now is not None else time.time()) - timestamp)
+        return None
+
+    @classmethod
+    def _adjust_command_key(cls, signal: dict) -> Tuple[str, str, str, str, str]:
+        environment = normalize_broker_mode(cls._signal_value(signal, "broker_mode") or cls._signal_value(signal, "environment"), "")
+        symbol = str(cls._signal_value(signal, "symbol") or "").strip().upper()
+        trade_key = str(
+            cls._signal_value(signal, "trade_group_id")
+            or cls._signal_value(signal, "bracket_group")
+            or cls._signal_value(signal, "entry_order_unique_id")
+            or cls._signal_value(signal, "origin_signal_id")
+            or cls._signal_value(signal, "signal_id")
+            or ""
+        ).strip()
+        risk_update_type = str(
+            cls._signal_value(signal, "risk_update_type")
+            or cls._signal_value(signal, "event_type")
+            or cls._signal_value(signal, "reverse_kind")
+            or cls._signal_value(signal, "action_type")
+            or "risk_update"
+        ).strip().lower()
+        explicit_sides: set[str] = set()
+        explicit_present = False
+        for key in ("requested_sides", "requested_side", "adjust_sides", "adjust_side"):
+            if not cls._signal_has_key(signal, key):
+                continue
+            explicit_present = True
+            explicit_sides = {
+                normalized
+                for normalized in (cls._normalize_adjust_side(item) for item in cls._signal_list(signal, key))
+                if normalized
+            }
+            break
+        if explicit_present:
+            side_family = ",".join(sorted(explicit_sides)) if explicit_sides else "metadata_noop"
+        else:
+            inferred = []
+            if cls._signal_has_value(signal, "new_sl"):
+                inferred.append("stop_loss")
+            if cls._signal_has_value(signal, "new_tp"):
+                inferred.append("take_profit")
+            side_family = ",".join(inferred) if inferred else "metadata_noop"
+        return (environment, symbol, trade_key, risk_update_type, side_family)
+
+    @classmethod
+    def _adjust_bracket_retry_state(cls, signal: dict, *, now: Optional[float] = None) -> Dict[str, Any]:
+        extra = cls._signal_extra(signal)
+        runtime_detail = cls._as_dict(extra.get("reverse_runtime_detail"))
+        backoff = cls._as_dict(extra.get("adjust_bracket_retry_backoff") or runtime_detail.get("adjust_bracket_retry_backoff"))
+        blocked = cls._as_dict(extra.get("reentry_blocked"))
+        reason = str(
+            backoff.get("reason")
+            or runtime_detail.get("blocked_reason")
+            or blocked.get("reason")
+            or extra.get("result_status")
+            or signal.get("reason")
+            or ""
+        ).strip()
+        attempts = cls._coerce_int(
+            backoff.get("attempts")
+            or runtime_detail.get("adjust_bracket_retry_attempts")
+            or extra.get("adjust_bracket_retry_attempts")
+            or 0,
+            0,
+        )
+        next_retry_at = str(
+            backoff.get("next_retry_at")
+            or runtime_detail.get("adjust_bracket_next_retry_at")
+            or extra.get("adjust_bracket_next_retry_at")
+            or ""
+        ).strip()
+        next_retry_ts = cls._parse_timestamp(next_retry_at)
+        now_ts = float(now if now is not None else time.time())
+        due = next_retry_ts is None or now_ts >= next_retry_ts
+        retryable = bool(
+            attempts > 0
+            or next_retry_at
+            or "adjust_bracket_not_confirmed" in reason
+            or "adjust_price_not_confirmed" in reason
+            or "child_order_id_unresolved" in reason
+            or "local_order_linkage_missing" in reason
+            or "position_snapshot_unavailable_for_adjust" in reason
+        )
+        return {
+            "retryable": retryable,
+            "reason": reason,
+            "attempts": attempts,
+            "next_retry_at": next_retry_at,
+            "next_retry_ts": next_retry_ts,
+            "due": due,
+        }
+
+    def _mark_superseded_adjust_bracket(self, signal: dict, key: Tuple[str, str, str, str, str]) -> None:
+        updater = getattr(self.pb_client, "update_record", None)
+        rid = str((signal or {}).get("id") or "").strip()
+        if not rid or not callable(updater):
+            return
+        extra = self._signal_extra(signal)
+        runtime_detail = self._as_dict(extra.get("reverse_runtime_detail"))
+        runtime_detail.update(
+            {
+                "superseded_by_latest_adjust_bracket": True,
+                "adjust_command_key": list(key),
+                "execution_readiness": "not_executable",
+                "blocked_reason": "superseded_by_latest_adjust_bracket",
+            }
+        )
+        extra.update(
+            {
+                "result_status": "superseded",
+                "superseded_by_latest_adjust_bracket": True,
+                "adjust_command_key": list(key),
+                "reverse_runtime_detail": runtime_detail,
+            }
+        )
+        try:
+            updater(
+                REVERSE_SIGNAL_COLLECTION,
+                rid,
+                {
+                    "status": "cancelled",
+                    "reason": "superseded_by_latest_adjust_bracket",
+                    "processed_time": self._now_iso(),
+                    "extra": extra,
+                },
+            )
+        except Exception as exc:
+            logger.debug("Failed to mark superseded adjust_bracket %s: %s", rid, exc)
+
+    def _filter_latest_adjust_bracket_records(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        latest_by_key: Dict[Tuple[str, str, str, str, str], Dict[str, Any]] = {}
+        superseded: List[Tuple[Dict[str, Any], Tuple[str, str, str, str, str]]] = []
+        for row in records or []:
+            action = str((row or {}).get("action_type") or "").strip().lower()
+            if action != "adjust_bracket" or not self._is_tv_risk_update_signal(row):
+                continue
+            key = self._adjust_command_key(row)
+            current = latest_by_key.get(key)
+            if current is None:
+                latest_by_key[key] = row
+                continue
+            current_ts = self._reverse_event_timestamp(current)
+            row_ts = self._reverse_event_timestamp(row)
+            if (row_ts, str(row.get("id") or "")) >= (current_ts, str(current.get("id") or "")):
+                superseded.append((current, key))
+                latest_by_key[key] = row
+            else:
+                superseded.append((row, key))
+        for row, key in superseded:
+            self._mark_superseded_adjust_bracket(row, key)
+        superseded_ids = {str(row.get("id") or "") for row, _key in superseded}
+        keep_ids = {str(row.get("id") or "") for row in latest_by_key.values()}
+        kept: List[Dict[str, Any]] = []
+        for row in records or []:
+            rid = str(row.get("id") or "")
+            if rid in superseded_ids:
+                continue
+            action = str((row or {}).get("action_type") or "").strip().lower()
+            if action == "adjust_bracket" and self._is_tv_risk_update_signal(row) and rid not in keep_ids:
+                continue
+            kept.append(row)
+        return kept
+
+    def _expire_or_hold_adjust_bracket_retries(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        now_ts = time.time()
+        max_attempts = self._adjust_bracket_max_retry_attempts()
+        stale_seconds = self._adjust_bracket_stale_seconds()
+        kept: List[Dict[str, Any]] = []
+        for row in records or []:
+            action = str((row or {}).get("action_type") or "").strip().lower()
+            if action != "adjust_bracket":
+                kept.append(row)
+                continue
+            state = self._adjust_bracket_retry_state(row, now=now_ts)
+            age_seconds = self._reverse_real_age_seconds(row, now=now_ts)
+            if state.get("retryable") and stale_seconds > 0 and age_seconds is not None and age_seconds >= stale_seconds:
+                self._finalize_stale_adjust_bracket(row, "stale_adjust_bracket_retry", state, age_seconds)
+                continue
+            if state.get("retryable") and int(state.get("attempts") or 0) >= max_attempts and state.get("due"):
+                self._finalize_stale_adjust_bracket(row, "adjust_bracket_retry_exhausted", state, age_seconds)
+                continue
+            if state.get("retryable") and not state.get("due"):
+                logger.debug(
+                    "Holding adjust_bracket retry until %s for %s",
+                    state.get("next_retry_at"),
+                    row.get("id"),
+                )
+                continue
+            kept.append(row)
+        return kept
+
+    def _finalize_stale_adjust_bracket(
+        self,
+        signal: dict,
+        reason: str,
+        retry_state: Dict[str, Any],
+        age_seconds: Optional[float],
+    ) -> None:
+        updater = getattr(self.pb_client, "update_record", None)
+        rid = str((signal or {}).get("id") or "").strip()
+        if not rid or not callable(updater):
+            return
+        extra = self._signal_extra(signal)
+        runtime_detail = self._as_dict(extra.get("reverse_runtime_detail"))
+        runtime_detail.update(
+            {
+                "blocked_reason": reason,
+                "retry_finalized": True,
+                "retry_state": dict(retry_state or {}),
+                "retry_age_seconds": age_seconds,
+                "execution_readiness": "not_executable",
+            }
+        )
+        extra.update(
+            {
+                "result_status": reason,
+                "adjust_bracket": "retry_finalized",
+                "reverse_runtime_detail": runtime_detail,
+            }
+        )
+        try:
+            updater(
+                REVERSE_SIGNAL_COLLECTION,
+                rid,
+                {
+                    "status": "cancelled",
+                    "reason": reason,
+                    "processed_time": self._now_iso(),
+                    "extra": extra,
+                },
+            )
+        except Exception as exc:
+            logger.debug("Failed to finalize stale adjust_bracket %s: %s", rid, exc)
+
+    def _mark_adjust_bracket_retryable(
+        self,
+        signal: dict,
+        detail: Dict[str, Any],
+        reason: str,
+        **context: Any,
+    ) -> Dict[str, Any]:
+        previous = self._adjust_bracket_retry_state(signal)
+        attempts = int(previous.get("attempts") or 0) + 1
+        delay = self._adjust_bracket_retry_delay(attempts)
+        next_retry_at = datetime.fromtimestamp(time.time() + delay, ET).isoformat()
+        backoff = {
+            "reason": str(reason or "adjust_bracket_pending_retry"),
+            "attempts": attempts,
+            "max_attempts": self._adjust_bracket_max_retry_attempts(),
+            "delay_seconds": delay,
+            "next_retry_at": next_retry_at,
+        }
+        detail["adjust_bracket_retry_backoff"] = backoff
+        detail["adjust_bracket_retry_attempts"] = attempts
+        detail["adjust_bracket_next_retry_at"] = next_retry_at
+        runtime_detail = detail.setdefault("reverse_runtime_detail", {})
+        runtime_detail["adjust_bracket_retry_backoff"] = dict(backoff)
+        runtime_detail["adjust_bracket_retry_attempts"] = attempts
+        runtime_detail["adjust_bracket_next_retry_at"] = next_retry_at
+        context.setdefault("retry_after_s", delay)
+        return self._mark_retryable_blocked(
+            detail,
+            reason,
+            retry_attempts=attempts,
+            next_retry_at=next_retry_at,
+            **context,
         )
 
     @staticmethod
@@ -3192,6 +3543,93 @@ class ReverseSignalHandler:
             results[side] = dict(side_detail)
         return results
 
+    def _expected_position_direction(self, signal: dict) -> str:
+        direction = str(
+            self._signal_value(signal, "current_direction")
+            or self._signal_value(signal, "direction")
+            or ""
+        ).strip().lower()
+        if direction in {"buy", "bull", "long"}:
+            return "long"
+        if direction in {"sell", "bear", "short"}:
+            return "short"
+        return ""
+
+    def _adjust_bracket_position_guard(
+        self,
+        signal: dict,
+        detail: Dict[str, Any],
+        *,
+        unresolved_sides: Optional[List[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if not self.order_lifecycle:
+            return None
+        symbol = str(self._signal_value(signal, "symbol") or "").strip().upper()
+        if not symbol:
+            return None
+        existing_snapshot = detail.get("position_preflight") if isinstance(detail.get("position_preflight"), dict) else {}
+        if "position_qty" in existing_snapshot:
+            qty = self._coerce_float(existing_snapshot.get("position_qty"), 0.0)
+        else:
+            positions_result = self._get_positions_result()
+            snapshot = self._compact_position_snapshot_result(positions_result)
+            detail["position_preflight"] = snapshot
+            if not positions_result.get("ok"):
+                return self._mark_adjust_bracket_retryable(
+                    signal,
+                    detail,
+                    "position_snapshot_unavailable_for_adjust",
+                    error=str(positions_result.get("error") or "position_snapshot_unavailable"),
+                    retry_after_s=positions_result.get("retry_after_s"),
+                    account_data_backoff_reason=positions_result.get("account_data_backoff_reason"),
+                )
+            positions = list(positions_result.get("positions") or [])
+            qty = self._position_quantity(symbol, positions)
+        expected_direction = self._expected_position_direction(signal)
+        actual_direction = "long" if qty > 0 else "short" if qty < 0 else "flat"
+        detail["position_preflight"].update(
+            {
+                "symbol": symbol,
+                "position_qty": qty,
+                "expected_direction": expected_direction,
+                "actual_direction": actual_direction,
+            }
+        )
+        if qty == 0:
+            return self._mark_invalidated(
+                detail,
+                "stale_no_position_for_adjust",
+                ack_status="expired",
+                action="adjust_bracket",
+                symbol=symbol,
+                position_qty=qty,
+                expected_direction=expected_direction,
+            )
+        if expected_direction and expected_direction != actual_direction:
+            return self._mark_invalidated(
+                detail,
+                "position_side_mismatch_for_adjust",
+                ack_status="expired",
+                action="adjust_bracket",
+                symbol=symbol,
+                position_qty=qty,
+                expected_direction=expected_direction,
+                actual_direction=actual_direction,
+            )
+        if unresolved_sides:
+            detail["repair_protection_required"] = True
+            detail["missing_protection_roles"] = list(unresolved_sides)
+            return self._mark_blocked(
+                detail,
+                "repair_protection_required",
+                missing_sides=list(unresolved_sides),
+                symbol=symbol,
+                position_qty=qty,
+                expected_direction=expected_direction,
+                safe_action="missing_protection_repair_not_adjust_retry",
+            )
+        return None
+
     def _current_stop_price(self, signal: dict) -> Tuple[float, str]:
         keys = (
             "previous_stop_loss",
@@ -3424,6 +3862,10 @@ class ReverseSignalHandler:
         if not has_explicit_requested_sides:
             detail["inferred_requested_sides"] = inferred_requested_sides
 
+        position_guard = self._adjust_bracket_position_guard(signal, detail)
+        if position_guard is not None:
+            return position_guard
+
         missing_order_sides = [
             side
             for side, (_, _, _, order_id, _, price_valid, requested) in side_inputs.items()
@@ -3442,6 +3884,13 @@ class ReverseSignalHandler:
 
             unresolved_sides = list(resolution.get("unresolved_sides") or [])
             if unresolved_sides and self._is_tv_risk_update_signal(signal):
+                position_guard = self._adjust_bracket_position_guard(
+                    signal,
+                    detail,
+                    unresolved_sides=unresolved_sides,
+                )
+                if position_guard is not None:
+                    return position_guard
                 resolution_detail = resolution.get("detail", {})
                 local_linkage_exists = bool(resolution.get("linkage_exists"))
                 linkage_hint_exists = bool(resolution.get("linkage_hint_exists"))
@@ -3507,7 +3956,8 @@ class ReverseSignalHandler:
                 if should_defer:
                     detail["adjust_bracket"] = "deferred"
                     detail["deferred"] = True
-                    return self._mark_retryable_blocked(
+                    return self._mark_adjust_bracket_retryable(
+                        signal,
                         detail,
                         block_reason,
                         missing_sides=unresolved_sides,
@@ -3664,7 +4114,8 @@ class ReverseSignalHandler:
             if unconfirmed_sides and len(unconfirmed_sides) == len(failed_sides):
                 detail["adjust_bracket"] = "pending_confirmation"
                 detail["adjust_bracket_result"]["unconfirmed_sides"] = unconfirmed_sides
-                return self._mark_retryable_blocked(
+                return self._mark_adjust_bracket_retryable(
+                    signal,
                     detail,
                     "adjust_bracket_not_confirmed",
                     unconfirmed_sides=unconfirmed_sides,

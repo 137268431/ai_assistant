@@ -400,11 +400,11 @@ class OrderLifecycle:
     def _missing_protection_auto_repair_enabled(self) -> bool:
         return self._get_config_bool(
             "ibkr_missing_protection_auto_repair_enabled",
-            self.environment == "paper",
+            True,
         )
 
     def _missing_protection_repair_cooldown_sec(self) -> float:
-        return max(0.0, self._get_config_float("ibkr_missing_protection_repair_cooldown_sec", 600.0))
+        return max(0.0, self._get_config_float("ibkr_missing_protection_repair_cooldown_sec", 60.0))
 
     def _missing_protection_stale_price_policy(self) -> str:
         return self._get_config_value("ibkr_missing_protection_repair_stale_price_policy", "skip_and_alert").strip().lower()
@@ -1516,7 +1516,7 @@ class OrderLifecycle:
             "Broker入场订单ID": self._order_broker_id(entry) or "-",
             "当前持仓": self._broker_position_quantity(broker_position),
             "缺失保护": "/".join(missing_labels) or "-",
-            "处理建议": "系统会按配置在 Paper 尝试自动补挂完整 TP/SL；若价格已过期、Live 默认关闭或补挂失败，请立即人工核对 IBKR 持仓和 open orders。",
+            "处理建议": "系统会按配置在 Paper/Live 尝试自动补挂完整 TP/SL，并按冷却时间重试；若价格已过期或补挂失败，请立即人工核对 IBKR 持仓和 open orders。",
         }
         try:
             notifier(
