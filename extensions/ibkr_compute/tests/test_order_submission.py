@@ -2475,6 +2475,24 @@ class IBGatewayOrderSubmissionWarningTest(unittest.TestCase):
         self.assertEqual("benign", record_broker_error.call_args.kwargs["severity"])
         self.assertEqual(10148, client._order_errors["86"]["code"])
 
+    def test_error_callback_treats_market_data_cancel_missing_as_benign(self):
+        client = ib_gateway._IBGatewayApp.__new__(ib_gateway._IBGatewayApp)
+        client._state_lock = threading.RLock()
+        client._pending_requests = {}
+        client._account_updates_expected_unsubscribe_until = 0.0
+        client._recent_errors = []
+        client._order_errors = {}
+        client._ready = True
+        client._status_code = 200
+        client._next_order_id = 1
+        message = "Can't find EId with tickerId:50164"
+
+        with mock.patch.object(ib_gateway, "record_broker_error") as record_broker_error:
+            ib_gateway._IBGatewayApp.error(client, 50164, 300, message, "")
+
+        self.assertEqual("benign", record_broker_error.call_args.kwargs["severity"])
+        self.assertNotIn("50164", client._order_errors)
+
 
 class OrderPlacerBracketMetadataTest(unittest.TestCase):
     def test_marketable_limit_close_order_is_logged_with_actual_type_and_price(self):

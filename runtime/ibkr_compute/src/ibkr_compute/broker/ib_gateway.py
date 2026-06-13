@@ -755,6 +755,13 @@ class _IBGatewayApp(EWrapper, EClient):
         with self._state_lock:
             return time.time() <= float(self._account_updates_expected_unsubscribe_until or 0.0)
 
+    @staticmethod
+    def _is_expected_market_data_cancel_missing_error(error_code: int, message: str) -> bool:
+        if int(error_code or 0) != 300:
+            return False
+        text = str(message or "").strip().lower()
+        return "can't find eid with tickerid" in text or "cant find eid with tickerid" in text
+
     def connect_and_start(self, timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS) -> bool:
         if not IBAPI_AVAILABLE:
             raise RuntimeError(f"ibapi not available: {IBAPI_IMPORT_ERROR}")
@@ -853,6 +860,10 @@ class _IBGatewayApp(EWrapper, EClient):
         order_warning = _order_error_is_submission_warning(order_error_payload)
         cancel_notice = _order_error_is_cancel_notice(order_error_payload)
         expected_account_unsubscribe = self._is_expected_account_updates_unsubscribe_error(normalized_error_code)
+        expected_market_data_cancel_missing = self._is_expected_market_data_cancel_missing_error(
+            normalized_error_code,
+            str(errorString or ""),
+        )
         pending_ctx = self._pending_requests.get(int(reqId or 0))
         account_summary_request_limit = bool(
             normalized_error_code == 322
@@ -871,6 +882,7 @@ class _IBGatewayApp(EWrapper, EClient):
             if (
                 normalized_error_code in BENIGN_ERROR_CODES
                 or expected_account_unsubscribe
+                or expected_market_data_cancel_missing
                 or order_warning
                 or cancel_notice
                 or account_summary_request_limit
@@ -905,6 +917,7 @@ class _IBGatewayApp(EWrapper, EClient):
             if (
                 normalized_error_code not in BENIGN_ERROR_CODES
                 and not expected_account_unsubscribe
+                and not expected_market_data_cancel_missing
                 and not order_warning
                 and not cancel_notice
                 and not account_summary_request_limit
@@ -925,11 +938,14 @@ class _IBGatewayApp(EWrapper, EClient):
                 logger.debug("Ignoring non-fatal IB cancel notice reqId=%s code=%s", reqId, errorCode)
             elif expected_account_unsubscribe:
                 logger.debug("Ignoring expected account update unsubscribe error reqId=%s code=%s", reqId, errorCode)
+            elif expected_market_data_cancel_missing:
+                logger.debug("Ignoring expected market data cancel-missing error reqId=%s code=%s", reqId, errorCode)
             numeric_req_id = int(reqId or 0)
             if (
                 numeric_req_id > 0
                 and normalized_error_code not in BENIGN_ERROR_CODES
                 and not expected_account_unsubscribe
+                and not expected_market_data_cancel_missing
                 and not order_warning
                 and not account_summary_request_limit
             ):
@@ -946,7 +962,12 @@ class _IBGatewayApp(EWrapper, EClient):
                 self._next_order_id = None
                 self._ready_event.clear()
         ctx = self._pending_requests.get(int(reqId or 0))
-        if ctx and errorCode not in BENIGN_ERROR_CODES and not expected_account_unsubscribe:
+        if (
+            ctx
+            and errorCode not in BENIGN_ERROR_CODES
+            and not expected_account_unsubscribe
+            and not expected_market_data_cancel_missing
+        ):
             ctx.error = str(errorString or f"ib_error_{errorCode}")
             ctx.event.set()
 

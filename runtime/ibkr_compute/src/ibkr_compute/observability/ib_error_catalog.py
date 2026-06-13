@@ -24,6 +24,7 @@ _IB_ERROR_CATALOG: dict[int, IBErrorInfo] = {
     200: IBErrorInfo("合约定义缺失或歧义", "补充交易所/币种/乘数"),
     201: IBErrorInfo("订单被IB拒绝", "查看拒单原文"),
     202: IBErrorInfo("订单被取消", "确认取消来源"),
+    300: IBErrorInfo("ticker订阅不存在", "通常是行情取消/重订阅时序"),
     326: IBErrorInfo("clientId已被占用", "更换唯一clientId"),
     354: IBErrorInfo("无实时行情权限", "订阅行情或启用延迟行情"),
     355: IBErrorInfo("订单数量不符合规则", "按合约最小数量/步长调整"),

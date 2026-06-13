@@ -87,12 +87,13 @@ class DummyBroker:
 
 
 class DummyResubscribeUniverse(TradingServiceMarketUniverseMixin):
-    def __init__(self, stale_quotes=None, broker_status=None, ws_status=None):
+    def __init__(self, stale_quotes=None, broker_status=None, ws_status=None, market_session_kind="regular"):
         self.config = DummyConfig(
             {
                 "ibkr_realtime_quote_stale_resubscribe_sec": 600,
                 "ibkr_realtime_quote_resubscribe_cooldown_sec": 300,
                 "ibkr_ws_silent_resubscribe_sec": 120,
+                "ibkr_ws_silent_resubscribe_late_session_sec": 600,
                 "ibkr_market_data_session_conflict_cooldown_sec": 900,
                 "ibkr_ws_resubscribe_batch_size": 8,
                 "ibkr_ws_resubscribe_gap_ms": 0,
@@ -109,9 +110,13 @@ class DummyResubscribeUniverse(TradingServiceMarketUniverseMixin):
             "SPY": 756733,
             "AAPL": 265598,
         }
+        self._market_session_kind = market_session_kind
 
     def _market_ws_symbols(self):
         return ["SPY", "QQQ", "VIX"]
+
+    def _runtime_market_session_snapshot(self, _service_mod, refresh_ibkr_calendar=True):
+        return {"kind": self._market_session_kind}
 
     def _normalize_symbol_list(self, values):
         normalized = []
@@ -749,6 +754,22 @@ class UniverseRealtimeQuoteResubscribeTest(unittest.TestCase):
         self.assertEqual([], repaired)
         self.assertEqual([], universe.ws_client.resubscribed)
 
+    def test_stale_repair_skips_when_market_is_closed(self):
+        universe = DummyResubscribeUniverse(
+            stale_quotes=[{"symbol": "SPY", "quote_age_s": 701.0}],
+            market_session_kind="closed",
+        )
+
+        repaired = universe._repair_stale_realtime_quote_subscriptions(
+            {"SPY": 756733},
+            monitor_symbols=universe._market_ws_symbols(),
+            reason="test",
+        )
+
+        self.assertEqual([], repaired)
+        self.assertEqual([], universe.ws_client.resubscribed)
+        self.assertEqual([], universe.realtime_quote_book.calls)
+
     def test_session_restore_force_resubscribes_active_market_data(self):
         universe = DummyResubscribeUniverse()
 
@@ -760,6 +781,39 @@ class UniverseRealtimeQuoteResubscribeTest(unittest.TestCase):
     def test_silent_websocket_resubscribes_active_market_data_when_no_conflict(self):
         universe = DummyResubscribeUniverse(
             ws_status={"connected": True, "ready": True, "last_message_age_s": 130.0}
+        )
+
+        repaired = universe._repair_silent_market_data_subscriptions(reason="test")
+
+        self.assertEqual(["SPY", "AAPL"], repaired)
+        self.assertEqual([756733, 265598], universe.ws_client.resubscribed)
+
+    def test_silent_websocket_skips_when_market_is_closed(self):
+        universe = DummyResubscribeUniverse(
+            ws_status={"connected": True, "ready": True, "last_message_age_s": 999.0},
+            market_session_kind="closed",
+        )
+
+        repaired = universe._repair_silent_market_data_subscriptions(reason="test")
+
+        self.assertEqual([], repaired)
+        self.assertEqual([], universe.ws_client.resubscribed)
+
+    def test_silent_websocket_uses_late_session_threshold(self):
+        universe = DummyResubscribeUniverse(
+            ws_status={"connected": True, "ready": True, "last_message_age_s": 130.0},
+            market_session_kind="afterhours",
+        )
+
+        repaired = universe._repair_silent_market_data_subscriptions(reason="test")
+
+        self.assertEqual([], repaired)
+        self.assertEqual([], universe.ws_client.resubscribed)
+
+    def test_silent_websocket_resubscribes_after_late_session_threshold(self):
+        universe = DummyResubscribeUniverse(
+            ws_status={"connected": True, "ready": True, "last_message_age_s": 601.0},
+            market_session_kind="afterhours",
         )
 
         repaired = universe._repair_silent_market_data_subscriptions(reason="test")

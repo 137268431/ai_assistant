@@ -975,8 +975,36 @@ class TradingServiceMarketUniverseTargetsMixin:
             ),
         )
 
-    def _ws_silent_resubscribe_threshold_sec(self) -> int:
+    def _market_data_resubscribe_session_kind(self) -> str:
         service_mod = _service_mod()
+        snapshot = {}
+        snapshot_getter = getattr(self, "_runtime_market_session_snapshot", None)
+        if callable(snapshot_getter):
+            try:
+                snapshot = dict(snapshot_getter(service_mod, refresh_ibkr_calendar=False) or {})
+            except Exception:
+                service_mod.logger.debug("Market session snapshot unavailable for resubscribe guard", exc_info=True)
+        if not snapshot:
+            try:
+                snapshot = dict(service_mod.build_market_session_snapshot() or {})
+            except Exception:
+                snapshot = {}
+        return str(snapshot.get("kind") or "").strip().lower() or "unknown"
+
+    def _ws_silent_resubscribe_threshold_sec(self, session_kind: str = "") -> int:
+        service_mod = _service_mod()
+        kind = str(session_kind or "").strip().lower()
+        if kind == "closed":
+            return 0
+        if kind in {"close_transition", "afterhours", "overnight"}:
+            return max(
+                300,
+                self.config.get_int_for_environment(
+                    "ibkr_ws_silent_resubscribe_late_session_sec",
+                    service_mod.DATA_ENVIRONMENT,
+                    600,
+                ),
+            )
         return max(
             60,
             self.config.get_int_for_environment(
@@ -1116,6 +1144,9 @@ class TradingServiceMarketUniverseTargetsMixin:
         monitor_symbols=None,
         reason: str = "poll",
     ) -> list[str]:
+        session_kind = self._market_data_resubscribe_session_kind()
+        if session_kind == "closed":
+            return []
         threshold_sec = self._quote_stale_resubscribe_threshold_sec()
         symbols = self._normalize_symbol_list(monitor_symbols or list((conid_map or {}).keys()))
         stale_quotes = self.realtime_quote_book.get_stale_quotes(symbols=symbols, max_age_s=threshold_sec)
@@ -1176,8 +1207,9 @@ class TradingServiceMarketUniverseTargetsMixin:
             age_s = float(last_message_age_s)
         except (TypeError, ValueError):
             return []
-        threshold_sec = self._ws_silent_resubscribe_threshold_sec()
-        if age_s < threshold_sec:
+        session_kind = self._market_data_resubscribe_session_kind()
+        threshold_sec = self._ws_silent_resubscribe_threshold_sec(session_kind)
+        if threshold_sec <= 0 or age_s < threshold_sec:
             return []
         with self._subscription_lock:
             active_map = dict(self._active_subscription_map)
@@ -1187,18 +1219,22 @@ class TradingServiceMarketUniverseTargetsMixin:
         if bool(conflict.get("active")):
             self._log_market_data_session_conflict_cooldown(reason=f"ws_silent:{reason or 'poll'}", conflict=conflict)
             return []
-        _service_mod().logger.warning(
-            "Market data WebSocket silent; requesting safe resubscribe: age_s=%.1f threshold_s=%s reason=%s",
-            age_s,
-            threshold_sec,
-            reason or "poll",
-        )
-        return self._resubscribe_realtime_conids(
+        resubscribed = self._resubscribe_realtime_conids(
             active_map,
             symbols=list(active_map.keys()),
             reason=f"ws_silent:{reason or 'poll'}",
             force=False,
         )
+        if resubscribed:
+            _service_mod().logger.warning(
+                "Market data WebSocket silent repair ran: age_s=%.1f threshold_s=%s session=%s reason=%s symbols=%s",
+                age_s,
+                threshold_sec,
+                session_kind or "unknown",
+                reason or "poll",
+                ",".join(resubscribed),
+            )
+        return resubscribed
 
     def _apply_live_subscriptions(self, target_date: str, conid_map: dict, reason: str = "", trade_symbols: list[str] | None = None):
         service_mod = _service_mod()

@@ -27,6 +27,7 @@ class _FakeCounter:
 
 
 def test_ib_error_catalog_maps_fractional_sizing_codes() -> None:
+    assert describe_ib_error(300).summary_cn == "ticker订阅不存在"
     assert describe_ib_error(2176).summary_cn == "API客户端不支持小数股规则"
     assert describe_ib_error(10285).summary_cn == "API客户端不支持小数股规则"
     assert describe_ib_error(2104).action_cn == "良性通知"
