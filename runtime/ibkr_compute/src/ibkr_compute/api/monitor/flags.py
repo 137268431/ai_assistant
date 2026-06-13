@@ -471,7 +471,8 @@ def _build_monitor_flags(runtime_status: dict, api_utilization: dict, host_snaps
     session_conflict = detect_market_data_session_conflict(runtime_status)
     data_backfill_present = isinstance(runtime_status.get("data_backfill"), dict) and bool(runtime_status.get("data_backfill"))
     fallback_session_conflict = is_market_data_session_conflict_text(last_trace_error) and not data_backfill_present
-    if bool(session_conflict.get("active")) or fallback_session_conflict:
+    session_conflict_active = bool(session_conflict.get("active")) or fallback_session_conflict
+    if session_conflict_active:
         conflict_detail = str(session_conflict.get("message") or last_trace_error or "").strip()
         _append_monitor_flag(
             flags,
@@ -504,6 +505,7 @@ def _build_monitor_flags(runtime_status: dict, api_utilization: dict, host_snaps
         and active_subscription_count > 0
         and last_message_age_s is not None
         and bool(ws_silence_policy.get("ws_silence_enabled"))
+        and not session_conflict_active
     ):
         critical_seconds = int(ws_silence_policy.get("ws_silence_critical_sec", 0) or 0)
         warn_seconds = int(ws_silence_policy.get("ws_silence_warn_sec", 0) or 0)

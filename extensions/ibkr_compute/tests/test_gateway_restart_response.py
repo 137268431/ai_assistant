@@ -217,6 +217,39 @@ class GatewayRestartResponseTest(unittest.TestCase):
         self.assertEqual(0, service.gateway_manager.restart_calls)
         background.assert_not_called()
 
+    def test_gateway_restart_blocks_10197_competing_live_session(self):
+        service = _FakeService(
+            running=True,
+            status_payload={
+                "gateway": {
+                    "broker": {
+                        "last_error_code": 10197,
+                        "last_error": "No market data during competing live session",
+                        "last_error_at": time.time(),
+                    }
+                }
+            },
+        )
+
+        with mock.patch.object(gateway_views, "_api_app", return_value=SimpleNamespace(_ibkr_restore_attempted=True)):
+            with mock.patch.object(gateway_views, "get_ibkr_service", return_value=service):
+                with mock.patch.object(gateway_views, "_ibkr_service_environment", return_value="live"):
+                    with mock.patch.object(gateway_views, "_background_panic_reset_auth") as background:
+                        with mock.patch.object(
+                            gateway_views,
+                            "_build_gateway_action_payload",
+                            side_effect=self._build_action_payload,
+                        ):
+                            payload, status_code = gateway_views._build_ibkr_gateway_restart_response(
+                                {"reason": "manual_gateway_restart", "source": "runtime_page"}
+                            )
+
+        self.assertEqual(409, status_code)
+        self.assertTrue(payload["restart_blocked"])
+        self.assertEqual("market_data_session_conflict", payload["blocker_code"])
+        self.assertEqual(0, service.gateway_manager.restart_calls)
+        background.assert_not_called()
+
     def test_gateway_restart_force_bypasses_market_data_session_conflict(self):
         service = _FakeService(
             running=True,

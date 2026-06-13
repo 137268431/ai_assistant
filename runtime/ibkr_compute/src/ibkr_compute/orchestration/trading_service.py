@@ -443,6 +443,7 @@ class IBKRTradingService(
         self._quote_prev_close_cache = {}
         self._quote_prev_close_cache_date = ""
         self._quote_resubscribe_at = {}
+        self._last_market_data_conflict_log_at = 0.0
         self._warmup_signature = ()
         self._warmup_state = self._initial_warmup_state()
         self._daily_scan_state = self._load_daily_scan_state(self._market_date())

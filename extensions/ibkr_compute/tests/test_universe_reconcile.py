@@ -65,28 +65,45 @@ class DummyQuoteBook:
 
 
 class DummyWsClient:
-    def __init__(self):
+    def __init__(self, status=None):
         self.resubscribed = []
         self.resubscribe_meta = []
+        self._status = dict(status or {})
 
     def resubscribe(self, conid, **kwargs):
         self.resubscribed.append(int(conid))
         self.resubscribe_meta.append({"conid": int(conid), **dict(kwargs)})
 
+    def status(self):
+        return dict(self._status)
+
+
+class DummyBroker:
+    def __init__(self, status=None):
+        self._status = dict(status or {})
+
+    def status(self):
+        return dict(self._status)
+
 
 class DummyResubscribeUniverse(TradingServiceMarketUniverseMixin):
-    def __init__(self, stale_quotes=None):
+    def __init__(self, stale_quotes=None, broker_status=None, ws_status=None):
         self.config = DummyConfig(
             {
                 "ibkr_realtime_quote_stale_resubscribe_sec": 600,
                 "ibkr_realtime_quote_resubscribe_cooldown_sec": 300,
+                "ibkr_ws_silent_resubscribe_sec": 120,
+                "ibkr_market_data_session_conflict_cooldown_sec": 900,
                 "ibkr_ws_resubscribe_batch_size": 8,
                 "ibkr_ws_resubscribe_gap_ms": 0,
             }
         )
         self.realtime_quote_book = DummyQuoteBook(stale_quotes or [])
-        self.ws_client = DummyWsClient()
+        self.ws_client = DummyWsClient(status=ws_status)
+        self.broker = DummyBroker(status=broker_status) if broker_status is not None else None
+        self.session_keeper = types.SimpleNamespace(is_authenticated=True)
         self._quote_resubscribe_at = {}
+        self._last_market_data_conflict_log_at = 0.0
         self._subscription_lock = threading.Lock()
         self._active_subscription_map = {
             "SPY": 756733,
@@ -714,6 +731,24 @@ class UniverseRealtimeQuoteResubscribeTest(unittest.TestCase):
         self.assertEqual("market_monitor", universe.ws_client.resubscribe_meta[0]["kind"])
         self.assertEqual(["QQQ", "SPY", "VIX"], universe.realtime_quote_book.calls[0]["symbols"])
 
+    def test_stale_repair_skips_resubscribe_during_market_data_session_conflict(self):
+        universe = DummyResubscribeUniverse(
+            stale_quotes=[{"symbol": "SPY", "quote_age_s": 701.0}],
+            broker_status={
+                "last_error_code": 10197,
+                "last_error": "No market data during competing live session",
+            },
+        )
+
+        repaired = universe._repair_stale_realtime_quote_subscriptions(
+            {"SPY": 756733},
+            monitor_symbols=universe._market_ws_symbols(),
+            reason="test",
+        )
+
+        self.assertEqual([], repaired)
+        self.assertEqual([], universe.ws_client.resubscribed)
+
     def test_session_restore_force_resubscribes_active_market_data(self):
         universe = DummyResubscribeUniverse()
 
@@ -721,6 +756,30 @@ class UniverseRealtimeQuoteResubscribeTest(unittest.TestCase):
 
         self.assertEqual(["SPY", "AAPL"], repaired)
         self.assertEqual([756733, 265598], universe.ws_client.resubscribed)
+
+    def test_silent_websocket_resubscribes_active_market_data_when_no_conflict(self):
+        universe = DummyResubscribeUniverse(
+            ws_status={"connected": True, "ready": True, "last_message_age_s": 130.0}
+        )
+
+        repaired = universe._repair_silent_market_data_subscriptions(reason="test")
+
+        self.assertEqual(["SPY", "AAPL"], repaired)
+        self.assertEqual([756733, 265598], universe.ws_client.resubscribed)
+
+    def test_silent_websocket_skips_resubscribe_during_market_data_session_conflict(self):
+        universe = DummyResubscribeUniverse(
+            broker_status={
+                "last_error_code": 10197,
+                "last_error": "No market data during competing live session",
+            },
+            ws_status={"connected": True, "ready": True, "last_message_age_s": 347.7},
+        )
+
+        repaired = universe._repair_silent_market_data_subscriptions(reason="test")
+
+        self.assertEqual([], repaired)
+        self.assertEqual([], universe.ws_client.resubscribed)
 
 
 class DeleteSymbolRuntimeDataTest(unittest.TestCase):

@@ -45,9 +45,9 @@ def _runtime_status_for_restart_guard(service) -> dict:
 
 def _market_data_session_conflict_message() -> str:
     return (
-        "检测到 IBKR 行情/历史数据会话被另一个 IP 占用。"
-        "请先退出其他电脑/服务器上的 TWS、IB Gateway 或 IBKR Desktop，"
-        "再重新触发 Gateway 重启；如确认要强制抢回会话，请使用 force_restart=true。"
+        "检测到 IBKR 行情/历史数据会话被其他 TWS、IB Gateway、IBKR Desktop 或 Client Portal 占用。"
+        "请先退出其他行情会话，再重启 Runtime 或触发行情重订阅；"
+        "不要优先重启 Gateway。若确认要强制抢回会话，请使用 force_restart=true。"
     )
 
 

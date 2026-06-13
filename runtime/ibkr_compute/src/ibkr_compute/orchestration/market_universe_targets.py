@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import requests
 
+from ibkr_compute.api.support.market_data_session import detect_market_data_session_conflict
 from ibkr_compute.market.pocketbase_sqlite import normalize_exchange_value
 from ibkr_compute.universe.target_execution import (
     signal_status_is_open,
@@ -974,6 +975,52 @@ class TradingServiceMarketUniverseTargetsMixin:
             ),
         )
 
+    def _ws_silent_resubscribe_threshold_sec(self) -> int:
+        service_mod = _service_mod()
+        return max(
+            60,
+            self.config.get_int_for_environment(
+                "ibkr_ws_silent_resubscribe_sec",
+                service_mod.DATA_ENVIRONMENT,
+                120,
+            ),
+        )
+
+    def _market_data_session_conflict_cooldown_sec(self) -> int:
+        service_mod = _service_mod()
+        return max(
+            60,
+            self.config.get_int_for_environment(
+                "ibkr_market_data_session_conflict_cooldown_sec",
+                service_mod.DATA_ENVIRONMENT,
+                900,
+            ),
+        )
+
+    def _market_data_session_conflict_snapshot(self) -> dict:
+        broker_status = {}
+        status_getter = getattr(getattr(self, "broker", None), "status", None)
+        if callable(status_getter):
+            try:
+                broker_status = dict(status_getter() or {})
+            except Exception:
+                _service_mod().logger.debug("Broker status unavailable for market data conflict check", exc_info=True)
+        return detect_market_data_session_conflict({"gateway": {"broker": broker_status}})
+
+    def _log_market_data_session_conflict_cooldown(self, *, reason: str, conflict: dict) -> None:
+        now = time.time()
+        cooldown_sec = self._market_data_session_conflict_cooldown_sec()
+        last_logged = float(getattr(self, "_last_market_data_conflict_log_at", 0.0) or 0.0)
+        if last_logged > 0 and (now - last_logged) < cooldown_sec:
+            return
+        self._last_market_data_conflict_log_at = now
+        _service_mod().logger.error(
+            "Market data session conflict active; skip automatic resubscribe: reason=%s source=%s message=%s",
+            reason or "unknown",
+            str((conflict or {}).get("source") or ""),
+            str((conflict or {}).get("message") or ""),
+        )
+
     def _resubscribe_realtime_conids(
         self,
         conid_map: dict,
@@ -1075,6 +1122,13 @@ class TradingServiceMarketUniverseTargetsMixin:
         stale_symbols = self._normalize_symbol_list([item.get("symbol") for item in stale_quotes])
         if not stale_symbols:
             return []
+        conflict = self._market_data_session_conflict_snapshot()
+        if bool(conflict.get("active")):
+            self._log_market_data_session_conflict_cooldown(
+                reason=f"stale_quote:{reason or 'poll'}",
+                conflict=conflict,
+            )
+            return []
         now = time.time()
         cooldown_sec = self._quote_resubscribe_cooldown_sec()
         resubscribe_at = getattr(self, "_quote_resubscribe_at", {})
@@ -1100,6 +1154,49 @@ class TradingServiceMarketUniverseTargetsMixin:
             conid_map,
             symbols=eligible_symbols,
             reason=f"stale_quote:{reason or 'poll'}",
+            force=False,
+        )
+
+    def _repair_silent_market_data_subscriptions(self, *, reason: str = "poll") -> list[str]:
+        session_keeper = getattr(self, "session_keeper", None)
+        if session_keeper is not None and not bool(getattr(session_keeper, "is_authenticated", False)):
+            return []
+        status_getter = getattr(getattr(self, "ws_client", None), "status", None)
+        if not callable(status_getter):
+            return []
+        try:
+            websocket_status = dict(status_getter() or {})
+        except Exception:
+            _service_mod().logger.debug("WebSocket status unavailable for silent market data repair", exc_info=True)
+            return []
+        if not bool(websocket_status.get("connected") or websocket_status.get("ready")):
+            return []
+        last_message_age_s = websocket_status.get("last_message_age_s")
+        try:
+            age_s = float(last_message_age_s)
+        except (TypeError, ValueError):
+            return []
+        threshold_sec = self._ws_silent_resubscribe_threshold_sec()
+        if age_s < threshold_sec:
+            return []
+        with self._subscription_lock:
+            active_map = dict(self._active_subscription_map)
+        if not active_map:
+            return []
+        conflict = self._market_data_session_conflict_snapshot()
+        if bool(conflict.get("active")):
+            self._log_market_data_session_conflict_cooldown(reason=f"ws_silent:{reason or 'poll'}", conflict=conflict)
+            return []
+        _service_mod().logger.warning(
+            "Market data WebSocket silent; requesting safe resubscribe: age_s=%.1f threshold_s=%s reason=%s",
+            age_s,
+            threshold_sec,
+            reason or "poll",
+        )
+        return self._resubscribe_realtime_conids(
+            active_map,
+            symbols=list(active_map.keys()),
+            reason=f"ws_silent:{reason or 'poll'}",
             force=False,
         )
 
@@ -1250,6 +1347,7 @@ class TradingServiceMarketUniverseTargetsMixin:
                 if self.session_keeper.is_authenticated:
                     self._run_daily_scan_if_due(reason="poll")
                     self._refresh_target_subscriptions(reason="poll")
+                    self._repair_silent_market_data_subscriptions(reason="poll")
                 else:
                     service_mod.logger.info("Skip target refresh while session is unauthenticated")
             except Exception as exc:
