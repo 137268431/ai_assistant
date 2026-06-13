@@ -1,12 +1,10 @@
 //@version=6
-strategy(title="Signal Strategy Core[Glory]", overlay=true, pyramiding=0, initial_capital=100000, default_qty_type=strategy.fixed, default_qty_value=1, process_orders_on_close=true, calc_on_every_tick=false)
+indicator(title="Signal Strategy Display[Glory]", overlay=true, max_labels_count=500)
 
 // TV-primary strategy v1.
 // Derived from Signal Alert Core[Glory]: EMA trend/touch, SD mean-reversion windows,
 // DTP direction, fractal pivots, cRSI/OBV divergence, ATR risk sizing.
 
-string STRATEGY_VERSION = "SSC_v1_20260613_alert_slim"
-string SCRIPT_TAG = "Signal_Strategy_Core[Glory]"
 string TP_SL_MODEL = "structure_first_atr_buffer_v1"
 string ENTRY_WINDOW_MODEL = "continuous_layered_v1"
 int ENTRY_PRIMARY_START_MIN = 9 * 60 + 45
@@ -118,7 +116,6 @@ entrySession = input.session("0945-1515", "Continuous entry window", group="07 T
 primaryEntrySession = input.session("0945-1130", "Primary entry layer", group="07 TV Primary Events")
 qualityEntrySession = input.session("1130-1400", "Quality entry layer", group="07 TV Primary Events")
 closingQualityEntrySession = input.session("1400-1515", "Closing quality entry layer", group="07 TV Primary Events")
-enableAlerts = input.bool(true, "Emit TV-primary alert() payloads", group="07 TV Primary Events")
 preAlertThreshold = input.int(65, "Pre-alert activity score", minval=1, maxval=99, group="07 TV Primary Events")
 enableEodForceClose = input.bool(true, "Mirror system EOD force close", group="07 TV Primary Events")
 eodCloseHour = input.int(15, "EOD force close hour ET", minval=0, maxval=23, group="07 TV Primary Events")
@@ -138,8 +135,31 @@ mtfMode = input.string("shadow_soft", "MTF mode", options=["shadow_soft", "displ
 mtfConfirmTf1 = input.timeframe("5", "MTF confirm TF 1", group="07 TV Primary Events")
 mtfConfirmTf2 = input.timeframe("15", "MTF confirm TF 2", group="07 TV Primary Events")
 mtfConfirmTf3 = input.timeframe("60", "MTF confirm TF 3", group="07 TV Primary Events")
-string MTF_CONFIRM_TFS = mtfConfirmTf1 + "," + mtfConfirmTf2 + "," + mtfConfirmTf3
-string TIMEFRAME_STACK = enableMtf ? "entry=" + timeframe.period + ";confirm=" + MTF_CONFIRM_TFS + ";mode=" + mtfMode : "entry=" + timeframe.period + ";confirm=none;mode=off"
+
+displayPreset = input.string("核心交易流程", "Display preset", options=["核心交易流程", "指标辅助", "调试全量"], group="08 Display")
+showFlowLabels = input.bool(true, "Show activation/prep/entry labels", group="08 Display")
+showSignalDiagnostics = input.bool(true, "Show raw/filtered signal diagnostics", group="08 Display")
+labelDetailMode = input.string("compact_tooltip", "Flow label detail mode", options=["compact_tooltip", "full_labels", "off"], group="08 Display")
+flowLabelTransparency = input.int(30, "Flow label background transparency", minval=0, maxval=100, group="08 Display")
+showStatusPanel = input.bool(true, "Show status panel", group="08 Display")
+showBands = input.bool(true, "Show SD bands", group="08 Display")
+showSdHelperLines = input.bool(false, "Show SD regression/filter lines", group="08 Display")
+showDtpLine = input.bool(true, "Show DTP trend line", group="08 Display")
+showEma = input.bool(true, "Show EMA fast/slow", group="08 Display")
+showDebugComponents = input.bool(false, "Show SD/F/D component markers", group="08 Display")
+showFractalMarkers = input.bool(true, "Show fractal markers", group="08 Display")
+showEmaCrossMarkers = input.bool(true, "Show EMA20/50 cross markers", group="08 Display")
+
+bool displayIndicatorMode = displayPreset == "指标辅助"
+bool displayDebugMode = displayPreset == "调试全量"
+bool flowLabelsVisible = showFlowLabels and labelDetailMode != "off"
+bool compactFlowLabelMode = labelDetailMode == "compact_tooltip"
+bool showEmaFastSlowLines = showEma or displayIndicatorMode or displayDebugMode
+bool showEmaContextLines = displayIndicatorMode or displayDebugMode
+bool showBandLines = showBands or displayIndicatorMode or displayDebugMode
+bool showSdHelperBandLines = showSdHelperLines or displayIndicatorMode or displayDebugMode
+bool showDtpTrendLine = showDtpLine or displayIndicatorMode or displayDebugMode
+bool showComponentMarkers = showDebugComponents or displayDebugMode
 
 bool confirmed = barstate.isconfirmed
 int entryCloseEtMinutes = hour(time_close, "America/New_York") * 60 + minute(time_close, "America/New_York")
@@ -163,106 +183,6 @@ bool isNewTradingDay = not na(dailyTime[1]) and dailyTime != dailyTime[1]
 // -----------------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------------
-fmtNum(float value) =>
-    na(value) ? "null" : str.tostring(value, "#.####")
-
-boolText(bool value) =>
-    value ? "true" : "false"
-
-jsonStr(string key, string value) =>
-    ',"' + key + '":"' + value + '"'
-
-jsonNum(string key, float value) =>
-    ',"' + key + '":' + fmtNum(value)
-
-jsonInt(string key, int value) =>
-    ',"' + key + '":' + str.tostring(value, "#")
-
-jsonIntNullable(string key, int value) =>
-    ',"' + key + '":' + (na(value) ? "null" : str.tostring(value, "#"))
-
-jsonBool(string key, bool value) =>
-    ',"' + key + '":' + boolText(value)
-
-jsonRequestedSides(string requestedSides) =>
-    ',"requested_sides":' + (requestedSides == "stop_loss" ? '["stop_loss"]' : requestedSides == "take_profit" ? '["take_profit"]' : requestedSides == "stop_loss,take_profit" ? '["stop_loss","take_profit"]' : '[]')
-
-symbolKey() =>
-    str.replace_all(syminfo.tickerid, ":", "_")
-
-barTimeKey() =>
-    str.format_time(time, "yyyyMMdd_HHmm", "America/New_York")
-
-scalePlanId(string direction, string setup) =>
-    symbolKey() + "_" + direction + "_" + barTimeKey() + "_" + timeframe.period + "_" + setup
-
-tradeGroupId(string direction, string setup) =>
-    string planIdValue = scalePlanId(direction, setup)
-    scalePlanEnabled ? planIdValue + "_leg1" : planIdValue
-
-entryOrderSignal(string tradeGroupIdValue) =>
-    "entry_" + tradeGroupIdValue
-
-tpOrderSignal(string tradeGroupIdValue) =>
-    "tp_" + tradeGroupIdValue
-
-slOrderSignal(string tradeGroupIdValue) =>
-    "sl_" + tradeGroupIdValue
-
-eventId(string eventType, string suffix) =>
-    symbolKey() + "_" + eventType + "_" + barTimeKey() + "_" + str.tostring(bar_index, "#") + "_" + suffix
-
-positionId(string direction) =>
-    symbolKey() + "_" + direction + "_" + barTimeKey() + "_" + str.tostring(bar_index, "#")
-
-basePayload(string eventType, string eventIdValue, string positionIdValue) =>
-    '{"source":"tv"' +
-     jsonStr("event_type", eventType) +
-     jsonStr("event_id", eventIdValue) +
-     jsonStr("position_id", positionIdValue) +
-     jsonStr("strategy_version", STRATEGY_VERSION) +
-     jsonStr("script_tag", SCRIPT_TAG) +
-     jsonStr("timeframe_stack", TIMEFRAME_STACK) +
-     jsonStr("interval", timeframe.period) +
-     jsonStr("bar_time_key", barTimeKey()) +
-     ',"bar_time_ms":' + str.tostring(time, "#") +
-     jsonIntNullable("bar_open_ms", time) +
-     jsonIntNullable("bar_close_ms", time_close) +
-     jsonIntNullable("pine_eval_ms", timenow) +
-     jsonStr("symbol", syminfo.ticker) +
-     jsonStr("tickerid", syminfo.tickerid) +
-     jsonStr("exchange", syminfo.prefix) +
-     jsonStr("currency", syminfo.currency) +
-     jsonStr("session", tradingSession)
-
-scalePlanPayload(string planIdValue, string tradeGroupIdValue, int legIndex, string legTrigger) =>
-    string payload = jsonBool("scale_plan_enabled", scalePlanEnabled)
-    if scalePlanEnabled
-        string resolvedPlanId = planIdValue == "" ? str.replace_all(tradeGroupIdValue, "_leg" + str.tostring(legIndex, "#"), "") : planIdValue
-        payload := payload +
-         jsonStr("scale_plan_version", "independent_two_leg_v1") +
-         jsonStr("plan_type", "independent_two_leg") +
-         jsonStr("scale_plan_type", "independent_two_leg") +
-         jsonStr("plan_id", resolvedPlanId) +
-         jsonInt("leg_index", legIndex) +
-         jsonInt("scale_leg_index", legIndex) +
-         jsonInt("leg_count", 2) +
-         jsonStr("leg_role", legIndex == 1 ? "primary" : "secondary") +
-         jsonStr("leg_trigger", legTrigger == "" ? "initial_structure" : legTrigger) +
-         jsonStr("leg_trade_group_id", tradeGroupIdValue) +
-         jsonNum("max_leg_notional", positionAmount) +
-         jsonNum("max_leg_risk", effectiveMaxLegRisk) +
-         jsonNum("max_plan_risk", effectiveMaxPlanRisk) +
-         jsonNum("plan_risk_budget_used", effectiveMaxLegRisk * 2.0) +
-         jsonBool("plan_risk_budget_ok", effectiveMaxLegRisk * 2.0 <= effectiveMaxPlanRisk) +
-         jsonBool("independent_legs", true) +
-         jsonBool("cross_leg_protection_sync", false) +
-         jsonBool("aggregate_position_management", false) +
-         jsonStr("leg_order_mode", "independent_bracket") +
-         jsonStr("scale_plan_risk_model", "fixed_risk_per_independent_leg") +
-         jsonBool("leg2_requires_leg1_protected", true)
-    payload
-
 appendSource(string existing, string nextValue) =>
     existing == "" ? nextValue : existing + "+" + nextValue
 
@@ -279,6 +199,42 @@ calcSlope(float source, int len) =>
 priceChanged(float oldValue, float newValue) =>
     na(oldValue) or na(newValue) ? true : math.abs(oldValue - newValue) >= syminfo.mintick
 
+setupDisplayName(string setup) =>
+    setup == "trend_sdUpper" ? "SD上轨顺势多" : setup == "trend_sdLowerBreakout" ? "SD下轨反转顺势多" : setup == "mr_sdLower" ? "SD下轨回归多" : setup == "trend_sdUpperBreakdown" ? "SD上轨反转顺势空" : setup == "trend_emaDeathContinuation" ? "EMA死叉顺势空" : setup == "mr_sdUpper" ? "SD上轨回归空" : setup == "trend_sdLower" ? "SD下轨顺势空" : setup
+
+directionDisplayName(string direction) =>
+    direction == "short" ? "做空" : "做多"
+
+closeDirectionTag(int direction) =>
+    direction == -1 ? "平空" : direction == 1 ? "平多" : "平仓"
+
+exitReasonDisplayName(string reason) =>
+    reason == "take_profit" ? "TP止盈" : reason == "runner_stop" ? "跟踪止盈" : reason == "stop_loss" ? "SL止损" : reason == "mr_time_stop" ? "MR超时退出" : reason == "mr_structure_invalidated" ? "MR结构失效" : reason == "adverse_early_stop" ? "早期反向止损" : reason == "opposite_structure_exit" ? "反向结构退出" : reason == "entry_ttl_expired" ? "挂单过期" : reason == "force_flat_eod" or reason == "eod" ? "EOD强平" : reason == "strategy_closed" ? "策略退出" : reason
+
+cancelReasonDisplayName(string reason) =>
+    reason == "entry_ttl_expired" ? "挂单过期" : reason == "entry_window_expired" ? "入场窗口结束" : reason == "setup_window_expired" ? "结构窗口失效" : reason == "entry_anchor_invalidated" ? "结构价失效" : reason == "trend_invalidated" ? "趋势硬裂化" : reason == "soft_trend_recheck_failed" ? "软失效复查失败" : reason == "opposite_signal_or_conflict" ? "反向/冲突信号" : reason == "pending_eod_cancel" ? "EOD撤销挂单" : reason
+
+fmtSignedMoney(float value) =>
+    na(value) ? "--" : (value >= 0.0 ? "+$" : "-$") + str.tostring(math.abs(value), "#.##")
+
+fmtMoney(float value) =>
+    na(value) ? "--" : "$" + str.tostring(value, "#.##")
+
+fmtSignedPct(float value) =>
+    na(value) ? "--" : (value >= 0.0 ? "+" : "-") + str.tostring(math.abs(value), "#.##") + "%"
+
+exitPnlLabelText(string reason, string timeText, float price, float pnl, float pnlPct) =>
+    exitReasonDisplayName(reason) + "\n" + syminfo.ticker + " · " + timeText + " ET @ " + str.tostring(price, "#.##") + "\nPnL " + fmtSignedMoney(pnl) + " (" + fmtSignedPct(pnlPct) + ")"
+
+exitPnlLabelColor(float pnl) =>
+    na(pnl) ? color.new(color.gray, flowLabelTransparency) : pnl > 0.0 ? color.new(color.green, flowLabelTransparency) : pnl < 0.0 ? color.new(color.red, flowLabelTransparency) : color.new(color.gray, flowLabelTransparency)
+
+entryComment(string direction, string setup) =>
+    direction == "short" ? "SELL 空 · " + setup : "BUY 多 · " + setup
+
+setupUsesUpperWindow(string setup) =>
+    setup == "trend_sdUpper" or setup == "mr_sdUpper" or setup == "trend_sdUpperBreakdown"
+
 setupUsesBullSide(string setup) =>
     setup == "trend_sdUpper" or setup == "mr_sdLower" or setup == "trend_sdLowerBreakout"
 
@@ -290,6 +246,9 @@ setupIsMr(string setup) =>
 
 setupIsTrend(string setup) =>
     setup == "trend_sdUpper" or setup == "trend_sdLower" or setup == "trend_sdUpperBreakdown" or setup == "trend_sdLowerBreakout" or setup == "trend_emaDeathContinuation"
+
+setupIsPostSdReversal(string setup) =>
+    setup == "trend_sdUpperBreakdown" or setup == "trend_sdLowerBreakout"
 
 calcTargetAtR(float entryPrice, float stopPrice, int direction, float rMultiple) =>
     float risk = direction == 1 ? entryPrice - stopPrice : stopPrice - entryPrice
@@ -389,14 +348,94 @@ nearestResistanceAbove(float referencePrice, float v1, float v2, float v3, float
 componentFresh(int componentBar) =>
     not na(componentBar) and bar_index - componentBar <= mrComponentFreshBars
 
+setupNeedsFreshMrComponents(string setup) =>
+    setup == "mr_sdUpper" or setup == "mr_sdLower"
+
 exitTouchesTarget(int direction, float exitPrice, float targetPrice) =>
     not na(targetPrice) and (math.abs(exitPrice - targetPrice) <= syminfo.mintick * 2.0 or (direction == 1 ? exitPrice >= targetPrice : exitPrice <= targetPrice))
 
 exitTouchesStop(int direction, float exitPrice, float stopPrice) =>
     not na(stopPrice) and (math.abs(exitPrice - stopPrice) <= syminfo.mintick * 2.0 or (direction == 1 ? exitPrice <= stopPrice : exitPrice >= stopPrice))
 
+setupUsesEmaTouch(string setup) =>
+    setup == "trend_sdUpper" or setup == "trend_sdLower"
+
+componentStateText(bool ready, string label) =>
+    (ready ? "有" : "缺") + label
+
 directionComponentCount(bool fractalReady, bool divReady, bool emaCrossReady) =>
     (fractalReady ? 1 : 0) + (divReady ? 1 : 0) + (emaCrossReady ? 1 : 0)
+
+directionComponentsReady(bool fractalReady, bool divReady, bool emaCrossReady) =>
+    directionComponentCount(fractalReady, divReady, emaCrossReady) >= 2
+
+componentLineText(string setup, bool windowReady, bool emaReady, bool fractalReady, bool divReady, bool emaCrossReady) =>
+    string windowLabel = setup == "trend_sdUpper" ? "强多背景" : setup == "trend_sdLower" ? "强空背景" : setup == "trend_sdUpperBreakdown" ? "上轨记忆" : setup == "trend_sdLowerBreakout" ? "下轨记忆" : setup == "trend_emaDeathContinuation" ? "弱势结构" : setupUsesUpperWindow(setup) ? "上轨窗" : "下轨窗"
+    string emaLabel = setup == "trend_sdUpper" ? "多EMA/贴轨" : setup == "trend_sdLower" ? "空EMA/回抽" : ""
+    string fractalLabel = setupUsesBullSide(setup) ? "多分形" : "空分形"
+    string divLabel = setupUsesBullSide(setup) ? "多背离" : "空背离"
+    string emaCrossLabel = setupUsesBullSide(setup) ? "金叉" : "死叉"
+    string parts = componentStateText(windowReady, windowLabel)
+    parts := setupUsesEmaTouch(setup) ? parts + " " + componentStateText(emaReady, emaLabel) : parts
+    parts + " 方向" + str.tostring(directionComponentCount(fractalReady, divReady, emaCrossReady), "#") + "/3(" + componentStateText(fractalReady, fractalLabel) + " " + componentStateText(divReady, divLabel) + " " + componentStateText(emaCrossReady, emaCrossLabel) + ")"
+
+componentReadyCount(string setup, bool windowReady, bool emaReady, bool fractalReady, bool divReady, bool emaCrossReady) =>
+    int count = windowReady ? 1 : 0
+    count := count + (setupUsesEmaTouch(setup) and emaReady ? 1 : 0)
+    count := count + (directionComponentsReady(fractalReady, divReady, emaCrossReady) ? 1 : 0)
+    count
+
+componentTotalCount(string setup) =>
+    setupUsesEmaTouch(setup) ? 3 : 2
+
+componentSummaryText(string setup, bool windowReady, bool emaReady, bool fractalReady, bool divReady, bool emaCrossReady) =>
+    str.tostring(componentReadyCount(setup, windowReady, emaReady, fractalReady, divReady, emaCrossReady), "#") + "/" + str.tostring(componentTotalCount(setup), "#") + " · " + componentLineText(setup, windowReady, emaReady, fractalReady, divReady, emaCrossReady)
+
+componentSummaryForSetup(string setup, bool upperWindowReady, bool lowerWindowReady, bool upperBullTouchReady, bool lowerBearTouchReady, bool upperBullFractalReady, bool lowerBullFractalReady, bool upperBearFractalReady, bool lowerBearFractalReady, bool trendBearFractalReady, bool upperBullEmaCrossReady, bool lowerBullEmaCrossReady, bool upperBearEmaCrossReady, bool lowerBearEmaCrossReady, bool trendBearEmaCrossReady, bool bullDivReady, bool bearDivReady) =>
+    bool windowReady = setupUsesUpperWindow(setup) ? upperWindowReady : lowerWindowReady
+    bool emaReady = setup == "trend_sdUpper" ? upperBullTouchReady : setup == "trend_sdLower" ? lowerBearTouchReady : true
+    bool fractalReady = setup == "trend_sdUpper" ? upperBullFractalReady : setup == "mr_sdLower" or setup == "trend_sdLowerBreakout" ? lowerBullFractalReady : setup == "trend_emaDeathContinuation" ? trendBearFractalReady : setup == "mr_sdUpper" or setup == "trend_sdUpperBreakdown" ? upperBearFractalReady : lowerBearFractalReady
+    bool divReady = setupUsesBullSide(setup) ? bullDivReady : bearDivReady
+    bool emaCrossReady = setup == "trend_sdUpper" ? upperBullEmaCrossReady : setup == "mr_sdLower" or setup == "trend_sdLowerBreakout" ? lowerBullEmaCrossReady : setup == "trend_emaDeathContinuation" ? trendBearEmaCrossReady : setup == "mr_sdUpper" or setup == "trend_sdUpperBreakdown" ? upperBearEmaCrossReady : lowerBearEmaCrossReady
+    componentSummaryText(setup, windowReady, emaReady, fractalReady, divReady, emaCrossReady)
+
+componentProgressForSetup(string setup, bool upperWindowReady, bool lowerWindowReady, bool upperBullTouchReady, bool lowerBearTouchReady, bool upperBullFractalReady, bool lowerBullFractalReady, bool upperBearFractalReady, bool lowerBearFractalReady, bool trendBearFractalReady, bool upperBullEmaCrossReady, bool lowerBullEmaCrossReady, bool upperBearEmaCrossReady, bool lowerBearEmaCrossReady, bool trendBearEmaCrossReady, bool bullDivReady, bool bearDivReady) =>
+    bool windowReady = setupUsesUpperWindow(setup) ? upperWindowReady : lowerWindowReady
+    bool emaReady = setup == "trend_sdUpper" ? upperBullTouchReady : setup == "trend_sdLower" ? lowerBearTouchReady : true
+    bool fractalReady = setup == "trend_sdUpper" ? upperBullFractalReady : setup == "mr_sdLower" or setup == "trend_sdLowerBreakout" ? lowerBullFractalReady : setup == "trend_emaDeathContinuation" ? trendBearFractalReady : setup == "mr_sdUpper" or setup == "trend_sdUpperBreakdown" ? upperBearFractalReady : lowerBearFractalReady
+    bool divReady = setupUsesBullSide(setup) ? bullDivReady : bearDivReady
+    bool emaCrossReady = setup == "trend_sdUpper" ? upperBullEmaCrossReady : setup == "mr_sdLower" or setup == "trend_sdLowerBreakout" ? lowerBullEmaCrossReady : setup == "trend_emaDeathContinuation" ? trendBearEmaCrossReady : setup == "mr_sdUpper" or setup == "trend_sdUpperBreakdown" ? upperBearEmaCrossReady : lowerBearEmaCrossReady
+    str.tostring(componentReadyCount(setup, windowReady, emaReady, fractalReady, divReady, emaCrossReady), "#") + "/" + str.tostring(componentTotalCount(setup), "#")
+
+compactMissingText(string value) =>
+    string missingText = value == "" or value == "none" ? "齐" : value
+    missingText := str.replace_all(missingText, "upper_window", "上轨窗")
+    missingText := str.replace_all(missingText, "lower_window", "下轨窗")
+    missingText := str.replace_all(missingText, "weak_structure", "弱势结构")
+    missingText := str.replace_all(missingText, "upper_sd_memory", "上轨记忆")
+    missingText := str.replace_all(missingText, "lower_sd_memory", "下轨记忆")
+    missingText := str.replace_all(missingText, "trend_context", "趋势背景")
+    missingText := str.replace_all(missingText, "key_level_wait", "关键位突破")
+    missingText := str.replace_all(missingText, "ema_bull_touch", "多EMA/贴轨")
+    missingText := str.replace_all(missingText, "ema_bear_touch", "空EMA/回抽")
+    missingText := str.replace_all(missingText, "bull_fractal", "多分形")
+    missingText := str.replace_all(missingText, "bear_fractal", "空分形")
+    missingText := str.replace_all(missingText, "bull_divergence", "多背离")
+    missingText := str.replace_all(missingText, "bear_divergence", "空背离")
+    missingText := str.replace_all(missingText, "bull_ema_cross", "金叉")
+    missingText := str.replace_all(missingText, "bear_ema_cross", "死叉")
+    missingText := str.replace_all(missingText, "+", "/")
+    missingText
+
+waitComponentText(string value) =>
+    string missingText = compactMissingText(value)
+    missingText == "齐" ? "组件齐" : "等 " + missingText
+
+filterDisplayName(string reason) =>
+    reason == "entry_time_blocked" ? "非连续入场窗口" : reason == "entry_anchor_unavailable" ? "无有效结构挂单价" : reason == "post_reversal_anchor_unqualified" ? "反转顺势锚点不足" : reason == "mr_dtp_phase_blocked" ? "MR逆DTP未转弱" : reason == "mr_anchor_unqualified" ? "MR锚点依据不足" : reason == "mr_reversal_confirm_missing" ? "MR缺少反转确认" : reason == "mr_target_space_too_small" ? "MR均值空间不足" : reason == "structure_tp_sl_unavailable" ? "结构止盈止损不足" : reason == "mr_ema_cross_missing" ? "MR缺少EMA反转" : reason == "mr_component_stale" ? "MR组件过期" : reason == "candidate_filtered" ? "候选未执行" : reason == "dtp_bearish_early" ? "DTP偏空初期" : reason == "dtp_bullish_early" ? "DTP偏多初期" : reason == "dtp_bearish_early_or_confirmed" ? "DTP偏空" : reason == "dtp_bullish_early_or_confirmed" ? "DTP偏多" : reason == "ema_weak" ? "EMA弱" : reason == "low_volatility" ? "低波动" : reason == "profit_space_too_small" ? "获利空间不足" : reason == "mtf_5m_15m_opposite" ? "MTF反向" : reason == "long_short_conflict" ? "多空冲突" : reason == "" ? "过滤" : reason
+
+filterActionText(string reason, string direction) =>
+    reason == "entry_time_blocked" ? "不在09:45-15:15连续入场窗口，新仓等待下一交易日/下一窗口" : reason == "entry_anchor_unavailable" ? "结构价离现价太远/无依据，放弃追价" : reason == "post_reversal_anchor_unqualified" ? "死叉/金叉后只接受EMA/前高低/日内结构锚点" : reason == "mr_dtp_phase_blocked" ? "MR逆DTP强趋势，等DTP转弱/中性再做回归" : reason == "mr_anchor_unqualified" ? "MR只接受SD外轨/前高低/EMA结构锚点" : reason == "mr_reversal_confirm_missing" ? "逆趋势转弱MR需要EMA反转交叉 + 分形/背离" : reason == "mr_target_space_too_small" ? "均值目标不可用或获利空间不足" : reason == "structure_tp_sl_unavailable" ? "没有真实结构TP/SL，不用ATR硬凑目标" : reason == "mr_ema_cross_missing" ? "MR缺少EMA20/50反转确认，等金叉/死叉" : reason == "mr_component_stale" ? "MR组件过期，等新分形/背离/交叉" : reason == "candidate_filtered" ? "候选未进入下单分支，检查窗口/方向/数量条件" : reason == "dtp_bearish_early" ? "DTP偏空初期，等过初期" : reason == "dtp_bullish_early" ? "DTP偏多初期，等过初期" : reason == "dtp_bearish_early_or_confirmed" ? "DTP偏空，等转弱/中性/多" : reason == "dtp_bullish_early_or_confirmed" ? "DTP偏多，等转弱/中性/空" : reason == "ema_weak" ? "EMA偏弱，等快慢线走强" : reason == "low_volatility" ? "ATR%低于入场阈值，等波动恢复" : reason == "profit_space_too_small" ? "等更大空间" : reason == "mtf_5m_15m_opposite" ? "5m+15m 同时反向，等MTF转中性/同向" : reason == "long_short_conflict" ? "多空冲突，等单边明确" : reason == "" ? "过滤" + directionDisplayName(direction) + "，等条件恢复" : filterDisplayName(reason)
 
 dtpPhaseDisplayName(string phase) =>
     phase == "early" ? "初期" : phase == "confirmed" ? "确认" : phase == "mature" ? "成熟" : phase == "weakening" ? "转弱" : "中性"
@@ -406,6 +445,9 @@ dtpStateText(int direction, string phase) =>
 
 dtpMrBlocksPhase(string mode, string phase) =>
     mode == "关闭：不挡MR" ? false : mode == "严格：只放转弱" ? phase != "weakening" : phase == "early"
+
+dtpBlockReasonText(string direction, string mode) =>
+    direction == "long" ? (mode == "严格：只放转弱" ? "dtp_bearish_early_or_confirmed" : "dtp_bearish_early") : (mode == "严格：只放转弱" ? "dtp_bullish_early_or_confirmed" : "dtp_bullish_early")
 
 mrDtpAdverse(string direction, int dtpDirection) =>
     direction == "long" ? dtpDirection == -1 : dtpDirection == 1
@@ -422,8 +464,13 @@ mrRegimeText(string direction, int dtpDirection, string phase, string mode, bool
     bool rangeLike = dtpDirection == 0 or sdSlopeAtrValue <= mrRangeMaxSdSlopeAtr
     blocked ? "countertrend_blocked" : adverse and phase == "weakening" ? "trend_weakening" : adverse ? "countertrend_allowed" : rangeLike ? "range" : mrDtpSameDirection(direction, dtpDirection) ? "same_direction_pullback" : "range"
 
-dirName(int direction) =>
-    direction == 1 ? "bullish" : direction == -1 ? "bearish" : "neutral"
+mrRegimeDisplayName(string regime) =>
+    regime == "range" ? "震荡" : regime == "trend_weakening" ? "趋势转弱" : regime == "same_direction_pullback" ? "顺势回撤" : regime == "countertrend_allowed" ? "逆势放行" : regime == "countertrend_blocked" ? "强趋势过滤" : "none"
+
+dtpEntryFilterText(string direction, int dtpDirection, string phase, string mode, bool enabled) =>
+    string stateText = dtpStateText(dtpDirection, phase)
+    bool adverse = direction == "long" ? dtpDirection == -1 : dtpDirection == 1
+    not enabled or mode == "关闭：不挡MR" ? stateText + " · DTP不拦" : adverse and mrDtpBlocked(direction, dtpDirection, phase, mode, enabled) ? stateText + " · MR等待转弱" : adverse and phase == "weakening" ? stateText + " · 转弱放行" : stateText
 
 mtfEmaDirValue() =>
     float fast = ta.ema(close, 20)
@@ -450,14 +497,32 @@ mtfStatePoints(string state, float weight) =>
 mtfScoreForStates(string state1, string state2, string state3) =>
     enableMtf ? mtfStatePoints(state1, 45.0) + mtfStatePoints(state2, 35.0) + mtfStatePoints(state3, 20.0) : 0.0
 
+mtfDisplayMark(string state) =>
+    state == "pass" ? "✓" : state == "fail" ? "×" : "!"
+
 mtfStatusForStates(string state1, string state2, string state3) =>
     enableMtf and mtfMode == "shadow_soft" and state1 == "fail" and state2 == "fail" ? "block" : enableMtf ? (state1 == "fail" or state2 == "fail" or state3 == "fail" ? "warn" : "pass") : "off"
 
 mtfBlockReasonForStates(string state1, string state2) =>
     enableMtf and mtfMode == "shadow_soft" and state1 == "fail" and state2 == "fail" ? "mtf_5m_15m_opposite" : "none"
 
-mtfStateJson(string tf, string state, int emaDirection, int dtpDirection, float weight, float points) =>
-    '{"tf":"' + tf + '","status":"' + state + '","ema_dir":"' + dirName(emaDirection) + '","dtp_dir":"' + dirName(dtpDirection) + '","weight":' + str.tostring(weight, "#") + ',"points":' + str.tostring(points, "#.##") + '}'
+flowBaseColor(string state, string direction) =>
+    state == "activate_lower" or state == "activate_upper" ? color.blue : state == "blocked" ? color.gray : direction == "short" ? color.red : color.green
+
+flowLabelColor(string state, string direction) =>
+    color.new(flowBaseColor(state, direction), flowLabelTransparency)
+
+flowStatusColor(string state, string direction) =>
+    color.new(flowBaseColor(state, direction), 0)
+
+flowLabelStyle(string direction) =>
+    direction == "short" ? label.style_label_down : label.style_label_up
+
+flowLabelText(string compactText, string detailText) =>
+    compactFlowLabelMode ? compactText : detailText
+
+flowLabelTooltip(string detailText) =>
+    compactFlowLabelMode ? detailText : ""
 
 // -----------------------------------------------------------------------------
 // Core indicators
@@ -626,6 +691,84 @@ profitSpaceFailureReason(float netProfit, float netRoiPct, float costPct, float 
 
 profitSpaceEntryAllowed(float netProfit, float netRoiPct, float costPct, float targetAtrMultiple, float rewardRisk, bool structureStopAvailable, bool structureTargetAvailable, float minRewardRisk) =>
     not useProfitSpaceFilter or profitSpaceFailureReason(netProfit, netRoiPct, costPct, targetAtrMultiple, rewardRisk, structureStopAvailable, structureTargetAvailable, minRewardRisk) == "pass"
+
+profitSpaceSummaryText(float netProfit, float netRoiPct, float costPct, float targetAtrMultiple, float rewardRisk) =>
+    "结构TP口径 预计净利 " + fmtSignedMoney(netProfit) + " / 占用ROI " + fmtSignedPct(netRoiPct) + " / 成本/毛利 " + str.tostring(costPct, "#.#") + "% / R " + str.tostring(rewardRisk, "#.##") + " / TP " + str.tostring(targetAtrMultiple, "#.#") + "ATR"
+
+profitSpaceCheckpointText(bool runnerMode, float netProfit, float costPct, float targetAtrMultiple) =>
+    runnerMode ? "\nRunner检查 净利 " + fmtSignedMoney(netProfit) + " / 成本/毛利 " + str.tostring(costPct, "#.#") + "% / 距离 " + str.tostring(targetAtrMultiple, "#.#") + "ATR" : ""
+
+entryWindowDiagnosticsText() =>
+    "窗口: " + entryWindowStage + " / " + ENTRY_WINDOW_MODEL
+
+profitSpaceThresholdText(float minRewardRisk) =>
+    "门槛 净利 >= " + fmtMoney(effectiveMinNetProfitForEntry) + " / 占用ROI >= " + str.tostring(effectiveMinNetRoiPctForEntry, "#.##") + "% / 成本/毛利 <= " + str.tostring(maxCostPctOfReward, "#.#") + "% / R >= " + str.tostring(minRewardRisk, "#.##") + " / TP >= " + str.tostring(minTargetAtrMultipleForEntry, "#.#") + "ATR"
+
+profitSpaceNetProfitCompareText(float netProfit) =>
+    string operatorText = netProfit >= effectiveMinNetProfitForEntry ? " >= " : " < "
+    string gapText = netProfit < effectiveMinNetProfitForEntry ? "，差 " + fmtMoney(effectiveMinNetProfitForEntry - netProfit) : ""
+    "净利 " + fmtSignedMoney(netProfit) + operatorText + fmtMoney(effectiveMinNetProfitForEntry) + gapText
+
+profitSpaceNetRoiCompareText(float netRoiPct) =>
+    string operatorText = netRoiPct >= effectiveMinNetRoiPctForEntry ? " >= " : " < "
+    string gapText = netRoiPct < effectiveMinNetRoiPctForEntry ? "，差 " + str.tostring(effectiveMinNetRoiPctForEntry - netRoiPct, "#.##") + "%" : ""
+    "占用ROI " + fmtSignedPct(netRoiPct) + operatorText + str.tostring(effectiveMinNetRoiPctForEntry, "#.##") + "%" + gapText
+
+profitSpaceCostCompareText(float costPct) =>
+    string operatorText = costPct <= maxCostPctOfReward ? " <= " : " > "
+    string gapText = costPct > maxCostPctOfReward ? "，超 " + str.tostring(costPct - maxCostPctOfReward, "#.#") + "%" : ""
+    "成本/毛利 " + str.tostring(costPct, "#.#") + "%" + operatorText + str.tostring(maxCostPctOfReward, "#.#") + "%" + gapText
+
+profitSpaceRewardRiskCompareText(float rewardRisk, float minRewardRisk) =>
+    string operatorText = rewardRisk >= minRewardRisk ? " >= " : " < "
+    string gapText = rewardRisk < minRewardRisk ? "，差 " + str.tostring(minRewardRisk - rewardRisk, "#.##") + "R" : ""
+    "结构R " + str.tostring(rewardRisk, "#.##") + operatorText + str.tostring(minRewardRisk, "#.##") + gapText
+
+profitSpaceTargetAtrCompareText(float targetAtrMultiple) =>
+    string operatorText = targetAtrMultiple >= minTargetAtrMultipleForEntry ? " >= " : " < "
+    string gapText = targetAtrMultiple < minTargetAtrMultipleForEntry ? "，差 " + str.tostring(minTargetAtrMultipleForEntry - targetAtrMultiple, "#.#") + "ATR" : ""
+    "TP " + str.tostring(targetAtrMultiple, "#.#") + "ATR" + operatorText + str.tostring(minTargetAtrMultipleForEntry, "#.#") + "ATR" + gapText
+
+profitSpaceBlockedText(float netProfit, float netRoiPct, float costPct, float targetAtrMultiple, float rewardRisk, float minRewardRisk) =>
+    "\n获利空间不足\n" + profitSpaceNetProfitCompareText(netProfit) + "\n" + profitSpaceNetRoiCompareText(netRoiPct) + "\n" + profitSpaceCostCompareText(costPct) + "\n" + profitSpaceRewardRiskCompareText(rewardRisk, minRewardRisk) + "\n" + profitSpaceTargetAtrCompareText(targetAtrMultiple) + "\n" + profitSpaceThresholdText(minRewardRisk)
+
+profitSpaceBlockedStatusText(float netProfit, float netRoiPct, float costPct, float targetAtrMultiple, float rewardRisk, float minRewardRisk) =>
+    "获利空间不足: " + profitSpaceNetProfitCompareText(netProfit) + " / " + profitSpaceNetRoiCompareText(netRoiPct) + " / " + profitSpaceCostCompareText(costPct) + " / " + profitSpaceRewardRiskCompareText(rewardRisk, minRewardRisk) + " / " + profitSpaceTargetAtrCompareText(targetAtrMultiple)
+
+decisionDirectionTag(string direction) =>
+    direction == "short" ? "空" : "多"
+
+decisionSetupTag(string setup) =>
+    setup == "trend_sdUpper" ? "SD↑顺势" : setup == "trend_sdLowerBreakout" ? "SD↓突破" : setup == "mr_sdLower" ? "SD↓回归" : setup == "trend_sdUpperBreakdown" ? "SD↑跌破" : setup == "trend_emaDeathContinuation" ? "EMA死叉" : setup == "mr_sdUpper" ? "SD↑回归" : setup == "trend_sdLower" ? "SD↓顺势" : setup
+
+decisionRText(float rewardRisk) =>
+    na(rewardRisk) ? "R--" : "R" + str.tostring(rewardRisk, "#.##")
+
+decisionTargetAtrText(float targetAtrMultiple) =>
+    na(targetAtrMultiple) or targetAtrMultiple <= 0.0 ? "TP--" : "TP" + str.tostring(targetAtrMultiple, "#.#") + "ATR"
+
+decisionStopPctText(float entryPrice, float stopPrice) =>
+    not na(entryPrice) and entryPrice > 0.0 and not na(stopPrice) and stopPrice > 0.0 ? "SL" + str.tostring(math.abs(entryPrice - stopPrice) / entryPrice * 100.0, "#.##") + "%" : "SL--"
+
+decisionProfitMetricLine(float rewardRisk, float targetAtrMultiple) =>
+    decisionRText(rewardRisk) + " " + decisionTargetAtrText(targetAtrMultiple)
+
+decisionRiskLine(float entryPrice, float stopPrice, float targetPrice, float rewardRisk, float targetAtrMultiple) =>
+    na(stopPrice) or stopPrice <= 0.0 ? "无结构SL" : na(targetPrice) or targetPrice <= 0.0 ? "无结构TP" : decisionProfitMetricLine(rewardRisk, targetAtrMultiple) + " " + decisionStopPctText(entryPrice, stopPrice)
+
+profitFailureDisplayName(string profitFailureReason) =>
+    profitFailureReason == "structure_stop_unavailable" ? "无结构SL" : profitFailureReason == "structure_target_unavailable" ? "无结构TP" : profitFailureReason == "net_profit_below_min" ? "净利不足" : profitFailureReason == "net_roi_below_min" ? "ROI不足" : profitFailureReason == "cost_pct_above_max" ? "成本过高" : profitFailureReason == "reward_risk_below_min" ? "R不足" : profitFailureReason == "target_atr_below_min" ? "TP太近" : ""
+
+decisionBlockReason(string reason, string profitFailureReason) =>
+    string profitReasonText = profitFailureDisplayName(profitFailureReason)
+    bool profitIsPrimary = reason == "profit_space_too_small" or reason == "mr_target_space_too_small"
+    profitIsPrimary and profitReasonText != "" and profitFailureReason != "pass" and profitFailureReason != "disabled" and profitFailureReason != "none" ? profitReasonText : filterDisplayName(reason)
+
+decisionComponentLine(string progressText, string waitText) =>
+    progressText + " " + waitText
+
+decisionExitRText(float rValue) =>
+    na(rValue) ? "" : " " + decisionRText(rValue)
 
 int crsiCycleLen = math.max(1, int(math.round(crsiDomcycle / 2.0)))
 int crsiMemory = math.max(2, crsiDomcycle * 2)
@@ -1505,865 +1648,157 @@ mtfState2ForDirection(string direction) =>
 mtfState3ForDirection(string direction) =>
     direction == "short" ? mtfTf3ShortState : mtfTf3LongState
 
-mtfPayloadForDirection(string direction) =>
-    string s1 = mtfState1ForDirection(direction)
-    string s2 = mtfState2ForDirection(direction)
-    string s3 = mtfState3ForDirection(direction)
-    float p1 = mtfStatePoints(s1, 45.0)
-    float p2 = mtfStatePoints(s2, 35.0)
-    float p3 = mtfStatePoints(s3, 20.0)
-    string blockReason = mtfBlockReasonForDirection(direction)
-    jsonStr("entry_tf", timeframe.period) +
-     jsonStr("confirm_tfs", MTF_CONFIRM_TFS) +
-     jsonStr("mtf_status", mtfStatusForDirection(direction)) +
-     jsonNum("mtf_score", mtfScoreForDirection(direction)) +
-     jsonStr("mtf_block_reason", blockReason) +
-     ',"mtf":{"enabled":' + boolText(enableMtf) +
-     ',"mode":"' + mtfMode + '"' +
-     ',"entry_tf":"' + timeframe.period + '"' +
-     ',"confirm_tfs":"' + MTF_CONFIRM_TFS + '"' +
-     ',"score":' + str.tostring(mtfScoreForDirection(direction), "#.##") +
-     ',"status":"' + mtfStatusForDirection(direction) + '"' +
-     ',"block_reason":"' + blockReason + '"' +
-     ',"votes":{"pass":' + str.tostring((s1 == "pass" ? 1 : 0) + (s2 == "pass" ? 1 : 0) + (s3 == "pass" ? 1 : 0), "#") +
-     ',"warn":' + str.tostring((s1 == "warn" ? 1 : 0) + (s2 == "warn" ? 1 : 0) + (s3 == "warn" ? 1 : 0), "#") +
-     ',"fail":' + str.tostring((s1 == "fail" ? 1 : 0) + (s2 == "fail" ? 1 : 0) + (s3 == "fail" ? 1 : 0), "#") + '}' +
-     ',"states":{"tf1":' + mtfStateJson(mtfConfirmTf1, s1, mtfTf1EmaDir, mtfTf1DtpDir, 45.0, p1) +
-     ',"tf2":' + mtfStateJson(mtfConfirmTf2, s2, mtfTf2EmaDir, mtfTf2DtpDir, 35.0, p2) +
-     ',"tf3":' + mtfStateJson(mtfConfirmTf3, s3, mtfTf3EmaDir, mtfTf3DtpDir, 20.0, p3) + '}}'
+mtfSummaryForDirection(string direction) =>
+    if not enableMtf
+        "off"
+    else
+        string s1 = mtfState1ForDirection(direction)
+        string s2 = mtfState2ForDirection(direction)
+        string s3 = mtfState3ForDirection(direction)
+        "MTF " + mtfConfirmTf1 + mtfDisplayMark(s1) + " " + mtfConfirmTf2 + mtfDisplayMark(s2) + " " + mtfConfirmTf3 + mtfDisplayMark(s3) + " score " + str.tostring(mtfScoreForDirection(direction), "#") + " " + mtfStatusForDirection(direction)
 
-volatilityPayload() =>
-    jsonBool("volatility_filter_enabled", useVolatilityFilter) +
-     jsonNum("min_atr_pct_for_entry", minAtrPctForEntry) +
-     jsonNum("volatility_atr_pct", atrPct) +
-     jsonBool("volatility_entry_blocked", lowVolatilityEntryBlocked) +
-     jsonBool("volatility_entry_allowed", not lowVolatilityEntryBlocked)
 
-profitSpacePayload(string direction, float qty, float entryPrice, float stopPrice, float targetPrice, float targetCheckpoint) =>
-    int directionSign = direction == "long" ? 1 : -1
-    float entryNotionalValue = profitSpaceEntryNotional(entryPrice, qty)
-    float estimatedCostValue = profitSpaceRoundTripCost(qty)
-    float grossProfitValue = profitSpaceGrossProfit(directionSign, entryPrice, targetPrice, qty)
-    float netProfitValue = grossProfitValue - estimatedCostValue
-    float netRoiPctValue = profitSpaceNetRoiPct(netProfitValue, entryNotionalValue)
-    float costPctValue = profitSpaceCostPct(estimatedCostValue, grossProfitValue)
-    float targetAtrValue = profitSpaceTargetAtrMultiple(entryPrice, targetPrice)
-    float checkpointGrossProfitValue = profitSpaceGrossProfit(directionSign, entryPrice, targetCheckpoint, qty)
-    float checkpointNetProfitValue = checkpointGrossProfitValue - estimatedCostValue
-    float checkpointNetRoiPctValue = profitSpaceNetRoiPct(checkpointNetProfitValue, entryNotionalValue)
-    float checkpointCostPctValue = profitSpaceCostPct(estimatedCostValue, checkpointGrossProfitValue)
-    float checkpointTargetAtrValue = profitSpaceTargetAtrMultiple(entryPrice, targetCheckpoint)
-    float finalGrossProfitValue = grossProfitValue
-    float finalNetProfitValue = netProfitValue
-    float finalNetRoiPctValue = netRoiPctValue
-    float finalTargetAtrValue = profitSpaceTargetAtrMultiple(entryPrice, targetPrice)
-    float riskPerShareValue = structureRiskPerShare(directionSign, entryPrice, stopPrice)
-    float rewardPerShareValue = structureRewardPerShare(directionSign, entryPrice, targetPrice)
-    float grossRiskValue = riskPerShareValue > 0.0 and qty > 0.0 ? riskPerShareValue * qty : na
-    float structureRewardRiskValue = rewardRiskMultiple(rewardPerShareValue, riskPerShareValue)
-    float netRewardRiskValue = grossRiskValue > 0.0 ? finalNetProfitValue / grossRiskValue : na
-    float checkpointNetRewardRiskValue = grossRiskValue > 0.0 ? checkpointNetProfitValue / grossRiskValue : na
-    float minRewardRiskValue = effectiveMinStructureRewardRiskForEntry
-    string failureReasonValue = profitSpaceFailureReason(netProfitValue, netRoiPctValue, costPctValue, targetAtrValue, structureRewardRiskValue, true, true, minRewardRiskValue)
-    bool entryAllowedValue = profitSpaceEntryAllowed(netProfitValue, netRoiPctValue, costPctValue, targetAtrValue, structureRewardRiskValue, true, true, minRewardRiskValue)
-    jsonBool("profit_space_filter_enabled", useProfitSpaceFilter) +
-     jsonBool("profit_space_entry_allowed", entryAllowedValue) +
-     jsonBool("profit_space_entry_blocked", useProfitSpaceFilter and not entryAllowedValue) +
-     jsonStr("profit_space_filter_reason", failureReasonValue) +
-     jsonStr("profit_space_basis", "final_structure_target") +
-     jsonNum("entry_notional", entryNotionalValue) +
-     jsonNum("gross_risk", grossRiskValue) +
-     jsonNum("expected_gross_profit", grossProfitValue) +
-     jsonNum("estimated_round_trip_cost", estimatedCostValue) +
-     jsonNum("expected_net_profit", netProfitValue) +
-     jsonNum("expected_net_roi_pct", netRoiPctValue) +
-     jsonNum("cost_pct_of_reward", costPctValue) +
-     jsonNum("structure_risk_per_share", riskPerShareValue) +
-     jsonNum("structure_reward_per_share", rewardPerShareValue) +
-     jsonNum("structure_reward_risk", structureRewardRiskValue) +
-     jsonNum("gross_reward_risk", structureRewardRiskValue) +
-     jsonNum("net_reward_risk", netRewardRiskValue) +
-     jsonNum("target_checkpoint_net_reward_risk", checkpointNetRewardRiskValue) +
-     jsonNum("target_distance_atr", targetAtrValue) +
-     jsonNum("profit_space_target_price", targetPrice) +
-     jsonNum("profit_space_checkpoint_price", targetCheckpoint) +
-     jsonNum("checkpoint_gross_profit", checkpointGrossProfitValue) +
-     jsonNum("checkpoint_net_profit", checkpointNetProfitValue) +
-     jsonNum("checkpoint_net_roi_pct", checkpointNetRoiPctValue) +
-     jsonNum("checkpoint_cost_pct_of_reward", checkpointCostPctValue) +
-     jsonNum("checkpoint_target_distance_atr", checkpointTargetAtrValue) +
-     jsonNum("profit_space_final_target_price", targetPrice) +
-     jsonNum("final_target_gross_profit", finalGrossProfitValue) +
-     jsonNum("final_target_net_profit", finalNetProfitValue) +
-     jsonNum("final_target_net_roi_pct", finalNetRoiPctValue) +
-     jsonNum("final_target_distance_atr", finalTargetAtrValue) +
-     jsonNum("min_net_profit_for_entry", effectiveMinNetProfitForEntry) +
-     jsonNum("min_net_roi_pct_for_entry", effectiveMinNetRoiPctForEntry) +
-     jsonNum("max_cost_pct_of_reward", maxCostPctOfReward) +
-     jsonNum("min_target_atr_multiple_for_entry", minTargetAtrMultipleForEntry) +
-     jsonNum("min_structure_reward_risk_for_entry", minRewardRiskValue) +
-     jsonNum("base_min_structure_reward_risk_for_entry", minStructureRewardRiskForEntry) +
-     jsonNum("weak_trend_min_structure_reward_risk_for_entry", minWeakTrendRewardRiskForEntry) +
-     jsonBool("weak_trend_or_low_vol_context", weakTrendOrLowVolContext) +
-     jsonNum("estimated_round_trip_fee", estimatedRoundTripFee) +
-     jsonNum("estimated_slippage_per_share_per_side", estimatedSlippagePerSharePerSide)
+
 
 // -----------------------------------------------------------------------------
-// Position/risk state.
+// Display-only event flow. This script is visual-only: no strategy orders and no alerts.
 // -----------------------------------------------------------------------------
-var string activePositionId = ""
-var string activeSignalId = ""
-var string activeTradeGroupId = ""
-var string activePlanId = ""
-var int activeDirection = 0
-var string activeSetup = ""
-var float activeReferenceEntry = na
-var float activeEntry = na
-var float activeSubmittedEntryLimit = na
-var string activeEntryAnchorSource = ""
-var string activeEntryAnchorReason = ""
-var int activeEntryOrderExpiresBar = na
-var bool activePendingEntry = false
-var bool activeCancelSent = false
-var float activeStop = na
-var float activeTarget = na
-var float activeRunnerActivation = na
-var float activeInitialRisk = na
-var float activeQty = na
-var int activeEntryBar = na
-var bool activeRunnerMode = false
-var bool activeRunnerActive = false
-var float activeRunnerExtreme = na
-var bool activeBreakevenDone = false
-var bool activeMrCheckpointDone = false
-var float activeMfeR = 0.0
-var float activeMaeR = 0.0
-var int activeRiskUpdateSeq = 0
-var string pendingExitReason = ""
-var int eodForceCloseDay = na
-buildEntryPayload(string eventIdValue, string signalIdValue, string tradeGroupIdValue, string positionIdValue, string planIdValue, string direction, string setup, string reason, float qty, float referenceEntry, float plannedEntry, float submittedLimitPrice, float stopPrice, float targetPrice, float runnerActivationPrice, bool runnerMode, bool structureStopAvailable, bool structureTargetAvailable, bool riskCapStopApplied, string structureStopSource, string structureTargetSource, string entryAnchorSource, string entryAnchorReason, int entryExpiresBar, string divSource, string touchLine) =>
-    float entryPrice = plannedEntry
-    int directionSign = direction == "long" ? 1 : -1
-    float riskPerShare = structureRiskPerShare(directionSign, entryPrice, stopPrice)
-    float rewardPerShare = structureRewardPerShare(directionSign, entryPrice, targetPrice)
-    float structureRewardRiskValue = rewardRiskMultiple(rewardPerShare, riskPerShare)
-    float targetCheckpoint = runnerMode ? runnerActivationPrice : targetPrice
-    float anchorDistanceAtr = directionalDistanceAtr(referenceEntry, plannedEntry, atrRaw)
-    float anchorDistanceBps = directionalDistanceBps(referenceEntry, plannedEntry)
-    bool mrSetup = setupIsMr(setup)
-    string mrRegimeValue = setup == "mr_sdLower" ? longMrRegime : setup == "mr_sdUpper" ? shortMrRegime : "none"
-    bool mrRegimeAllowedValue = setup == "mr_sdLower" ? not longMrDtpBlocked : setup == "mr_sdUpper" ? not shortMrDtpBlocked : true
-    basePayload("entry", eventIdValue, positionIdValue) +
-     jsonStr("signal_id", signalIdValue) +
-     jsonStr("trade_group_id", tradeGroupIdValue) +
-     jsonStr("bracket_group", tradeGroupIdValue) +
-     scalePlanPayload(planIdValue, tradeGroupIdValue, 1, entryAnchorSource) +
-     jsonStr("entry_order_unique_id", entryOrderSignal(tradeGroupIdValue)) +
-     jsonStr("tp_order_unique_id", tpOrderSignal(tradeGroupIdValue)) +
-     jsonStr("sl_order_unique_id", slOrderSignal(tradeGroupIdValue)) +
-     jsonStr("entry_coid", entryOrderSignal(tradeGroupIdValue)) +
-     jsonStr("tp_coid", tpOrderSignal(tradeGroupIdValue)) +
-     jsonStr("sl_coid", slOrderSignal(tradeGroupIdValue)) +
-     jsonStr("signal_key_policy", "bar_time_trade_group_v1") +
-     jsonStr("direction", direction) +
-     jsonStr("position_side", direction) +
-     jsonStr("setup", setup) +
-     jsonStr("reason", reason) +
-     jsonNum("quantity", qty) +
-     jsonNum("shares", qty) +
-     jsonNum("entry_price", entryPrice) +
-     jsonNum("entry", entryPrice) +
-     jsonNum("reference_entry", referenceEntry) +
-     jsonNum("planned_entry_price", plannedEntry) +
-     jsonNum("signal_reference_price", referenceEntry) +
-     jsonNum("reference_stop_loss", stopPrice) +
-     jsonNum("reference_take_profit", targetPrice) +
-     jsonNum("submitted_entry_limit_price", submittedLimitPrice) +
-     jsonNum("submitted_limit_cap_price", submittedLimitPrice) +
-     jsonNum("submitted_limit_cap_bps", tvEntryLimitCapBps) +
-     jsonBool("submitted_limit_cap_applied", not structuralAnchorMode) +
-     jsonBool("reference_protection_only", true) +
-     jsonBool("final_protection_from_fill", true) +
-     jsonStr("entry_order_type", "LMT") +
-     jsonStr("entry_limit_intent", structuralAnchorMode ? "structural_anchor" : "bounded_marketable") +
-     jsonStr("entry_price_plan", structuralAnchorMode ? "structural_anchor_limit" : "tv_direct_bounded_limit") +
-     jsonStr("entry_anchor_mode", entryAnchorMode) +
-     jsonStr("entry_anchor_source", entryAnchorSource) +
-     jsonStr("entry_anchor_reason", entryAnchorReason == "" ? "none" : entryAnchorReason) +
-     jsonNum("entry_anchor_distance_atr", anchorDistanceAtr) +
-     jsonNum("entry_anchor_distance_bps", anchorDistanceBps) +
-     jsonInt("entry_order_ttl_bars", entryOrderTtlBars) +
-     jsonInt("entry_order_expires_bar_index", entryExpiresBar) +
-     jsonStr("entry_window_model", ENTRY_WINDOW_MODEL) +
-     jsonStr("entry_window_stage", entryWindowStage) +
-     jsonStr("entry_cutoff_time", "15:15") +
-     jsonStr("risk_model", structuralAnchorMode ? "setup_aware_structural_v1" : "tv_direct_bounded_limit_v1") +
-     jsonNum("stop_loss", stopPrice) +
-     jsonNum("take_profit", targetPrice) +
-     jsonNum("target_checkpoint", targetCheckpoint) +
-     jsonNum("safety_take_profit", targetPrice) +
-     jsonNum("runner_activation_price", runnerActivationPrice) +
-     jsonNum("runner_activation_r", runnerActivationR) +
-     jsonBool("runner_enabled", runnerMode) +
-     jsonBool("runner_active", false) +
-     jsonBool("tp_checkpoint_runner", runnerMode) +
-     jsonBool("target_is_hard", not runnerMode) +
-     jsonBool("target_checkpoint_is_exit", not runnerMode) +
-     jsonStr("target_role", mrSetup ? "mr_mean_tp" : runnerMode ? "structure_safety_tp" : "structure_hard_tp") +
-     jsonStr("mr_target_mode", mrSetup ? "mean_reversion_mixed" : "none") +
-     jsonNum("mr_mean_target_price", mrSetup ? targetPrice : na) +
-     jsonStr("mr_regime", mrRegimeValue) +
-     jsonBool("mr_regime_allowed", mrRegimeAllowedValue) +
-     jsonNum("mr_sd_slope_atr", sdSlopeAtr) +
-     jsonStr("tp_sl_model", TP_SL_MODEL) +
-     jsonStr("rr_basis", "structure_stop_to_structure_target") +
-     jsonStr("atr_role", "buffer_and_filter_only") +
-     jsonNum("atr_buffer_mult", structuralSlBufferAtr) +
-     jsonNum("atr_buffer_amount", atrRaw * structuralSlBufferAtr) +
-     jsonBool("structure_stop_available", structureStopAvailable) +
-     jsonBool("structure_target_available", structureTargetAvailable) +
-     jsonBool("target_is_structure", structureTargetAvailable) +
-     jsonBool("risk_cap_stop_applied", riskCapStopApplied) +
-     jsonStr("structure_stop_source", structureStopSource) +
-     jsonStr("structure_target_source", structureTargetSource) +
-     jsonNum("structure_stop_loss", stopPrice) +
-     jsonNum("structure_take_profit", targetPrice) +
-     jsonNum("structure_reward_per_share", rewardPerShare) +
-     jsonNum("structure_risk_per_share", riskPerShare) +
-     jsonNum("structure_reward_risk", structureRewardRiskValue) +
-     jsonNum("gross_reward_risk", structureRewardRiskValue) +
-     jsonNum("risk_per_share", riskPerShare) +
-     jsonNum("reward_risk", structureRewardRiskValue) +
-     jsonNum("configured_reward_risk", rrRatio) +
-     jsonStr("divergence_source", divSource == "" ? "none" : divSource) +
-     jsonStr("ema_touch_line", touchLine) +
-     jsonBool("trend_continuation_context", setup == "trend_sdUpper" ? bullTrendContinuationContext : setup == "trend_sdLower" ? bearTrendContinuationContext : false) +
-     jsonStr("trend_trigger_source", touchLine == "" ? "none" : touchLine) +
-     jsonStr("key_level_state", setup == "trend_sdUpper" and trendLongSupportLingerWait ? "support_linger_wait" : setup == "trend_sdLower" and trendShortResistanceLingerWait ? "resistance_linger_wait" : "triggered") +
-     jsonStr("direction_decision", setup == "trend_sdUpper" and bullTrendContinuationContext ? "dtp_bull_sd_upper_trend_long" : setup == "trend_sdLower" and bearTrendContinuationContext ? "dtp_bear_sd_lower_trend_short" : "none") +
-     jsonStr("primary_reason", reason) +
-     jsonStr("secondary_reason", "none") +
-     jsonInt("activity_score", activityScore) +
-     jsonInt("quality_score", activityScore) +
-     jsonStr("activity_grade", activityGrade) +
-     mtfPayloadForDirection(direction) +
-     volatilityPayload() +
-     profitSpacePayload(direction, qty, entryPrice, stopPrice, targetPrice, targetCheckpoint) +
-     jsonStr("sd_zone", sdZone == 1 ? "overbought" : sdZone == -1 ? "oversold" : "normal") +
-     jsonStr("sd_trend", sdTrend == 1 ? "up" : sdTrend == -1 ? "down" : "flat") +
-     jsonStr("dtp_dir", dtpDir == 1 ? "bullish" : dtpDir == -1 ? "bearish" : "neutral") +
-     jsonStr("dtp_phase", dtpPhase) +
-     jsonInt("dtp_phase_bars", dtpPhaseBars) +
-     jsonNum("atr", atrRaw) +
-     jsonNum("atr_pct", atrPct) +
-     jsonNum("close", close) +
-     jsonInt("bar_index", bar_index) +
-     '}'
+bool displayEnterLong = canOpenEntry and allowLong and longSignalCandidate and not shortSignalCandidate and not blockLong and not conflict
+bool displayEnterShort = canOpenEntry and allowShort and shortSignalCandidate and not longSignalCandidate and not blockShort and not conflict
+bool displayPreAlertNow = canOpenEntry and not displayEnterLong and not displayEnterShort and activityScore >= preAlertThreshold and activityScore < 100 and not conflict
+bool displayObserveNow = displayPreAlertNow
 
-buildRiskPayload(string eventIdValue, string positionIdValue, string updateReason, string requestedSides, float previousStop, float previousTarget, float newStop, float newTarget) =>
-    float effectiveStop = na(newStop) ? activeStop : newStop
-    float effectiveTarget = na(newTarget) ? activeTarget : newTarget
-    float riskPerShare = structureRiskPerShare(activeDirection, activeEntry, effectiveStop)
-    float rewardPerShare = structureRewardPerShare(activeDirection, activeEntry, effectiveTarget)
-    float structureRewardRiskValue = rewardRiskMultiple(rewardPerShare, riskPerShare)
-    float targetCheckpoint = activeRunnerMode ? activeRunnerActivation : effectiveTarget
-    int barsInTradePayload = na(activeEntryBar) ? 0 : bar_index - activeEntryBar
-    basePayload("risk_update", eventIdValue, positionIdValue) +
-     jsonStr("signal_id", activeSignalId) +
-     jsonStr("origin_signal_id", activeSignalId) +
-     jsonStr("trade_group_id", activeTradeGroupId) +
-     jsonStr("bracket_group", activeTradeGroupId) +
-     scalePlanPayload(activePlanId, activeTradeGroupId, 1, activeEntryAnchorSource) +
-     jsonStr("entry_order_unique_id", entryOrderSignal(activeTradeGroupId)) +
-     jsonStr("tp_order_unique_id", tpOrderSignal(activeTradeGroupId)) +
-     jsonStr("sl_order_unique_id", slOrderSignal(activeTradeGroupId)) +
-     jsonStr("entry_coid", entryOrderSignal(activeTradeGroupId)) +
-     jsonStr("tp_coid", tpOrderSignal(activeTradeGroupId)) +
-     jsonStr("sl_coid", slOrderSignal(activeTradeGroupId)) +
-     jsonStr("signal_key_policy", "bar_time_trade_group_v1") +
-     jsonStr("direction", activeDirection == 1 ? "long" : "short") +
-     jsonStr("position_side", activeDirection == 1 ? "long" : "short") +
-     jsonStr("setup", activeSetup) +
-     jsonStr("update_reason", updateReason) +
-     jsonStr("risk_update_reason", updateReason) +
-     jsonInt("risk_update_seq", activeRiskUpdateSeq) +
-     jsonInt("bars_in_trade", barsInTradePayload) +
-     jsonNum("mfe_r", activeMfeR) +
-     jsonNum("mae_r", activeMaeR) +
-     jsonRequestedSides(requestedSides) +
-     jsonNum("entry_price", activeEntry) +
-     jsonNum("quantity", activeQty) +
-     jsonNum("previous_stop_loss", previousStop) +
-     jsonNum("previous_take_profit", previousTarget) +
-     jsonNum("new_stop_loss", newStop) +
-     jsonNum("new_take_profit", newTarget) +
-     jsonNum("target_checkpoint", targetCheckpoint) +
-     jsonNum("take_profit", effectiveTarget) +
-     jsonNum("safety_take_profit", effectiveTarget) +
-     jsonNum("runner_activation_price", activeRunnerActivation) +
-     jsonNum("runner_activation_r", runnerActivationR) +
-     jsonBool("runner_enabled", activeRunnerMode) +
-     jsonBool("runner_active", activeRunnerActive) +
-     jsonBool("tp_checkpoint_runner", activeRunnerMode) +
-     jsonBool("target_checkpoint_hit", activeRunnerActive) +
-     jsonBool("target_checkpoint_is_exit", not activeRunnerMode) +
-     jsonStr("target_role", setupIsMr(activeSetup) ? "mr_mean_tp" : activeRunnerMode ? "structure_safety_tp" : "structure_hard_tp") +
-     jsonStr("mr_target_mode", setupIsMr(activeSetup) ? "mean_reversion_mixed" : "none") +
-     jsonStr("tp_sl_model", TP_SL_MODEL) +
-     jsonStr("rr_basis", "structure_stop_to_structure_target") +
-     jsonStr("atr_role", "buffer_and_filter_only") +
-     jsonNum("atr_buffer_mult", structuralSlBufferAtr) +
-     jsonNum("atr_buffer_amount", atrRaw * structuralSlBufferAtr) +
-     jsonNum("structure_stop_loss", effectiveStop) +
-     jsonNum("structure_take_profit", effectiveTarget) +
-     jsonNum("structure_reward_per_share", rewardPerShare) +
-     jsonNum("structure_risk_per_share", riskPerShare) +
-     jsonNum("structure_reward_risk", structureRewardRiskValue) +
-     jsonNum("gross_reward_risk", structureRewardRiskValue) +
-     jsonNum("risk_per_share", riskPerShare) +
-     jsonNum("reward_risk", structureRewardRiskValue) +
-     jsonNum("configured_reward_risk", rrRatio) +
-     jsonNum("close", close) +
-     jsonInt("bar_index", bar_index) +
-     '}'
+bool candidateUpperWindowReady = candidateSetup == "trend_sdUpper" ? longTrendContextReady : candidateSetup == "trend_sdUpperBreakdown" ? upperSdExtremeFresh : candidateSetup == "mr_sdUpper" ? upperMrWindowValid : upperWindowValid
+bool candidateLowerWindowReady = candidateSetup == "trend_sdLower" ? shortTrendContextReady : candidateSetup == "trend_sdLowerBreakout" ? lowerSdExtremeFresh : candidateSetup == "trend_emaDeathContinuation" ? shortEmaDeathContinuationStructureOk : candidateSetup == "mr_sdLower" ? lowerMrWindowValid : lowerWindowValid
+string candidateComponentText = componentSummaryForSetup(candidateSetup, candidateUpperWindowReady, candidateLowerWindowReady, upperBullTrendTriggerSeen, lowerBearTrendTriggerSeen, trendBullFractalSeen, lowerBullFractalSeen, upperBearFractalSeen, trendBearFractalSeen, trendBearFractalSeen, trendBullEmaCrossSeen, lowerBullEmaCrossSeen, upperBearEmaCrossSeen, trendBearEmaCrossSeen, trendBearEmaCrossSeen, bullDivSeen, bearDivSeen)
+string candidateProgressText = componentProgressForSetup(candidateSetup, candidateUpperWindowReady, candidateLowerWindowReady, upperBullTrendTriggerSeen, lowerBearTrendTriggerSeen, trendBullFractalSeen, lowerBullFractalSeen, upperBearFractalSeen, trendBearFractalSeen, trendBearFractalSeen, trendBullEmaCrossSeen, lowerBullEmaCrossSeen, upperBearEmaCrossSeen, trendBearEmaCrossSeen, trendBearEmaCrossSeen, bullDivSeen, bearDivSeen)
+string candidateWaitText = waitComponentText(missingComponents)
 
-buildExitPayload(string eventIdValue, string positionIdValue, string exitReason, float exitPrice) =>
-    float pnlPerShare = activeDirection == 1 ? exitPrice - activeEntry : activeEntry - exitPrice
-    float targetCheckpoint = activeRunnerMode ? activeRunnerActivation : activeTarget
-    basePayload("exit", eventIdValue, positionIdValue) +
-     jsonStr("signal_id", activeSignalId) +
-     jsonStr("origin_signal_id", activeSignalId) +
-     jsonStr("trade_group_id", activeTradeGroupId) +
-     jsonStr("bracket_group", activeTradeGroupId) +
-     scalePlanPayload(activePlanId, activeTradeGroupId, 1, activeEntryAnchorSource) +
-     jsonStr("entry_order_unique_id", entryOrderSignal(activeTradeGroupId)) +
-     jsonStr("tp_order_unique_id", tpOrderSignal(activeTradeGroupId)) +
-     jsonStr("sl_order_unique_id", slOrderSignal(activeTradeGroupId)) +
-     jsonStr("entry_coid", entryOrderSignal(activeTradeGroupId)) +
-     jsonStr("tp_coid", tpOrderSignal(activeTradeGroupId)) +
-     jsonStr("sl_coid", slOrderSignal(activeTradeGroupId)) +
-     jsonStr("signal_key_policy", "bar_time_trade_group_v1") +
-     jsonStr("direction", activeDirection == 1 ? "long" : "short") +
-     jsonStr("position_side", activeDirection == 1 ? "long" : "short") +
-     jsonStr("setup", activeSetup) +
-     jsonStr("exit_reason", exitReason) +
-     jsonNum("entry_price", activeEntry) +
-     jsonNum("exit_price", exitPrice) +
-     jsonNum("quantity", activeQty) +
-     jsonNum("stop_loss", activeStop) +
-     jsonNum("take_profit", activeTarget) +
-     jsonNum("target_checkpoint", targetCheckpoint) +
-     jsonNum("safety_take_profit", activeTarget) +
-     jsonNum("runner_activation_price", activeRunnerActivation) +
-     jsonNum("runner_activation_r", runnerActivationR) +
-     jsonBool("runner_enabled", activeRunnerMode) +
-     jsonBool("runner_active", activeRunnerActive) +
-     jsonBool("tp_checkpoint_runner", activeRunnerMode) +
-     jsonBool("target_checkpoint_hit", activeRunnerActive) +
-     jsonBool("target_checkpoint_is_exit", not activeRunnerMode) +
-     jsonStr("target_role", setupIsMr(activeSetup) ? "mr_mean_tp" : activeRunnerMode ? "structure_safety_tp" : "structure_hard_tp") +
-     jsonStr("mr_target_mode", setupIsMr(activeSetup) ? "mean_reversion_mixed" : "none") +
-     jsonNum("pnl_per_share", pnlPerShare) +
-     jsonNum("pnl_estimate", pnlPerShare * activeQty) +
-     jsonInt("entry_bar_index", activeEntryBar) +
-     jsonInt("bar_index", bar_index) +
-     '}'
+if flowLabelsVisible and lowerActivationEvent
+    string lowerActivateDecisionText = dtpBearDominant ? "\n方向裁决: DTP强空，SD下轨优先顺势空" : ""
+    string lowerActivateDetailText = "已入选候选池\n" + syminfo.ticker + " · SD窗口开启\nSD下轨候选\n非开仓点，等组件" + lowerActivateDecisionText
+    string lowerActivateCompactText = dtpBearDominant ? "候选 空·SD↓\n顺势优先" : "候选 多·SD↓\n等组件"
+    label.new(bar_index, low - atrVal * 1.4, flowLabelText(lowerActivateCompactText, lowerActivateDetailText), style=label.style_label_up, color=flowLabelColor("activate_lower", dtpBearDominant ? "short" : "long"), textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(lowerActivateDetailText))
 
-buildCancelPayload(string eventIdValue, string positionIdValue, string cancelReason) =>
-    string direction = activeDirection == 1 ? "long" : "short"
-    basePayload("cancel", eventIdValue, positionIdValue) +
-     jsonStr("signal_id", activeSignalId) +
-     jsonStr("origin_signal_id", activeSignalId) +
-     jsonStr("trade_group_id", activeTradeGroupId) +
-     jsonStr("bracket_group", activeTradeGroupId) +
-     scalePlanPayload(activePlanId, activeTradeGroupId, 1, activeEntryAnchorSource) +
-     jsonStr("entry_order_unique_id", entryOrderSignal(activeTradeGroupId)) +
-     jsonStr("tp_order_unique_id", tpOrderSignal(activeTradeGroupId)) +
-     jsonStr("sl_order_unique_id", slOrderSignal(activeTradeGroupId)) +
-     jsonStr("entry_coid", entryOrderSignal(activeTradeGroupId)) +
-     jsonStr("tp_coid", tpOrderSignal(activeTradeGroupId)) +
-     jsonStr("sl_coid", slOrderSignal(activeTradeGroupId)) +
-     jsonStr("signal_key_policy", "bar_time_trade_group_v1") +
-     jsonStr("direction", direction) +
-     jsonStr("position_side", direction) +
-     jsonStr("setup", activeSetup) +
-     jsonStr("cancel_reason", cancelReason) +
-     jsonStr("reason", cancelReason) +
-     jsonStr("cancel_scope", "trade_intent") +
-     jsonStr("cancel_policy", "cancel_unfilled_or_close_filled") +
-     jsonNum("quantity", activeQty) +
-     jsonNum("entry_price", activeEntry) +
-     jsonNum("reference_entry", activeReferenceEntry) +
-     jsonNum("planned_entry_price", activeEntry) +
-     jsonNum("submitted_entry_limit_price", activeSubmittedEntryLimit) +
-     jsonNum("submitted_limit_cap_price", activeSubmittedEntryLimit) +
-     jsonNum("stop_loss", activeStop) +
-     jsonNum("take_profit", activeTarget) +
-     jsonNum("target_checkpoint", activeRunnerMode ? activeRunnerActivation : activeTarget) +
-     jsonNum("entry_anchor_distance_atr", directionalDistanceAtr(activeReferenceEntry, activeEntry, atrRaw)) +
-     jsonNum("entry_anchor_distance_bps", directionalDistanceBps(activeReferenceEntry, activeEntry)) +
-     jsonStr("entry_anchor_mode", entryAnchorMode) +
-     jsonStr("entry_anchor_source", activeEntryAnchorSource) +
-     jsonStr("entry_anchor_reason", activeEntryAnchorReason == "" ? "none" : activeEntryAnchorReason) +
-     jsonInt("entry_order_ttl_bars", entryOrderTtlBars) +
-     jsonInt("entry_order_expires_bar_index", activeEntryOrderExpiresBar) +
-     jsonBool("plan_price_locked", true) +
-     jsonStr("pending_plan_policy", "lock_original_plan") +
-     jsonNum("pending_trend_invalidation_buffer_atr", pendingTrendInvalidationBufferAtr) +
-     jsonBool("tv_position_filled", strategy.position_size != 0) +
-     jsonNum("close", close) +
-     jsonNum("atr", atrRaw) +
-     jsonNum("atr_pct", atrPct) +
-     jsonInt("bar_index", bar_index) +
-     '}'
+if flowLabelsVisible and upperActivationEvent
+    string upperActivateDecisionText = dtpBullDominant ? "\n方向裁决: DTP强多，SD上轨优先顺势多" : ""
+    string upperActivateDetailText = "已入选候选池\n" + syminfo.ticker + " · SD窗口开启\nSD上轨候选\n非开仓点，等组件" + upperActivateDecisionText
+    string upperActivateCompactText = dtpBullDominant ? "候选 多·SD↑\n顺势优先" : "候选 空·SD↑\n等组件"
+    label.new(bar_index, high + atrVal * 1.4, flowLabelText(upperActivateCompactText, upperActivateDetailText), style=label.style_label_down, color=flowLabelColor("activate_upper", dtpBullDominant ? "long" : "short"), textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(upperActivateDetailText))
 
-buildPreAlertPayload(string eventIdValue, string pendingPositionId, string activationWindow) =>
-    basePayload("pre_alert", eventIdValue, pendingPositionId) +
-     jsonStr("pre_alert_stage", "window_activation") +
-     jsonStr("activation_window", activationWindow) +
-     jsonNum("activation_window_upper", sdSignalUpper) +
-     jsonNum("activation_window_lower", sdSignalLower) +
-     jsonBool("entry_decides_direction", true) +
-     jsonInt("activity_score", activityScore) +
-     jsonInt("quality_score", activityScore) +
-     jsonBool("qualified", false) +
-     jsonStr("activity_grade", activityGrade) +
-     jsonBool("trend_continuation_context", bullTrendContinuationContext or bearTrendContinuationContext) +
-     jsonStr("trend_trigger_source", candidateDirection == "short" ? lowerBearTrendTriggerLine : upperBullTrendTriggerLine) +
-     jsonStr("key_level_state", candidateSetup == "trend_sdUpper" and trendLongSupportLingerWait ? "support_linger_wait" : candidateSetup == "trend_sdLower" and trendShortResistanceLingerWait ? "resistance_linger_wait" : "none") +
-     jsonStr("direction_decision", candidateSetup == "trend_sdUpper" and bullTrendContinuationContext ? "dtp_bull_sd_upper_trend_long" : candidateSetup == "trend_sdLower" and bearTrendContinuationContext ? "dtp_bear_sd_lower_trend_short" : "none") +
-     jsonStr("primary_reason", missingComponents) +
-     jsonStr("secondary_reason", "none") +
-     volatilityPayload() +
-     jsonStr("missing_components", missingComponents) +
-     jsonBool("lower_window_valid", lowerWindowValid) +
-     jsonBool("upper_window_valid", upperWindowValid) +
-     jsonBool("lower_mr_window_valid", lowerMrWindowValid) +
-     jsonBool("upper_mr_window_valid", upperMrWindowValid) +
-     jsonBool("lower_sd_extreme_fresh", lowerSdExtremeFresh) +
-     jsonBool("upper_sd_extreme_fresh", upperSdExtremeFresh) +
-     jsonBool("lower_post_reversal_used", lowerPostReversalUsed) +
-     jsonBool("upper_post_reversal_used", upperPostReversalUsed) +
-     jsonStr("long_mr_regime", longMrRegime) +
-     jsonStr("short_mr_regime", shortMrRegime) +
-     jsonBool("long_mr_regime_allowed", not longMrDtpBlocked) +
-     jsonBool("short_mr_regime_allowed", not shortMrDtpBlocked) +
-     jsonNum("mr_sd_slope_atr", sdSlopeAtr) +
-     jsonBool("bull_div_seen", bullDivSeen) +
-     jsonBool("bear_div_seen", bearDivSeen) +
-     jsonBool("ema_bull_touch_seen", upperBullTouchSeen) +
-     jsonBool("ema_bear_touch_seen", lowerBearTouchSeen) +
-     jsonBool("bear_pullback_resistance_seen", lowerBearPullbackSeen) +
-     jsonBool("bull_fractal_seen", lowerBullFractalSeen or upperBullFractalSeen or trendBullFractalSeen) +
-     jsonBool("bear_fractal_seen", lowerBearFractalSeen or upperBearFractalSeen or trendBearFractalSeen) +
-     jsonBool("bull_ema_cross_seen", lowerBullEmaCrossSeen or upperBullEmaCrossSeen or trendBullEmaCrossSeen) +
-     jsonBool("bear_ema_cross_seen", lowerBearEmaCrossSeen or upperBearEmaCrossSeen or trendBearEmaCrossSeen) +
-     jsonStr("bull_divergence_source", bullDivSource == "" ? "none" : bullDivSource) +
-     jsonStr("bear_divergence_source", bearDivSource == "" ? "none" : bearDivSource) +
-     jsonStr("sd_zone", sdZone == 1 ? "overbought" : sdZone == -1 ? "oversold" : "normal") +
-     jsonStr("dtp_dir", dtpDir == 1 ? "bullish" : dtpDir == -1 ? "bearish" : "neutral") +
-     jsonStr("dtp_phase", dtpPhase) +
-     jsonNum("close", close) +
-     jsonNum("atr", atrRaw) +
-     jsonNum("atr_pct", atrPct) +
-     jsonInt("bar_index", bar_index) +
-     '}'
-
-// -----------------------------------------------------------------------------
-// TV-primary event flow: pre_alert -> entry -> risk_update -> exit.
-// -----------------------------------------------------------------------------
-bool exitedNow = confirmed and activePositionId != "" and strategy.position_size == 0 and strategy.position_size[1] != 0
-if exitedNow
-    float exitPrice = strategy.closedtrades > 0 ? strategy.closedtrades.exit_price(strategy.closedtrades - 1) : close
-    string exitReason = pendingExitReason != "" ? pendingExitReason : "strategy_closed"
-    if pendingExitReason == ""
-        bool targetExit = exitTouchesTarget(activeDirection, exitPrice, activeTarget)
-        bool stopExit = exitTouchesStop(activeDirection, exitPrice, activeStop)
-        exitReason := targetExit ? "take_profit" : stopExit ? "stop_loss" : exitReason
-    float exitPnlPerShare = activeDirection == 1 ? exitPrice - activeEntry : activeEntry - exitPrice
-    if exitReason == "stop_loss" and activeRunnerActive and exitPnlPerShare > 0.0
-        exitReason := "runner_stop"
-    if enableAlerts
-        alert(buildExitPayload(eventId("exit", exitReason), activePositionId, exitReason, exitPrice), alert.freq_all)
-    pendingExitReason := ""
-    activePositionId := ""
-    activeSignalId := ""
-    activeTradeGroupId := ""
-    activePlanId := ""
-    activeDirection := 0
-    activeSetup := ""
-    activeReferenceEntry := na
-    activeEntry := na
-    activeSubmittedEntryLimit := na
-    activeEntryAnchorSource := ""
-    activeEntryAnchorReason := ""
-    activeEntryOrderExpiresBar := na
-    activePendingEntry := false
-    activeCancelSent := false
-    activeStop := na
-    activeTarget := na
-    activeRunnerActivation := na
-    activeInitialRisk := na
-    activeQty := na
-    activeEntryBar := na
-    activeRunnerMode := false
-    activeRunnerActive := false
-    activeRunnerExtreme := na
-    activeBreakevenDone := false
-    activeMrCheckpointDone := false
-    activeMfeR := 0.0
-    activeMaeR := 0.0
-    activeRiskUpdateSeq := 0
-
-bool pendingFilledNow = confirmed and activePendingEntry and strategy.position_size != 0
-if pendingFilledNow
-    activePendingEntry := false
-    activeEntry := strategy.position_avg_price > 0.0 ? strategy.position_avg_price : activeEntry
-    activeInitialRisk := activeDirection == 1 ? activeEntry - activeStop : activeStop - activeEntry
-    activeRunnerExtreme := activeDirection == 1 ? high : low
-    activeMfeR := 0.0
-    activeMaeR := 0.0
-    activeEntryBar := bar_index
-int eodCloseHourNow = hour(time_close, "America/New_York")
-int eodCloseMinuteNow = minute(time_close, "America/New_York")
-bool eodCloseTimeReached = eodCloseHourNow > eodCloseHour or (eodCloseHourNow == eodCloseHour and eodCloseMinuteNow >= eodCloseMinute)
-bool pendingEntryExpired = confirmed and activePendingEntry and strategy.position_size == 0 and not na(activeEntryOrderExpiresBar) and bar_index > activeEntryOrderExpiresBar
-bool pendingEntryWindowExpired = confirmed and activePendingEntry and strategy.position_size == 0 and not inEntryWindow
-bool pendingAnchorInvalidated = confirmed and activePendingEntry and strategy.position_size == 0 and structuralAnchorMode and (activeDirection == 1 ? close < activeEntry - atrRaw * structuralSlBufferAtr : close > activeEntry + atrRaw * structuralSlBufferAtr)
-bool pendingOppositeLongActionable = confirmed and activePendingEntry and strategy.position_size == 0 and activeDirection == -1 and longActionable
-bool pendingOppositeShortActionable = confirmed and activePendingEntry and strategy.position_size == 0 and activeDirection == 1 and shortActionable
-bool pendingActionableConflict = confirmed and activePendingEntry and strategy.position_size == 0 and longActionable and shortActionable
-bool pendingOppositeOrConflict = pendingActionableConflict or pendingOppositeLongActionable or pendingOppositeShortActionable
-bool pendingEodCancel = confirmed and enableEodForceClose and activePendingEntry and strategy.position_size == 0 and eodCloseTimeReached and (na(eodForceCloseDay) or eodForceCloseDay != dailyTime)
-bool pendingSameDirectionContinuation = confirmed and activePendingEntry and strategy.position_size == 0 and (activeDirection == 1 ? longRaw : activeDirection == -1 ? shortRaw : false)
-float pendingTrendInvalidationBuffer = atrRaw * pendingTrendInvalidationBufferAtr
-bool pendingLongEmaSoftReversed = emaFast < emaSlow or close < emaSlow
-bool pendingShortEmaSoftReversed = emaFast > emaSlow or close > emaSlow
-bool pendingLongEmaBufferBroken = emaFast < emaSlow and close < emaSlow - pendingTrendInvalidationBuffer
-bool pendingShortEmaBufferBroken = emaFast > emaSlow and close > emaSlow + pendingTrendInvalidationBuffer
-bool pendingLongTrendSupportFailed = dtpDir == -1 or mtfLongStatus == "block"
-bool pendingShortTrendSupportFailed = dtpDir == 1 or mtfShortStatus == "block"
-bool pendingLongSoftInvalidated = pendingLongTrendSupportFailed or pendingLongEmaSoftReversed
-bool pendingShortSoftInvalidated = pendingShortTrendSupportFailed or pendingShortEmaSoftReversed
-bool pendingLongHardInvalidated = pendingLongEmaBufferBroken and pendingLongTrendSupportFailed
-bool pendingShortHardInvalidated = pendingShortEmaBufferBroken and pendingShortTrendSupportFailed
-bool pendingHardInvalidated = confirmed and activePendingEntry and strategy.position_size == 0 and (activeDirection == 1 ? pendingLongHardInvalidated : activeDirection == -1 ? pendingShortHardInvalidated : true)
-bool pendingSoftInvalidated = confirmed and activePendingEntry and strategy.position_size == 0 and not pendingHardInvalidated and (activeDirection == 1 ? pendingLongSoftInvalidated : activeDirection == -1 ? pendingShortSoftInvalidated : false)
-bool pendingSoftRecheckFailed = pendingEntryExpired and pendingSoftInvalidated and not pendingSameDirectionContinuation
-bool pendingTrendInvalidated = pendingHardInvalidated
-bool pendingTrendStillValid = confirmed and activePendingEntry and strategy.position_size == 0 and not pendingTrendInvalidated
-bool pendingEntryRenewNow = pendingEntryExpired and pendingTrendStillValid and not pendingSoftRecheckFailed and not pendingEodCancel and not pendingEntryWindowExpired and not pendingAnchorInvalidated and not pendingOppositeOrConflict
-if pendingEntryRenewNow
-    int pendingRenewBars = pendingSoftInvalidated ? pendingTrendRecheckBars : entryOrderTtlBars
-    activeEntryOrderExpiresBar := bar_index + pendingRenewBars
-string pendingCancelReason = pendingEodCancel ? "pending_eod_cancel" : pendingOppositeOrConflict ? "opposite_signal_or_conflict" : pendingEntryWindowExpired ? "entry_window_expired" : pendingAnchorInvalidated ? "entry_anchor_invalidated" : pendingTrendInvalidated ? "trend_invalidated" : pendingSoftRecheckFailed ? "soft_trend_recheck_failed" : pendingEntryExpired and not pendingEntryRenewNow ? "entry_ttl_expired" : ""
-bool pendingCancelNow = pendingCancelReason != ""
-if pendingCancelNow
-    if enableAlerts and not activeCancelSent
-        alert(buildCancelPayload(eventId("cancel", pendingCancelReason), activePositionId, pendingCancelReason), alert.freq_all)
-        activeCancelSent := true
-    if activeDirection == 1
-        strategy.cancel("TV-L")
-    if activeDirection == -1
-        strategy.cancel("TV-S")
-    activePositionId := ""
-    activeSignalId := ""
-    activeTradeGroupId := ""
-    activePlanId := ""
-    activeDirection := 0
-    activeSetup := ""
-    activeReferenceEntry := na
-    activeEntry := na
-    activeSubmittedEntryLimit := na
-    activeEntryAnchorSource := ""
-    activeEntryAnchorReason := ""
-    activeEntryOrderExpiresBar := na
-    activePendingEntry := false
-    activeCancelSent := false
-    activeStop := na
-    activeTarget := na
-    activeRunnerActivation := na
-    activeInitialRisk := na
-    activeQty := na
-    activeEntryBar := na
-    activeRunnerMode := false
-    activeRunnerActive := false
-    activeRunnerExtreme := na
-    activeBreakevenDone := false
-    activeMrCheckpointDone := false
-    activeMfeR := 0.0
-    activeMaeR := 0.0
-    activeRiskUpdateSeq := 0
-
-bool flatForEntry = activePositionId == "" and strategy.position_size == 0 and not exitedNow
-bool enterLong = canOpenEntry and flatForEntry and allowLong and longSignalCandidate and not shortSignalCandidate and not blockLong and not conflict
-bool enterShort = canOpenEntry and flatForEntry and allowShort and shortSignalCandidate and not longSignalCandidate and not blockShort and not conflict
-
-var bool candidateNoticeSentToday = false
+var string lastPrepareVisualKey = ""
 if isNewTradingDay
-    candidateNoticeSentToday := false
-bool lowerCandidateNotice = lowerActivationEvent and not candidateNoticeSentToday
-bool upperCandidateNotice = upperActivationEvent and not candidateNoticeSentToday and not lowerCandidateNotice
-if enableAlerts and lowerCandidateNotice
-    string pendingLowerId = "pending_window_lower_" + str.tostring(time, "#") + "_" + str.tostring(bar_index, "#")
-    alert(buildPreAlertPayload(eventId("pre_alert", "window_lower"), pendingLowerId, "lower"), alert.freq_all)
-if enableAlerts and upperCandidateNotice
-    string pendingUpperId = "pending_window_upper_" + str.tostring(time, "#") + "_" + str.tostring(bar_index, "#")
-    alert(buildPreAlertPayload(eventId("pre_alert", "window_upper"), pendingUpperId, "upper"), alert.freq_all)
-if lowerCandidateNotice or upperCandidateNotice
-    candidateNoticeSentToday := true
+    lastPrepareVisualKey := ""
+string prepareVisualKey = activityGrade + ":" + candidateDirection + ":" + candidateSetup + ":" + missingComponents + ":" + str.tostring(activityScore, "#")
+if flowLabelsVisible and displayObserveNow and prepareVisualKey != lastPrepareVisualKey
+    float prepareY = candidateDirection == "short" ? high + atrVal * 2.4 : low - atrVal * 2.4
+    string candidateDirectionDecisionText = bullTrendContinuationContext and candidateSetup == "trend_sdUpper" ? "\n方向裁决: DTP强多，SD上轨优先顺势多" : bearTrendContinuationContext and candidateSetup == "trend_sdLower" ? "\n方向裁决: DTP强空，SD下轨优先顺势空" : ""
+    string prepareDetailText = "观察" + directionDisplayName(candidateDirection) + "\n" + setupDisplayName(candidateSetup) + candidateDirectionDecisionText + "\n组件: " + candidateComponentText + "\nMTF: " + mtfSummaryForDirection(candidateDirection) + "\n下一步: " + candidateWaitText
+    string prepareCompactText = "观察 " + decisionDirectionTag(candidateDirection) + "·" + decisionSetupTag(candidateSetup) + "\n" + decisionComponentLine(candidateProgressText, candidateWaitText)
+    label.new(bar_index, prepareY, flowLabelText(prepareCompactText, prepareDetailText), style=flowLabelStyle(candidateDirection), color=color.new(color.orange, flowLabelTransparency), textcolor=color.white, size=size.normal, tooltip=flowLabelTooltip(prepareDetailText))
+    lastPrepareVisualKey := prepareVisualKey
+if not displayObserveNow and activityScore == 0
+    lastPrepareVisualKey := ""
 
+bool diagnosticLongCandidate = canTrade and allowLong and longRaw and not displayEnterLong
+bool diagnosticShortCandidate = canTrade and allowShort and shortRaw and not displayEnterShort
+bool blockedNow = diagnosticLongCandidate or diagnosticShortCandidate
+string blockedDirection = diagnosticLongCandidate and (not diagnosticShortCandidate or candidateDirection == "long") ? "long" : "short"
+string blockedSetup = blockedDirection == "long" ? longSetup : shortSetup
+string blockedReasonRaw = conflict ? "long_short_conflict" : blockedDirection == "long" ? blockLongReason : blockShortReason
+string blockedReason = blockedReasonRaw == "" ? "candidate_filtered" : blockedReasonRaw
+bool blockedProfitSpaceEntryBlocked = blockedDirection == "long" ? longProfitSpaceEntryBlocked : shortProfitSpaceEntryBlocked
+string blockedProfitSpaceFailureReason = blockedDirection == "long" ? profitSpaceFailureReason(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr, longStructureRewardRisk, longStructureStopAvailable, longStructureTargetAvailable, effectiveMinStructureRewardRiskForEntry) : profitSpaceFailureReason(shortExpectedNetProfit, shortExpectedNetRoiPct, shortCostPctOfReward, shortTargetDistanceAtr, shortStructureRewardRisk, shortStructureStopAvailable, shortStructureTargetAvailable, effectiveMinStructureRewardRiskForEntry)
+bool blockedUpperWindowReady = blockedSetup == "trend_sdUpper" ? longTrendContextReady : blockedSetup == "trend_sdUpperBreakdown" ? upperSdExtremeFresh : blockedSetup == "mr_sdUpper" ? upperMrWindowValid : upperWindowValid
+bool blockedLowerWindowReady = blockedSetup == "trend_sdLower" ? shortTrendContextReady : blockedSetup == "trend_sdLowerBreakout" ? lowerSdExtremeFresh : blockedSetup == "trend_emaDeathContinuation" ? shortEmaDeathContinuationStructureOk : blockedSetup == "mr_sdLower" ? lowerMrWindowValid : lowerWindowValid
+string blockedComponentText = componentSummaryForSetup(blockedSetup, blockedUpperWindowReady, blockedLowerWindowReady, upperBullTrendTriggerSeen, lowerBearTrendTriggerSeen, trendBullFractalSeen, lowerBullFractalSeen, upperBearFractalSeen, trendBearFractalSeen, trendBearFractalSeen, trendBullEmaCrossSeen, lowerBullEmaCrossSeen, upperBearEmaCrossSeen, trendBearEmaCrossSeen, trendBearEmaCrossSeen, bullDivSeen, bearDivSeen)
+float blockedStructureRewardRisk = blockedDirection == "long" ? longStructureRewardRisk : shortStructureRewardRisk
+float blockedTargetDistanceAtr = blockedDirection == "long" ? longTargetDistanceAtr : shortTargetDistanceAtr
+string blockedProfitSecondaryReason = blockedProfitSpaceEntryBlocked ? profitFailureDisplayName(blockedProfitSpaceFailureReason) : ""
+string blockedSecondaryText = blockedProfitSecondaryReason != "" and blockedReason != "profit_space_too_small" and blockedReason != "mr_target_space_too_small" ? "\n次因: " + blockedProfitSecondaryReason : ""
+var string lastBlockVisualKey = ""
 if isNewTradingDay
-    eodForceCloseDay := na
+    lastBlockVisualKey := ""
+string blockedVisualKey = blockedDirection + ":" + blockedSetup + ":" + blockedReason + ":" + blockedComponentText + ":" + mtfStatusForDirection(blockedDirection) + ":" + mtfBlockReasonForDirection(blockedDirection) + ":" + str.tostring(dtpDir, "#") + ":" + dtpPhase + ":" + (blockedProfitSpaceEntryBlocked ? blockedProfitSpaceFailureReason : "none")
+if flowLabelsVisible and showSignalDiagnostics and blockedNow and blockedVisualKey != lastBlockVisualKey
+    float blockedY = blockedDirection == "short" ? high + atrVal * 4.0 : low - atrVal * 4.0
+    string blockedProfitText = blockedDirection == "long" ? profitSpaceSummaryText(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr, longStructureRewardRisk) : profitSpaceSummaryText(shortExpectedNetProfit, shortExpectedNetRoiPct, shortCostPctOfReward, shortTargetDistanceAtr, shortStructureRewardRisk)
+    string blockedDetailText = "信号过滤\n" + directionDisplayName(blockedDirection) + " · " + setupDisplayName(blockedSetup) + "\n" + entryWindowDiagnosticsText() + "\n组件: " + blockedComponentText + "\n主因: " + filterDisplayName(blockedReason) + blockedSecondaryText + "\n" + filterActionText(blockedReason, blockedDirection) + "\n" + mtfSummaryForDirection(blockedDirection) + "\n" + dtpEntryFilterText(blockedDirection, dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\n" + blockedProfitText
+    string blockedCompactReasonText = decisionBlockReason(blockedReason, blockedProfitSpaceEntryBlocked ? blockedProfitSpaceFailureReason : "none")
+    string blockedCompactMetricText = blockedProfitSpaceEntryBlocked ? " / " + decisionProfitMetricLine(blockedStructureRewardRisk, blockedTargetDistanceAtr) : ""
+    string blockedCompactText = "过滤 " + decisionDirectionTag(blockedDirection) + "·" + decisionSetupTag(blockedSetup) + "\n" + blockedCompactReasonText + blockedCompactMetricText
+    label.new(bar_index, blockedY, flowLabelText(blockedCompactText, blockedDetailText), style=flowLabelStyle(blockedDirection), color=flowLabelColor("blocked", blockedDirection), textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(blockedDetailText))
+    lastBlockVisualKey := blockedVisualKey
+if not blockedNow and not longRaw and not shortRaw
+    lastBlockVisualKey := ""
 
-if enterLong
-    float entryPrice = longEntryCandidate
-    float qty = longQtyCandidate
-    if qty > 0.0
-        float stopPrice = longStopCandidate
-        bool runnerMode = longRunnerCandidate
-        float runnerActivationPrice = longRunnerActivationCandidate
-        float targetPrice = longTargetCandidate
-        float submittedLimitPrice = structuralAnchorMode ? entryPrice : calcSubmittedEntryLimit(entryPrice, 1)
-        int entryExpiresBar = bar_index + entryOrderTtlBars
-        string posId = positionId("long")
-        string planIdValue = scalePlanId("long", longSetup)
-        string tradeGroup = tradeGroupId("long", longSetup)
-        string entryEventId = eventId("entry", longSetup)
-        activePositionId := posId
-        activeSignalId := tradeGroup
-        activeTradeGroupId := tradeGroup
-        activePlanId := planIdValue
-        activeDirection := 1
-        activeSetup := longSetup
-        activeReferenceEntry := longReferenceEntry
-        activeEntry := entryPrice
-        activeSubmittedEntryLimit := submittedLimitPrice
-        activeEntryAnchorSource := longEntryAnchorSource
-        activeEntryAnchorReason := longEntryAnchorReason == "" ? "none" : longEntryAnchorReason
-        activeEntryOrderExpiresBar := entryExpiresBar
-        activePendingEntry := true
-        activeCancelSent := false
-        activeStop := stopPrice
-        activeTarget := targetPrice
-        activeRunnerActivation := runnerActivationPrice
-        activeInitialRisk := entryPrice - stopPrice
-        activeQty := qty
-        activeEntryBar := bar_index
-        activeRunnerMode := runnerMode
-        activeRunnerActive := false
-        activeRunnerExtreme := high
-        activeBreakevenDone := false
-        activeMrCheckpointDone := false
-        activeMfeR := 0.0
-        activeMaeR := 0.0
-        activeRiskUpdateSeq := 0
-        string divSourceForEntry = bullDivSource == "" ? bullDivSourceNow : bullDivSource
-        strategy.entry("TV-L", strategy.long, qty=qty, limit=submittedLimitPrice)
-        strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget)
-        lowerPostReversalUsed := setupLongPostLowerBreakout ? true : lowerPostReversalUsed
-        lowerWindowUsed := longSetup == "mr_sdLower" ? true : lowerWindowUsed
-        upperWindowUsed := longSetup == "trend_sdUpper" ? true : upperWindowUsed
-        bullDivSeen := false
-        bullDivSource := ""
-        bullDivBar := na
-        if enableAlerts
-            string touchLine = longSetup == "trend_sdUpper" ? upperBullTrendTriggerLine : longSetup == "trend_sdLowerBreakout" ? "post_sd_lower_breakout" : "none"
-            alert(buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, activePlanId, "long", longSetup, longReason, qty, longReferenceEntry, entryPrice, submittedLimitPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode, longStructureStopAvailable, longStructureTargetAvailable, longRiskCapStopApplied, longStopSource, structureTargetSourceForSetup(longSetup, "long"), longEntryAnchorSource, activeEntryAnchorReason, entryExpiresBar, divSourceForEntry, touchLine), alert.freq_all)
+if flowLabelsVisible and displayEnterLong
+    string directionDecisionLine = longSetup == "trend_sdUpper" and bullTrendContinuationContext ? "\n方向裁决: DTP强多，SD上轨优先顺势多" : ""
+    string longEntryDetailText = "信号满足\n准备做多\n" + setupDisplayName(longSetup) + directionDecisionLine + "\n" + entryWindowDiagnosticsText() + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("long") + "\n" + dtpEntryFilterText("long", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\nref " + str.tostring(longReferenceEntry, "#.##") + " / plan " + str.tostring(longEntryCandidate, "#.##")
+    string longEntryCompactText = "入场 多·" + decisionSetupTag(longSetup) + " " + str.tostring(longEntryCandidate, "#.##") + "\n" + decisionRiskLine(longEntryCandidate, longStopCandidate, longTargetCandidate, longStructureRewardRisk, longTargetDistanceAtr)
+    label.new(bar_index, low - atrVal * 3.1, flowLabelText(longEntryCompactText, longEntryDetailText), style=label.style_label_up, color=flowLabelColor("entry", "long"), textcolor=color.white, size=size.normal, tooltip=flowLabelTooltip(longEntryDetailText))
 
-if enterShort
-    float entryPrice = shortEntryCandidate
-    float qty = shortQtyCandidate
-    if qty > 0.0
-        float stopPrice = shortStopCandidate
-        bool runnerMode = shortRunnerCandidate
-        float runnerActivationPrice = shortRunnerActivationCandidate
-        float targetPrice = shortTargetCandidate
-        float submittedLimitPrice = structuralAnchorMode ? entryPrice : calcSubmittedEntryLimit(entryPrice, -1)
-        int entryExpiresBar = bar_index + entryOrderTtlBars
-        string posId = positionId("short")
-        string planIdValue = scalePlanId("short", shortSetup)
-        string tradeGroup = tradeGroupId("short", shortSetup)
-        string entryEventId = eventId("entry", shortSetup)
-        activePositionId := posId
-        activeSignalId := tradeGroup
-        activeTradeGroupId := tradeGroup
-        activePlanId := planIdValue
-        activeDirection := -1
-        activeSetup := shortSetup
-        activeReferenceEntry := shortReferenceEntry
-        activeEntry := entryPrice
-        activeSubmittedEntryLimit := submittedLimitPrice
-        activeEntryAnchorSource := shortEntryAnchorSource
-        activeEntryAnchorReason := shortEntryAnchorReason == "" ? "none" : shortEntryAnchorReason
-        activeEntryOrderExpiresBar := entryExpiresBar
-        activePendingEntry := true
-        activeCancelSent := false
-        activeStop := stopPrice
-        activeTarget := targetPrice
-        activeRunnerActivation := runnerActivationPrice
-        activeInitialRisk := stopPrice - entryPrice
-        activeQty := qty
-        activeEntryBar := bar_index
-        activeRunnerMode := runnerMode
-        activeRunnerActive := false
-        activeRunnerExtreme := low
-        activeBreakevenDone := false
-        activeMrCheckpointDone := false
-        activeMfeR := 0.0
-        activeMaeR := 0.0
-        activeRiskUpdateSeq := 0
-        string divSourceForEntry = bearDivSource == "" ? bearDivSourceNow : bearDivSource
-        strategy.entry("TV-S", strategy.short, qty=qty, limit=submittedLimitPrice)
-        strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget)
-        upperPostReversalUsed := setupShortPostUpperBreakdown ? true : upperPostReversalUsed
-        emaDeathContinuationShortUsed := setupShortEmaDeathContinuation ? true : emaDeathContinuationShortUsed
-        upperWindowUsed := shortSetup == "mr_sdUpper" ? true : upperWindowUsed
-        lowerWindowUsed := shortSetup == "trend_sdLower" ? true : lowerWindowUsed
-        bearDivSeen := false
-        bearDivSource := ""
-        bearDivBar := na
-        if enableAlerts
-            string touchLine = shortSetup == "trend_sdLower" ? lowerBearTrendTriggerLine : shortSetup == "trend_sdUpperBreakdown" ? "post_sd_upper_breakdown" : shortSetup == "trend_emaDeathContinuation" ? "ema_death_continuation" : "none"
-            alert(buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, activePlanId, "short", shortSetup, shortReason, qty, shortReferenceEntry, entryPrice, submittedLimitPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode, shortStructureStopAvailable, shortStructureTargetAvailable, shortRiskCapStopApplied, shortStopSource, structureTargetSourceForSetup(shortSetup, "short"), shortEntryAnchorSource, activeEntryAnchorReason, entryExpiresBar, divSourceForEntry, touchLine), alert.freq_all)
+if flowLabelsVisible and displayEnterShort
+    string directionDecisionLine = shortSetup == "trend_sdLower" and bearTrendContinuationContext ? "\n方向裁决: DTP强空，SD下轨优先顺势空" : ""
+    string shortEntryDetailText = "信号满足\n准备做空\n" + setupDisplayName(shortSetup) + directionDecisionLine + "\n" + entryWindowDiagnosticsText() + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("short") + "\n" + dtpEntryFilterText("short", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\nref " + str.tostring(shortReferenceEntry, "#.##") + " / plan " + str.tostring(shortEntryCandidate, "#.##")
+    string shortEntryCompactText = "入场 空·" + decisionSetupTag(shortSetup) + " " + str.tostring(shortEntryCandidate, "#.##") + "\n" + decisionRiskLine(shortEntryCandidate, shortStopCandidate, shortTargetCandidate, shortStructureRewardRisk, shortTargetDistanceAtr)
+    label.new(bar_index, high + atrVal * 3.1, flowLabelText(shortEntryCompactText, shortEntryDetailText), style=label.style_label_down, color=flowLabelColor("entry", "short"), textcolor=color.white, size=size.normal, tooltip=flowLabelTooltip(shortEntryDetailText))
 
-if confirmed and activePositionId != "" and strategy.position_size != 0
-    float previousStop = activeStop
-    float previousTarget = activeTarget
-    string riskUpdateReason = ""
-    bool runnerStateChanged = false
-    float initialRisk = activeInitialRisk > 0.0 ? activeInitialRisk : activeDirection == 1 ? activeEntry - activeStop : activeStop - activeEntry
-    int barsInTrade = na(activeEntryBar) ? 0 : bar_index - activeEntryBar
-    if activeRunnerMode
-        activeRunnerExtreme := activeDirection == 1 ? math.max(nz(activeRunnerExtreme, high), high) : math.min(nz(activeRunnerExtreme, low), low)
-    float mfeRNow = initialRisk > 0.0 ? (activeDirection == 1 ? (high - activeEntry) / initialRisk : (activeEntry - low) / initialRisk) : 0.0
-    float maeRNow = initialRisk > 0.0 ? (activeDirection == 1 ? (activeEntry - low) / initialRisk : (high - activeEntry) / initialRisk) : 0.0
-    activeMfeR := math.max(nz(activeMfeR, 0.0), mfeRNow)
-    activeMaeR := math.max(nz(activeMaeR, 0.0), maeRNow)
-    bool mrSetupActive = setupIsMr(activeSetup)
-    bool mrStructureInvalidated = mrSetupActive and barsInTrade > 1 and (activeDirection == 1 ? close < sdSignalLower - atrRaw * structuralSlBufferAtr : close > sdSignalUpper + atrRaw * structuralSlBufferAtr)
-    bool mrTimeStopNow = mrSetupActive and barsInTrade >= mrTimeStopBars and activeMfeR < mrTimeStopMinMfeR
-    if mrStructureInvalidated
-        pendingExitReason := "mr_structure_invalidated"
-        if activeDirection == 1
-            strategy.close("TV-L")
-        if activeDirection == -1
-            strategy.close("TV-S")
-    else if mrTimeStopNow
-        pendingExitReason := "mr_time_stop"
-        if activeDirection == 1
-            strategy.close("TV-L")
-        if activeDirection == -1
-            strategy.close("TV-S")
-    bool noFollowEligible = setupIsTrend(activeSetup) and not activeRunnerActive and activeMfeR < noFollowThroughDisableAfterMfeR and initialRisk > 0.0
-    bool activeLongStructureBroken = activeDirection == 1 and (close < activeReferenceEntry - atrRaw * pendingTrendInvalidationBufferAtr or (close < emaSlow and close < sdReg))
-    bool activeShortStructureBroken = activeDirection == -1 and (close > activeReferenceEntry + atrRaw * pendingTrendInvalidationBufferAtr or (close > emaSlow and close > sdReg))
-    bool activeOppositeStructureBroken = activeLongStructureBroken or activeShortStructureBroken
-    bool earlyAdverseStopNow = noFollowEligible and barsInTrade <= earlyAdverseBars and activeMaeR >= earlyAdverseExitR and activeOppositeStructureBroken
-    bool oppositeStructureExitNow = noFollowEligible and barsInTrade > earlyAdverseBars and activeMaeR >= earlyAdverseExitR and activeOppositeStructureBroken
-    bool noFollowCompressNow = noFollowEligible and barsInTrade >= noFollowThroughBars and activeMfeR < noFollowThroughMinMfeR
-    if earlyAdverseStopNow or oppositeStructureExitNow
-        pendingExitReason := earlyAdverseStopNow ? "adverse_early_stop" : "opposite_structure_exit"
-        if activeDirection == 1
-            strategy.close("TV-L")
-        if activeDirection == -1
-            strategy.close("TV-S")
-    else if noFollowCompressNow
-        float compressedStop = activeDirection == 1 ? activeEntry - initialRisk * noFollowThroughCompressedStopR : activeEntry + initialRisk * noFollowThroughCompressedStopR
-        compressedStop := activeDirection == 1 ? math.min(compressedStop, close - syminfo.mintick) : math.max(compressedStop, close + syminfo.mintick)
-        bool compressedStopImproved = activeDirection == 1 ? compressedStop > activeStop : compressedStop < activeStop
-        if compressedStopImproved
-            activeStop := compressedStop
-            riskUpdateReason := "no_follow_through_stop_compress"
-    if mrSetupActive and not activeMrCheckpointDone and initialRisk > 0.0 and activeMfeR >= mrCheckpointR
-        float mrLockStop = activeDirection == 1 ? activeEntry + initialRisk * mrCheckpointLockR : activeEntry - initialRisk * mrCheckpointLockR
-        mrLockStop := activeDirection == 1 ? math.min(mrLockStop, close - syminfo.mintick) : math.max(mrLockStop, close + syminfo.mintick)
-        bool mrLockImproved = activeDirection == 1 ? mrLockStop > activeStop : mrLockStop < activeStop
-        if mrLockImproved
-            activeStop := mrLockStop
-            riskUpdateReason := "mr_checkpoint_lock"
-        activeMrCheckpointDone := true
-    if enableBreakeven and not activeBreakevenDone
-        if initialRisk > 0.0 and activeDirection == 1 and close >= activeEntry + initialRisk * breakevenAtR
-            activeStop := math.max(activeStop, activeEntry + initialRisk * breakevenOffsetR)
-            activeBreakevenDone := priceChanged(previousStop, activeStop)
-        if initialRisk > 0.0 and activeDirection == -1 and close <= activeEntry - initialRisk * breakevenAtR
-            activeStop := math.min(activeStop, activeEntry - initialRisk * breakevenOffsetR)
-            activeBreakevenDone := priceChanged(previousStop, activeStop)
-        if activeBreakevenDone
-            riskUpdateReason := "breakeven_trail"
-    if activeRunnerMode and not activeRunnerActive and not na(activeRunnerActivation)
-        bool activationTouched = activeDirection == 1 ? high >= activeRunnerActivation : low <= activeRunnerActivation
-        if activationTouched
-            activeRunnerActive := true
-            runnerStateChanged := true
-            float lockStop = activeDirection == 1 ? activeEntry + initialRisk * tpCheckpointLockR : activeEntry - initialRisk * tpCheckpointLockR
-            lockStop := activeDirection == 1 ? math.min(lockStop, close - syminfo.mintick) : math.max(lockStop, close + syminfo.mintick)
-            float lockedStop = activeDirection == 1 ? math.max(activeStop, lockStop) : math.min(activeStop, lockStop)
-            riskUpdateReason := "runner_activation"
-            if priceChanged(activeStop, lockedStop)
-                activeStop := lockedStop
-                riskUpdateReason := "runner_activation"
-    if activeRunnerMode and activeRunnerActive
-        float trailStop = activeDirection == 1 ? activeRunnerExtreme - atrVal * runnerTrailAtrMult : activeRunnerExtreme + atrVal * runnerTrailAtrMult
-        trailStop := activeDirection == 1 ? math.min(trailStop, close - syminfo.mintick) : math.max(trailStop, close + syminfo.mintick)
-        bool trailImproved = activeDirection == 1 ? trailStop > activeStop : trailStop < activeStop
-        if trailImproved
-            activeStop := trailStop
-            riskUpdateReason := riskUpdateReason == "" ? "runner_trail_stop" : riskUpdateReason
-    bool stopChanged = priceChanged(previousStop, activeStop)
-    bool targetChanged = priceChanged(previousTarget, activeTarget)
-    bool riskChanged = stopChanged or targetChanged or runnerStateChanged
-    if riskChanged and enableAlerts
-        string reasonForEvent = riskUpdateReason == "" ? "risk_update" : riskUpdateReason
-        string requestedSides = stopChanged and targetChanged ? "stop_loss,take_profit" : stopChanged ? "stop_loss" : targetChanged ? "take_profit" : ""
-        float eventNewStop = stopChanged ? activeStop : na
-        float eventNewTarget = targetChanged ? activeTarget : na
-        activeRiskUpdateSeq := activeRiskUpdateSeq + 1
-        alert(buildRiskPayload(eventId("risk_update", reasonForEvent), activePositionId, reasonForEvent, requestedSides, previousStop, previousTarget, eventNewStop, eventNewTarget), alert.freq_all)
+// -----------------------------------------------------------------------------
+// Visuals
+// -----------------------------------------------------------------------------
+color dtpLineColor = dtpDir == 1 ? color.new(color.aqua, 0) : dtpDir == -1 ? color.new(color.red, 0) : color.new(color.gray, 25)
+plot(showEmaFastSlowLines ? emaFast : na, "EMA 20 快线", color=color.new(color.teal, 0))
+plot(showEmaFastSlowLines ? emaSlow : na, "EMA 50 慢线", color=color.new(color.orange, 0))
+plot(showEmaContextLines ? emaTrend : na, "EMA 100 趋势", color=color.new(color.blue, 35))
+plot(showEmaContextLines ? emaLongest : na, "EMA 200 长线", color=color.new(color.gray, 35))
+plot(showDtpTrendLine ? dtpAvg : na, "DTP 趋势线", color=dtpLineColor, linewidth=2)
+plot(showSdHelperBandLines ? sdReg : na, "SD regression", color=color.new(color.white, 25))
+plot(showBandLines ? sdSignalUpper : na, "SD signal upper", color=color.new(color.red, 30))
+plot(showBandLines ? sdSignalLower : na, "SD signal lower", color=color.new(color.green, 30))
+plot(showSdHelperBandLines ? sdFilterUpper : na, "SD filter upper", color=color.new(color.red, 75))
+plot(showSdHelperBandLines ? sdFilterLower : na, "SD filter lower", color=color.new(color.green, 75))
 
-bool eodCloseNow = confirmed and enableEodForceClose and activePositionId != "" and strategy.position_size != 0 and eodCloseTimeReached and (na(eodForceCloseDay) or eodForceCloseDay != dailyTime)
-if eodCloseNow
-    float eodExitPrice = close
-    string eodPositionId = activePositionId
-    pendingExitReason := "force_flat_eod"
-    eodForceCloseDay := dailyTime
-    strategy.cancel_all()
-    strategy.close_all()
-    if enableAlerts
-        alert(buildExitPayload(eventId("exit", "force_flat_eod"), eodPositionId, "force_flat_eod", eodExitPrice), alert.freq_all)
-    pendingExitReason := ""
-    activePositionId := ""
-    activeSignalId := ""
-    activeTradeGroupId := ""
-    activePlanId := ""
-    activeDirection := 0
-    activeSetup := ""
-    activeReferenceEntry := na
-    activeEntry := na
-    activeSubmittedEntryLimit := na
-    activeEntryAnchorSource := ""
-    activeEntryAnchorReason := ""
-    activeEntryOrderExpiresBar := na
-    activePendingEntry := false
-    activeCancelSent := false
-    activeStop := na
-    activeTarget := na
-    activeRunnerActivation := na
-    activeInitialRisk := na
-    activeQty := na
-    activeEntryBar := na
-    activeRunnerMode := false
-    activeRunnerActive := false
-    activeRunnerExtreme := na
-    activeBreakevenDone := false
-    activeMrCheckpointDone := false
-    activeMfeR := 0.0
-    activeMaeR := 0.0
-    activeRiskUpdateSeq := 0
+bool showAnyFractalMarkers = showComponentMarkers or showFractalMarkers
+plotshape(showComponentMarkers and sdLowerHit, "SD lower hit", location=location.belowbar, style=shape.triangleup, color=color.new(color.green, 0), size=size.tiny, text="SD-L")
+plotshape(showComponentMarkers and sdUpperHit, "SD upper hit", location=location.abovebar, style=shape.triangledown, color=color.new(color.orange, 0), size=size.tiny, text="SD-U")
+plotshape(showAnyFractalMarkers and fractalBull, "Fractal bull", location=location.belowbar, style=shape.circle, color=color.new(color.aqua, 0), size=size.tiny, text="F+", offset=-fractalPeriod)
+plotshape(showAnyFractalMarkers and fractalBear, "Fractal bear", location=location.abovebar, style=shape.circle, color=color.new(color.fuchsia, 0), size=size.tiny, text="F-", offset=-fractalPeriod)
+plotshape(showEmaCrossMarkers and emaGoldenCross, "EMA20/50 golden cross", location=location.belowbar, style=shape.triangleup, color=color.new(color.lime, 0), size=size.small, text="20/50金叉")
+plotshape(showEmaCrossMarkers and emaDeathCross, "EMA20/50 death cross", location=location.abovebar, style=shape.triangledown, color=color.new(color.red, 0), size=size.small, text="20/50死叉")
+plotshape(showComponentMarkers and bullDivNow, "Bull divergence", location=location.belowbar, style=shape.diamond, color=color.new(color.lime, 0), size=size.tiny, text="D+")
+plotshape(showComponentMarkers and bearDivNow, "Bear divergence", location=location.abovebar, style=shape.diamond, color=color.new(color.red, 0), size=size.tiny, text="D-")
 
-if activePositionId != "" and not activePendingEntry and not eodCloseNow
-    if activeDirection == 1
-        strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget)
-    if activeDirection == -1
-        strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget)
+float displayEntryPlan = displayEnterLong ? longEntryCandidate : displayEnterShort ? shortEntryCandidate : na
+float displayStopPlan = displayEnterLong ? longStopCandidate : displayEnterShort ? shortStopCandidate : na
+float displayTargetPlan = displayEnterLong ? longTargetCandidate : displayEnterShort ? shortTargetCandidate : na
+float displayRunnerActivation = displayEnterLong ? longRunnerActivationCandidate : displayEnterShort ? shortRunnerActivationCandidate : na
+plot(displayEntryPlan, "Display Plan Entry", color=color.new(color.yellow, 0), style=plot.style_linebr, linewidth=2)
+plot(displayStopPlan, "Display SL", color=color.new(color.red, 0), style=plot.style_linebr, linewidth=2)
+plot(displayTargetPlan, "Display TP", color=color.new(color.green, 0), style=plot.style_linebr, linewidth=2)
+plot(displayRunnerActivation, "Display Runner Activation", color=color.new(color.blue, 0), style=plot.style_linebr, linewidth=2)
+
+var table flowStatus = table.new(position.top_right, 2, 7, border_width=1)
+string statusDirection = displayEnterShort ? "做空" : displayEnterLong ? "做多" : blockedNow ? directionDisplayName(blockedDirection) : activityScore > 0 ? directionDisplayName(candidateDirection) : "--"
+string statusText = displayEnterLong ? "准备做多" : displayEnterShort ? "准备做空" : blockedNow ? "过滤" + directionDisplayName(blockedDirection) : displayObserveNow ? "观察" + directionDisplayName(candidateDirection) : lowerWindowValid or upperWindowValid ? "窗口激活" : "等待"
+color statusColor = displayEnterLong ? flowStatusColor("entry", "long") : displayEnterShort ? flowStatusColor("entry", "short") : blockedNow ? flowStatusColor("blocked", blockedDirection) : displayObserveNow ? color.new(color.orange, 0) : lowerWindowValid ? flowStatusColor("activate_lower", dtpBearDominant ? "short" : "long") : upperWindowValid ? flowStatusColor("activate_upper", dtpBullDominant ? "long" : "short") : color.new(color.gray, 20)
+string statusSetup = blockedNow ? setupDisplayName(blockedSetup) : activityScore > 0 ? setupDisplayName(candidateSetup) : "--"
+string statusComponents = blockedNow ? blockedComponentText + " · " + filterActionText(blockedReason, blockedDirection) : activityScore > 0 ? candidateComponentText + " · " + candidateWaitText : "--"
+string statusDtp = dtpStateText(dtpDir, dtpPhase)
+string statusMtf = blockedNow ? mtfSummaryForDirection(blockedDirection) : activityScore > 0 ? mtfSummaryForDirection(candidateDirection) : enableMtf ? "MTF 等待信号" : "off"
+string statusRisk = displayEnterLong ? "plan " + str.tostring(longEntryCandidate, "#.##") + " / TP " + str.tostring(longTargetCandidate, "#.##") + " / SL " + str.tostring(longStopCandidate, "#.##") : displayEnterShort ? "plan " + str.tostring(shortEntryCandidate, "#.##") + " / TP " + str.tostring(shortTargetCandidate, "#.##") + " / SL " + str.tostring(shortStopCandidate, "#.##") : "--"
+if confirmed and showStatusPanel
+    table.cell(flowStatus, 0, 0, "流程", bgcolor=statusColor, text_color=color.white)
+    table.cell(flowStatus, 1, 0, statusText, bgcolor=color.new(color.black, 0), text_color=color.white)
+    table.cell(flowStatus, 0, 1, "标的", bgcolor=color.new(color.black, 15), text_color=color.white)
+    table.cell(flowStatus, 1, 1, syminfo.ticker + " · " + timeframe.period, bgcolor=color.new(color.black, 15), text_color=color.white)
+    table.cell(flowStatus, 0, 2, "方向", bgcolor=color.new(color.black, 15), text_color=color.white)
+    table.cell(flowStatus, 1, 2, statusDirection, bgcolor=color.new(color.black, 15), text_color=color.white)
+    table.cell(flowStatus, 0, 3, "Setup", bgcolor=color.new(color.black, 15), text_color=color.white)
+    table.cell(flowStatus, 1, 3, statusSetup, bgcolor=color.new(color.black, 15), text_color=color.white)
+    table.cell(flowStatus, 0, 4, "组件", bgcolor=color.new(color.black, 15), text_color=color.white)
+    table.cell(flowStatus, 1, 4, statusComponents, bgcolor=color.new(color.black, 15), text_color=color.white)
+    table.cell(flowStatus, 0, 5, "DTP/MTF", bgcolor=color.new(color.black, 15), text_color=color.white)
+    table.cell(flowStatus, 1, 5, statusDtp + " / " + statusMtf, bgcolor=color.new(color.black, 15), text_color=color.white)
+    table.cell(flowStatus, 0, 6, "计划", bgcolor=color.new(color.black, 15), text_color=color.white)
+    table.cell(flowStatus, 1, 6, statusRisk, bgcolor=color.new(color.black, 15), text_color=color.white)
