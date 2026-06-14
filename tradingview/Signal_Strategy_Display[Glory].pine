@@ -139,15 +139,17 @@ mtfConfirmTf3 = input.timeframe("60", "MTF confirm TF 3", group="07 TV Primary E
 displayPreset = input.string("核心交易流程", "Display preset", options=["核心交易流程", "指标辅助", "调试全量"], group="08 Display")
 showFlowLabels = input.bool(true, "Show activation/prep/entry labels", group="08 Display")
 showSignalDiagnostics = input.bool(true, "Show raw/filtered signal diagnostics", group="08 Display")
+showSignalEventFlow = input.bool(true, "Show signal event flow", group="08 Display")
+maxSignalEventFlows = input.int(80, "Max signal event flows", minval=1, maxval=80, group="08 Display")
+showRawDiagnosticLabels = input.bool(false, "Show standalone raw diagnostic labels", group="08 Display")
 labelDetailMode = input.string("compact_tooltip", "Flow label detail mode", options=["compact_tooltip", "full_labels", "off"], group="08 Display")
 flowLabelTransparency = input.int(30, "Flow label background transparency", minval=0, maxval=100, group="08 Display")
 showStatusPanel = input.bool(true, "Show status panel", group="08 Display")
 showPendingEntryLifecycle = input.bool(true, "Show pending entry lifecycle", group="08 Display")
 showCurrentPlanLines = input.bool(true, "Show current Core plan lines", group="08 Display")
-currentPlanLineForwardBars = input.int(3, "Current plan line forward bars", minval=1, maxval=20, group="08 Display")
+currentPlanLineMinBars = input.int(1, "Current plan line minimum visible bars", minval=1, maxval=20, group="08 Display")
 showHistoricalPlanLines = input.bool(true, "Show historical Core plan lines", group="08 Display")
-historicalPlanLineForwardBars = input.int(8, "Historical plan line forward bars", minval=1, maxval=50, group="08 Display")
-maxHistoricalPlanLineSets = input.int(120, "Max historical plan line sets", minval=1, maxval=120, group="08 Display")
+maxHistoricalPlanLineSets = input.int(80, "Max historical plan line sets", minval=1, maxval=80, group="08 Display")
 showBands = input.bool(true, "Show SD bands", group="08 Display")
 showSdHelperLines = input.bool(false, "Show SD regression/filter lines", group="08 Display")
 showDtpLine = input.bool(true, "Show DTP trend line", group="08 Display")
@@ -530,6 +532,18 @@ flowLabelText(string compactText, string detailText) =>
 flowLabelTooltip(string detailText) =>
     compactFlowLabelMode ? detailText : ""
 
+flowStepMark(int step) =>
+    step == 1 ? "①" : step == 2 ? "②" : step == 3 ? "③" : step == 4 ? "④" : "•"
+
+flowIdText(int flowId) =>
+    na(flowId) ? "F?" : "F" + str.tostring(flowId, "#")
+
+flowEventCompactText(int flowId, int step, string title, string compactText) =>
+    showSignalEventFlow ? flowIdText(flowId) + " " + flowStepMark(step) + title + "\n" + compactText : compactText
+
+flowEventDetailText(int flowId, int step, string title, string detailText) =>
+    showSignalEventFlow ? "flow: " + flowIdText(flowId) + " / " + flowStepMark(step) + title + "\n" + detailText : detailText
+
 // -----------------------------------------------------------------------------
 // Core indicators
 // -----------------------------------------------------------------------------
@@ -705,7 +719,7 @@ profitSpaceCheckpointText(bool runnerMode, float netProfit, float costPct, float
     runnerMode ? "\nRunner检查 净利 " + fmtSignedMoney(netProfit) + " / 成本/毛利 " + str.tostring(costPct, "#.#") + "% / 距离 " + str.tostring(targetAtrMultiple, "#.#") + "ATR" : ""
 
 entryWindowDiagnosticsText() =>
-    "窗口: " + entryWindowStage + " / " + ENTRY_WINDOW_MODEL
+    "交易窗口: " + entryWindowStage + "\n入场时间模型: " + ENTRY_WINDOW_MODEL
 
 profitSpaceThresholdText(float minRewardRisk) =>
     "门槛 净利 >= " + fmtMoney(effectiveMinNetProfitForEntry) + " / 占用ROI >= " + str.tostring(effectiveMinNetRoiPctForEntry, "#.##") + "% / 成本/毛利 <= " + str.tostring(maxCostPctOfReward, "#.#") + "% / R >= " + str.tostring(minRewardRisk, "#.##") + " / TP >= " + str.tostring(minTargetAtrMultipleForEntry, "#.#") + "ATR"
@@ -1681,7 +1695,24 @@ var float displayShadowRunnerActivation = na
 var int displayShadowSignalBar = na
 var int displayShadowExpiresBar = na
 var string displayShadowCancelReason = ""
+var int displayShadowFlowId = na
+var int displayShadowFlowLastBar = na
+var float displayShadowFlowLastY = na
+var line displayShadowPlanEntryLine = na
+var line displayShadowPlanStopLine = na
+var line displayShadowPlanTargetLine = na
+var line displayShadowPlanRunnerLine = na
 var int displayEodForceCloseDay = na
+var int signalFlowSeq = 0
+var int activeFlowId = na
+var int activeFlowDirection = 0
+var string activeFlowSetup = ""
+var int activeFlowLastBar = na
+var float activeFlowLastY = na
+var array<label> signalEventFlowLabels = array.new_label()
+var array<int> signalEventFlowLabelSetSizes = array.new_int()
+var array<line> signalEventFlowConnectors = array.new_line()
+var array<int> signalEventFlowConnectorSetSizes = array.new_int()
 if isNewTradingDay
     displayShadowPendingEntry := false
     displayShadowEntryTouched := false
@@ -1695,7 +1726,15 @@ if isNewTradingDay
     displayShadowSignalBar := na
     displayShadowExpiresBar := na
     displayShadowCancelReason := ""
+    displayShadowFlowId := na
+    displayShadowFlowLastBar := na
+    displayShadowFlowLastY := na
     displayEodForceCloseDay := na
+    activeFlowId := na
+    activeFlowDirection := 0
+    activeFlowSetup := ""
+    activeFlowLastBar := na
+    activeFlowLastY := na
 
 int displayEodCloseHourNow = hour(time_close, "America/New_York")
 int displayEodCloseMinuteNow = minute(time_close, "America/New_York")
@@ -1754,10 +1793,29 @@ float displayLifecycleTarget = displayShadowTarget
 float displayLifecycleRunnerActivation = displayShadowRunnerActivation
 int displayLifecycleSignalBar = displayShadowSignalBar
 int displayLifecycleExpiresBar = displayShadowExpiresBar
+int displayLifecycleFlowId = displayShadowFlowId
 
 bool displayFlatForEntry = not displayShadowPendingEntry and not displayPendingEntryTouchedNow
 bool displayEnterLong = canOpenEntry and displayFlatForEntry and allowLong and longSignalCandidate and not shortSignalCandidate and not blockLong and not conflict
 bool displayEnterShort = canOpenEntry and displayFlatForEntry and allowShort and shortSignalCandidate and not longSignalCandidate and not blockShort and not conflict
+if showSignalEventFlow and displayEnterLong and (na(activeFlowId) or activeFlowDirection != 1 or (activeFlowSetup != "" and activeFlowSetup != longSetup))
+    signalFlowSeq += 1
+    activeFlowId := signalFlowSeq
+    activeFlowDirection := 1
+    activeFlowSetup := longSetup
+    activeFlowLastBar := na
+    activeFlowLastY := na
+    array.push(signalEventFlowLabelSetSizes, 0)
+    array.push(signalEventFlowConnectorSetSizes, 0)
+if showSignalEventFlow and displayEnterShort and (na(activeFlowId) or activeFlowDirection != -1 or (activeFlowSetup != "" and activeFlowSetup != shortSetup))
+    signalFlowSeq += 1
+    activeFlowId := signalFlowSeq
+    activeFlowDirection := -1
+    activeFlowSetup := shortSetup
+    activeFlowLastBar := na
+    activeFlowLastY := na
+    array.push(signalEventFlowLabelSetSizes, 0)
+    array.push(signalEventFlowConnectorSetSizes, 0)
 if showPendingEntryLifecycle and displayEnterLong
     displayShadowPendingEntry := true
     displayShadowEntryTouched := false
@@ -1771,6 +1829,9 @@ if showPendingEntryLifecycle and displayEnterLong
     displayShadowSignalBar := bar_index
     displayShadowExpiresBar := bar_index + entryOrderTtlBars
     displayShadowCancelReason := ""
+    displayShadowFlowId := activeFlowId
+    displayShadowFlowLastBar := activeFlowLastBar
+    displayShadowFlowLastY := activeFlowLastY
 if showPendingEntryLifecycle and displayEnterShort
     displayShadowPendingEntry := true
     displayShadowEntryTouched := false
@@ -1784,6 +1845,9 @@ if showPendingEntryLifecycle and displayEnterShort
     displayShadowSignalBar := bar_index
     displayShadowExpiresBar := bar_index + entryOrderTtlBars
     displayShadowCancelReason := ""
+    displayShadowFlowId := activeFlowId
+    displayShadowFlowLastBar := activeFlowLastBar
+    displayShadowFlowLastY := activeFlowLastY
 bool displayPreAlertNow = canOpenEntry and displayFlatForEntry and not displayEnterLong and not displayEnterShort and activityScore >= preAlertThreshold and activityScore < 100 and not conflict
 bool displayObserveNow = displayPreAlertNow
 bool pendingDisplayWaiting = showPendingEntryLifecycle and displayShadowPendingEntry
@@ -1796,16 +1860,52 @@ string candidateProgressText = componentProgressForSetup(candidateSetup, candida
 string candidateWaitText = waitComponentText(missingComponents)
 
 if flowLabelsVisible and lowerActivationEvent
+    int lowerFlowDirection = dtpBearDominant ? -1 : 1
+    string lowerFlowDirectionKey = lowerFlowDirection == -1 ? "short" : "long"
+    if showSignalEventFlow
+        signalFlowSeq += 1
+        activeFlowId := signalFlowSeq
+        activeFlowDirection := lowerFlowDirection
+        activeFlowSetup := ""
+        activeFlowLastBar := na
+        activeFlowLastY := na
+        array.push(signalEventFlowLabelSetSizes, 0)
+        array.push(signalEventFlowConnectorSetSizes, 0)
     string lowerActivateDecisionText = dtpBearDominant ? "\n方向裁决: DTP强空，SD下轨优先顺势空" : ""
-    string lowerActivateDetailText = "已入选候选池\n" + syminfo.ticker + " · SD窗口开启\nSD下轨候选\n非开仓点，等组件" + lowerActivateDecisionText
-    string lowerActivateCompactText = dtpBearDominant ? "候选 空·SD↓\n顺势优先" : "候选 多·SD↓\n等组件"
-    label.new(bar_index, low - atrVal * 1.4, flowLabelText(lowerActivateCompactText, lowerActivateDetailText), style=label.style_label_up, color=flowLabelColor("activate_lower", dtpBearDominant ? "short" : "long"), textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(lowerActivateDetailText))
+    string lowerActivateDetailText = flowEventDetailText(activeFlowId, 1, "候选", "已入选候选池\n" + syminfo.ticker + " · SD窗口开启\nSD下轨候选\n非开仓点，等组件" + lowerActivateDecisionText)
+    string lowerActivateCompactText = flowEventCompactText(activeFlowId, 1, "候选", dtpBearDominant ? "空·SD↓\n顺势优先" : "多·SD↓\n等组件")
+    float lowerActivateY = low - atrVal * 1.4
+    label lowerActivateLabel = label.new(bar_index, lowerActivateY, flowLabelText(lowerActivateCompactText, lowerActivateDetailText), style=label.style_label_up, color=flowLabelColor("activate_lower", lowerFlowDirectionKey), textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(lowerActivateDetailText))
+    if showSignalEventFlow
+        array.push(signalEventFlowLabels, lowerActivateLabel)
+        int lowerLabelSetIndex = array.size(signalEventFlowLabelSetSizes) - 1
+        array.set(signalEventFlowLabelSetSizes, lowerLabelSetIndex, array.get(signalEventFlowLabelSetSizes, lowerLabelSetIndex) + 1)
+        activeFlowLastBar := bar_index
+        activeFlowLastY := lowerActivateY
 
 if flowLabelsVisible and upperActivationEvent
+    int upperFlowDirection = dtpBullDominant ? 1 : -1
+    string upperFlowDirectionKey = upperFlowDirection == 1 ? "long" : "short"
+    if showSignalEventFlow
+        signalFlowSeq += 1
+        activeFlowId := signalFlowSeq
+        activeFlowDirection := upperFlowDirection
+        activeFlowSetup := ""
+        activeFlowLastBar := na
+        activeFlowLastY := na
+        array.push(signalEventFlowLabelSetSizes, 0)
+        array.push(signalEventFlowConnectorSetSizes, 0)
     string upperActivateDecisionText = dtpBullDominant ? "\n方向裁决: DTP强多，SD上轨优先顺势多" : ""
-    string upperActivateDetailText = "已入选候选池\n" + syminfo.ticker + " · SD窗口开启\nSD上轨候选\n非开仓点，等组件" + upperActivateDecisionText
-    string upperActivateCompactText = dtpBullDominant ? "候选 多·SD↑\n顺势优先" : "候选 空·SD↑\n等组件"
-    label.new(bar_index, high + atrVal * 1.4, flowLabelText(upperActivateCompactText, upperActivateDetailText), style=label.style_label_down, color=flowLabelColor("activate_upper", dtpBullDominant ? "long" : "short"), textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(upperActivateDetailText))
+    string upperActivateDetailText = flowEventDetailText(activeFlowId, 1, "候选", "已入选候选池\n" + syminfo.ticker + " · SD窗口开启\nSD上轨候选\n非开仓点，等组件" + upperActivateDecisionText)
+    string upperActivateCompactText = flowEventCompactText(activeFlowId, 1, "候选", dtpBullDominant ? "多·SD↑\n顺势优先" : "空·SD↑\n等组件")
+    float upperActivateY = high + atrVal * 1.4
+    label upperActivateLabel = label.new(bar_index, upperActivateY, flowLabelText(upperActivateCompactText, upperActivateDetailText), style=label.style_label_down, color=flowLabelColor("activate_upper", upperFlowDirectionKey), textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(upperActivateDetailText))
+    if showSignalEventFlow
+        array.push(signalEventFlowLabels, upperActivateLabel)
+        int upperLabelSetIndex = array.size(signalEventFlowLabelSetSizes) - 1
+        array.set(signalEventFlowLabelSetSizes, upperLabelSetIndex, array.get(signalEventFlowLabelSetSizes, upperLabelSetIndex) + 1)
+        activeFlowLastBar := bar_index
+        activeFlowLastY := upperActivateY
 
 var string lastPrepareVisualKey = ""
 if isNewTradingDay
@@ -1813,10 +1913,33 @@ if isNewTradingDay
 string prepareVisualKey = activityGrade + ":" + candidateDirection + ":" + candidateSetup + ":" + missingComponents + ":" + str.tostring(activityScore, "#")
 if flowLabelsVisible and displayObserveNow and prepareVisualKey != lastPrepareVisualKey
     float prepareY = candidateDirection == "short" ? high + atrVal * 2.4 : low - atrVal * 2.4
+    int prepareFlowDirection = candidateDirection == "short" ? -1 : 1
+    bool prepareMatchesActiveFlow = showSignalEventFlow and not na(activeFlowId) and activeFlowDirection == prepareFlowDirection
+    if showSignalEventFlow and not prepareMatchesActiveFlow
+        signalFlowSeq += 1
+        activeFlowId := signalFlowSeq
+        activeFlowDirection := prepareFlowDirection
+        activeFlowSetup := candidateSetup
+        activeFlowLastBar := na
+        activeFlowLastY := na
+        array.push(signalEventFlowLabelSetSizes, 0)
+        array.push(signalEventFlowConnectorSetSizes, 0)
+    activeFlowSetup := showSignalEventFlow ? candidateSetup : activeFlowSetup
+    if showSignalEventFlow and not na(activeFlowLastBar)
+        line prepareConnector = line.new(activeFlowLastBar, activeFlowLastY, bar_index, prepareY, color=color.new(color.white, 72), width=1)
+        array.push(signalEventFlowConnectors, prepareConnector)
+        int prepareConnectorSetIndex = array.size(signalEventFlowConnectorSetSizes) - 1
+        array.set(signalEventFlowConnectorSetSizes, prepareConnectorSetIndex, array.get(signalEventFlowConnectorSetSizes, prepareConnectorSetIndex) + 1)
     string candidateDirectionDecisionText = bullTrendContinuationContext and candidateSetup == "trend_sdUpper" ? "\n方向裁决: DTP强多，SD上轨优先顺势多" : bearTrendContinuationContext and candidateSetup == "trend_sdLower" ? "\n方向裁决: DTP强空，SD下轨优先顺势空" : ""
-    string prepareDetailText = "观察" + directionDisplayName(candidateDirection) + "\n" + setupDisplayName(candidateSetup) + candidateDirectionDecisionText + "\n组件: " + candidateComponentText + "\nMTF: " + mtfSummaryForDirection(candidateDirection) + "\n下一步: " + candidateWaitText
-    string prepareCompactText = "观察 " + decisionDirectionTag(candidateDirection) + "·" + decisionSetupTag(candidateSetup) + "\n" + decisionComponentLine(candidateProgressText, candidateWaitText)
-    label.new(bar_index, prepareY, flowLabelText(prepareCompactText, prepareDetailText), style=flowLabelStyle(candidateDirection), color=color.new(color.orange, flowLabelTransparency), textcolor=color.white, size=size.normal, tooltip=flowLabelTooltip(prepareDetailText))
+    string prepareDetailText = flowEventDetailText(activeFlowId, 2, "观察", "观察" + directionDisplayName(candidateDirection) + "\n" + setupDisplayName(candidateSetup) + candidateDirectionDecisionText + "\n" + entryWindowDiagnosticsText() + "\n组件: " + candidateComponentText + "\nMTF: " + mtfSummaryForDirection(candidateDirection) + "\n下一步: " + candidateWaitText)
+    string prepareCompactText = flowEventCompactText(activeFlowId, 2, "观察", decisionDirectionTag(candidateDirection) + "·" + decisionSetupTag(candidateSetup) + "\n" + decisionComponentLine(candidateProgressText, candidateWaitText))
+    label prepareLabel = label.new(bar_index, prepareY, flowLabelText(prepareCompactText, prepareDetailText), style=flowLabelStyle(candidateDirection), color=color.new(color.orange, flowLabelTransparency), textcolor=color.white, size=size.normal, tooltip=flowLabelTooltip(prepareDetailText))
+    if showSignalEventFlow
+        array.push(signalEventFlowLabels, prepareLabel)
+        int prepareLabelSetIndex = array.size(signalEventFlowLabelSetSizes) - 1
+        array.set(signalEventFlowLabelSetSizes, prepareLabelSetIndex, array.get(signalEventFlowLabelSetSizes, prepareLabelSetIndex) + 1)
+        activeFlowLastBar := bar_index
+        activeFlowLastY := prepareY
     lastPrepareVisualKey := prepareVisualKey
 if not displayObserveNow and activityScore == 0
     lastPrepareVisualKey := ""
@@ -1837,49 +1960,142 @@ float blockedStructureRewardRisk = blockedDirection == "long" ? longStructureRew
 float blockedTargetDistanceAtr = blockedDirection == "long" ? longTargetDistanceAtr : shortTargetDistanceAtr
 string blockedProfitSecondaryReason = blockedProfitSpaceEntryBlocked ? profitFailureDisplayName(blockedProfitSpaceFailureReason) : ""
 string blockedSecondaryText = blockedProfitSecondaryReason != "" and blockedReason != "profit_space_too_small" and blockedReason != "mr_target_space_too_small" ? "\n次因: " + blockedProfitSecondaryReason : ""
+int blockedFlowDirection = blockedDirection == "short" ? -1 : 1
+bool blockedBelongsToActiveFlow = showSignalEventFlow and not na(activeFlowId) and activeFlowDirection == blockedFlowDirection
+bool blockedFlowVisible = blockedBelongsToActiveFlow or showRawDiagnosticLabels or displayDebugMode
 var string lastBlockVisualKey = ""
 if isNewTradingDay
     lastBlockVisualKey := ""
 string blockedVisualKey = blockedDirection + ":" + blockedSetup + ":" + blockedReason + ":" + blockedComponentText + ":" + mtfStatusForDirection(blockedDirection) + ":" + mtfBlockReasonForDirection(blockedDirection) + ":" + str.tostring(dtpDir, "#") + ":" + dtpPhase + ":" + (blockedProfitSpaceEntryBlocked ? blockedProfitSpaceFailureReason : "none")
-if flowLabelsVisible and showSignalDiagnostics and not pendingDisplayWaiting and blockedNow and blockedVisualKey != lastBlockVisualKey
+if flowLabelsVisible and showSignalDiagnostics and blockedFlowVisible and not pendingDisplayWaiting and blockedNow and blockedVisualKey != lastBlockVisualKey
     float blockedY = blockedDirection == "short" ? high + atrVal * 4.0 : low - atrVal * 4.0
+    if showSignalEventFlow and not blockedBelongsToActiveFlow
+        signalFlowSeq += 1
+        activeFlowId := signalFlowSeq
+        activeFlowDirection := blockedFlowDirection
+        activeFlowSetup := blockedSetup
+        activeFlowLastBar := na
+        activeFlowLastY := na
+        array.push(signalEventFlowLabelSetSizes, 0)
+        array.push(signalEventFlowConnectorSetSizes, 0)
+    if showSignalEventFlow and blockedBelongsToActiveFlow and not na(activeFlowLastBar)
+        line blockedConnector = line.new(activeFlowLastBar, activeFlowLastY, bar_index, blockedY, color=color.new(color.gray, 60), width=1)
+        array.push(signalEventFlowConnectors, blockedConnector)
+        int blockedConnectorSetIndex = array.size(signalEventFlowConnectorSetSizes) - 1
+        array.set(signalEventFlowConnectorSetSizes, blockedConnectorSetIndex, array.get(signalEventFlowConnectorSetSizes, blockedConnectorSetIndex) + 1)
     string blockedProfitText = blockedDirection == "long" ? profitSpaceSummaryText(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr, longStructureRewardRisk) : profitSpaceSummaryText(shortExpectedNetProfit, shortExpectedNetRoiPct, shortCostPctOfReward, shortTargetDistanceAtr, shortStructureRewardRisk)
-    string blockedDetailText = "信号过滤\n" + directionDisplayName(blockedDirection) + " · " + setupDisplayName(blockedSetup) + "\n" + entryWindowDiagnosticsText() + "\n组件: " + blockedComponentText + "\n主因: " + filterDisplayName(blockedReason) + blockedSecondaryText + "\n" + filterActionText(blockedReason, blockedDirection) + "\n" + mtfSummaryForDirection(blockedDirection) + "\n" + dtpEntryFilterText(blockedDirection, dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\n" + blockedProfitText
+    string blockedDetailText = flowEventDetailText(activeFlowId, 4, "过滤", "信号过滤\n" + directionDisplayName(blockedDirection) + " · " + setupDisplayName(blockedSetup) + "\n" + entryWindowDiagnosticsText() + "\n组件: " + blockedComponentText + "\n主因: " + filterDisplayName(blockedReason) + blockedSecondaryText + "\n" + filterActionText(blockedReason, blockedDirection) + "\n" + mtfSummaryForDirection(blockedDirection) + "\n" + dtpEntryFilterText(blockedDirection, dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\n" + blockedProfitText)
     string blockedCompactReasonText = decisionBlockReason(blockedReason, blockedProfitSpaceEntryBlocked ? blockedProfitSpaceFailureReason : "none")
     string blockedCompactMetricText = blockedProfitSpaceEntryBlocked ? " / " + decisionProfitMetricLine(blockedStructureRewardRisk, blockedTargetDistanceAtr) : ""
-    string blockedCompactText = "过滤 " + decisionDirectionTag(blockedDirection) + "·" + decisionSetupTag(blockedSetup) + "\n" + blockedCompactReasonText + blockedCompactMetricText
-    label.new(bar_index, blockedY, flowLabelText(blockedCompactText, blockedDetailText), style=flowLabelStyle(blockedDirection), color=flowLabelColor("blocked", blockedDirection), textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(blockedDetailText))
+    string blockedCompactText = flowEventCompactText(activeFlowId, 4, "过滤", decisionDirectionTag(blockedDirection) + "·" + decisionSetupTag(blockedSetup) + "\n" + blockedCompactReasonText + blockedCompactMetricText)
+    label blockedLabel = label.new(bar_index, blockedY, flowLabelText(blockedCompactText, blockedDetailText), style=flowLabelStyle(blockedDirection), color=flowLabelColor("blocked", blockedDirection), textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(blockedDetailText))
+    if showSignalEventFlow
+        array.push(signalEventFlowLabels, blockedLabel)
+        int blockedLabelSetIndex = array.size(signalEventFlowLabelSetSizes) - 1
+        array.set(signalEventFlowLabelSetSizes, blockedLabelSetIndex, array.get(signalEventFlowLabelSetSizes, blockedLabelSetIndex) + 1)
+        activeFlowLastBar := bar_index
+        activeFlowLastY := blockedY
     lastBlockVisualKey := blockedVisualKey
 if not blockedNow and not longRaw and not shortRaw
     lastBlockVisualKey := ""
 
 if flowLabelsVisible and displayEnterLong
+    float longEntryY = low - atrVal * 3.1
+    int longEntryFlowId = activeFlowId
+    if showSignalEventFlow and not na(activeFlowLastBar)
+        line longEntryConnector = line.new(activeFlowLastBar, activeFlowLastY, bar_index, longEntryY, color=color.new(color.green, 58), width=1)
+        array.push(signalEventFlowConnectors, longEntryConnector)
+        int longEntryConnectorSetIndex = array.size(signalEventFlowConnectorSetSizes) - 1
+        array.set(signalEventFlowConnectorSetSizes, longEntryConnectorSetIndex, array.get(signalEventFlowConnectorSetSizes, longEntryConnectorSetIndex) + 1)
     string directionDecisionLine = longSetup == "trend_sdUpper" and bullTrendContinuationContext ? "\n方向裁决: DTP强多，SD上轨优先顺势多" : ""
-    string longEntryDetailText = "信号满足\nCore计划挂多\n" + setupDisplayName(longSetup) + directionDecisionLine + "\n" + entryWindowDiagnosticsText() + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("long") + "\n" + dtpEntryFilterText("long", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\nref " + str.tostring(longReferenceEntry, "#.##") + " / plan " + str.tostring(longEntryCandidate, "#.##")
-    string longEntryCompactText = "待触及 多·" + decisionSetupTag(longSetup) + " " + str.tostring(longEntryCandidate, "#.##") + "\n" + decisionRiskLine(longEntryCandidate, longStopCandidate, longTargetCandidate, longStructureRewardRisk, longTargetDistanceAtr)
-    label.new(bar_index, low - atrVal * 3.1, flowLabelText(longEntryCompactText, longEntryDetailText), style=label.style_label_up, color=flowLabelColor("entry", "long"), textcolor=color.white, size=size.normal, tooltip=flowLabelTooltip(longEntryDetailText))
+    string longEntryDetailText = "信号满足\nCore计划挂多\n" + setupDisplayName(longSetup) + directionDecisionLine + "\n" + entryWindowDiagnosticsText() + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("long") + "\n" + dtpEntryFilterText("long", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\n信号bar: " + str.tostring(bar_index, "#") + " / 计划过期bar: " + str.tostring(bar_index + entryOrderTtlBars, "#") + "\nref " + str.tostring(longReferenceEntry, "#.##") + " / plan " + str.tostring(longEntryCandidate, "#.##")
+    string longEntryFlowDetailText = flowEventDetailText(longEntryFlowId, 3, "挂单", longEntryDetailText)
+    string longEntryCompactText = flowEventCompactText(longEntryFlowId, 3, "挂单", "待触及 多·" + decisionSetupTag(longSetup) + " " + str.tostring(longEntryCandidate, "#.##") + "\n" + decisionRiskLine(longEntryCandidate, longStopCandidate, longTargetCandidate, longStructureRewardRisk, longTargetDistanceAtr))
+    label longEntryLabel = label.new(bar_index, longEntryY, flowLabelText(longEntryCompactText, longEntryFlowDetailText), style=label.style_label_up, color=flowLabelColor("entry", "long"), textcolor=color.white, size=size.normal, tooltip=flowLabelTooltip(longEntryFlowDetailText))
+    if showSignalEventFlow
+        array.push(signalEventFlowLabels, longEntryLabel)
+        int longEntryLabelSetIndex = array.size(signalEventFlowLabelSetSizes) - 1
+        array.set(signalEventFlowLabelSetSizes, longEntryLabelSetIndex, array.get(signalEventFlowLabelSetSizes, longEntryLabelSetIndex) + 1)
+        activeFlowLastBar := bar_index
+        activeFlowLastY := longEntryY
+        displayShadowFlowLastBar := bar_index
+        displayShadowFlowLastY := longEntryY
 
 if flowLabelsVisible and displayEnterShort
+    float shortEntryY = high + atrVal * 3.1
+    int shortEntryFlowId = activeFlowId
+    if showSignalEventFlow and not na(activeFlowLastBar)
+        line shortEntryConnector = line.new(activeFlowLastBar, activeFlowLastY, bar_index, shortEntryY, color=color.new(color.red, 58), width=1)
+        array.push(signalEventFlowConnectors, shortEntryConnector)
+        int shortEntryConnectorSetIndex = array.size(signalEventFlowConnectorSetSizes) - 1
+        array.set(signalEventFlowConnectorSetSizes, shortEntryConnectorSetIndex, array.get(signalEventFlowConnectorSetSizes, shortEntryConnectorSetIndex) + 1)
     string directionDecisionLine = shortSetup == "trend_sdLower" and bearTrendContinuationContext ? "\n方向裁决: DTP强空，SD下轨优先顺势空" : ""
-    string shortEntryDetailText = "信号满足\nCore计划挂空\n" + setupDisplayName(shortSetup) + directionDecisionLine + "\n" + entryWindowDiagnosticsText() + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("short") + "\n" + dtpEntryFilterText("short", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\nref " + str.tostring(shortReferenceEntry, "#.##") + " / plan " + str.tostring(shortEntryCandidate, "#.##")
-    string shortEntryCompactText = "待触及 空·" + decisionSetupTag(shortSetup) + " " + str.tostring(shortEntryCandidate, "#.##") + "\n" + decisionRiskLine(shortEntryCandidate, shortStopCandidate, shortTargetCandidate, shortStructureRewardRisk, shortTargetDistanceAtr)
-    label.new(bar_index, high + atrVal * 3.1, flowLabelText(shortEntryCompactText, shortEntryDetailText), style=label.style_label_down, color=flowLabelColor("entry", "short"), textcolor=color.white, size=size.normal, tooltip=flowLabelTooltip(shortEntryDetailText))
+    string shortEntryDetailText = "信号满足\nCore计划挂空\n" + setupDisplayName(shortSetup) + directionDecisionLine + "\n" + entryWindowDiagnosticsText() + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("short") + "\n" + dtpEntryFilterText("short", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\n信号bar: " + str.tostring(bar_index, "#") + " / 计划过期bar: " + str.tostring(bar_index + entryOrderTtlBars, "#") + "\nref " + str.tostring(shortReferenceEntry, "#.##") + " / plan " + str.tostring(shortEntryCandidate, "#.##")
+    string shortEntryFlowDetailText = flowEventDetailText(shortEntryFlowId, 3, "挂单", shortEntryDetailText)
+    string shortEntryCompactText = flowEventCompactText(shortEntryFlowId, 3, "挂单", "待触及 空·" + decisionSetupTag(shortSetup) + " " + str.tostring(shortEntryCandidate, "#.##") + "\n" + decisionRiskLine(shortEntryCandidate, shortStopCandidate, shortTargetCandidate, shortStructureRewardRisk, shortTargetDistanceAtr))
+    label shortEntryLabel = label.new(bar_index, shortEntryY, flowLabelText(shortEntryCompactText, shortEntryFlowDetailText), style=label.style_label_down, color=flowLabelColor("entry", "short"), textcolor=color.white, size=size.normal, tooltip=flowLabelTooltip(shortEntryFlowDetailText))
+    if showSignalEventFlow
+        array.push(signalEventFlowLabels, shortEntryLabel)
+        int shortEntryLabelSetIndex = array.size(signalEventFlowLabelSetSizes) - 1
+        array.set(signalEventFlowLabelSetSizes, shortEntryLabelSetIndex, array.get(signalEventFlowLabelSetSizes, shortEntryLabelSetIndex) + 1)
+        activeFlowLastBar := bar_index
+        activeFlowLastY := shortEntryY
+        displayShadowFlowLastBar := bar_index
+        displayShadowFlowLastY := shortEntryY
 
 if flowLabelsVisible and showPendingEntryLifecycle and displayPendingEntryTouchedNow
     string pendingDirectionText = displayLifecycleDirection == 1 ? "多" : "空"
     string pendingTouchPriceText = displayLifecycleDirection == 1 ? "low " + str.tostring(low, "#.##") : "high " + str.tostring(high, "#.##")
-    string pendingTouchDetailText = "Core模拟触及\n" + directionDisplayName(displayLifecycleDirection == 1 ? "long" : "short") + " · " + setupDisplayName(displayLifecycleSetup) + "\nplan " + str.tostring(displayLifecycleEntry, "#.##") + " / " + pendingTouchPriceText + "\nsignal bar " + str.tostring(displayLifecycleSignalBar, "#") + " / touch bar " + str.tostring(bar_index, "#") + " / TTL " + str.tostring(entryOrderTtlBars, "#") + "\nDisplay shadow，不代表 TV strategy 已成交；真实成交看 Core Strategy Tester / Core entry_fill / 券商订单"
-    string pendingTouchCompactText = "Core模拟触及 " + pendingDirectionText + " " + str.tostring(displayLifecycleEntry, "#.##")
+    int pendingTouchFlowId = displayShadowFlowId
     float pendingTouchY = displayLifecycleDirection == 1 ? low - atrVal * 2.0 : high + atrVal * 2.0
-    label.new(bar_index, pendingTouchY, flowLabelText(pendingTouchCompactText, pendingTouchDetailText), style=flowLabelStyle(displayLifecycleDirection == 1 ? "long" : "short"), color=flowLabelColor("entry", displayLifecycleDirection == 1 ? "long" : "short"), textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(pendingTouchDetailText))
+    if showSignalEventFlow and not na(displayShadowFlowLastBar)
+        line pendingTouchConnector = line.new(displayShadowFlowLastBar, displayShadowFlowLastY, bar_index, pendingTouchY, color=color.new(color.teal, 55), width=1)
+        array.push(signalEventFlowConnectors, pendingTouchConnector)
+        int pendingTouchConnectorSetIndex = array.size(signalEventFlowConnectorSetSizes) - 1
+        array.set(signalEventFlowConnectorSetSizes, pendingTouchConnectorSetIndex, array.get(signalEventFlowConnectorSetSizes, pendingTouchConnectorSetIndex) + 1)
+    string pendingTouchDetailText = flowEventDetailText(pendingTouchFlowId, 4, "触及", "Core模拟触及\n" + directionDisplayName(displayLifecycleDirection == 1 ? "long" : "short") + " · " + setupDisplayName(displayLifecycleSetup) + "\nplan " + str.tostring(displayLifecycleEntry, "#.##") + " / " + pendingTouchPriceText + "\nsignal bar " + str.tostring(displayLifecycleSignalBar, "#") + " / touch bar " + str.tostring(bar_index, "#") + " / TTL " + str.tostring(entryOrderTtlBars, "#") + "\n当前状态: 触及计划价\nDisplay shadow，不代表 TV strategy 已成交；真实成交看 Core Strategy Tester / Core entry_fill / 券商订单")
+    string pendingTouchCompactText = flowEventCompactText(pendingTouchFlowId, 4, "触及", "Core模拟触及 " + pendingDirectionText + " " + str.tostring(displayLifecycleEntry, "#.##"))
+    label pendingTouchLabel = label.new(bar_index, pendingTouchY, flowLabelText(pendingTouchCompactText, pendingTouchDetailText), style=flowLabelStyle(displayLifecycleDirection == 1 ? "long" : "short"), color=flowLabelColor("entry", displayLifecycleDirection == 1 ? "long" : "short"), textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(pendingTouchDetailText))
+    if showSignalEventFlow
+        array.push(signalEventFlowLabels, pendingTouchLabel)
+        int pendingTouchLabelSetIndex = array.size(signalEventFlowLabelSetSizes) - 1
+        array.set(signalEventFlowLabelSetSizes, pendingTouchLabelSetIndex, array.get(signalEventFlowLabelSetSizes, pendingTouchLabelSetIndex) + 1)
+        displayShadowFlowLastBar := bar_index
+        displayShadowFlowLastY := pendingTouchY
 
 if flowLabelsVisible and showPendingEntryLifecycle and displayPendingCancelNow
     string pendingDirectionText = displayLifecycleDirection == 1 ? "多" : "空"
-    string pendingCancelDetailText = "撤销挂单\n" + directionDisplayName(displayLifecycleDirection == 1 ? "long" : "short") + " · " + setupDisplayName(displayLifecycleSetup) + "\nCore模拟撤销: " + displayPendingCancelReason + "\n原因: " + cancelReasonDisplayName(displayPendingCancelReason) + "\nplan " + str.tostring(displayLifecycleEntry, "#.##") + "\nsignal bar " + str.tostring(displayLifecycleSignalBar, "#") + " / expires bar " + str.tostring(displayLifecycleExpiresBar, "#") + "\nDisplay shadow，仅复刻 Core 挂单生命周期；真实撤单看 Core cancel alert / Strategy Tester / 券商订单"
-    string pendingCancelCompactText = "撤销挂单 " + pendingDirectionText + " " + cancelReasonDisplayName(displayPendingCancelReason)
+    int pendingCancelFlowId = displayShadowFlowId
     float pendingCancelY = displayLifecycleDirection == 1 ? low - atrVal * 2.0 : high + atrVal * 2.0
+    if showSignalEventFlow and not na(displayShadowFlowLastBar)
+        line pendingCancelConnector = line.new(displayShadowFlowLastBar, displayShadowFlowLastY, bar_index, pendingCancelY, color=color.new(color.orange, 50), width=1)
+        array.push(signalEventFlowConnectors, pendingCancelConnector)
+        int pendingCancelConnectorSetIndex = array.size(signalEventFlowConnectorSetSizes) - 1
+        array.set(signalEventFlowConnectorSetSizes, pendingCancelConnectorSetIndex, array.get(signalEventFlowConnectorSetSizes, pendingCancelConnectorSetIndex) + 1)
+    string pendingCancelDetailText = flowEventDetailText(pendingCancelFlowId, 4, "撤销", "撤销挂单\n" + directionDisplayName(displayLifecycleDirection == 1 ? "long" : "short") + " · " + setupDisplayName(displayLifecycleSetup) + "\nCore模拟撤销: " + displayPendingCancelReason + "\n原因: " + cancelReasonDisplayName(displayPendingCancelReason) + "\nplan " + str.tostring(displayLifecycleEntry, "#.##") + "\nsignal bar " + str.tostring(displayLifecycleSignalBar, "#") + " / expires bar " + str.tostring(displayLifecycleExpiresBar, "#") + "\n当前状态: " + cancelReasonDisplayName(displayPendingCancelReason) + "\nDisplay shadow，仅复刻 Core 挂单生命周期；真实撤单看 Core cancel alert / Strategy Tester / 券商订单")
+    string pendingCancelCompactText = flowEventCompactText(pendingCancelFlowId, 4, "撤销", "撤销挂单 " + pendingDirectionText + " " + cancelReasonDisplayName(displayPendingCancelReason))
     color displayCancelColor = color.new(displayLifecycleDirection == 1 ? color.orange : color.red, flowLabelTransparency)
-    label.new(bar_index, pendingCancelY, flowLabelText(pendingCancelCompactText, pendingCancelDetailText), style=flowLabelStyle(displayLifecycleDirection == 1 ? "long" : "short"), color=displayCancelColor, textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(pendingCancelDetailText))
+    label pendingCancelLabel = label.new(bar_index, pendingCancelY, flowLabelText(pendingCancelCompactText, pendingCancelDetailText), style=flowLabelStyle(displayLifecycleDirection == 1 ? "long" : "short"), color=displayCancelColor, textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(pendingCancelDetailText))
+    if showSignalEventFlow
+        array.push(signalEventFlowLabels, pendingCancelLabel)
+        int pendingCancelLabelSetIndex = array.size(signalEventFlowLabelSetSizes) - 1
+        array.set(signalEventFlowLabelSetSizes, pendingCancelLabelSetIndex, array.get(signalEventFlowLabelSetSizes, pendingCancelLabelSetIndex) + 1)
+        displayShadowFlowLastBar := bar_index
+        displayShadowFlowLastY := pendingCancelY
+
+while array.size(signalEventFlowLabelSetSizes) > maxSignalEventFlows
+    int oldestFlowLabelCount = array.shift(signalEventFlowLabelSetSizes)
+    int oldestFlowConnectorCount = array.size(signalEventFlowConnectorSetSizes) > 0 ? array.shift(signalEventFlowConnectorSetSizes) : 0
+    if oldestFlowLabelCount > 0
+        for deleteFlowLabelIndex = 0 to oldestFlowLabelCount - 1
+            if array.size(signalEventFlowLabels) > 0
+                label oldestFlowLabel = array.shift(signalEventFlowLabels)
+                label.delete(oldestFlowLabel)
+    if oldestFlowConnectorCount > 0
+        for deleteFlowLineIndex = 0 to oldestFlowConnectorCount - 1
+            if array.size(signalEventFlowConnectors) > 0
+                line oldestFlowConnector = array.shift(signalEventFlowConnectors)
+                line.delete(oldestFlowConnector)
 
 // -----------------------------------------------------------------------------
 // Visuals
@@ -1921,25 +2137,46 @@ var array<line> historicalPlanLines = array.new_line()
 var array<int> historicalPlanLineSetSizes = array.new_int()
 if historicalPlanSnapshotNow
     int historicalStartBar = bar_index
-    int historicalEndBar = bar_index + historicalPlanLineForwardBars
+    int historicalEndBar = bar_index + 1
     int historicalLineCount = 0
     line historicalEntryLine = line.new(historicalStartBar, displaySignalEntryPlan, historicalEndBar, displaySignalEntryPlan, color=color.new(color.yellow, 45), width=2)
     array.push(historicalPlanLines, historicalEntryLine)
+    displayShadowPlanEntryLine := historicalEntryLine
     historicalLineCount += 1
     if not na(displaySignalStopPlan)
         line historicalStopLine = line.new(historicalStartBar, displaySignalStopPlan, historicalEndBar, displaySignalStopPlan, color=color.new(color.red, 45), width=2)
         array.push(historicalPlanLines, historicalStopLine)
+        displayShadowPlanStopLine := historicalStopLine
         historicalLineCount += 1
+    else
+        displayShadowPlanStopLine := na
     if not na(displaySignalTargetPlan)
         line historicalTargetLine = line.new(historicalStartBar, displaySignalTargetPlan, historicalEndBar, displaySignalTargetPlan, color=color.new(color.green, 45), width=2)
         array.push(historicalPlanLines, historicalTargetLine)
+        displayShadowPlanTargetLine := historicalTargetLine
         historicalLineCount += 1
+    else
+        displayShadowPlanTargetLine := na
     if not na(displaySignalRunnerActivation)
         line historicalRunnerLine = line.new(historicalStartBar, displaySignalRunnerActivation, historicalEndBar, displaySignalRunnerActivation, color=color.new(color.blue, 45), width=2)
         array.push(historicalPlanLines, historicalRunnerLine)
+        displayShadowPlanRunnerLine := historicalRunnerLine
         historicalLineCount += 1
+    else
+        displayShadowPlanRunnerLine := na
     if historicalLineCount > 0
         array.push(historicalPlanLineSetSizes, historicalLineCount)
+bool flowPlanLinesShouldExtend = showHistoricalPlanLines and (pendingDisplayWaiting or displayPendingEntryTouchedNow or displayPendingCancelNow) and not na(displayLifecycleSignalBar)
+if flowPlanLinesShouldExtend
+    int flowPlanLineEndBar = bar_index > displayLifecycleSignalBar + 1 ? bar_index : displayLifecycleSignalBar + 1
+    if not na(displayShadowPlanEntryLine)
+        line.set_x2(displayShadowPlanEntryLine, flowPlanLineEndBar)
+    if not na(displayShadowPlanStopLine)
+        line.set_x2(displayShadowPlanStopLine, flowPlanLineEndBar)
+    if not na(displayShadowPlanTargetLine)
+        line.set_x2(displayShadowPlanTargetLine, flowPlanLineEndBar)
+    if not na(displayShadowPlanRunnerLine)
+        line.set_x2(displayShadowPlanRunnerLine, flowPlanLineEndBar)
 while array.size(historicalPlanLineSetSizes) > maxHistoricalPlanLineSets
     int oldestLineCount = array.shift(historicalPlanLineSetSizes)
     if oldestLineCount > 0
@@ -1947,6 +2184,13 @@ while array.size(historicalPlanLineSetSizes) > maxHistoricalPlanLineSets
             if array.size(historicalPlanLines) > 0
                 line oldestLine = array.shift(historicalPlanLines)
                 line.delete(oldestLine)
+while array.size(signalEventFlowConnectors) + array.size(historicalPlanLines) > 470
+    if array.size(signalEventFlowConnectors) > 0
+        line oldestOverflowConnector = array.shift(signalEventFlowConnectors)
+        line.delete(oldestOverflowConnector)
+    else if array.size(historicalPlanLines) > 0
+        line oldestOverflowPlanLine = array.shift(historicalPlanLines)
+        line.delete(oldestOverflowPlanLine)
 var line displayEntryLine = na
 var line displayStopLine = na
 var line displayTargetLine = na
@@ -1966,7 +2210,7 @@ if not displayPlanLinesActive
         displayRunnerLine := na
 else
     int planLineStartBar = na(displayPlanLineStartBar) ? bar_index : displayPlanLineStartBar
-    int planLineEndBar = bar_index + currentPlanLineForwardBars
+    int planLineEndBar = bar_index > planLineStartBar + currentPlanLineMinBars ? bar_index : planLineStartBar + currentPlanLineMinBars
     if na(displayEntryLine)
         displayEntryLine := line.new(planLineStartBar, displayEntryPlan, planLineEndBar, displayEntryPlan, color=color.new(color.yellow, 0), width=3)
     else
@@ -2000,6 +2244,7 @@ var table flowStatus = table.new(position.top_right, 2, 7, border_width=1)
 string pendingDisplayStatus = displayPendingEntryTouchedNow ? "Core模拟触及" : displayPendingCancelNow ? "撤销挂单" : pendingDisplayWaiting ? "Core挂单中" : ""
 string pendingDisplayDirectionName = displayLifecycleDirection == 1 ? "做多" : displayLifecycleDirection == -1 ? "做空" : "--"
 string pendingDisplayDirectionKey = displayLifecycleDirection == 1 ? "long" : displayLifecycleDirection == -1 ? "short" : ""
+string statusFlowId = pendingDisplayStatus != "" ? flowIdText(displayLifecycleFlowId) : not na(activeFlowId) ? flowIdText(activeFlowId) : "--"
 string statusDirection = displayEnterShort ? "做空" : displayEnterLong ? "做多" : pendingDisplayStatus != "" ? pendingDisplayDirectionName : blockedNow ? directionDisplayName(blockedDirection) : activityScore > 0 ? directionDisplayName(candidateDirection) : "--"
 string statusText = displayEnterLong or displayEnterShort ? "Core挂单中" : pendingDisplayStatus != "" ? pendingDisplayStatus : blockedNow ? "过滤" + directionDisplayName(blockedDirection) : displayObserveNow ? "观察" + directionDisplayName(candidateDirection) : lowerWindowValid or upperWindowValid ? "窗口激活" : "等待"
 color statusColor = displayEnterLong ? flowStatusColor("entry", "long") : displayEnterShort ? flowStatusColor("entry", "short") : pendingDisplayStatus != "" and displayPendingCancelNow ? flowStatusColor("blocked", pendingDisplayDirectionKey) : pendingDisplayStatus != "" ? flowStatusColor("entry", pendingDisplayDirectionKey) : blockedNow ? flowStatusColor("blocked", blockedDirection) : displayObserveNow ? color.new(color.orange, 0) : lowerWindowValid ? flowStatusColor("activate_lower", dtpBearDominant ? "short" : "long") : upperWindowValid ? flowStatusColor("activate_upper", dtpBullDominant ? "long" : "short") : color.new(color.gray, 20)
@@ -2012,7 +2257,7 @@ string statusRiskBase = displayEnterLong ? "plan " + str.tostring(longEntryCandi
 string statusRisk = statusRiskBase == "--" ? statusRiskBase : statusRiskBase + planLineLegend
 if confirmed and showStatusPanel
     table.cell(flowStatus, 0, 0, "流程", bgcolor=statusColor, text_color=color.white)
-    table.cell(flowStatus, 1, 0, statusText, bgcolor=color.new(color.black, 0), text_color=color.white)
+    table.cell(flowStatus, 1, 0, showSignalEventFlow and statusFlowId != "--" ? statusFlowId + " · " + statusText : statusText, bgcolor=color.new(color.black, 0), text_color=color.white)
     table.cell(flowStatus, 0, 1, "标的", bgcolor=color.new(color.black, 15), text_color=color.white)
     table.cell(flowStatus, 1, 1, syminfo.ticker + " · " + timeframe.period, bgcolor=color.new(color.black, 15), text_color=color.white)
     table.cell(flowStatus, 0, 2, "方向", bgcolor=color.new(color.black, 15), text_color=color.white)

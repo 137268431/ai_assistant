@@ -1,4 +1,5 @@
 import sys
+import time
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -8,6 +9,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from ibkr_compute.order.order_lifecycle import OrderLifecycle
+from ibkr_compute.core.time_utils import ET
 
 
 class _FakeConfig:
@@ -29,16 +31,26 @@ class _FakeConfig:
 
 
 class _FakeBroker:
-    def __init__(self, positions=None, fill_result=None, positions_error=None):
+    def __init__(self, positions=None, fill_result=None, positions_error=None, market_snapshot=None, open_orders=None):
         self.positions = list(positions or [])
         self.fill_result = dict(fill_result or {})
         self.positions_error = positions_error
         self.fill_calls = []
+        self.market_snapshot = dict(market_snapshot or {})
+        self.market_snapshot_calls = []
+        self.open_orders = list(open_orders or [])
 
     def list_positions(self):
         if self.positions_error:
             raise RuntimeError(self.positions_error)
         return list(self.positions)
+
+    def list_open_orders(self, include_all=False):
+        return list(self.open_orders)
+
+    def request_market_data_snapshot(self, **kwargs):
+        self.market_snapshot_calls.append(dict(kwargs))
+        return dict(self.market_snapshot or {})
 
     def await_order_fill(self, order_id, **kwargs):
         self.fill_calls.append({"order_id": str(order_id), **dict(kwargs or {})})
@@ -64,6 +76,20 @@ class _FakePB:
     def get_records(self, collection, filter=None, sort=None, per_page=100, page=1):
         if collection == "orders":
             return [dict(item) for item in self.orders]
+        if collection == "ibkr_state":
+            rows = [dict(row) for row in self.states.values()]
+            if filter and "state_key" in filter:
+                if "order_lifecycle_eod_close:v1" in filter:
+                    rows = [row for row in rows if row.get("state_key") == "order_lifecycle_eod_close:v1"]
+                elif "order_lifecycle_risk:v1" in filter:
+                    rows = [row for row in rows if row.get("state_key") == "order_lifecycle_risk:v1"]
+            if filter and "environment" in filter:
+                if '"paper"' in filter:
+                    rows = [row for row in rows if row.get("environment") == "paper"]
+                elif '"live"' in filter:
+                    rows = [row for row in rows if row.get("environment") == "live"]
+            rows.sort(key=lambda row: str(row.get("date") or ""), reverse=str(sort or "").startswith("-"))
+            return rows[:per_page]
         return []
 
     def get_first_record(self, collection, filter=None, sort=None):
@@ -617,7 +643,7 @@ class OrderLifecycleRiskLimitTests(unittest.TestCase):
             config=_FakeConfig({"eod_close_time": "15:55"}),
         )
 
-        result = lifecycle.eod_close_all()
+        result = lifecycle.eod_close_all(et_now=datetime(2026, 6, 12, 15, 55, tzinfo=ET))
 
         self.assertFalse(result["ok"])
         self.assertTrue(result["position_snapshot_unavailable"])
@@ -646,17 +672,19 @@ class OrderLifecycleRiskLimitTests(unittest.TestCase):
             config=_FakeConfig({"eod_keep_symbols": "BOXX,IBKR"}),
         )
 
-        result = lifecycle.eod_close_all()
+        result = lifecycle.eod_close_all(et_now=datetime(2026, 6, 12, 15, 55, tzinfo=ET))
 
         self.assertTrue(result["ok"])
         self.assertEqual(1, result["closed"])
         self.assertTrue(lifecycle.status()["eod_closed_today"])
-        self.assertEqual([None], modifier.cancel_all_calls)
+        self.assertEqual([], modifier.cancel_all_calls)
         self.assertEqual(1, len(placer.closes))
         close = placer.closes[0]
         self.assertEqual("AAPL", close["symbol"])
         self.assertEqual("long", close["direction"])
         self.assertEqual(5, close["quantity"])
+        self.assertEqual("MKT", close["order_type"])
+        self.assertTrue(close["allow_market"])
         self.assertEqual("eod_force_close", close["source"])
         self.assertEqual("force_flat_eod", close["close_reason"])
         self.assertEqual([], pb.events)
@@ -674,16 +702,91 @@ class OrderLifecycleRiskLimitTests(unittest.TestCase):
             config=_FakeConfig({}),
         )
 
-        result = lifecycle.eod_close_all()
+        result = lifecycle.eod_close_all(et_now=datetime(2026, 6, 12, 15, 55, tzinfo=ET))
 
         self.assertFalse(result["ok"])
         self.assertEqual(1, result["errors"])
-        self.assertTrue(lifecycle.status()["eod_closed_today"])
+        self.assertFalse(lifecycle.status()["eod_closed_today"])
         self.assertEqual(1, len(placer.closes))
         self.assertEqual(1, len(pb.events))
-        self.assertEqual("EOD 平仓失败：需要人工确认", pb.events[0]["title"])
+        self.assertEqual("EOD 平仓失败且持仓无保护：需要立即人工确认", pb.events[0]["title"])
         self.assertEqual("error", pb.events[0]["level"])
         self.assertEqual("AAPL", pb.events[0]["detail"]["失败标的"])
+
+    def test_eod_close_live_without_price_does_not_submit_or_mark_done(self):
+        pb = _FakePB()
+        placer = _FakeOrderPlacer()
+        lifecycle = OrderLifecycle(
+            pb_client=pb,
+            order_placer=placer,
+            broker=_FakeBroker([{"ticker": "AAPL", "position": 5, "conid": 123}]),
+            environment="live",
+            config=_FakeConfig({"eod_close_allow_market_fallback": "false"}),
+        )
+
+        result = lifecycle.eod_close_all(et_now=datetime(2026, 6, 12, 15, 55, tzinfo=ET))
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(1, result["errors"])
+        self.assertEqual([], placer.closes)
+        self.assertFalse(lifecycle.status()["eod_closed_today"])
+        self.assertEqual("close_limit_price_unavailable", result["error_items"][0]["error"])
+        self.assertEqual("EOD 平仓失败且持仓无保护：需要立即人工确认", pb.events[0]["title"])
+
+    def test_eod_close_live_uses_latest_bar_price_fallback_as_limit(self):
+        pb = _FakePB(snapshot={"close": 101.0, "bar_time_ms": int(time.time() * 1000)})
+        placer = _FakeOrderPlacer()
+        lifecycle = OrderLifecycle(
+            pb_client=pb,
+            order_placer=placer,
+            broker=_FakeBroker([{"ticker": "AAPL", "position": 5, "conid": 123}]),
+            environment="live",
+            config=_FakeConfig({"eod_close_allow_market_fallback": "false"}),
+        )
+
+        result = lifecycle.eod_close_all(et_now=datetime(2026, 6, 12, 15, 55, tzinfo=ET))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(1, len(placer.closes))
+        self.assertEqual("LMT", placer.closes[0]["order_type"])
+        self.assertFalse(placer.closes[0]["allow_market"])
+        self.assertEqual("latest_5m_snapshot", placer.closes[0]["position_snapshot"]["eod_price_source"])
+        self.assertEqual(101.0, placer.closes[0]["position_snapshot"]["last_price"])
+
+    def test_eod_close_skips_weekends_without_submitting_orders(self):
+        pb = _FakePB()
+        placer = _FakeOrderPlacer()
+        lifecycle = OrderLifecycle(
+            pb_client=pb,
+            order_placer=placer,
+            broker=_FakeBroker([{"ticker": "AAPL", "position": 5, "conid": 123}]),
+            environment="paper",
+            config=_FakeConfig({}),
+        )
+
+        result = lifecycle.eod_close_all(et_now=datetime(2026, 6, 13, 15, 55, tzinfo=ET))
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["skipped"])
+        self.assertEqual("eod_non_trading_day", result["reason"])
+        self.assertTrue(lifecycle.status()["eod_closed_today"])
+        self.assertEqual([], placer.closes)
+        self.assertEqual([], pb.events)
+
+    def test_status_surfaces_persisted_eod_result_after_restart(self):
+        pb = _FakePB()
+        pb.upsert_state(
+            "order_lifecycle_eod_close:v1",
+            "paper",
+            {"ok": False, "reason": "eod_close_incomplete", "errors": 1, "date": "2026-06-12"},
+            date="2026-06-12",
+        )
+        lifecycle = OrderLifecycle(pb_client=pb, environment="paper", config=_FakeConfig({}))
+
+        status = lifecycle.status()
+
+        self.assertEqual("eod_close_incomplete", status["last_eod_close_result"]["reason"])
+        self.assertEqual(1, status["last_eod_close_result"]["errors"])
 
     def test_eod_close_window_closed_alerts_without_submitting_orders(self):
         pb = _FakePB()
