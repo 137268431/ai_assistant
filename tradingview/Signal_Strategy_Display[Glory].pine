@@ -1707,12 +1707,16 @@ var int signalFlowSeq = 0
 var int activeFlowId = na
 var int activeFlowDirection = 0
 var string activeFlowSetup = ""
+var bool activeFlowTerminal = false
+var int activeFlowStartBar = na
+var int activeFlowTerminalBar = na
 var int activeFlowLastBar = na
 var float activeFlowLastY = na
 var array<label> signalEventFlowLabels = array.new_label()
 var array<int> signalEventFlowLabelSetSizes = array.new_int()
 var array<line> signalEventFlowConnectors = array.new_line()
 var array<int> signalEventFlowConnectorSetSizes = array.new_int()
+int signalFlowAttachWindowBars = math.max(mrWindowBars, entryOrderTtlBars + pendingTrendRecheckBars + 1)
 if isNewTradingDay
     displayShadowPendingEntry := false
     displayShadowEntryTouched := false
@@ -1733,6 +1737,9 @@ if isNewTradingDay
     activeFlowId := na
     activeFlowDirection := 0
     activeFlowSetup := ""
+    activeFlowTerminal := false
+    activeFlowStartBar := na
+    activeFlowTerminalBar := na
     activeFlowLastBar := na
     activeFlowLastY := na
 
@@ -1747,6 +1754,9 @@ if displayPendingEntryTouchedNow
     displayShadowEntryExpired := false
     displayShadowCancelReason := ""
     displayShadowPendingEntry := false
+if showSignalEventFlow and displayPendingEntryTouchedNow and activeFlowId == displayShadowFlowId
+    activeFlowTerminal := true
+    activeFlowTerminalBar := bar_index
 
 bool displayPendingEntryExpiredNow = confirmed and showPendingEntryLifecycle and displayShadowPendingEntry and not na(displayShadowExpiresBar) and bar_index > displayShadowExpiresBar
 bool displayPendingEntryWindowExpired = confirmed and showPendingEntryLifecycle and displayShadowPendingEntry and not inEntryWindow
@@ -1784,6 +1794,9 @@ if displayPendingCancelNow
     displayShadowEntryExpired := displayPendingEntryExpiredNow
     displayShadowCancelReason := displayPendingCancelReason
     displayShadowPendingEntry := false
+if showSignalEventFlow and displayPendingCancelNow and activeFlowId == displayShadowFlowId
+    activeFlowTerminal := true
+    activeFlowTerminalBar := bar_index
 
 int displayLifecycleDirection = displayShadowDirection
 string displayLifecycleSetup = displayShadowSetup
@@ -1798,20 +1811,28 @@ int displayLifecycleFlowId = displayShadowFlowId
 bool displayFlatForEntry = not displayShadowPendingEntry and not displayPendingEntryTouchedNow
 bool displayEnterLong = canOpenEntry and displayFlatForEntry and allowLong and longSignalCandidate and not shortSignalCandidate and not blockLong and not conflict
 bool displayEnterShort = canOpenEntry and displayFlatForEntry and allowShort and shortSignalCandidate and not longSignalCandidate and not blockShort and not conflict
-if showSignalEventFlow and displayEnterLong and (na(activeFlowId) or activeFlowDirection != 1 or (activeFlowSetup != "" and activeFlowSetup != longSetup))
+bool longEntryMatchesActiveFlow = showSignalEventFlow and not na(activeFlowId) and not activeFlowTerminal and activeFlowDirection == 1 and (activeFlowSetup == "" or activeFlowSetup == longSetup) and not na(activeFlowStartBar) and bar_index - activeFlowStartBar <= signalFlowAttachWindowBars
+bool shortEntryMatchesActiveFlow = showSignalEventFlow and not na(activeFlowId) and not activeFlowTerminal and activeFlowDirection == -1 and (activeFlowSetup == "" or activeFlowSetup == shortSetup) and not na(activeFlowStartBar) and bar_index - activeFlowStartBar <= signalFlowAttachWindowBars
+if showSignalEventFlow and displayEnterLong and not longEntryMatchesActiveFlow
     signalFlowSeq += 1
     activeFlowId := signalFlowSeq
     activeFlowDirection := 1
     activeFlowSetup := longSetup
+    activeFlowTerminal := false
+    activeFlowStartBar := bar_index
+    activeFlowTerminalBar := na
     activeFlowLastBar := na
     activeFlowLastY := na
     array.push(signalEventFlowLabelSetSizes, 0)
     array.push(signalEventFlowConnectorSetSizes, 0)
-if showSignalEventFlow and displayEnterShort and (na(activeFlowId) or activeFlowDirection != -1 or (activeFlowSetup != "" and activeFlowSetup != shortSetup))
+if showSignalEventFlow and displayEnterShort and not shortEntryMatchesActiveFlow
     signalFlowSeq += 1
     activeFlowId := signalFlowSeq
     activeFlowDirection := -1
     activeFlowSetup := shortSetup
+    activeFlowTerminal := false
+    activeFlowStartBar := bar_index
+    activeFlowTerminalBar := na
     activeFlowLastBar := na
     activeFlowLastY := na
     array.push(signalEventFlowLabelSetSizes, 0)
@@ -1867,6 +1888,9 @@ if flowLabelsVisible and lowerActivationEvent
         activeFlowId := signalFlowSeq
         activeFlowDirection := lowerFlowDirection
         activeFlowSetup := ""
+        activeFlowTerminal := false
+        activeFlowStartBar := bar_index
+        activeFlowTerminalBar := na
         activeFlowLastBar := na
         activeFlowLastY := na
         array.push(signalEventFlowLabelSetSizes, 0)
@@ -1891,6 +1915,9 @@ if flowLabelsVisible and upperActivationEvent
         activeFlowId := signalFlowSeq
         activeFlowDirection := upperFlowDirection
         activeFlowSetup := ""
+        activeFlowTerminal := false
+        activeFlowStartBar := bar_index
+        activeFlowTerminalBar := na
         activeFlowLastBar := na
         activeFlowLastY := na
         array.push(signalEventFlowLabelSetSizes, 0)
@@ -1914,12 +1941,16 @@ string prepareVisualKey = activityGrade + ":" + candidateDirection + ":" + candi
 if flowLabelsVisible and displayObserveNow and prepareVisualKey != lastPrepareVisualKey
     float prepareY = candidateDirection == "short" ? high + atrVal * 2.4 : low - atrVal * 2.4
     int prepareFlowDirection = candidateDirection == "short" ? -1 : 1
-    bool prepareMatchesActiveFlow = showSignalEventFlow and not na(activeFlowId) and activeFlowDirection == prepareFlowDirection
+    bool prepareSetupMatchesActiveFlow = activeFlowSetup == "" or activeFlowSetup == candidateSetup
+    bool prepareMatchesActiveFlow = showSignalEventFlow and not na(activeFlowId) and not activeFlowTerminal and activeFlowDirection == prepareFlowDirection and prepareSetupMatchesActiveFlow and not na(activeFlowStartBar) and bar_index - activeFlowStartBar <= signalFlowAttachWindowBars
     if showSignalEventFlow and not prepareMatchesActiveFlow
         signalFlowSeq += 1
         activeFlowId := signalFlowSeq
         activeFlowDirection := prepareFlowDirection
         activeFlowSetup := candidateSetup
+        activeFlowTerminal := false
+        activeFlowStartBar := bar_index
+        activeFlowTerminalBar := na
         activeFlowLastBar := na
         activeFlowLastY := na
         array.push(signalEventFlowLabelSetSizes, 0)
@@ -1961,7 +1992,8 @@ float blockedTargetDistanceAtr = blockedDirection == "long" ? longTargetDistance
 string blockedProfitSecondaryReason = blockedProfitSpaceEntryBlocked ? profitFailureDisplayName(blockedProfitSpaceFailureReason) : ""
 string blockedSecondaryText = blockedProfitSecondaryReason != "" and blockedReason != "profit_space_too_small" and blockedReason != "mr_target_space_too_small" ? "\n次因: " + blockedProfitSecondaryReason : ""
 int blockedFlowDirection = blockedDirection == "short" ? -1 : 1
-bool blockedBelongsToActiveFlow = showSignalEventFlow and not na(activeFlowId) and activeFlowDirection == blockedFlowDirection
+bool blockedSetupMatchesActiveFlow = activeFlowSetup == "" or activeFlowSetup == blockedSetup
+bool blockedBelongsToActiveFlow = showSignalEventFlow and not na(activeFlowId) and not activeFlowTerminal and activeFlowDirection == blockedFlowDirection and blockedSetupMatchesActiveFlow and not na(activeFlowStartBar) and bar_index - activeFlowStartBar <= signalFlowAttachWindowBars
 bool blockedFlowVisible = blockedBelongsToActiveFlow or showRawDiagnosticLabels or displayDebugMode
 var string lastBlockVisualKey = ""
 if isNewTradingDay
@@ -1974,6 +2006,9 @@ if flowLabelsVisible and showSignalDiagnostics and blockedFlowVisible and not pe
         activeFlowId := signalFlowSeq
         activeFlowDirection := blockedFlowDirection
         activeFlowSetup := blockedSetup
+        activeFlowTerminal := false
+        activeFlowStartBar := bar_index
+        activeFlowTerminalBar := na
         activeFlowLastBar := na
         activeFlowLastY := na
         array.push(signalEventFlowLabelSetSizes, 0)
@@ -1995,6 +2030,8 @@ if flowLabelsVisible and showSignalDiagnostics and blockedFlowVisible and not pe
         array.set(signalEventFlowLabelSetSizes, blockedLabelSetIndex, array.get(signalEventFlowLabelSetSizes, blockedLabelSetIndex) + 1)
         activeFlowLastBar := bar_index
         activeFlowLastY := blockedY
+        activeFlowTerminal := true
+        activeFlowTerminalBar := bar_index
     lastBlockVisualKey := blockedVisualKey
 if not blockedNow and not longRaw and not shortRaw
     lastBlockVisualKey := ""
@@ -2062,6 +2099,9 @@ if flowLabelsVisible and showPendingEntryLifecycle and displayPendingEntryTouche
         array.set(signalEventFlowLabelSetSizes, pendingTouchLabelSetIndex, array.get(signalEventFlowLabelSetSizes, pendingTouchLabelSetIndex) + 1)
         displayShadowFlowLastBar := bar_index
         displayShadowFlowLastY := pendingTouchY
+        if activeFlowId == pendingTouchFlowId
+            activeFlowTerminal := true
+            activeFlowTerminalBar := bar_index
 
 if flowLabelsVisible and showPendingEntryLifecycle and displayPendingCancelNow
     string pendingDirectionText = displayLifecycleDirection == 1 ? "多" : "空"
@@ -2082,6 +2122,9 @@ if flowLabelsVisible and showPendingEntryLifecycle and displayPendingCancelNow
         array.set(signalEventFlowLabelSetSizes, pendingCancelLabelSetIndex, array.get(signalEventFlowLabelSetSizes, pendingCancelLabelSetIndex) + 1)
         displayShadowFlowLastBar := bar_index
         displayShadowFlowLastY := pendingCancelY
+        if activeFlowId == pendingCancelFlowId
+            activeFlowTerminal := true
+            activeFlowTerminalBar := bar_index
 
 while array.size(signalEventFlowLabelSetSizes) > maxSignalEventFlows
     int oldestFlowLabelCount = array.shift(signalEventFlowLabelSetSizes)
