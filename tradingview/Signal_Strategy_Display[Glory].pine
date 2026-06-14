@@ -353,6 +353,30 @@ nearestResistanceAbove(float referencePrice, float v1, float v2, float v3, float
     best := not na(v8) and v8 > 0.0 and v8 >= referencePrice and (na(best) or v8 < best) ? v8 : best
     na(best) ? fallback : best
 
+farthestResistanceAbove(float referencePrice, float v1, float v2, float v3, float v4, float v5, float v6, float v7, float v8, float fallback) =>
+    float best = na
+    best := not na(v1) and v1 > 0.0 and v1 >= referencePrice and (na(best) or v1 > best) ? v1 : best
+    best := not na(v2) and v2 > 0.0 and v2 >= referencePrice and (na(best) or v2 > best) ? v2 : best
+    best := not na(v3) and v3 > 0.0 and v3 >= referencePrice and (na(best) or v3 > best) ? v3 : best
+    best := not na(v4) and v4 > 0.0 and v4 >= referencePrice and (na(best) or v4 > best) ? v4 : best
+    best := not na(v5) and v5 > 0.0 and v5 >= referencePrice and (na(best) or v5 > best) ? v5 : best
+    best := not na(v6) and v6 > 0.0 and v6 >= referencePrice and (na(best) or v6 > best) ? v6 : best
+    best := not na(v7) and v7 > 0.0 and v7 >= referencePrice and (na(best) or v7 > best) ? v7 : best
+    best := not na(v8) and v8 > 0.0 and v8 >= referencePrice and (na(best) or v8 > best) ? v8 : best
+    na(best) ? fallback : best
+
+farthestSupportBelow(float referencePrice, float v1, float v2, float v3, float v4, float v5, float v6, float v7, float v8, float fallback) =>
+    float best = na
+    best := not na(v1) and v1 > 0.0 and v1 <= referencePrice and (na(best) or v1 < best) ? v1 : best
+    best := not na(v2) and v2 > 0.0 and v2 <= referencePrice and (na(best) or v2 < best) ? v2 : best
+    best := not na(v3) and v3 > 0.0 and v3 <= referencePrice and (na(best) or v3 < best) ? v3 : best
+    best := not na(v4) and v4 > 0.0 and v4 <= referencePrice and (na(best) or v4 < best) ? v4 : best
+    best := not na(v5) and v5 > 0.0 and v5 <= referencePrice and (na(best) or v5 < best) ? v5 : best
+    best := not na(v6) and v6 > 0.0 and v6 <= referencePrice and (na(best) or v6 < best) ? v6 : best
+    best := not na(v7) and v7 > 0.0 and v7 <= referencePrice and (na(best) or v7 < best) ? v7 : best
+    best := not na(v8) and v8 > 0.0 and v8 <= referencePrice and (na(best) or v8 < best) ? v8 : best
+    na(best) ? fallback : best
+
 componentFresh(int componentBar) =>
     not na(componentBar) and bar_index - componentBar <= mrComponentFreshBars
 
@@ -1324,10 +1348,18 @@ int shortMrUpperDirectionComponents = directionComponentCount(upperBearFractalFr
 int shortPostUpperBreakdownDirectionComponents = directionComponentCount(upperBearFractalFresh, bearDivFresh, upperBearEmaCrossFresh)
 int shortTrendLowerDirectionComponents = directionComponentCount(trendBearFractalFresh, bearDivFresh, trendBearEmaCrossFresh)
 int shortEmaDeathContinuationDirectionComponents = directionComponentCount(trendBearFractalFresh, bearDivFresh, trendBearEmaCrossFresh)
+bool trendLongPullbackRangeBreakout = upperBullContinuationFresh and upperBullContinuationLine == "break_support_range_high"
+bool trendLongPullbackReclaimSource = upperBullContinuationFresh and (trendLongPullbackRangeBreakout or str.contains(upperBullContinuationLine, "pullback_"))
+bool trendLongPullbackContinuationQualified = bullTrendContinuationContext and trendLongPullbackReclaimSource and (longTrendUpperDirectionComponents >= 1 or trendLongPullbackRangeBreakout)
+bool trendShortPullbackRangeBreakdown = lowerBearContinuationFresh and lowerBearContinuationLine == "break_resistance_range_low"
+bool trendShortPullbackReclaimSource = lowerBearContinuationFresh and (trendShortPullbackRangeBreakdown or str.contains(lowerBearContinuationLine, "pullback_"))
+bool trendShortPullbackContinuationQualified = bearTrendContinuationContext and trendShortPullbackReclaimSource and (shortTrendLowerDirectionComponents >= 1 or trendShortPullbackRangeBreakdown)
 bool longTrendUpperStructureOk = emaFast >= emaSlow and close >= sdReg and close >= emaSlow
 bool shortTrendLowerStructureOk = emaFast <= emaSlow and close <= sdReg and close <= emaSlow
 bool shortEmaDeathContinuationStructureOk = emaFast < emaSlow and close < emaSlow and close < sdReg
-bool setupLongTrendUpper = longTrendContextReady and upperBullTrendTriggerFresh and longTrendUpperDirectionComponents >= 2 and longTrendUpperStructureOk
+bool setupLongTrendUpperBase = longTrendContextReady and upperBullTrendTriggerFresh and longTrendUpperDirectionComponents >= 2 and longTrendUpperStructureOk
+bool setupLongTrendUpperPullback = longTrendContextReady and trendLongPullbackContinuationQualified and longTrendUpperStructureOk
+bool setupLongTrendUpper = setupLongTrendUpperBase or setupLongTrendUpperPullback
 bool setupLongMrLower = lowerMrWindowValid and longMrLowerDirectionComponents >= 2
 bool setupLongPostLowerBreakout = lowerSdExtremeFresh and not lowerPostReversalUsed and emaFast > emaSlow and close > emaSlow and lowerBullEmaCrossFresh and (lowerBullFractalFresh or bullDivFresh) and longPostLowerBreakoutDirectionComponents >= 2
 bool setupShortMrUpper = upperMrWindowValid and shortMrUpperDirectionComponents >= 2 and (not dtpBullDominant or bearishReversalContext)
@@ -1335,7 +1367,7 @@ bool setupShortPostUpperBreakdown = upperSdExtremeFresh and not upperPostReversa
 bool setupShortEmaDeathContinuation = not emaDeathContinuationShortUsed and not setupShortPostUpperBreakdown and shortEmaDeathContinuationStructureOk and (not dtpBullDominant or bearishReversalContext) and trendBearEmaCrossFresh and (trendBearFractalFresh or bearDivFresh) and shortEmaDeathContinuationDirectionComponents >= 2
 bool setupShortTrendLowerTouch = shortTrendContextReady and lowerBearTouchFresh and shortTrendLowerDirectionComponents >= 2 and shortTrendLowerStructureOk
 bool setupShortTrendLowerPullback = shortTrendContextReady and lowerBearPullbackFresh and shortTrendLowerDirectionComponents >= 2 and shortTrendLowerStructureOk
-bool setupShortTrendLowerContinuation = bearTrendContinuationContext and not trendShortResistanceLingerWait and lowerBearContinuationFresh and shortTrendLowerDirectionComponents >= 2 and shortTrendLowerStructureOk
+bool setupShortTrendLowerContinuation = bearTrendContinuationContext and not trendShortResistanceLingerWait and lowerBearContinuationFresh and (shortTrendLowerDirectionComponents >= 2 or trendShortPullbackContinuationQualified) and shortTrendLowerStructureOk
 bool setupShortTrendLower = setupShortTrendLowerTouch or setupShortTrendLowerPullback or setupShortTrendLowerContinuation
 bool longMrLowerComponentStale = lowerMrWindowValid and longMrLowerRawDirectionComponents >= 2 and longMrLowerDirectionComponents < 2
 bool shortMrUpperComponentStale = upperMrWindowValid and shortMrUpperRawDirectionComponents >= 2 and shortMrUpperDirectionComponents < 2
@@ -1348,8 +1380,8 @@ bool longRaw = allowLong and (longSignalCandidate or longStaleCandidate)
 bool shortRaw = allowShort and (shortSignalCandidate or shortStaleCandidate)
 string longSetup = setupLongPostLowerBreakout ? "trend_sdLowerBreakout" : setupLongTrendUpper ? "trend_sdUpper" : setupLongMrLower or longStaleCandidate ? "mr_sdLower" : "none"
 string shortSetup = setupShortPostUpperBreakdown ? "trend_sdUpperBreakdown" : setupShortEmaDeathContinuation ? "trend_emaDeathContinuation" : setupShortMrUpper or shortStaleCandidate ? "mr_sdUpper" : setupShortTrendLower ? "trend_sdLower" : "none"
-string longReason = setupLongPostLowerBreakout ? "SD lower breakout long: prior lower SD + EMA golden cross + 2 of 3 bull direction components" : setupLongTrendUpper ? "SD upper trend-continuation long: EMA touch/upper-band continuation + 2 of 3 bull direction components" : setupLongMrLower ? "SD lower mean-reversion long: fresh 2 of 3 bull direction components" : longStaleCandidate ? "SD lower mean-reversion long blocked: stale MR components" : "none"
-string shortReason = setupShortPostUpperBreakdown ? "SD upper breakdown short: prior upper SD + EMA death cross + 2 of 3 bear direction components" : setupShortEmaDeathContinuation ? "EMA death continuation short: weak structure + EMA death cross + bear fractal/divergence" : setupShortMrUpper ? "SD upper mean-reversion short: fresh 2 of 3 bear direction components" : shortStaleCandidate ? "SD upper mean-reversion short blocked: stale MR components" : setupShortTrendLowerContinuation ? "DTP bearish trend-continuation short: resistance rejection/range break + 2 of 3 bear direction components" : setupShortTrendLowerPullback ? "SD lower trend-continuation short: pullback resistance + 2 of 3 bear direction components" : setupShortTrendLowerTouch ? "SD lower trend-continuation short: EMA touch + 2 of 3 bear direction components" : "none"
+string longReason = setupLongPostLowerBreakout ? "SD lower breakout long: prior lower SD + EMA golden cross + 2 of 3 bull direction components" : setupLongTrendUpperPullback and longTrendUpperDirectionComponents < 2 ? "Strong bull trend pullback reclaim long: support reclaim/range break substitutes missing divergence" : setupLongTrendUpper ? "SD upper trend-continuation long: EMA touch/upper-band continuation + 2 of 3 bull direction components" : setupLongMrLower ? "SD lower mean-reversion long: fresh 2 of 3 bull direction components" : longStaleCandidate ? "SD lower mean-reversion long blocked: stale MR components" : "none"
+string shortReason = setupShortPostUpperBreakdown ? "SD upper breakdown short: prior upper SD + EMA death cross + 2 of 3 bear direction components" : setupShortEmaDeathContinuation ? "EMA death continuation short: weak structure + EMA death cross + bear fractal/divergence" : setupShortMrUpper ? "SD upper mean-reversion short: fresh 2 of 3 bear direction components" : shortStaleCandidate ? "SD upper mean-reversion short blocked: stale MR components" : setupShortTrendLowerContinuation and trendShortPullbackContinuationQualified and shortTrendLowerDirectionComponents < 2 ? "Strong bear trend pullback reclaim short: resistance reclaim/range break substitutes missing divergence" : setupShortTrendLowerContinuation ? "DTP bearish trend-continuation short: resistance rejection/range break + 2 of 3 bear direction components" : setupShortTrendLowerPullback ? "SD lower trend-continuation short: pullback resistance + 2 of 3 bear direction components" : setupShortTrendLowerTouch ? "SD lower trend-continuation short: EMA touch + 2 of 3 bear direction components" : "none"
 string longMrRegime = mrRegimeText("long", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter, sdSlopeAtr)
 string shortMrRegime = mrRegimeText("short", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter, sdSlopeAtr)
 bool longMrDtpBlocked = mrDtpBlocked("long", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter)
@@ -1358,6 +1390,8 @@ bool longMrWeakeningReversalOk = longMrRegime != "trend_weakening" or (lowerBull
 bool shortMrWeakeningReversalOk = shortMrRegime != "trend_weakening" or (upperBearEmaCrossFresh and (upperBearFractalFresh or bearDivFresh))
 
 bool structuralAnchorMode = entryAnchorMode == "setup_structural"
+bool longTrendReclaimEntry = longSetup == "trend_sdUpper" and setupLongTrendUpperPullback
+bool shortTrendReclaimEntry = shortSetup == "trend_sdLower" and setupShortTrendLowerContinuation and trendShortPullbackContinuationQualified
 float longReferenceEntry = close
 float shortReferenceEntry = close
 float longFallbackEntry = close - atrRaw * entryFallbackAtr
@@ -1365,21 +1399,21 @@ float shortFallbackEntry = close + atrRaw * entryFallbackAtr
 float longSupportEmaFast = emaFast <= longReferenceEntry ? emaFast : na
 float longSupportEmaSlow = emaSlow <= longReferenceEntry ? emaSlow : na
 float longSupportMid = signalMid <= longReferenceEntry ? signalMid : na
-float longSupportSd = setupLongMrLower ? sdSignalLower : na
+float longSupportSd = setupLongMrLower ? sdSignalLower : setupLongTrendUpper ? sdReg : na
 float shortResistanceEmaFast = emaFast >= shortReferenceEntry ? emaFast : na
 float shortResistanceEmaSlow = emaSlow >= shortReferenceEntry ? emaSlow : na
 float shortResistanceMid = signalMid >= shortReferenceEntry ? signalMid : na
-float shortResistanceSd = setupShortMrUpper ? sdSignalUpper : na
+float shortResistanceSd = setupShortMrUpper ? sdSignalUpper : setupShortTrendLower ? sdReg : na
 float longStructuralAnchorLevel = nearestSupportBelow(longReferenceEntry, lastPivotLow, recentLow, sessionLow, longSupportEmaFast, longSupportEmaSlow, longSupportSd, noLevel, noLevel, longFallbackEntry)
 float shortStructuralAnchorLevel = nearestResistanceAbove(shortReferenceEntry, lastPivotHigh, recentHigh, sessionHigh, shortResistanceEmaFast, shortResistanceEmaSlow, shortResistanceSd, noLevel, noLevel, shortFallbackEntry)
 float longStructuralEntryRaw = math.min(longReferenceEntry, longStructuralAnchorLevel + atrRaw * entryAnchorZoneAtr)
 float shortStructuralEntryRaw = math.max(shortReferenceEntry, shortStructuralAnchorLevel - atrRaw * entryAnchorZoneAtr)
-float longPlannedEntryRaw = structuralAnchorMode ? longStructuralEntryRaw : longReferenceEntry
-float shortPlannedEntryRaw = structuralAnchorMode ? shortStructuralEntryRaw : shortReferenceEntry
-float longEntryCandidate = structuralAnchorMode ? roundStructuralEntryLimitToTick(limitByHardCap(longReferenceEntry, longPlannedEntryRaw, 1), 1) : longReferenceEntry
-float shortEntryCandidate = structuralAnchorMode ? roundStructuralEntryLimitToTick(limitByHardCap(shortReferenceEntry, shortPlannedEntryRaw, -1), -1) : shortReferenceEntry
-bool longEntryAnchorTouched = structuralAnchorMode and not na(longEntryCandidate) and low <= longEntryCandidate
-bool shortEntryAnchorTouched = structuralAnchorMode and not na(shortEntryCandidate) and high >= shortEntryCandidate
+float longPlannedEntryRaw = longTrendReclaimEntry ? longReferenceEntry : structuralAnchorMode ? longStructuralEntryRaw : longReferenceEntry
+float shortPlannedEntryRaw = shortTrendReclaimEntry ? shortReferenceEntry : structuralAnchorMode ? shortStructuralEntryRaw : shortReferenceEntry
+float longEntryCandidate = longTrendReclaimEntry ? longReferenceEntry : structuralAnchorMode ? roundStructuralEntryLimitToTick(limitByHardCap(longReferenceEntry, longPlannedEntryRaw, 1), 1) : longReferenceEntry
+float shortEntryCandidate = shortTrendReclaimEntry ? shortReferenceEntry : structuralAnchorMode ? roundStructuralEntryLimitToTick(limitByHardCap(shortReferenceEntry, shortPlannedEntryRaw, -1), -1) : shortReferenceEntry
+bool longEntryAnchorTouched = structuralAnchorMode and not longTrendReclaimEntry and not na(longEntryCandidate) and low <= longEntryCandidate
+bool shortEntryAnchorTouched = structuralAnchorMode and not shortTrendReclaimEntry and not na(shortEntryCandidate) and high >= shortEntryCandidate
 string longEntryAnchorReason = ""
 longEntryAnchorReason := structuralAnchorMode and anchorNear(longEntryCandidate, lastPivotLow, atrRaw) ? appendAnchorReason(longEntryAnchorReason, "前低支撑") : longEntryAnchorReason
 longEntryAnchorReason := structuralAnchorMode and anchorNear(longEntryCandidate, recentLow, atrRaw) ? appendAnchorReason(longEntryAnchorReason, "近期低点") : longEntryAnchorReason
@@ -1388,8 +1422,10 @@ longEntryAnchorReason := structuralAnchorMode and anchorNear(longEntryCandidate,
 longEntryAnchorReason := structuralAnchorMode and anchorNear(longEntryCandidate, longSupportEmaSlow, atrRaw) ? appendAnchorReason(longEntryAnchorReason, "EMA50支撑") : longEntryAnchorReason
 longEntryAnchorReason := structuralAnchorMode and anchorNear(longEntryCandidate, low, atrRaw) ? appendAnchorReason(longEntryAnchorReason, "信号K低点") : longEntryAnchorReason
 longEntryAnchorReason := structuralAnchorMode and anchorNear(longEntryCandidate, longSupportMid, atrRaw) ? appendAnchorReason(longEntryAnchorReason, "信号K中点") : longEntryAnchorReason
-longEntryAnchorReason := structuralAnchorMode and anchorNear(longEntryCandidate, longSupportSd, atrRaw) ? appendAnchorReason(longEntryAnchorReason, "SD下轨接近") : longEntryAnchorReason
+longEntryAnchorReason := structuralAnchorMode and setupLongMrLower and anchorNear(longEntryCandidate, longSupportSd, atrRaw) ? appendAnchorReason(longEntryAnchorReason, "SD下轨接近") : longEntryAnchorReason
+longEntryAnchorReason := structuralAnchorMode and setupLongTrendUpper and anchorNear(longEntryCandidate, longSupportSd, atrRaw) ? appendAnchorReason(longEntryAnchorReason, "SD中线支撑") : longEntryAnchorReason
 longEntryAnchorReason := structuralAnchorMode and longEntryAnchorReason == "" and anchorNear(longEntryCandidate, longFallbackEntry, atrRaw) ? "ATR回撤备选" : longEntryAnchorReason
+longEntryAnchorReason := longTrendReclaimEntry ? appendAnchorReason(longEntryAnchorReason, "强多回踩确认") : longEntryAnchorReason
 longEntryAnchorReason := longEntryAnchorTouched ? appendAnchorReason(longEntryAnchorReason, "锚点已触及") : longEntryAnchorReason
 string shortEntryAnchorReason = ""
 shortEntryAnchorReason := structuralAnchorMode and anchorNear(shortEntryCandidate, lastPivotHigh, atrRaw) ? appendAnchorReason(shortEntryAnchorReason, "前高压力") : shortEntryAnchorReason
@@ -1399,13 +1435,15 @@ shortEntryAnchorReason := structuralAnchorMode and anchorNear(shortEntryCandidat
 shortEntryAnchorReason := structuralAnchorMode and anchorNear(shortEntryCandidate, shortResistanceEmaSlow, atrRaw) ? appendAnchorReason(shortEntryAnchorReason, "EMA50压力") : shortEntryAnchorReason
 shortEntryAnchorReason := structuralAnchorMode and anchorNear(shortEntryCandidate, high, atrRaw) ? appendAnchorReason(shortEntryAnchorReason, "信号K高点") : shortEntryAnchorReason
 shortEntryAnchorReason := structuralAnchorMode and anchorNear(shortEntryCandidate, shortResistanceMid, atrRaw) ? appendAnchorReason(shortEntryAnchorReason, "信号K中点") : shortEntryAnchorReason
-shortEntryAnchorReason := structuralAnchorMode and anchorNear(shortEntryCandidate, shortResistanceSd, atrRaw) ? appendAnchorReason(shortEntryAnchorReason, "SD上轨接近") : shortEntryAnchorReason
+shortEntryAnchorReason := structuralAnchorMode and setupShortMrUpper and anchorNear(shortEntryCandidate, shortResistanceSd, atrRaw) ? appendAnchorReason(shortEntryAnchorReason, "SD上轨接近") : shortEntryAnchorReason
+shortEntryAnchorReason := structuralAnchorMode and setupShortTrendLower and anchorNear(shortEntryCandidate, shortResistanceSd, atrRaw) ? appendAnchorReason(shortEntryAnchorReason, "SD中线压力") : shortEntryAnchorReason
 shortEntryAnchorReason := structuralAnchorMode and shortEntryAnchorReason == "" and anchorNear(shortEntryCandidate, shortFallbackEntry, atrRaw) ? "ATR反抽备选" : shortEntryAnchorReason
+shortEntryAnchorReason := shortTrendReclaimEntry ? appendAnchorReason(shortEntryAnchorReason, "强空回踩确认") : shortEntryAnchorReason
 shortEntryAnchorReason := shortEntryAnchorTouched ? appendAnchorReason(shortEntryAnchorReason, "锚点已触及") : shortEntryAnchorReason
-string longEntryAnchorSource = structuralAnchorMode ? "support_anchor" : "marketable_cap"
-string shortEntryAnchorSource = structuralAnchorMode ? "resistance_anchor" : "marketable_cap"
-bool longEntryAnchorAllowed = not structuralAnchorMode or ((longEntryAnchorTouched or entryAnchorValid(longReferenceEntry, longEntryCandidate, atrRaw)) and longEntryCandidate <= longReferenceEntry)
-bool shortEntryAnchorAllowed = not structuralAnchorMode or ((shortEntryAnchorTouched or entryAnchorValid(shortReferenceEntry, shortEntryCandidate, atrRaw)) and shortEntryCandidate >= shortReferenceEntry)
+string longEntryAnchorSource = longTrendReclaimEntry ? "trend_reclaim_marketable" : structuralAnchorMode ? "support_anchor" : "marketable_cap"
+string shortEntryAnchorSource = shortTrendReclaimEntry ? "trend_reclaim_marketable" : structuralAnchorMode ? "resistance_anchor" : "marketable_cap"
+bool longEntryAnchorAllowed = longTrendReclaimEntry or not structuralAnchorMode or ((longEntryAnchorTouched or entryAnchorValid(longReferenceEntry, longEntryCandidate, atrRaw)) and longEntryCandidate <= longReferenceEntry)
+bool shortEntryAnchorAllowed = shortTrendReclaimEntry or not structuralAnchorMode or ((shortEntryAnchorTouched or entryAnchorValid(shortReferenceEntry, shortEntryCandidate, atrRaw)) and shortEntryCandidate >= shortReferenceEntry)
 bool longMrStructuralAnchorQualified = not structuralAnchorMode or anchorNear(longEntryCandidate, lastPivotLow, atrRaw) or anchorNear(longEntryCandidate, recentLow, atrRaw) or anchorNear(longEntryCandidate, sessionLow, atrRaw) or anchorNear(longEntryCandidate, longSupportEmaFast, atrRaw) or anchorNear(longEntryCandidate, longSupportEmaSlow, atrRaw) or anchorNear(longEntryCandidate, sdSignalLower, atrRaw)
 bool shortMrStructuralAnchorQualified = not structuralAnchorMode or anchorNear(shortEntryCandidate, lastPivotHigh, atrRaw) or anchorNear(shortEntryCandidate, recentHigh, atrRaw) or anchorNear(shortEntryCandidate, sessionHigh, atrRaw) or anchorNear(shortEntryCandidate, shortResistanceEmaFast, atrRaw) or anchorNear(shortEntryCandidate, shortResistanceEmaSlow, atrRaw) or anchorNear(shortEntryCandidate, sdSignalUpper, atrRaw)
 bool longPostReversalStructuralAnchorQualified = not structuralAnchorMode or anchorNear(longEntryCandidate, lastPivotLow, atrRaw) or anchorNear(longEntryCandidate, recentLow, atrRaw) or anchorNear(longEntryCandidate, sessionLow, atrRaw) or anchorNear(longEntryCandidate, longSupportEmaFast, atrRaw) or anchorNear(longEntryCandidate, longSupportEmaSlow, atrRaw) or anchorNear(longEntryCandidate, low, atrRaw) or anchorNear(longEntryCandidate, longSupportMid, atrRaw)
@@ -1429,7 +1467,9 @@ string longStopSource = longStructureStopAvailable ? longRiskCapStopApplied ? "s
 float longRunnerActivationRaw = setupUsesRunner(longSetup) and not setupIsMr(longSetup) ? calcRunnerActivationTarget(longEntryCandidate, longStopCandidate, 1) : na
 float longMrMeanTargetRaw = nearestResistanceAbove(longEntryCandidate, validResistanceLevel(longEntryCandidate, sdReg), validResistanceLevel(longEntryCandidate, emaFast), validResistanceLevel(longEntryCandidate, emaSlow), noLevel, noLevel, noLevel, noLevel, noLevel, noLevel)
 bool longMrMeanTargetAvailable = not na(longMrMeanTargetRaw)
-float longTrendStructureTargetRaw = nearestResistanceAbove(longEntryCandidate, validResistanceLevel(longEntryCandidate, lastPivotHigh), validResistanceLevel(longEntryCandidate, recentHigh), validResistanceLevel(longEntryCandidate, sessionHigh), validResistanceLevel(longEntryCandidate, sdSignalUpper), validResistanceLevel(longEntryCandidate, sdFilterUpper), validResistanceLevel(longEntryCandidate, sdReg), noLevel, noLevel, noLevel)
+float longTrendNearestTargetRaw = nearestResistanceAbove(longEntryCandidate, validResistanceLevel(longEntryCandidate, lastPivotHigh), validResistanceLevel(longEntryCandidate, recentHigh), validResistanceLevel(longEntryCandidate, sessionHigh), validResistanceLevel(longEntryCandidate, sdSignalUpper), validResistanceLevel(longEntryCandidate, sdFilterUpper), validResistanceLevel(longEntryCandidate, sdReg), noLevel, noLevel, noLevel)
+float longTrendSafetyTargetRaw = farthestResistanceAbove(longEntryCandidate, validResistanceLevel(longEntryCandidate, lastPivotHigh), validResistanceLevel(longEntryCandidate, recentHigh), validResistanceLevel(longEntryCandidate, sessionHigh), validResistanceLevel(longEntryCandidate, sdSignalUpper), validResistanceLevel(longEntryCandidate, sdFilterUpper), noLevel, noLevel, noLevel, longTrendNearestTargetRaw)
+float longTrendStructureTargetRaw = setupUsesRunner(longSetup) and not na(longTrendSafetyTargetRaw) ? longTrendSafetyTargetRaw : longTrendNearestTargetRaw
 float longStructureTargetRaw = setupIsMr(longSetup) and longMrMeanTargetAvailable ? longMrMeanTargetRaw : longTrendStructureTargetRaw
 bool longStructureTargetAvailable = not na(longStructureTargetRaw)
 bool longRunnerCandidate = setupUsesRunner(longSetup) and not setupIsMr(longSetup) and longStructureTargetAvailable and not na(longRunnerActivationRaw) and longStructureTargetRaw > longRunnerActivationRaw and rewardRiskMultiple(structureRewardPerShare(1, longEntryCandidate, longStructureTargetRaw), structureRiskPerShare(1, longEntryCandidate, longStopCandidate)) >= runnerSafetyR
@@ -1468,7 +1508,9 @@ string shortStopSource = shortStructureStopAvailable ? shortRiskCapStopApplied ?
 float shortRunnerActivationRaw = setupUsesRunner(shortSetup) and not setupIsMr(shortSetup) ? calcRunnerActivationTarget(shortEntryCandidate, shortStopCandidate, -1) : na
 float shortMrMeanTargetRaw = nearestSupportBelow(shortEntryCandidate, validSupportLevel(shortEntryCandidate, sdReg), validSupportLevel(shortEntryCandidate, emaFast), validSupportLevel(shortEntryCandidate, emaSlow), noLevel, noLevel, noLevel, noLevel, noLevel, noLevel)
 bool shortMrMeanTargetAvailable = not na(shortMrMeanTargetRaw)
-float shortTrendStructureTargetRaw = nearestSupportBelow(shortEntryCandidate, validSupportLevel(shortEntryCandidate, lastPivotLow), validSupportLevel(shortEntryCandidate, recentLow), validSupportLevel(shortEntryCandidate, sessionLow), validSupportLevel(shortEntryCandidate, sdSignalLower), validSupportLevel(shortEntryCandidate, sdFilterLower), validSupportLevel(shortEntryCandidate, sdReg), noLevel, noLevel, noLevel)
+float shortTrendNearestTargetRaw = nearestSupportBelow(shortEntryCandidate, validSupportLevel(shortEntryCandidate, lastPivotLow), validSupportLevel(shortEntryCandidate, recentLow), validSupportLevel(shortEntryCandidate, sessionLow), validSupportLevel(shortEntryCandidate, sdSignalLower), validSupportLevel(shortEntryCandidate, sdFilterLower), validSupportLevel(shortEntryCandidate, sdReg), noLevel, noLevel, noLevel)
+float shortTrendSafetyTargetRaw = farthestSupportBelow(shortEntryCandidate, validSupportLevel(shortEntryCandidate, lastPivotLow), validSupportLevel(shortEntryCandidate, recentLow), validSupportLevel(shortEntryCandidate, sessionLow), validSupportLevel(shortEntryCandidate, sdSignalLower), validSupportLevel(shortEntryCandidate, sdFilterLower), noLevel, noLevel, noLevel, shortTrendNearestTargetRaw)
+float shortTrendStructureTargetRaw = setupUsesRunner(shortSetup) and not na(shortTrendSafetyTargetRaw) ? shortTrendSafetyTargetRaw : shortTrendNearestTargetRaw
 float shortStructureTargetRaw = setupIsMr(shortSetup) and shortMrMeanTargetAvailable ? shortMrMeanTargetRaw : shortTrendStructureTargetRaw
 bool shortStructureTargetAvailable = not na(shortStructureTargetRaw)
 bool shortRunnerCandidate = setupUsesRunner(shortSetup) and not setupIsMr(shortSetup) and shortStructureTargetAvailable and not na(shortRunnerActivationRaw) and shortStructureTargetRaw < shortRunnerActivationRaw and rewardRiskMultiple(structureRewardPerShare(-1, shortEntryCandidate, shortStructureTargetRaw), structureRiskPerShare(-1, shortEntryCandidate, shortStopCandidate)) >= runnerSafetyR
@@ -1589,13 +1631,13 @@ bool conflict = longRaw and shortRaw
 bool longActionable = longSignalCandidate and not blockLong
 bool shortActionable = shortSignalCandidate and not blockShort
 
-int scoreLongTrendUpper = math.min(100, (longTrendContextReady ? 20 : 0) + (upperBullTrendTriggerSeen ? 30 : 0) + (trendBullFractalSeen ? 25 : 0) + (bullDivSeen ? 25 : 0) + (trendBullEmaCrossSeen ? 25 : 0))
+int scoreLongTrendUpper = trendLongPullbackContinuationQualified ? 100 : math.min(100, (longTrendContextReady ? 20 : 0) + (upperBullTrendTriggerSeen ? 30 : 0) + (trendBullFractalSeen ? 25 : 0) + (bullDivSeen ? 25 : 0) + (trendBullEmaCrossSeen ? 25 : 0))
 int scoreLongPostLowerBreakout = math.min(100, (lowerSdExtremeFresh ? 34 : 0) + (lowerBullFractalSeen ? 33 : 0) + (bullDivSeen ? 33 : 0) + (lowerBullEmaCrossSeen ? 33 : 0))
 int scoreLongMrLower = math.min(100, (lowerMrWindowValid ? 34 : 0) + (lowerBullFractalSeen ? 33 : 0) + (bullDivSeen ? 33 : 0) + (lowerBullEmaCrossSeen ? 33 : 0))
 int scoreShortPostUpperBreakdown = dtpBullDominant and not bearishReversalContext ? 0 : math.min(100, (upperSdExtremeFresh ? 34 : 0) + (upperBearFractalSeen ? 33 : 0) + (bearDivSeen ? 33 : 0) + (upperBearEmaCrossSeen ? 33 : 0))
 int scoreShortEmaDeathContinuation = shortEmaDeathContinuationStructureOk and (not dtpBullDominant or bearishReversalContext) ? math.min(100, 34 + (trendBearFractalSeen ? 33 : 0) + (bearDivSeen ? 33 : 0) + (trendBearEmaCrossSeen ? 33 : 0)) : 0
 int scoreShortMrUpper = dtpBullDominant and not bearishReversalContext ? 0 : math.min(100, (upperMrWindowValid ? 34 : 0) + (upperBearFractalSeen ? 33 : 0) + (bearDivSeen ? 33 : 0) + (upperBearEmaCrossSeen ? 33 : 0))
-int scoreShortTrendLower = math.min(100, (shortTrendContextReady ? 25 : 0) + (lowerBearTrendTriggerSeen ? 25 : 0) + (trendBearFractalSeen ? 25 : 0) + (bearDivSeen ? 25 : 0) + (trendBearEmaCrossSeen ? 25 : 0))
+int scoreShortTrendLower = trendShortPullbackContinuationQualified ? 100 : math.min(100, (shortTrendContextReady ? 25 : 0) + (lowerBearTrendTriggerSeen ? 25 : 0) + (trendBearFractalSeen ? 25 : 0) + (bearDivSeen ? 25 : 0) + (trendBearEmaCrossSeen ? 25 : 0))
 int activityScore = math.max(math.max(math.max(scoreLongTrendUpper, scoreLongPostLowerBreakout), scoreLongMrLower), math.max(math.max(math.max(scoreShortPostUpperBreakdown, scoreShortEmaDeathContinuation), scoreShortMrUpper), scoreShortTrendLower))
 string candidateSetup = activityScore == 0 ? "none" : activityScore == scoreLongPostLowerBreakout ? "trend_sdLowerBreakout" : activityScore == scoreLongTrendUpper ? "trend_sdUpper" : activityScore == scoreLongMrLower ? "mr_sdLower" : activityScore == scoreShortPostUpperBreakdown ? "trend_sdUpperBreakdown" : activityScore == scoreShortEmaDeathContinuation ? "trend_emaDeathContinuation" : activityScore == scoreShortMrUpper ? "mr_sdUpper" : "trend_sdLower"
 string candidateDirection = setupUsesBullSide(candidateSetup) ? "long" : "short"
@@ -1606,7 +1648,7 @@ if candidateSetup == "trend_sdUpper"
     missingComponents := trendLongSupportLingerWait ? appendSource(missingComponents, "key_level_wait") : missingComponents
     missingComponents := not longTrendContextReady and not trendLongSupportLingerWait ? appendSource(missingComponents, "trend_context") : missingComponents
     missingComponents := not upperBullTrendTriggerSeen ? appendSource(missingComponents, "ema_bull_touch") : missingComponents
-    if longTrendUpperDirectionComponents < 2
+    if not trendLongPullbackContinuationQualified and longTrendUpperDirectionComponents < 2
         missingComponents := not trendBullFractalSeen ? appendSource(missingComponents, "bull_fractal") : missingComponents
         missingComponents := not bullDivSeen ? appendSource(missingComponents, "bull_divergence") : missingComponents
         missingComponents := not trendBullEmaCrossSeen ? appendSource(missingComponents, "bull_ema_cross") : missingComponents
@@ -1644,7 +1686,7 @@ else
     missingComponents := trendShortResistanceLingerWait ? appendSource(missingComponents, "key_level_wait") : missingComponents
     missingComponents := not shortTrendContextReady and not trendShortResistanceLingerWait ? appendSource(missingComponents, "trend_context") : missingComponents
     missingComponents := not lowerBearTrendTriggerSeen ? appendSource(missingComponents, "ema_bear_touch") : missingComponents
-    if shortTrendLowerDirectionComponents < 2
+    if not trendShortPullbackContinuationQualified and shortTrendLowerDirectionComponents < 2
         missingComponents := not trendBearFractalSeen ? appendSource(missingComponents, "bear_fractal") : missingComponents
         missingComponents := not bearDivSeen ? appendSource(missingComponents, "bear_divergence") : missingComponents
         missingComponents := not trendBearEmaCrossSeen ? appendSource(missingComponents, "bear_ema_cross") : missingComponents
@@ -1961,7 +2003,7 @@ if flowLabelsVisible and displayObserveNow and prepareVisualKey != lastPrepareVi
         array.push(signalEventFlowConnectors, prepareConnector)
         int prepareConnectorSetIndex = array.size(signalEventFlowConnectorSetSizes) - 1
         array.set(signalEventFlowConnectorSetSizes, prepareConnectorSetIndex, array.get(signalEventFlowConnectorSetSizes, prepareConnectorSetIndex) + 1)
-    string candidateDirectionDecisionText = bullTrendContinuationContext and candidateSetup == "trend_sdUpper" ? "\n方向裁决: DTP强多，SD上轨优先顺势多" : bearTrendContinuationContext and candidateSetup == "trend_sdLower" ? "\n方向裁决: DTP强空，SD下轨优先顺势空" : ""
+    string candidateDirectionDecisionText = trendLongPullbackContinuationQualified and candidateSetup == "trend_sdUpper" ? "\n方向裁决: DTP强多，趋势回踩确认，区间突破/快拒替代等待多背离" : trendShortPullbackContinuationQualified and candidateSetup == "trend_sdLower" ? "\n方向裁决: DTP强空，趋势回抽确认，区间跌破/快拒替代等待空背离" : bullTrendContinuationContext and candidateSetup == "trend_sdUpper" ? "\n方向裁决: DTP强多，SD上轨优先顺势多" : bearTrendContinuationContext and candidateSetup == "trend_sdLower" ? "\n方向裁决: DTP强空，SD下轨优先顺势空" : ""
     string prepareDetailText = flowEventDetailText(activeFlowId, 2, "观察", "观察" + directionDisplayName(candidateDirection) + "\n" + setupDisplayName(candidateSetup) + candidateDirectionDecisionText + "\n" + entryWindowDiagnosticsText() + "\n组件: " + candidateComponentText + "\nMTF: " + mtfSummaryForDirection(candidateDirection) + "\n下一步: " + candidateWaitText)
     string prepareCompactText = flowEventCompactText(activeFlowId, 2, "观察", decisionDirectionTag(candidateDirection) + "·" + decisionSetupTag(candidateSetup) + "\n" + decisionComponentLine(candidateProgressText, candidateWaitText))
     label prepareLabel = label.new(bar_index, prepareY, flowLabelText(prepareCompactText, prepareDetailText), style=flowLabelStyle(candidateDirection), color=color.new(color.orange, flowLabelTransparency), textcolor=color.white, size=size.normal, tooltip=flowLabelTooltip(prepareDetailText))
@@ -2044,10 +2086,11 @@ if flowLabelsVisible and displayEnterLong
         array.push(signalEventFlowConnectors, longEntryConnector)
         int longEntryConnectorSetIndex = array.size(signalEventFlowConnectorSetSizes) - 1
         array.set(signalEventFlowConnectorSetSizes, longEntryConnectorSetIndex, array.get(signalEventFlowConnectorSetSizes, longEntryConnectorSetIndex) + 1)
-    string directionDecisionLine = longSetup == "trend_sdUpper" and bullTrendContinuationContext ? "\n方向裁决: DTP强多，SD上轨优先顺势多" : ""
+    string directionDecisionLine = longSetup == "trend_sdUpper" and trendLongPullbackContinuationQualified ? "\n方向裁决: DTP强多，趋势回踩确认，区间突破/快拒替代等待多背离" : longSetup == "trend_sdUpper" and bullTrendContinuationContext ? "\n方向裁决: DTP强多，SD上轨优先顺势多" : ""
+    string longEntrySetupTag = longSetup == "trend_sdUpper" and trendLongPullbackContinuationQualified ? "趋势回踩" : decisionSetupTag(longSetup)
     string longEntryDetailText = "信号满足\nCore计划挂多\n" + setupDisplayName(longSetup) + directionDecisionLine + "\n" + entryWindowDiagnosticsText() + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("long") + "\n" + dtpEntryFilterText("long", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\n信号bar: " + str.tostring(bar_index, "#") + " / 计划过期bar: " + str.tostring(bar_index + entryOrderTtlBars, "#") + "\nref " + str.tostring(longReferenceEntry, "#.##") + " / plan " + str.tostring(longEntryCandidate, "#.##")
     string longEntryFlowDetailText = flowEventDetailText(longEntryFlowId, 3, "挂单", longEntryDetailText)
-    string longEntryCompactText = flowEventCompactText(longEntryFlowId, 3, "挂单", "待触及 多·" + decisionSetupTag(longSetup) + " " + str.tostring(longEntryCandidate, "#.##") + "\n" + decisionRiskLine(longEntryCandidate, longStopCandidate, longTargetCandidate, longStructureRewardRisk, longTargetDistanceAtr))
+    string longEntryCompactText = flowEventCompactText(longEntryFlowId, 3, "挂单", "待触及 多·" + longEntrySetupTag + " " + str.tostring(longEntryCandidate, "#.##") + "\n" + decisionRiskLine(longEntryCandidate, longStopCandidate, longTargetCandidate, longStructureRewardRisk, longTargetDistanceAtr))
     label longEntryLabel = label.new(bar_index, longEntryY, flowLabelText(longEntryCompactText, longEntryFlowDetailText), style=label.style_label_up, color=flowLabelColor("entry", "long"), textcolor=color.white, size=size.normal, tooltip=flowLabelTooltip(longEntryFlowDetailText))
     if showSignalEventFlow
         array.push(signalEventFlowLabels, longEntryLabel)
@@ -2066,10 +2109,11 @@ if flowLabelsVisible and displayEnterShort
         array.push(signalEventFlowConnectors, shortEntryConnector)
         int shortEntryConnectorSetIndex = array.size(signalEventFlowConnectorSetSizes) - 1
         array.set(signalEventFlowConnectorSetSizes, shortEntryConnectorSetIndex, array.get(signalEventFlowConnectorSetSizes, shortEntryConnectorSetIndex) + 1)
-    string directionDecisionLine = shortSetup == "trend_sdLower" and bearTrendContinuationContext ? "\n方向裁决: DTP强空，SD下轨优先顺势空" : ""
+    string directionDecisionLine = shortSetup == "trend_sdLower" and trendShortPullbackContinuationQualified ? "\n方向裁决: DTP强空，趋势回抽确认，区间跌破/快拒替代等待空背离" : shortSetup == "trend_sdLower" and bearTrendContinuationContext ? "\n方向裁决: DTP强空，SD下轨优先顺势空" : ""
+    string shortEntrySetupTag = shortSetup == "trend_sdLower" and trendShortPullbackContinuationQualified ? "趋势回抽" : decisionSetupTag(shortSetup)
     string shortEntryDetailText = "信号满足\nCore计划挂空\n" + setupDisplayName(shortSetup) + directionDecisionLine + "\n" + entryWindowDiagnosticsText() + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("short") + "\n" + dtpEntryFilterText("short", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\n信号bar: " + str.tostring(bar_index, "#") + " / 计划过期bar: " + str.tostring(bar_index + entryOrderTtlBars, "#") + "\nref " + str.tostring(shortReferenceEntry, "#.##") + " / plan " + str.tostring(shortEntryCandidate, "#.##")
     string shortEntryFlowDetailText = flowEventDetailText(shortEntryFlowId, 3, "挂单", shortEntryDetailText)
-    string shortEntryCompactText = flowEventCompactText(shortEntryFlowId, 3, "挂单", "待触及 空·" + decisionSetupTag(shortSetup) + " " + str.tostring(shortEntryCandidate, "#.##") + "\n" + decisionRiskLine(shortEntryCandidate, shortStopCandidate, shortTargetCandidate, shortStructureRewardRisk, shortTargetDistanceAtr))
+    string shortEntryCompactText = flowEventCompactText(shortEntryFlowId, 3, "挂单", "待触及 空·" + shortEntrySetupTag + " " + str.tostring(shortEntryCandidate, "#.##") + "\n" + decisionRiskLine(shortEntryCandidate, shortStopCandidate, shortTargetCandidate, shortStructureRewardRisk, shortTargetDistanceAtr))
     label shortEntryLabel = label.new(bar_index, shortEntryY, flowLabelText(shortEntryCompactText, shortEntryFlowDetailText), style=label.style_label_down, color=flowLabelColor("entry", "short"), textcolor=color.white, size=size.normal, tooltip=flowLabelTooltip(shortEntryFlowDetailText))
     if showSignalEventFlow
         array.push(signalEventFlowLabels, shortEntryLabel)

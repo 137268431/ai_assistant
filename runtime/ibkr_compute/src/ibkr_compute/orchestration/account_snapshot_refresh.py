@@ -36,6 +36,59 @@ def _safe_float(value, default: float = 0.0) -> float:
         return float(default)
 
 
+def _summary_has_safety_values(summary: dict) -> bool:
+    if not isinstance(summary, dict) or not summary:
+        return False
+    for key in (
+        "remaining_buying_power",
+        "buying_power",
+        "net_liquidation",
+        "available_funds",
+        "excess_liquidity",
+        "equity_with_loan",
+    ):
+        raw = summary.get(key)
+        if raw in (None, ""):
+            continue
+        if _safe_float(raw, 0.0) != 0.0:
+            return True
+    return bool(str(summary.get("account_type") or "").strip())
+
+
+def _snapshot_payload_safety_available(payload: dict) -> bool:
+    if not isinstance(payload, dict) or not payload:
+        return False
+    health = payload.get("account_snapshot_health") if isinstance(payload.get("account_snapshot_health"), dict) else {}
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    summary_available = bool(payload.get("summary_available") or health.get("summary_available"))
+    if not summary_available:
+        summary_available = _summary_has_safety_values(summary)
+    guard = payload.get("buying_power_guard") if isinstance(payload.get("buying_power_guard"), dict) else {}
+    guard_state = str(guard.get("state") or "").strip().lower()
+    return bool(summary_available and guard.get("available") is True and guard_state != "unavailable")
+
+
+def _pacing_item_blocked(item: dict) -> tuple[bool, float, str]:
+    payload = item if isinstance(item, dict) else {}
+    retry_after_s = _safe_float(payload.get("retry_after_s"), 0.0)
+    reason = str(
+        payload.get("blocked_reason")
+        or payload.get("cooldown_reason")
+        or payload.get("reason")
+        or ""
+    ).strip().lower()
+    return bool(payload.get("blocked") or retry_after_s > 0), retry_after_s, reason
+
+
+def _pacing_block_is_soft_min_interval(kind: str, item: dict) -> bool:
+    normalized = str(kind or "").strip().lower()
+    if normalized not in {"positions", "open_orders", "open_orders_all"}:
+        return False
+    payload = item if isinstance(item, dict) else {}
+    _blocked, _retry_after_s, reason = _pacing_item_blocked(payload)
+    return reason == "min_interval" and not bool(payload.get("cooldown_active"))
+
+
 def _component_status(component) -> dict:
     status_fn = getattr(component, "status", None)
     if not callable(status_fn):
@@ -107,10 +160,20 @@ class TradingServiceAccountSnapshotRefreshMixin:
             "account_data_gate_owner_age_s": 0.0,
             "account_data_pacing_blocked": False,
             "account_data_pacing_blocked_kinds": [],
+            "account_data_pacing_hard_blocked": False,
+            "account_data_pacing_hard_blocked_kinds": [],
+            "account_data_pacing_soft_blocked": False,
+            "account_data_pacing_soft_blocked_kinds": [],
             "account_lifecycle_backoff_remaining_s": 0.0,
             "account_lifecycle_backoff_reason": "",
             "order_tracker_backoff_remaining_s": 0.0,
             "order_tracker_backoff_reason": "",
+            "account_data_guard_hard_active": False,
+            "account_data_guard_soft_active": False,
+            "safety_cache_available": False,
+            "safety_cache_source": "",
+            "safety_cache_state": "",
+            "safety_cache_error": "",
         }
 
         for component_name in ("broker", "gateway_manager"):
@@ -142,13 +205,34 @@ class TradingServiceAccountSnapshotRefreshMixin:
             pacing = _account_data_pacing_from_status(component_status)
             by_kind = pacing.get("by_kind") if isinstance(pacing.get("by_kind"), dict) else {}
             blocked_kinds = set(details["account_data_pacing_blocked_kinds"])
-            for kind in ("positions", "open_orders", "open_orders_all", "account_summary", "account_pnl"):
+            hard_blocked_kinds = set(details["account_data_pacing_hard_blocked_kinds"])
+            soft_blocked_kinds = set(details["account_data_pacing_soft_blocked_kinds"])
+            for kind in (
+                "positions",
+                "open_orders",
+                "open_orders_all",
+                "account_updates",
+                "account_summary",
+                "account_pnl",
+                "account_snapshot",
+            ):
                 item = by_kind.get(kind) if isinstance(by_kind.get(kind), dict) else {}
-                if bool(item.get("blocked")) or _safe_float(item.get("retry_after_s"), 0.0) > 0:
+                blocked, _retry_after_s, _reason = _pacing_item_blocked(item)
+                if blocked:
                     blocked_kinds.add(kind)
+                    if _pacing_block_is_soft_min_interval(kind, item):
+                        soft_blocked_kinds.add(kind)
+                    else:
+                        hard_blocked_kinds.add(kind)
             if blocked_kinds:
                 details["account_data_pacing_blocked"] = True
                 details["account_data_pacing_blocked_kinds"] = sorted(blocked_kinds)
+            if hard_blocked_kinds:
+                details["account_data_pacing_hard_blocked"] = True
+                details["account_data_pacing_hard_blocked_kinds"] = sorted(hard_blocked_kinds)
+            if soft_blocked_kinds:
+                details["account_data_pacing_soft_blocked"] = True
+                details["account_data_pacing_soft_blocked_kinds"] = sorted(soft_blocked_kinds)
 
         for attr_name, detail_prefix in (
             ("order_lifecycle", "account_lifecycle"),
@@ -165,12 +249,20 @@ class TradingServiceAccountSnapshotRefreshMixin:
             details[f"{detail_prefix}_backoff_remaining_s"] = round(remaining_s, 1)
             details[f"{detail_prefix}_backoff_reason"] = reason
 
-        details["account_data_guard_active"] = bool(
+        details["account_data_guard_hard_active"] = bool(
             details["account_data_circuit_active"]
             or details["account_data_gate_active"]
-            or details["account_data_pacing_blocked"]
+            or details["account_data_pacing_hard_blocked"]
             or details["account_lifecycle_backoff_remaining_s"] > 0
             or details["order_tracker_backoff_remaining_s"] > 0
+        )
+        details["account_data_guard_soft_active"] = bool(
+            details["account_data_pacing_soft_blocked"]
+            and not details["account_data_guard_hard_active"]
+        )
+        details["account_data_guard_active"] = bool(
+            details["account_data_guard_hard_active"]
+            or details["account_data_guard_soft_active"]
         )
         return details
 
@@ -189,6 +281,52 @@ class TradingServiceAccountSnapshotRefreshMixin:
             "startup_warmup_grace_s": grace_s,
             "service_starting": starting,
         }
+
+    def _account_snapshot_refresh_safety_cache_state(self) -> dict:
+        state = {
+            "safety_cache_available": False,
+            "safety_cache_source": "",
+            "safety_cache_state": "",
+            "safety_cache_error": "",
+        }
+        try:
+            from ibkr_compute.api.account.snapshot_builder.context import (
+                build_snapshot_context,
+                load_cached_snapshot,
+            )
+            from ibkr_compute.api.account.snapshot_builder.payload import _decorate_account_snapshot_health
+
+            context = build_snapshot_context(self, include_pnl=False, fast_status=True)
+            runtime_environment = str(context.get("runtime_environment") or "").strip()
+            account_id = str(context.get("account_id") or "").strip()
+            candidate_keys = [
+                ("full", context["cache_key"]),
+                ("full", (runtime_environment, account_id, False)),
+                ("full", (runtime_environment, account_id, True)),
+                ("buying_power", (runtime_environment, f"{account_id}::buying_power", False)),
+            ]
+            seen: set[tuple] = set()
+            for source, cache_key in candidate_keys:
+                if not cache_key or cache_key in seen:
+                    continue
+                seen.add(cache_key)
+                cached = load_cached_snapshot(context["api_app"], cache_key, allow_stale=True)
+                if not isinstance(cached, dict) or not cached:
+                    continue
+                decorated = _decorate_account_snapshot_health(dict(cached))
+                if _snapshot_payload_safety_available(decorated):
+                    health = decorated.get("account_snapshot_health") if isinstance(decorated.get("account_snapshot_health"), dict) else {}
+                    state.update(
+                        {
+                            "safety_cache_available": True,
+                            "safety_cache_source": source,
+                            "safety_cache_state": str(decorated.get("cache_state") or health.get("cache_state") or ""),
+                        }
+                    )
+                    return state
+        except Exception as exc:
+            state["safety_cache_error"] = str(exc)
+        return state
 
     def _account_snapshot_refresh_orders_fast_needed(self) -> tuple[bool, dict]:
         details = {
@@ -235,7 +373,7 @@ class TradingServiceAccountSnapshotRefreshMixin:
             except Exception:
                 details["buying_power_reservations"] = 0
 
-        needed = bool(details.get("startup_warmup_active") or details.get("account_data_guard_active")) or any(
+        order_pressure_active = any(
             int(value or 0) > 0
             for key, value in details.items()
             if key in {
@@ -245,7 +383,50 @@ class TradingServiceAccountSnapshotRefreshMixin:
                 "buying_power_reservations",
             }
         )
+        details["order_pressure_active"] = bool(order_pressure_active)
+        hard_guard_active = bool(details.get("account_data_guard_hard_active"))
+        soft_guard_active = bool(details.get("account_data_guard_soft_active"))
+        startup_warmup_active = bool(details.get("startup_warmup_active"))
+        if not hard_guard_active and not order_pressure_active and (startup_warmup_active or soft_guard_active):
+            details.update(self._account_snapshot_refresh_safety_cache_state())
+
+        if hard_guard_active:
+            details["orders_fast_decision_reason"] = "account_data_hard_guard"
+            needed = True
+        elif order_pressure_active:
+            details["orders_fast_decision_reason"] = "order_pressure"
+            needed = True
+        elif (startup_warmup_active or soft_guard_active) and bool(details.get("safety_cache_available")):
+            details["orders_fast_decision_reason"] = (
+                "startup_warmup_with_safety_cache"
+                if startup_warmup_active
+                else "soft_pacing_with_safety_cache"
+            )
+            needed = True
+        elif startup_warmup_active or soft_guard_active:
+            details["orders_fast_decision_reason"] = (
+                "bootstrap_full_refresh_without_safety_cache"
+                if startup_warmup_active
+                else "soft_pacing_full_refresh_without_safety_cache"
+            )
+            needed = False
+        else:
+            details["orders_fast_decision_reason"] = "full_refresh"
+            needed = False
         return needed, details
+
+    def _account_snapshot_bootstrap_full_refresh_enabled(self) -> bool:
+        return _env_bool("IBKR_ACCOUNT_SNAPSHOT_BOOTSTRAP_FULL_REFRESH_ENABLED", True)
+
+    @staticmethod
+    def _orders_fast_summary_unavailable(payload: dict) -> bool:
+        if not isinstance(payload, dict) or not bool(payload.get("orders_fast")):
+            return False
+        if bool(payload.get("summary_available")):
+            return False
+        errors = payload.get("errors") if isinstance(payload.get("errors"), dict) else {}
+        reason = str(errors.get("summary") or "").strip().lower()
+        return reason in {"orders_fast_summary_cache_unavailable", "account_snapshot_unavailable"}
 
     def _refresh_account_snapshot_once(self, *, reason: str = "loop") -> dict:
         if not self._account_snapshot_refresh_enabled():
@@ -279,8 +460,34 @@ class TradingServiceAccountSnapshotRefreshMixin:
                     else "orders_fast_during_order_pressure"
                 )
                 payload["refresh_profile_reason"] = orders_fast_reason
+                if (
+                    self._account_snapshot_bootstrap_full_refresh_enabled()
+                    and self._orders_fast_summary_unavailable(payload)
+                    and not bool(orders_fast_reason.get("account_data_guard_hard_active"))
+                    and not bool(orders_fast_reason.get("order_pressure_active"))
+                ):
+                    fallback_reason = str(
+                        (payload.get("errors") or {}).get("summary")
+                        if isinstance(payload.get("errors"), dict)
+                        else ""
+                    ) or "orders_fast_summary_cache_unavailable"
+                    fallback_payload = refresh_account_snapshot_cache(self, include_pnl=False)
+                    if isinstance(fallback_payload, dict):
+                        fallback_payload["refresh_profile"] = "full_bootstrap_after_orders_fast_unavailable"
+                        fallback_payload["refresh_profile_reason"] = orders_fast_reason
+                        fallback_payload["orders_fast_bootstrap_fallback"] = {
+                            "enabled": True,
+                            "reason": fallback_reason,
+                            "orders_fast_source": payload.get("source"),
+                            "orders_fast_summary_source": payload.get("summary_source"),
+                        }
+                        payload = fallback_payload
+                        use_orders_fast = False
         else:
             payload = refresh_account_snapshot_cache(self, include_pnl=False)
+            if isinstance(payload, dict):
+                payload["refresh_profile"] = "full_account_snapshot_refresh"
+                payload["refresh_profile_reason"] = orders_fast_reason
         if isinstance(payload, dict):
             payload["refresh_reason"] = reason
             try:

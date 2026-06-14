@@ -374,15 +374,85 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertEqual(31.4, details["account_lifecycle_backoff_remaining_s"])
         self.assertEqual("account_data_circuit_open:account_summary", details["account_lifecycle_backoff_reason"])
 
-    def test_account_snapshot_refresh_uses_orders_fast_during_startup_warmup(self):
+    def test_account_snapshot_refresh_uses_full_during_startup_warmup_without_safety_cache(self):
         service = _RefreshService()
         service._runtime_started_at = time.time()
+        app = _FakeApiApp()
 
-        needed, details = service._account_snapshot_refresh_orders_fast_needed()
+        needed, details = _with_fake_api_app(app, lambda: service._account_snapshot_refresh_orders_fast_needed())
+
+        self.assertFalse(needed)
+        self.assertTrue(details["startup_warmup_active"])
+        self.assertGreater(details["startup_warmup_remaining_s"], 0)
+        self.assertFalse(details["safety_cache_available"])
+        self.assertEqual("bootstrap_full_refresh_without_safety_cache", details["orders_fast_decision_reason"])
+
+    def test_account_snapshot_refresh_uses_orders_fast_during_startup_warmup_with_safety_cache(self):
+        app = _FakeApiApp()
+        service = _RefreshService()
+        service.order_lifecycle = _BuyingPowerLifecycle()
+        service._runtime_started_at = time.time()
+        _with_fake_api_app(app, lambda: _build_ibkr_account_snapshot(service, include_pnl=False))
+
+        needed, details = _with_fake_api_app(app, lambda: service._account_snapshot_refresh_orders_fast_needed())
 
         self.assertTrue(needed)
         self.assertTrue(details["startup_warmup_active"])
-        self.assertGreater(details["startup_warmup_remaining_s"], 0)
+        self.assertTrue(details["safety_cache_available"])
+        self.assertEqual("startup_warmup_with_safety_cache", details["orders_fast_decision_reason"])
+
+    def test_account_snapshot_refresh_uses_full_when_only_soft_pacing_and_no_safety_cache(self):
+        service = _RefreshService()
+        service.broker.payload["account_data_pacing"] = {
+            "by_kind": {
+                "positions": {
+                    "blocked": True,
+                    "blocked_reason": "min_interval",
+                    "retry_after_s": 12.0,
+                }
+            }
+        }
+        app = _FakeApiApp()
+
+        needed, details = _with_fake_api_app(app, lambda: service._account_snapshot_refresh_orders_fast_needed())
+
+        self.assertFalse(needed)
+        self.assertTrue(details["account_data_guard_active"])
+        self.assertTrue(details["account_data_guard_soft_active"])
+        self.assertFalse(details["account_data_guard_hard_active"])
+        self.assertEqual(["positions"], details["account_data_pacing_soft_blocked_kinds"])
+        self.assertEqual("soft_pacing_full_refresh_without_safety_cache", details["orders_fast_decision_reason"])
+
+    def test_account_snapshot_refresh_falls_back_to_full_when_orders_fast_has_no_summary(self):
+        app = _FakeApiApp()
+        service = _RefreshService()
+        service.order_lifecycle = _BuyingPowerLifecycle()
+        service._runtime_started_at = time.time()
+
+        with (
+            mock.patch.object(
+                service,
+                "_account_snapshot_refresh_safety_cache_state",
+                return_value={
+                    "safety_cache_available": True,
+                    "safety_cache_source": "full",
+                    "safety_cache_state": "fresh",
+                    "safety_cache_error": "",
+                },
+            ),
+            mock.patch("ibkr_compute.observability.prometheus.set_account_snapshot_metrics"),
+        ):
+            payload = _with_fake_api_app(app, lambda: service._refresh_account_snapshot_once(reason="unit_test"))
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual("account_snapshot", payload["source"])
+        self.assertEqual("full_bootstrap_after_orders_fast_unavailable", payload["refresh_profile"])
+        self.assertEqual("unit_test", payload["refresh_reason"])
+        self.assertEqual(1, service.order_lifecycle.snapshot_calls)
+        self.assertEqual(
+            "orders_fast_summary_cache_unavailable",
+            payload["orders_fast_bootstrap_fallback"]["reason"],
+        )
 
     def test_account_snapshot_refresh_uses_orders_fast_when_account_data_gate_busy(self):
         service = _RefreshService()
