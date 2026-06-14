@@ -1,5 +1,5 @@
 //@version=6
-indicator(title="Signal Strategy Display[Glory]", overlay=true, max_labels_count=500, max_lines_count=20)
+indicator(title="Signal Strategy Display[Glory]", overlay=true, max_labels_count=500, max_lines_count=500)
 
 // TV-primary strategy v1.
 // Derived from Signal Alert Core[Glory]: EMA trend/touch, SD mean-reversion windows,
@@ -145,6 +145,9 @@ showStatusPanel = input.bool(true, "Show status panel", group="08 Display")
 showPendingEntryLifecycle = input.bool(true, "Show pending entry lifecycle", group="08 Display")
 showCurrentPlanLines = input.bool(true, "Show current Core plan lines", group="08 Display")
 currentPlanLineForwardBars = input.int(3, "Current plan line forward bars", minval=1, maxval=20, group="08 Display")
+showHistoricalPlanLines = input.bool(true, "Show historical Core plan lines", group="08 Display")
+historicalPlanLineForwardBars = input.int(8, "Historical plan line forward bars", minval=1, maxval=50, group="08 Display")
+maxHistoricalPlanLineSets = input.int(120, "Max historical plan line sets", minval=1, maxval=120, group="08 Display")
 showBands = input.bool(true, "Show SD bands", group="08 Display")
 showSdHelperLines = input.bool(false, "Show SD regression/filter lines", group="08 Display")
 showDtpLine = input.bool(true, "Show DTP trend line", group="08 Display")
@@ -1913,6 +1916,37 @@ float displayTargetPlan = not na(displaySignalTargetPlan) ? displaySignalTargetP
 float displayRunnerActivation = not na(displaySignalRunnerActivation) ? displaySignalRunnerActivation : pendingDisplayWaiting ? displayLifecycleRunnerActivation : na
 bool displayPlanLinesActive = showCurrentPlanLines and not na(displayEntryPlan) and not displayPendingEntryTouchedNow and not displayPendingCancelNow
 int displayPlanLineStartBar = displayEnterLong or displayEnterShort ? bar_index : displayLifecycleSignalBar
+bool historicalPlanSnapshotNow = showHistoricalPlanLines and (displayEnterLong or displayEnterShort) and not na(displaySignalEntryPlan)
+var array<line> historicalPlanLines = array.new_line()
+var array<int> historicalPlanLineSetSizes = array.new_int()
+if historicalPlanSnapshotNow
+    int historicalStartBar = bar_index
+    int historicalEndBar = bar_index + historicalPlanLineForwardBars
+    int historicalLineCount = 0
+    line historicalEntryLine = line.new(historicalStartBar, displaySignalEntryPlan, historicalEndBar, displaySignalEntryPlan, color=color.new(color.yellow, 45), width=2)
+    array.push(historicalPlanLines, historicalEntryLine)
+    historicalLineCount += 1
+    if not na(displaySignalStopPlan)
+        line historicalStopLine = line.new(historicalStartBar, displaySignalStopPlan, historicalEndBar, displaySignalStopPlan, color=color.new(color.red, 45), width=2)
+        array.push(historicalPlanLines, historicalStopLine)
+        historicalLineCount += 1
+    if not na(displaySignalTargetPlan)
+        line historicalTargetLine = line.new(historicalStartBar, displaySignalTargetPlan, historicalEndBar, displaySignalTargetPlan, color=color.new(color.green, 45), width=2)
+        array.push(historicalPlanLines, historicalTargetLine)
+        historicalLineCount += 1
+    if not na(displaySignalRunnerActivation)
+        line historicalRunnerLine = line.new(historicalStartBar, displaySignalRunnerActivation, historicalEndBar, displaySignalRunnerActivation, color=color.new(color.blue, 45), width=2)
+        array.push(historicalPlanLines, historicalRunnerLine)
+        historicalLineCount += 1
+    if historicalLineCount > 0
+        array.push(historicalPlanLineSetSizes, historicalLineCount)
+while array.size(historicalPlanLineSetSizes) > maxHistoricalPlanLineSets
+    int oldestLineCount = array.shift(historicalPlanLineSetSizes)
+    if oldestLineCount > 0
+        for deleteIndex = 0 to oldestLineCount - 1
+            if array.size(historicalPlanLines) > 0
+                line oldestLine = array.shift(historicalPlanLines)
+                line.delete(oldestLine)
 var line displayEntryLine = na
 var line displayStopLine = na
 var line displayTargetLine = na
@@ -1973,7 +2007,9 @@ string statusSetup = pendingDisplayStatus != "" ? setupDisplayName(displayLifecy
 string statusComponents = pendingDisplayStatus != "" ? displayPendingCancelNow ? "撤销挂单: " + cancelReasonDisplayName(displayPendingCancelReason) : "成交确认看 Core" : blockedNow ? blockedComponentText + " · " + filterActionText(blockedReason, blockedDirection) : activityScore > 0 ? candidateComponentText + " · " + candidateWaitText : "--"
 string statusDtp = dtpStateText(dtpDir, dtpPhase)
 string statusMtf = pendingDisplayStatus != "" ? "Display shadow / Core entry_fill" : blockedNow ? mtfSummaryForDirection(blockedDirection) : activityScore > 0 ? mtfSummaryForDirection(candidateDirection) : enableMtf ? "MTF 等待信号" : "off"
-string statusRisk = displayEnterLong ? "plan " + str.tostring(longEntryCandidate, "#.##") + " / TP " + str.tostring(longTargetCandidate, "#.##") + " / SL " + str.tostring(longStopCandidate, "#.##") : displayEnterShort ? "plan " + str.tostring(shortEntryCandidate, "#.##") + " / TP " + str.tostring(shortTargetCandidate, "#.##") + " / SL " + str.tostring(shortStopCandidate, "#.##") : pendingDisplayStatus != "" ? "plan " + str.tostring(displayLifecycleEntry, "#.##") + " / TP " + str.tostring(displayLifecycleTarget, "#.##") + " / SL " + str.tostring(displayLifecycleStop, "#.##") : "--"
+string planLineLegend = showCurrentPlanLines or showHistoricalPlanLines ? " / 黄Plan 红SL 绿TP 蓝Runner" : ""
+string statusRiskBase = displayEnterLong ? "plan " + str.tostring(longEntryCandidate, "#.##") + " / TP " + str.tostring(longTargetCandidate, "#.##") + " / SL " + str.tostring(longStopCandidate, "#.##") : displayEnterShort ? "plan " + str.tostring(shortEntryCandidate, "#.##") + " / TP " + str.tostring(shortTargetCandidate, "#.##") + " / SL " + str.tostring(shortStopCandidate, "#.##") : pendingDisplayStatus != "" ? "plan " + str.tostring(displayLifecycleEntry, "#.##") + " / TP " + str.tostring(displayLifecycleTarget, "#.##") + " / SL " + str.tostring(displayLifecycleStop, "#.##") : "--"
+string statusRisk = statusRiskBase == "--" ? statusRiskBase : statusRiskBase + planLineLegend
 if confirmed and showStatusPanel
     table.cell(flowStatus, 0, 0, "流程", bgcolor=statusColor, text_color=color.white)
     table.cell(flowStatus, 1, 0, statusText, bgcolor=color.new(color.black, 0), text_color=color.white)

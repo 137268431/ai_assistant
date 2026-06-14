@@ -154,13 +154,13 @@ def _first_restart_time_value(*payloads: dict[str, Any]) -> str:
             value = str(ibc.get(key) or "").strip()
             if value:
                 return value
-    env_value = os.environ.get("IBKR_AUTO_RESTART_TIME", "").strip()
-    if env_value:
-        return env_value
     config_value = _read_ibc_config_auto_restart_time(
         os.environ.get("IBKR_IBC_INI", "").strip() or "/opt/ibc/config.ini"
     )
-    return config_value or DEFAULT_IBC_AUTO_RESTART_TIME
+    if config_value:
+        return config_value
+    env_value = os.environ.get("IBKR_AUTO_RESTART_TIME", "").strip()
+    return env_value or DEFAULT_IBC_AUTO_RESTART_TIME
 
 
 def _ibc_auto_restart_window(
