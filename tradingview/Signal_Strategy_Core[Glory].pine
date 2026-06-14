@@ -119,6 +119,7 @@ primaryEntrySession = input.session("0945-1130", "Primary entry layer", group="0
 qualityEntrySession = input.session("1130-1400", "Quality entry layer", group="07 TV Primary Events")
 closingQualityEntrySession = input.session("1400-1515", "Closing quality entry layer", group="07 TV Primary Events")
 enableAlerts = input.bool(true, "Emit TV-primary alert() payloads", group="07 TV Primary Events")
+enableFillConfirmAlerts = input.bool(false, "Alert on TV strategy fill confirmation", group="07 TV Primary Events")
 preAlertThreshold = input.int(65, "Pre-alert activity score", minval=1, maxval=99, group="07 TV Primary Events")
 enableEodForceClose = input.bool(true, "Mirror system EOD force close", group="07 TV Primary Events")
 eodCloseHour = input.int(15, "EOD force close hour ET", minval=0, maxval=23, group="07 TV Primary Events")
@@ -1623,6 +1624,7 @@ var float activeSubmittedEntryLimit = na
 var string activeEntryAnchorSource = ""
 var string activeEntryAnchorReason = ""
 var int activeEntryOrderExpiresBar = na
+var int activeEntrySignalBar = na
 var bool activePendingEntry = false
 var bool activeCancelSent = false
 var float activeStop = na
@@ -1665,6 +1667,9 @@ buildEntryPayload(string eventIdValue, string signalIdValue, string tradeGroupId
      jsonStr("tp_coid", tpOrderSignal(tradeGroupIdValue)) +
      jsonStr("sl_coid", slOrderSignal(tradeGroupIdValue)) +
      jsonStr("signal_key_policy", "bar_time_trade_group_v1") +
+     jsonStr("order_lifecycle_model", "core_strategy_shadow_v1") +
+     jsonStr("fill_confirmation_source", "tv_strategy_position_size") +
+     jsonStr("limit_fill_note", "TradingView broker emulator controls actual fill") +
      jsonStr("direction", direction) +
      jsonStr("position_side", direction) +
      jsonStr("setup", setup) +
@@ -1756,6 +1761,67 @@ buildEntryPayload(string eventIdValue, string signalIdValue, string tradeGroupId
      jsonInt("dtp_phase_bars", dtpPhaseBars) +
      jsonNum("atr", atrRaw) +
      jsonNum("atr_pct", atrPct) +
+     jsonNum("close", close) +
+     jsonInt("bar_index", bar_index) +
+     '}'
+
+buildEntryFillPayload(string eventIdValue, string positionIdValue, float actualFillPrice) =>
+    string direction = activeDirection == 1 ? "long" : "short"
+    int entryOrderAgeBars = na(activeEntrySignalBar) ? 0 : bar_index - activeEntrySignalBar
+    float targetCheckpoint = activeRunnerMode ? activeRunnerActivation : activeTarget
+    float riskPerShare = structureRiskPerShare(activeDirection, actualFillPrice, activeStop)
+    float rewardPerShare = structureRewardPerShare(activeDirection, actualFillPrice, activeTarget)
+    float structureRewardRiskValue = rewardRiskMultiple(rewardPerShare, riskPerShare)
+    basePayload("entry_fill", eventIdValue, positionIdValue) +
+     jsonStr("signal_id", activeSignalId) +
+     jsonStr("origin_signal_id", activeSignalId) +
+     jsonStr("trade_group_id", activeTradeGroupId) +
+     jsonStr("bracket_group", activeTradeGroupId) +
+     scalePlanPayload(activePlanId, activeTradeGroupId, 1, activeEntryAnchorSource) +
+     jsonStr("entry_order_unique_id", entryOrderSignal(activeTradeGroupId)) +
+     jsonStr("tp_order_unique_id", tpOrderSignal(activeTradeGroupId)) +
+     jsonStr("sl_order_unique_id", slOrderSignal(activeTradeGroupId)) +
+     jsonStr("entry_coid", entryOrderSignal(activeTradeGroupId)) +
+     jsonStr("tp_coid", tpOrderSignal(activeTradeGroupId)) +
+     jsonStr("sl_coid", slOrderSignal(activeTradeGroupId)) +
+     jsonStr("signal_key_policy", "bar_time_trade_group_v1") +
+     jsonStr("order_lifecycle_model", "core_strategy_shadow_v1") +
+     jsonStr("fill_confirmation_source", "tv_strategy_position_size") +
+     jsonStr("limit_fill_note", "TradingView broker emulator controls actual fill") +
+     jsonStr("direction", direction) +
+     jsonStr("position_side", direction) +
+     jsonStr("setup", activeSetup) +
+     jsonNum("quantity", activeQty) +
+     jsonNum("shares", activeQty) +
+     jsonNum("entry_price", actualFillPrice) +
+     jsonNum("actual_fill_price", actualFillPrice) +
+     jsonNum("planned_entry_price", activeEntry) +
+     jsonNum("submitted_entry_limit_price", activeSubmittedEntryLimit) +
+     jsonNum("submitted_limit_cap_price", activeSubmittedEntryLimit) +
+     jsonNum("reference_entry", activeReferenceEntry) +
+     jsonIntNullable("entry_signal_bar_index", activeEntrySignalBar) +
+     jsonInt("fill_bar_index", bar_index) +
+     jsonInt("entry_order_age_bars", entryOrderAgeBars) +
+     jsonNum("strategy_position_size", strategy.position_size) +
+     jsonNum("stop_loss", activeStop) +
+     jsonNum("take_profit", activeTarget) +
+     jsonNum("target_checkpoint", targetCheckpoint) +
+     jsonNum("safety_take_profit", activeTarget) +
+     jsonNum("runner_activation_price", activeRunnerActivation) +
+     jsonNum("runner_activation_r", runnerActivationR) +
+     jsonBool("runner_enabled", activeRunnerMode) +
+     jsonBool("runner_active", false) +
+     jsonBool("tp_checkpoint_runner", activeRunnerMode) +
+     jsonStr("target_role", setupIsMr(activeSetup) ? "mr_mean_tp" : activeRunnerMode ? "structure_safety_tp" : "structure_hard_tp") +
+     jsonStr("tp_sl_model", TP_SL_MODEL) +
+     jsonStr("rr_basis", "structure_stop_to_structure_target") +
+     jsonStr("atr_role", "buffer_and_filter_only") +
+     jsonNum("structure_stop_loss", activeStop) +
+     jsonNum("structure_take_profit", activeTarget) +
+     jsonNum("structure_reward_per_share", rewardPerShare) +
+     jsonNum("structure_risk_per_share", riskPerShare) +
+     jsonNum("structure_reward_risk", structureRewardRiskValue) +
+     jsonNum("reward_risk", structureRewardRiskValue) +
      jsonNum("close", close) +
      jsonInt("bar_index", bar_index) +
      '}'
@@ -1998,6 +2064,7 @@ if exitedNow
     activeEntryAnchorSource := ""
     activeEntryAnchorReason := ""
     activeEntryOrderExpiresBar := na
+    activeEntrySignalBar := na
     activePendingEntry := false
     activeCancelSent := false
     activeStop := na
@@ -2017,8 +2084,11 @@ if exitedNow
 
 bool pendingFilledNow = confirmed and activePendingEntry and strategy.position_size != 0
 if pendingFilledNow
+    float actualFillPrice = strategy.position_avg_price > 0.0 ? strategy.position_avg_price : activeEntry
+    if enableAlerts and enableFillConfirmAlerts
+        alert(buildEntryFillPayload(eventId("entry_fill", activeSetup), activePositionId, actualFillPrice), alert.freq_all)
     activePendingEntry := false
-    activeEntry := strategy.position_avg_price > 0.0 ? strategy.position_avg_price : activeEntry
+    activeEntry := actualFillPrice
     activeInitialRisk := activeDirection == 1 ? activeEntry - activeStop : activeStop - activeEntry
     activeRunnerExtreme := activeDirection == 1 ? high : low
     activeMfeR := 0.0
@@ -2078,6 +2148,7 @@ if pendingCancelNow
     activeEntryAnchorSource := ""
     activeEntryAnchorReason := ""
     activeEntryOrderExpiresBar := na
+    activeEntrySignalBar := na
     activePendingEntry := false
     activeCancelSent := false
     activeStop := na
@@ -2142,6 +2213,7 @@ if enterLong
         activeEntryAnchorSource := longEntryAnchorSource
         activeEntryAnchorReason := longEntryAnchorReason == "" ? "none" : longEntryAnchorReason
         activeEntryOrderExpiresBar := entryExpiresBar
+        activeEntrySignalBar := bar_index
         activePendingEntry := true
         activeCancelSent := false
         activeStop := stopPrice
@@ -2149,7 +2221,7 @@ if enterLong
         activeRunnerActivation := runnerActivationPrice
         activeInitialRisk := entryPrice - stopPrice
         activeQty := qty
-        activeEntryBar := bar_index
+        activeEntryBar := na
         activeRunnerMode := runnerMode
         activeRunnerActive := false
         activeRunnerExtreme := high
@@ -2197,6 +2269,7 @@ if enterShort
         activeEntryAnchorSource := shortEntryAnchorSource
         activeEntryAnchorReason := shortEntryAnchorReason == "" ? "none" : shortEntryAnchorReason
         activeEntryOrderExpiresBar := entryExpiresBar
+        activeEntrySignalBar := bar_index
         activePendingEntry := true
         activeCancelSent := false
         activeStop := stopPrice
@@ -2204,7 +2277,7 @@ if enterShort
         activeRunnerActivation := runnerActivationPrice
         activeInitialRisk := stopPrice - entryPrice
         activeQty := qty
-        activeEntryBar := bar_index
+        activeEntryBar := na
         activeRunnerMode := runnerMode
         activeRunnerActive := false
         activeRunnerExtreme := low
@@ -2345,6 +2418,7 @@ if eodCloseNow
     activeEntryAnchorSource := ""
     activeEntryAnchorReason := ""
     activeEntryOrderExpiresBar := na
+    activeEntrySignalBar := na
     activePendingEntry := false
     activeCancelSent := false
     activeStop := na

@@ -1,5 +1,5 @@
 //@version=6
-indicator(title="Signal Strategy Display[Glory]", overlay=true, max_labels_count=500)
+indicator(title="Signal Strategy Display[Glory]", overlay=true, max_labels_count=500, max_lines_count=20)
 
 // TV-primary strategy v1.
 // Derived from Signal Alert Core[Glory]: EMA trend/touch, SD mean-reversion windows,
@@ -142,6 +142,8 @@ showSignalDiagnostics = input.bool(true, "Show raw/filtered signal diagnostics",
 labelDetailMode = input.string("compact_tooltip", "Flow label detail mode", options=["compact_tooltip", "full_labels", "off"], group="08 Display")
 flowLabelTransparency = input.int(30, "Flow label background transparency", minval=0, maxval=100, group="08 Display")
 showStatusPanel = input.bool(true, "Show status panel", group="08 Display")
+showPendingEntryLifecycle = input.bool(true, "Show pending entry lifecycle", group="08 Display")
+showCurrentPlanLines = input.bool(true, "Show current Core plan lines", group="08 Display")
 showBands = input.bool(true, "Show SD bands", group="08 Display")
 showSdHelperLines = input.bool(false, "Show SD regression/filter lines", group="08 Display")
 showDtpLine = input.bool(true, "Show DTP trend line", group="08 Display")
@@ -1663,10 +1665,125 @@ mtfSummaryForDirection(string direction) =>
 // -----------------------------------------------------------------------------
 // Display-only event flow. This script is visual-only: no strategy orders and no alerts.
 // -----------------------------------------------------------------------------
-bool displayEnterLong = canOpenEntry and allowLong and longSignalCandidate and not shortSignalCandidate and not blockLong and not conflict
-bool displayEnterShort = canOpenEntry and allowShort and shortSignalCandidate and not longSignalCandidate and not blockShort and not conflict
-bool displayPreAlertNow = canOpenEntry and not displayEnterLong and not displayEnterShort and activityScore >= preAlertThreshold and activityScore < 100 and not conflict
+var bool displayShadowPendingEntry = false
+var bool displayShadowEntryTouched = false
+var bool displayShadowEntryExpired = false
+var int displayShadowDirection = 0
+var string displayShadowSetup = ""
+var float displayShadowEntry = na
+var float displayShadowStop = na
+var float displayShadowTarget = na
+var float displayShadowRunnerActivation = na
+var int displayShadowSignalBar = na
+var int displayShadowExpiresBar = na
+var string displayShadowCancelReason = ""
+var int displayEodForceCloseDay = na
+if isNewTradingDay
+    displayShadowPendingEntry := false
+    displayShadowEntryTouched := false
+    displayShadowEntryExpired := false
+    displayShadowDirection := 0
+    displayShadowSetup := ""
+    displayShadowEntry := na
+    displayShadowStop := na
+    displayShadowTarget := na
+    displayShadowRunnerActivation := na
+    displayShadowSignalBar := na
+    displayShadowExpiresBar := na
+    displayShadowCancelReason := ""
+    displayEodForceCloseDay := na
+
+int displayEodCloseHourNow = hour(time_close, "America/New_York")
+int displayEodCloseMinuteNow = minute(time_close, "America/New_York")
+bool displayEodCloseTimeReached = displayEodCloseHourNow > eodCloseHour or (displayEodCloseHourNow == eodCloseHour and displayEodCloseMinuteNow >= eodCloseMinute)
+bool displayPendingLongTouchedNow = confirmed and showPendingEntryLifecycle and displayShadowPendingEntry and displayShadowDirection == 1 and bar_index > displayShadowSignalBar and low <= displayShadowEntry
+bool displayPendingShortTouchedNow = confirmed and showPendingEntryLifecycle and displayShadowPendingEntry and displayShadowDirection == -1 and bar_index > displayShadowSignalBar and high >= displayShadowEntry
+bool displayPendingEntryTouchedNow = displayPendingLongTouchedNow or displayPendingShortTouchedNow
+if displayPendingEntryTouchedNow
+    displayShadowEntryTouched := true
+    displayShadowEntryExpired := false
+    displayShadowCancelReason := ""
+    displayShadowPendingEntry := false
+
+bool displayPendingEntryExpiredNow = confirmed and showPendingEntryLifecycle and displayShadowPendingEntry and not na(displayShadowExpiresBar) and bar_index > displayShadowExpiresBar
+bool displayPendingEntryWindowExpired = confirmed and showPendingEntryLifecycle and displayShadowPendingEntry and not inEntryWindow
+bool displayPendingAnchorInvalidated = confirmed and showPendingEntryLifecycle and displayShadowPendingEntry and structuralAnchorMode and (displayShadowDirection == 1 ? close < displayShadowEntry - atrRaw * structuralSlBufferAtr : close > displayShadowEntry + atrRaw * structuralSlBufferAtr)
+bool displayPendingOppositeLongActionable = confirmed and showPendingEntryLifecycle and displayShadowPendingEntry and displayShadowDirection == -1 and longActionable
+bool displayPendingOppositeShortActionable = confirmed and showPendingEntryLifecycle and displayShadowPendingEntry and displayShadowDirection == 1 and shortActionable
+bool displayPendingActionableConflict = confirmed and showPendingEntryLifecycle and displayShadowPendingEntry and longActionable and shortActionable
+bool displayPendingOppositeOrConflict = displayPendingActionableConflict or displayPendingOppositeLongActionable or displayPendingOppositeShortActionable
+bool displayPendingEodCancel = confirmed and showPendingEntryLifecycle and enableEodForceClose and displayShadowPendingEntry and displayEodCloseTimeReached and (na(displayEodForceCloseDay) or displayEodForceCloseDay != dailyTime)
+bool displayPendingSameDirectionContinuation = confirmed and showPendingEntryLifecycle and displayShadowPendingEntry and (displayShadowDirection == 1 ? longRaw : displayShadowDirection == -1 ? shortRaw : false)
+float displayPendingTrendInvalidationBuffer = atrRaw * pendingTrendInvalidationBufferAtr
+bool displayPendingLongEmaSoftReversed = emaFast < emaSlow or close < emaSlow
+bool displayPendingShortEmaSoftReversed = emaFast > emaSlow or close > emaSlow
+bool displayPendingLongEmaBufferBroken = emaFast < emaSlow and close < emaSlow - displayPendingTrendInvalidationBuffer
+bool displayPendingShortEmaBufferBroken = emaFast > emaSlow and close > emaSlow + displayPendingTrendInvalidationBuffer
+bool displayPendingLongTrendSupportFailed = dtpDir == -1 or mtfLongStatus == "block"
+bool displayPendingShortTrendSupportFailed = dtpDir == 1 or mtfShortStatus == "block"
+bool displayPendingLongSoftInvalidated = displayPendingLongTrendSupportFailed or displayPendingLongEmaSoftReversed
+bool displayPendingShortSoftInvalidated = displayPendingShortTrendSupportFailed or displayPendingShortEmaSoftReversed
+bool displayPendingLongHardInvalidated = displayPendingLongEmaBufferBroken and displayPendingLongTrendSupportFailed
+bool displayPendingShortHardInvalidated = displayPendingShortEmaBufferBroken and displayPendingShortTrendSupportFailed
+bool displayPendingHardInvalidated = confirmed and showPendingEntryLifecycle and displayShadowPendingEntry and (displayShadowDirection == 1 ? displayPendingLongHardInvalidated : displayShadowDirection == -1 ? displayPendingShortHardInvalidated : true)
+bool displayPendingSoftInvalidated = confirmed and showPendingEntryLifecycle and displayShadowPendingEntry and not displayPendingHardInvalidated and (displayShadowDirection == 1 ? displayPendingLongSoftInvalidated : displayShadowDirection == -1 ? displayPendingShortSoftInvalidated : false)
+bool displayPendingSoftRecheckFailed = displayPendingEntryExpiredNow and displayPendingSoftInvalidated and not displayPendingSameDirectionContinuation
+bool displayPendingTrendInvalidated = displayPendingHardInvalidated
+bool displayPendingTrendStillValid = confirmed and showPendingEntryLifecycle and displayShadowPendingEntry and not displayPendingTrendInvalidated
+bool displayPendingEntryRenewNow = displayPendingEntryExpiredNow and displayPendingTrendStillValid and not displayPendingSoftRecheckFailed and not displayPendingEodCancel and not displayPendingEntryWindowExpired and not displayPendingAnchorInvalidated and not displayPendingOppositeOrConflict
+if displayPendingEntryRenewNow
+    int displayPendingRenewBars = displayPendingSoftInvalidated ? pendingTrendRecheckBars : entryOrderTtlBars
+    displayShadowExpiresBar := bar_index + displayPendingRenewBars
+string displayPendingCancelReason = displayPendingEodCancel ? "pending_eod_cancel" : displayPendingOppositeOrConflict ? "opposite_signal_or_conflict" : displayPendingEntryWindowExpired ? "entry_window_expired" : displayPendingAnchorInvalidated ? "entry_anchor_invalidated" : displayPendingTrendInvalidated ? "trend_invalidated" : displayPendingSoftRecheckFailed ? "soft_trend_recheck_failed" : displayPendingEntryExpiredNow and not displayPendingEntryRenewNow ? "entry_ttl_expired" : ""
+bool displayPendingCancelNow = showPendingEntryLifecycle and displayPendingCancelReason != ""
+if displayPendingCancelNow
+    displayShadowEntryTouched := false
+    displayShadowEntryExpired := displayPendingEntryExpiredNow
+    displayShadowCancelReason := displayPendingCancelReason
+    displayShadowPendingEntry := false
+
+int displayLifecycleDirection = displayShadowDirection
+string displayLifecycleSetup = displayShadowSetup
+float displayLifecycleEntry = displayShadowEntry
+float displayLifecycleStop = displayShadowStop
+float displayLifecycleTarget = displayShadowTarget
+float displayLifecycleRunnerActivation = displayShadowRunnerActivation
+int displayLifecycleSignalBar = displayShadowSignalBar
+int displayLifecycleExpiresBar = displayShadowExpiresBar
+
+bool displayFlatForEntry = not displayShadowPendingEntry and not displayPendingEntryTouchedNow
+bool displayEnterLong = canOpenEntry and displayFlatForEntry and allowLong and longSignalCandidate and not shortSignalCandidate and not blockLong and not conflict
+bool displayEnterShort = canOpenEntry and displayFlatForEntry and allowShort and shortSignalCandidate and not longSignalCandidate and not blockShort and not conflict
+if showPendingEntryLifecycle and displayEnterLong
+    displayShadowPendingEntry := true
+    displayShadowEntryTouched := false
+    displayShadowEntryExpired := false
+    displayShadowDirection := 1
+    displayShadowSetup := longSetup
+    displayShadowEntry := longEntryCandidate
+    displayShadowStop := longStopCandidate
+    displayShadowTarget := longTargetCandidate
+    displayShadowRunnerActivation := longRunnerActivationCandidate
+    displayShadowSignalBar := bar_index
+    displayShadowExpiresBar := bar_index + entryOrderTtlBars
+    displayShadowCancelReason := ""
+if showPendingEntryLifecycle and displayEnterShort
+    displayShadowPendingEntry := true
+    displayShadowEntryTouched := false
+    displayShadowEntryExpired := false
+    displayShadowDirection := -1
+    displayShadowSetup := shortSetup
+    displayShadowEntry := shortEntryCandidate
+    displayShadowStop := shortStopCandidate
+    displayShadowTarget := shortTargetCandidate
+    displayShadowRunnerActivation := shortRunnerActivationCandidate
+    displayShadowSignalBar := bar_index
+    displayShadowExpiresBar := bar_index + entryOrderTtlBars
+    displayShadowCancelReason := ""
+bool displayPreAlertNow = canOpenEntry and displayFlatForEntry and not displayEnterLong and not displayEnterShort and activityScore >= preAlertThreshold and activityScore < 100 and not conflict
 bool displayObserveNow = displayPreAlertNow
+bool pendingDisplayWaiting = showPendingEntryLifecycle and displayShadowPendingEntry
+bool pendingDisplayLifecycleVisible = pendingDisplayWaiting or displayPendingEntryTouchedNow or displayPendingCancelNow
 
 bool candidateUpperWindowReady = candidateSetup == "trend_sdUpper" ? longTrendContextReady : candidateSetup == "trend_sdUpperBreakdown" ? upperSdExtremeFresh : candidateSetup == "mr_sdUpper" ? upperMrWindowValid : upperWindowValid
 bool candidateLowerWindowReady = candidateSetup == "trend_sdLower" ? shortTrendContextReady : candidateSetup == "trend_sdLowerBreakout" ? lowerSdExtremeFresh : candidateSetup == "trend_emaDeathContinuation" ? shortEmaDeathContinuationStructureOk : candidateSetup == "mr_sdLower" ? lowerMrWindowValid : lowerWindowValid
@@ -1734,15 +1851,30 @@ if not blockedNow and not longRaw and not shortRaw
 
 if flowLabelsVisible and displayEnterLong
     string directionDecisionLine = longSetup == "trend_sdUpper" and bullTrendContinuationContext ? "\n方向裁决: DTP强多，SD上轨优先顺势多" : ""
-    string longEntryDetailText = "信号满足\n准备做多\n" + setupDisplayName(longSetup) + directionDecisionLine + "\n" + entryWindowDiagnosticsText() + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("long") + "\n" + dtpEntryFilterText("long", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\nref " + str.tostring(longReferenceEntry, "#.##") + " / plan " + str.tostring(longEntryCandidate, "#.##")
-    string longEntryCompactText = "入场 多·" + decisionSetupTag(longSetup) + " " + str.tostring(longEntryCandidate, "#.##") + "\n" + decisionRiskLine(longEntryCandidate, longStopCandidate, longTargetCandidate, longStructureRewardRisk, longTargetDistanceAtr)
+    string longEntryDetailText = "信号满足\nCore计划挂多\n" + setupDisplayName(longSetup) + directionDecisionLine + "\n" + entryWindowDiagnosticsText() + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("long") + "\n" + dtpEntryFilterText("long", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\nref " + str.tostring(longReferenceEntry, "#.##") + " / plan " + str.tostring(longEntryCandidate, "#.##")
+    string longEntryCompactText = "待触及 多·" + decisionSetupTag(longSetup) + " " + str.tostring(longEntryCandidate, "#.##") + "\n" + decisionRiskLine(longEntryCandidate, longStopCandidate, longTargetCandidate, longStructureRewardRisk, longTargetDistanceAtr)
     label.new(bar_index, low - atrVal * 3.1, flowLabelText(longEntryCompactText, longEntryDetailText), style=label.style_label_up, color=flowLabelColor("entry", "long"), textcolor=color.white, size=size.normal, tooltip=flowLabelTooltip(longEntryDetailText))
 
 if flowLabelsVisible and displayEnterShort
     string directionDecisionLine = shortSetup == "trend_sdLower" and bearTrendContinuationContext ? "\n方向裁决: DTP强空，SD下轨优先顺势空" : ""
-    string shortEntryDetailText = "信号满足\n准备做空\n" + setupDisplayName(shortSetup) + directionDecisionLine + "\n" + entryWindowDiagnosticsText() + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("short") + "\n" + dtpEntryFilterText("short", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\nref " + str.tostring(shortReferenceEntry, "#.##") + " / plan " + str.tostring(shortEntryCandidate, "#.##")
-    string shortEntryCompactText = "入场 空·" + decisionSetupTag(shortSetup) + " " + str.tostring(shortEntryCandidate, "#.##") + "\n" + decisionRiskLine(shortEntryCandidate, shortStopCandidate, shortTargetCandidate, shortStructureRewardRisk, shortTargetDistanceAtr)
+    string shortEntryDetailText = "信号满足\nCore计划挂空\n" + setupDisplayName(shortSetup) + directionDecisionLine + "\n" + entryWindowDiagnosticsText() + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("short") + "\n" + dtpEntryFilterText("short", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\nref " + str.tostring(shortReferenceEntry, "#.##") + " / plan " + str.tostring(shortEntryCandidate, "#.##")
+    string shortEntryCompactText = "待触及 空·" + decisionSetupTag(shortSetup) + " " + str.tostring(shortEntryCandidate, "#.##") + "\n" + decisionRiskLine(shortEntryCandidate, shortStopCandidate, shortTargetCandidate, shortStructureRewardRisk, shortTargetDistanceAtr)
     label.new(bar_index, high + atrVal * 3.1, flowLabelText(shortEntryCompactText, shortEntryDetailText), style=label.style_label_down, color=flowLabelColor("entry", "short"), textcolor=color.white, size=size.normal, tooltip=flowLabelTooltip(shortEntryDetailText))
+
+if flowLabelsVisible and showPendingEntryLifecycle and displayPendingEntryTouchedNow
+    string pendingDirectionText = displayLifecycleDirection == 1 ? "多" : "空"
+    string pendingTouchPriceText = displayLifecycleDirection == 1 ? "low " + str.tostring(low, "#.##") : "high " + str.tostring(high, "#.##")
+    string pendingTouchDetailText = "Core模拟触及\n" + directionDisplayName(displayLifecycleDirection == 1 ? "long" : "short") + " · " + setupDisplayName(displayLifecycleSetup) + "\nplan " + str.tostring(displayLifecycleEntry, "#.##") + " / " + pendingTouchPriceText + "\nsignal bar " + str.tostring(displayLifecycleSignalBar, "#") + " / touch bar " + str.tostring(bar_index, "#") + " / TTL " + str.tostring(entryOrderTtlBars, "#") + "\nDisplay shadow，不代表 TV strategy 已成交；真实成交看 Core Strategy Tester / Core entry_fill / 券商订单"
+    string pendingTouchCompactText = "Core模拟触及 " + pendingDirectionText + " " + str.tostring(displayLifecycleEntry, "#.##")
+    float pendingTouchY = displayLifecycleDirection == 1 ? low - atrVal * 2.0 : high + atrVal * 2.0
+    label.new(bar_index, pendingTouchY, flowLabelText(pendingTouchCompactText, pendingTouchDetailText), style=flowLabelStyle(displayLifecycleDirection == 1 ? "long" : "short"), color=flowLabelColor("entry", displayLifecycleDirection == 1 ? "long" : "short"), textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(pendingTouchDetailText))
+
+if flowLabelsVisible and showPendingEntryLifecycle and displayPendingCancelNow
+    string pendingDirectionText = displayLifecycleDirection == 1 ? "多" : "空"
+    string pendingCancelDetailText = "Core模拟撤销: " + displayPendingCancelReason + "\n" + directionDisplayName(displayLifecycleDirection == 1 ? "long" : "short") + " · " + setupDisplayName(displayLifecycleSetup) + "\n原因: " + cancelReasonDisplayName(displayPendingCancelReason) + "\nplan " + str.tostring(displayLifecycleEntry, "#.##") + "\nsignal bar " + str.tostring(displayLifecycleSignalBar, "#") + " / expires bar " + str.tostring(displayLifecycleExpiresBar, "#") + "\nDisplay shadow，仅复刻 Core 挂单生命周期；真实撤单看 Core cancel alert / Strategy Tester / 券商订单"
+    string pendingCancelCompactText = "Core模拟撤销 " + pendingDirectionText + " " + cancelReasonDisplayName(displayPendingCancelReason)
+    float pendingCancelY = displayLifecycleDirection == 1 ? low - atrVal * 2.0 : high + atrVal * 2.0
+    label.new(bar_index, pendingCancelY, flowLabelText(pendingCancelCompactText, pendingCancelDetailText), style=flowLabelStyle(displayLifecycleDirection == 1 ? "long" : "short"), color=flowLabelColor("blocked", displayLifecycleDirection == 1 ? "long" : "short"), textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(pendingCancelDetailText))
 
 // -----------------------------------------------------------------------------
 // Visuals
@@ -1769,24 +1901,76 @@ plotshape(showEmaCrossMarkers and emaDeathCross, "EMA20/50 death cross", locatio
 plotshape(showComponentMarkers and bullDivNow, "Bull divergence", location=location.belowbar, style=shape.diamond, color=color.new(color.lime, 0), size=size.tiny, text="D+")
 plotshape(showComponentMarkers and bearDivNow, "Bear divergence", location=location.abovebar, style=shape.diamond, color=color.new(color.red, 0), size=size.tiny, text="D-")
 
-float displayEntryPlan = displayEnterLong ? longEntryCandidate : displayEnterShort ? shortEntryCandidate : na
-float displayStopPlan = displayEnterLong ? longStopCandidate : displayEnterShort ? shortStopCandidate : na
-float displayTargetPlan = displayEnterLong ? longTargetCandidate : displayEnterShort ? shortTargetCandidate : na
-float displayRunnerActivation = displayEnterLong ? longRunnerActivationCandidate : displayEnterShort ? shortRunnerActivationCandidate : na
-plot(displayEntryPlan, "Display Plan Entry", color=color.new(color.yellow, 0), style=plot.style_linebr, linewidth=2)
-plot(displayStopPlan, "Display SL", color=color.new(color.red, 0), style=plot.style_linebr, linewidth=2)
-plot(displayTargetPlan, "Display TP", color=color.new(color.green, 0), style=plot.style_linebr, linewidth=2)
-plot(displayRunnerActivation, "Display Runner Activation", color=color.new(color.blue, 0), style=plot.style_linebr, linewidth=2)
+float displaySignalEntryPlan = displayEnterLong ? longEntryCandidate : displayEnterShort ? shortEntryCandidate : na
+float displaySignalStopPlan = displayEnterLong ? longStopCandidate : displayEnterShort ? shortStopCandidate : na
+float displaySignalTargetPlan = displayEnterLong ? longTargetCandidate : displayEnterShort ? shortTargetCandidate : na
+float displaySignalRunnerActivation = displayEnterLong ? longRunnerActivationCandidate : displayEnterShort ? shortRunnerActivationCandidate : na
+float displayEntryPlan = not na(displaySignalEntryPlan) ? displaySignalEntryPlan : pendingDisplayWaiting ? displayLifecycleEntry : na
+float displayStopPlan = not na(displaySignalStopPlan) ? displaySignalStopPlan : pendingDisplayWaiting ? displayLifecycleStop : na
+float displayTargetPlan = not na(displaySignalTargetPlan) ? displaySignalTargetPlan : pendingDisplayWaiting ? displayLifecycleTarget : na
+float displayRunnerActivation = not na(displaySignalRunnerActivation) ? displaySignalRunnerActivation : pendingDisplayWaiting ? displayLifecycleRunnerActivation : na
+bool displayPlanLinesActive = showCurrentPlanLines and not na(displayEntryPlan) and not displayPendingEntryTouchedNow and not displayPendingCancelNow
+int displayPlanLineStartBar = displayEnterLong or displayEnterShort ? bar_index : displayLifecycleSignalBar
+var line displayEntryLine = na
+var line displayStopLine = na
+var line displayTargetLine = na
+var line displayRunnerLine = na
+if not displayPlanLinesActive
+    if not na(displayEntryLine)
+        line.delete(displayEntryLine)
+        displayEntryLine := na
+    if not na(displayStopLine)
+        line.delete(displayStopLine)
+        displayStopLine := na
+    if not na(displayTargetLine)
+        line.delete(displayTargetLine)
+        displayTargetLine := na
+    if not na(displayRunnerLine)
+        line.delete(displayRunnerLine)
+        displayRunnerLine := na
+else
+    int planLineStartBar = na(displayPlanLineStartBar) ? bar_index : displayPlanLineStartBar
+    if na(displayEntryLine)
+        displayEntryLine := line.new(planLineStartBar, displayEntryPlan, bar_index, displayEntryPlan, color=color.new(color.yellow, 0), width=2)
+    else
+        line.set_xy1(displayEntryLine, planLineStartBar, displayEntryPlan)
+        line.set_xy2(displayEntryLine, bar_index, displayEntryPlan)
+        line.set_color(displayEntryLine, color.new(color.yellow, 0))
+    if na(displayStopLine)
+        displayStopLine := line.new(planLineStartBar, displayStopPlan, bar_index, displayStopPlan, color=color.new(color.red, 0), width=2)
+    else
+        line.set_xy1(displayStopLine, planLineStartBar, displayStopPlan)
+        line.set_xy2(displayStopLine, bar_index, displayStopPlan)
+        line.set_color(displayStopLine, color.new(color.red, 0))
+    if na(displayTargetLine)
+        displayTargetLine := line.new(planLineStartBar, displayTargetPlan, bar_index, displayTargetPlan, color=color.new(color.green, 0), width=2)
+    else
+        line.set_xy1(displayTargetLine, planLineStartBar, displayTargetPlan)
+        line.set_xy2(displayTargetLine, bar_index, displayTargetPlan)
+        line.set_color(displayTargetLine, color.new(color.green, 0))
+    if na(displayRunnerActivation)
+        if not na(displayRunnerLine)
+            line.delete(displayRunnerLine)
+            displayRunnerLine := na
+    else if na(displayRunnerLine)
+        displayRunnerLine := line.new(planLineStartBar, displayRunnerActivation, bar_index, displayRunnerActivation, color=color.new(color.blue, 0), width=2)
+    else
+        line.set_xy1(displayRunnerLine, planLineStartBar, displayRunnerActivation)
+        line.set_xy2(displayRunnerLine, bar_index, displayRunnerActivation)
+        line.set_color(displayRunnerLine, color.new(color.blue, 0))
 
 var table flowStatus = table.new(position.top_right, 2, 7, border_width=1)
-string statusDirection = displayEnterShort ? "做空" : displayEnterLong ? "做多" : blockedNow ? directionDisplayName(blockedDirection) : activityScore > 0 ? directionDisplayName(candidateDirection) : "--"
-string statusText = displayEnterLong ? "准备做多" : displayEnterShort ? "准备做空" : blockedNow ? "过滤" + directionDisplayName(blockedDirection) : displayObserveNow ? "观察" + directionDisplayName(candidateDirection) : lowerWindowValid or upperWindowValid ? "窗口激活" : "等待"
-color statusColor = displayEnterLong ? flowStatusColor("entry", "long") : displayEnterShort ? flowStatusColor("entry", "short") : blockedNow ? flowStatusColor("blocked", blockedDirection) : displayObserveNow ? color.new(color.orange, 0) : lowerWindowValid ? flowStatusColor("activate_lower", dtpBearDominant ? "short" : "long") : upperWindowValid ? flowStatusColor("activate_upper", dtpBullDominant ? "long" : "short") : color.new(color.gray, 20)
-string statusSetup = blockedNow ? setupDisplayName(blockedSetup) : activityScore > 0 ? setupDisplayName(candidateSetup) : "--"
-string statusComponents = blockedNow ? blockedComponentText + " · " + filterActionText(blockedReason, blockedDirection) : activityScore > 0 ? candidateComponentText + " · " + candidateWaitText : "--"
+string pendingDisplayStatus = displayPendingEntryTouchedNow ? "Core模拟触及" : displayPendingCancelNow ? "Core模拟撤销" : pendingDisplayWaiting ? "Core挂单中" : ""
+string pendingDisplayDirectionName = displayLifecycleDirection == 1 ? "做多" : displayLifecycleDirection == -1 ? "做空" : "--"
+string pendingDisplayDirectionKey = displayLifecycleDirection == 1 ? "long" : displayLifecycleDirection == -1 ? "short" : ""
+string statusDirection = displayEnterShort ? "做空" : displayEnterLong ? "做多" : pendingDisplayStatus != "" ? pendingDisplayDirectionName : blockedNow ? directionDisplayName(blockedDirection) : activityScore > 0 ? directionDisplayName(candidateDirection) : "--"
+string statusText = displayEnterLong or displayEnterShort ? "Core挂单中" : pendingDisplayStatus != "" ? pendingDisplayStatus : blockedNow ? "过滤" + directionDisplayName(blockedDirection) : displayObserveNow ? "观察" + directionDisplayName(candidateDirection) : lowerWindowValid or upperWindowValid ? "窗口激活" : "等待"
+color statusColor = displayEnterLong ? flowStatusColor("entry", "long") : displayEnterShort ? flowStatusColor("entry", "short") : pendingDisplayStatus != "" and displayPendingCancelNow ? flowStatusColor("blocked", pendingDisplayDirectionKey) : pendingDisplayStatus != "" ? flowStatusColor("entry", pendingDisplayDirectionKey) : blockedNow ? flowStatusColor("blocked", blockedDirection) : displayObserveNow ? color.new(color.orange, 0) : lowerWindowValid ? flowStatusColor("activate_lower", dtpBearDominant ? "short" : "long") : upperWindowValid ? flowStatusColor("activate_upper", dtpBullDominant ? "long" : "short") : color.new(color.gray, 20)
+string statusSetup = pendingDisplayStatus != "" ? setupDisplayName(displayLifecycleSetup) : blockedNow ? setupDisplayName(blockedSetup) : activityScore > 0 ? setupDisplayName(candidateSetup) : "--"
+string statusComponents = pendingDisplayStatus != "" ? displayPendingCancelNow ? "Core模拟撤销: " + cancelReasonDisplayName(displayPendingCancelReason) : "成交确认看 Core" : blockedNow ? blockedComponentText + " · " + filterActionText(blockedReason, blockedDirection) : activityScore > 0 ? candidateComponentText + " · " + candidateWaitText : "--"
 string statusDtp = dtpStateText(dtpDir, dtpPhase)
-string statusMtf = blockedNow ? mtfSummaryForDirection(blockedDirection) : activityScore > 0 ? mtfSummaryForDirection(candidateDirection) : enableMtf ? "MTF 等待信号" : "off"
-string statusRisk = displayEnterLong ? "plan " + str.tostring(longEntryCandidate, "#.##") + " / TP " + str.tostring(longTargetCandidate, "#.##") + " / SL " + str.tostring(longStopCandidate, "#.##") : displayEnterShort ? "plan " + str.tostring(shortEntryCandidate, "#.##") + " / TP " + str.tostring(shortTargetCandidate, "#.##") + " / SL " + str.tostring(shortStopCandidate, "#.##") : "--"
+string statusMtf = pendingDisplayStatus != "" ? "Display shadow / Core entry_fill" : blockedNow ? mtfSummaryForDirection(blockedDirection) : activityScore > 0 ? mtfSummaryForDirection(candidateDirection) : enableMtf ? "MTF 等待信号" : "off"
+string statusRisk = displayEnterLong ? "plan " + str.tostring(longEntryCandidate, "#.##") + " / TP " + str.tostring(longTargetCandidate, "#.##") + " / SL " + str.tostring(longStopCandidate, "#.##") : displayEnterShort ? "plan " + str.tostring(shortEntryCandidate, "#.##") + " / TP " + str.tostring(shortTargetCandidate, "#.##") + " / SL " + str.tostring(shortStopCandidate, "#.##") : pendingDisplayStatus != "" ? "plan " + str.tostring(displayLifecycleEntry, "#.##") + " / TP " + str.tostring(displayLifecycleTarget, "#.##") + " / SL " + str.tostring(displayLifecycleStop, "#.##") : "--"
 if confirmed and showStatusPanel
     table.cell(flowStatus, 0, 0, "流程", bgcolor=statusColor, text_color=color.white)
     table.cell(flowStatus, 1, 0, statusText, bgcolor=color.new(color.black, 0), text_color=color.white)
