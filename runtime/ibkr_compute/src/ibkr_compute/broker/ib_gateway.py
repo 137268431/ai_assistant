@@ -71,6 +71,7 @@ from ibkr_compute.observability.prometheus import (
 
 logger = logging.getLogger(__name__)
 _GLOBAL_GATEWAY_ORDER_WRITE_LOCK = threading.RLock()
+EPOCH_MS_ERROR_CODE_FLOOR = 1_000_000_000_000
 
 
 TICK_BY_TICK_DUPLICATE_WINDOW_SECONDS = 15.0
@@ -254,6 +255,37 @@ MODIFY_ORDER_OBJECT_LOOKUP_TIMEOUT_SECONDS = _env_float(
     minimum=0.0,
 )
 ATTACHED_BRACKET_EXPLICIT_OCA_ENABLED = _env_bool("IBKR_ATTACHED_BRACKET_EXPLICIT_OCA_ENABLED", False)
+
+
+def _looks_like_epoch_ms_error_value(value: Any) -> bool:
+    return _safe_int(value, 0) >= EPOCH_MS_ERROR_CODE_FLOOR
+
+
+def _looks_like_ib_error_code_value(value: Any) -> bool:
+    number = abs(_safe_int(value, 0))
+    return 0 < number < 1_000_000
+
+
+def _normalize_ibapi_error_args(args: tuple[Any, ...]) -> tuple[Any, Any, Any, Any]:
+    """Support both legacy and timestamp-prefixed ibapi error callback shapes."""
+    error_time = None
+    advanced_order_reject_json = ""
+    if len(args) >= 4:
+        first, second, third, fourth = args[:4]
+        if _looks_like_epoch_ms_error_value(first) and _looks_like_ib_error_code_value(second):
+            return first, second, third, fourth
+        return error_time, first, second, third
+    if len(args) >= 3:
+        first, second, third = args[:3]
+        if _looks_like_epoch_ms_error_value(first) and _looks_like_ib_error_code_value(second):
+            return first, second, third, advanced_order_reject_json
+        return error_time, first, second, third
+    if len(args) >= 2:
+        first, second = args[:2]
+        if _looks_like_epoch_ms_error_value(first) and _looks_like_ib_error_code_value(second):
+            return first, second, "", advanced_order_reject_json
+        return error_time, first, second, advanced_order_reject_json
+    return error_time, 0, args[0] if args else "", advanced_order_reject_json
 
 
 from ibkr_compute.broker.ib_gateway_service import (
@@ -844,18 +876,8 @@ class _IBGatewayApp(EWrapper, EClient):
             self._last_message_at = time.time()
 
     def error(self, reqId: int, *args):  # noqa: N802
-        if len(args) >= 4:
-            _error_time, errorCode, errorString, _advancedOrderRejectJson = args[:4]
-        elif len(args) >= 3:
-            errorCode, errorString, _advancedOrderRejectJson = args[:3]
-        elif len(args) >= 2:
-            errorCode, errorString = args[:2]
-            _advancedOrderRejectJson = ""
-        else:
-            errorCode = 0
-            errorString = args[0] if args else ""
-            _advancedOrderRejectJson = ""
-        normalized_error_code = int(errorCode or 0)
+        _error_time, errorCode, errorString, _advancedOrderRejectJson = _normalize_ibapi_error_args(args)
+        normalized_error_code = _safe_int(errorCode, 0)
         order_error_payload = {"code": normalized_error_code, "message": str(errorString or "")}
         order_warning = _order_error_is_submission_warning(order_error_payload)
         cancel_notice = _order_error_is_cancel_notice(order_error_payload)
@@ -897,12 +919,12 @@ class _IBGatewayApp(EWrapper, EClient):
         )
         with self._state_lock:
             self._last_message_at = time.time()
-            self._last_error_code = int(errorCode or 0)
+            self._last_error_code = normalized_error_code
             self._last_error_message = str(errorString or "")
             self._last_error_at = time.time()
             self._recent_errors.append(
                 {
-                    "code": int(errorCode or 0),
+                    "code": normalized_error_code,
                     "message": str(errorString or ""),
                     "req_id": int(reqId or 0),
                     "at": datetime.fromtimestamp(self._last_error_at, ET).isoformat(),
@@ -922,7 +944,7 @@ class _IBGatewayApp(EWrapper, EClient):
                 and not cancel_notice
                 and not account_summary_request_limit
             ):
-                logger.warning("IB Gateway error reqId=%s code=%s message=%s", reqId, errorCode, errorString)
+                logger.warning("IB Gateway error reqId=%s code=%s message=%s", reqId, normalized_error_code, errorString)
                 if normalized_error_code in ACCOUNT_DATA_UNSUBSCRIBED_CODES:
                     self._record_account_data_issue("account_updates", str(errorString or "account_data_unsubscribed"))
             elif account_summary_request_limit:
@@ -931,15 +953,31 @@ class _IBGatewayApp(EWrapper, EClient):
                     "account_summary_request_limit",
                     ACCOUNT_DATA_PACING_COOLDOWN_SECONDS,
                 )
-                logger.info("IB account summary request limit hit; using cache/backoff reqId=%s code=%s", reqId, errorCode)
+                logger.info(
+                    "IB account summary request limit hit; using cache/backoff reqId=%s code=%s",
+                    reqId,
+                    normalized_error_code,
+                )
             elif order_warning:
-                logger.info("Ignoring non-fatal IB order submission warning reqId=%s code=%s", reqId, errorCode)
+                logger.info(
+                    "Ignoring non-fatal IB order submission warning reqId=%s code=%s",
+                    reqId,
+                    normalized_error_code,
+                )
             elif cancel_notice:
-                logger.debug("Ignoring non-fatal IB cancel notice reqId=%s code=%s", reqId, errorCode)
+                logger.debug("Ignoring non-fatal IB cancel notice reqId=%s code=%s", reqId, normalized_error_code)
             elif expected_account_unsubscribe:
-                logger.debug("Ignoring expected account update unsubscribe error reqId=%s code=%s", reqId, errorCode)
+                logger.debug(
+                    "Ignoring expected account update unsubscribe error reqId=%s code=%s",
+                    reqId,
+                    normalized_error_code,
+                )
             elif expected_market_data_cancel_missing:
-                logger.debug("Ignoring expected market data cancel-missing error reqId=%s code=%s", reqId, errorCode)
+                logger.debug(
+                    "Ignoring expected market data cancel-missing error reqId=%s code=%s",
+                    reqId,
+                    normalized_error_code,
+                )
             numeric_req_id = int(reqId or 0)
             if (
                 numeric_req_id > 0
@@ -964,11 +1002,11 @@ class _IBGatewayApp(EWrapper, EClient):
         ctx = self._pending_requests.get(int(reqId or 0))
         if (
             ctx
-            and errorCode not in BENIGN_ERROR_CODES
+            and normalized_error_code not in BENIGN_ERROR_CODES
             and not expected_account_unsubscribe
             and not expected_market_data_cancel_missing
         ):
-            ctx.error = str(errorString or f"ib_error_{errorCode}")
+            ctx.error = str(errorString or f"ib_error_{normalized_error_code}")
             ctx.event.set()
 
     def add_market_data_listener(self, callback: Callable[[dict], None]):

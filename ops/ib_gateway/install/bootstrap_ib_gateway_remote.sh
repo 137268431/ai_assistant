@@ -345,9 +345,9 @@ broker_mode = (data.get("IBKR_BROKER_MODE") or "paper").strip() or "paper"
 trading_mode = (data.get("IBKR_GATEWAY_MODE") or broker_mode).strip() or broker_mode
 twofa_action = (data.get("IBKR_2FA_TIMEOUT_ACTION") or "exit").strip() or "exit"
 gateway_tz = (data.get("IBKR_GATEWAY_TZ") or "America/New_York").strip() or "America/New_York"
-auto_restart_time = data.get("IBKR_AUTO_RESTART_TIME", "08:05 PM")
+auto_restart_time = data.get("IBKR_AUTO_RESTART_TIME", "02:35 AM")
 if auto_restart_time is None:
-    auto_restart_time = "08:05 PM"
+    auto_restart_time = "02:35 AM"
 auto_restart_time = str(auto_restart_time).strip()
 java_home = data.get("IBKR_GATEWAY_JAVA_HOME", "").strip()
 if java_home in {
@@ -479,9 +479,9 @@ api_port = (data.get("IBGW_PORT") or "4001").strip() or "4001"
 user_dir = (data.get("IBKR_TWS_SETTINGS_PATH") or data.get("IBKR_IBG_USER_DIR") or "").strip()
 relogin = "yes" if (data.get("IBKR_2FA_TIMEOUT_ACTION", "exit").strip().lower() == "restart") else "no"
 trusted_ips = data.get("IBKR_TRUSTED_API_CLIENT_IPS", "").strip()
-auto_restart_time = data.get("IBKR_AUTO_RESTART_TIME", "08:05 PM")
+auto_restart_time = data.get("IBKR_AUTO_RESTART_TIME", "02:35 AM")
 if auto_restart_time is None:
-    auto_restart_time = "08:05 PM"
+    auto_restart_time = "02:35 AM"
 auto_restart_time = str(auto_restart_time).strip()
 
 lines = [

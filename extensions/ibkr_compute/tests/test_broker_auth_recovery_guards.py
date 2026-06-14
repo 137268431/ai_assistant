@@ -60,6 +60,23 @@ class BrokerReadyGuardTest(unittest.TestCase):
         self.assertTrue(ready)
         connect_mock.assert_called_once_with("127.0.0.1", 4001, 31)
 
+    def test_error_callback_treats_epoch_ms_as_error_time(self):
+        scenarios = [
+            ((1781395514559, 502), ""),
+            ((1781395514559, 502, "Couldn't connect to TWS", ""), "Couldn't connect to TWS"),
+        ]
+        for args, expected_message in scenarios:
+            with self.subTest(args=args):
+                app = _IBGatewayApp("127.0.0.1", 4001, 31)
+
+                app.error(-1, *args)
+
+                status = app.status()
+                self.assertEqual(status["last_error_code"], 502)
+                self.assertEqual(status["last_error"], expected_message)
+                self.assertEqual(status["recent_errors"][-1]["code"], 502)
+                self.assertNotEqual(status["recent_errors"][-1]["code"], 1781395514559)
+
     def test_account_data_circuit_fails_fast_after_repeated_timeouts(self):
         app = _IBGatewayApp("127.0.0.1", 4001, 31)
         app._ensure_ready = mock.Mock(return_value={"ready": True})

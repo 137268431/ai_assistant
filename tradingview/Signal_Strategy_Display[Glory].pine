@@ -144,6 +144,7 @@ flowLabelTransparency = input.int(30, "Flow label background transparency", minv
 showStatusPanel = input.bool(true, "Show status panel", group="08 Display")
 showPendingEntryLifecycle = input.bool(true, "Show pending entry lifecycle", group="08 Display")
 showCurrentPlanLines = input.bool(true, "Show current Core plan lines", group="08 Display")
+currentPlanLineForwardBars = input.int(3, "Current plan line forward bars", minval=1, maxval=20, group="08 Display")
 showBands = input.bool(true, "Show SD bands", group="08 Display")
 showSdHelperLines = input.bool(false, "Show SD regression/filter lines", group="08 Display")
 showDtpLine = input.bool(true, "Show DTP trend line", group="08 Display")
@@ -1837,7 +1838,7 @@ var string lastBlockVisualKey = ""
 if isNewTradingDay
     lastBlockVisualKey := ""
 string blockedVisualKey = blockedDirection + ":" + blockedSetup + ":" + blockedReason + ":" + blockedComponentText + ":" + mtfStatusForDirection(blockedDirection) + ":" + mtfBlockReasonForDirection(blockedDirection) + ":" + str.tostring(dtpDir, "#") + ":" + dtpPhase + ":" + (blockedProfitSpaceEntryBlocked ? blockedProfitSpaceFailureReason : "none")
-if flowLabelsVisible and showSignalDiagnostics and blockedNow and blockedVisualKey != lastBlockVisualKey
+if flowLabelsVisible and showSignalDiagnostics and not pendingDisplayWaiting and blockedNow and blockedVisualKey != lastBlockVisualKey
     float blockedY = blockedDirection == "short" ? high + atrVal * 4.0 : low - atrVal * 4.0
     string blockedProfitText = blockedDirection == "long" ? profitSpaceSummaryText(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr, longStructureRewardRisk) : profitSpaceSummaryText(shortExpectedNetProfit, shortExpectedNetRoiPct, shortCostPctOfReward, shortTargetDistanceAtr, shortStructureRewardRisk)
     string blockedDetailText = "信号过滤\n" + directionDisplayName(blockedDirection) + " · " + setupDisplayName(blockedSetup) + "\n" + entryWindowDiagnosticsText() + "\n组件: " + blockedComponentText + "\n主因: " + filterDisplayName(blockedReason) + blockedSecondaryText + "\n" + filterActionText(blockedReason, blockedDirection) + "\n" + mtfSummaryForDirection(blockedDirection) + "\n" + dtpEntryFilterText(blockedDirection, dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\n" + blockedProfitText
@@ -1871,10 +1872,11 @@ if flowLabelsVisible and showPendingEntryLifecycle and displayPendingEntryTouche
 
 if flowLabelsVisible and showPendingEntryLifecycle and displayPendingCancelNow
     string pendingDirectionText = displayLifecycleDirection == 1 ? "多" : "空"
-    string pendingCancelDetailText = "Core模拟撤销: " + displayPendingCancelReason + "\n" + directionDisplayName(displayLifecycleDirection == 1 ? "long" : "short") + " · " + setupDisplayName(displayLifecycleSetup) + "\n原因: " + cancelReasonDisplayName(displayPendingCancelReason) + "\nplan " + str.tostring(displayLifecycleEntry, "#.##") + "\nsignal bar " + str.tostring(displayLifecycleSignalBar, "#") + " / expires bar " + str.tostring(displayLifecycleExpiresBar, "#") + "\nDisplay shadow，仅复刻 Core 挂单生命周期；真实撤单看 Core cancel alert / Strategy Tester / 券商订单"
-    string pendingCancelCompactText = "Core模拟撤销 " + pendingDirectionText + " " + cancelReasonDisplayName(displayPendingCancelReason)
+    string pendingCancelDetailText = "撤销挂单\n" + directionDisplayName(displayLifecycleDirection == 1 ? "long" : "short") + " · " + setupDisplayName(displayLifecycleSetup) + "\nCore模拟撤销: " + displayPendingCancelReason + "\n原因: " + cancelReasonDisplayName(displayPendingCancelReason) + "\nplan " + str.tostring(displayLifecycleEntry, "#.##") + "\nsignal bar " + str.tostring(displayLifecycleSignalBar, "#") + " / expires bar " + str.tostring(displayLifecycleExpiresBar, "#") + "\nDisplay shadow，仅复刻 Core 挂单生命周期；真实撤单看 Core cancel alert / Strategy Tester / 券商订单"
+    string pendingCancelCompactText = "撤销挂单 " + pendingDirectionText + " " + cancelReasonDisplayName(displayPendingCancelReason)
     float pendingCancelY = displayLifecycleDirection == 1 ? low - atrVal * 2.0 : high + atrVal * 2.0
-    label.new(bar_index, pendingCancelY, flowLabelText(pendingCancelCompactText, pendingCancelDetailText), style=flowLabelStyle(displayLifecycleDirection == 1 ? "long" : "short"), color=flowLabelColor("blocked", displayLifecycleDirection == 1 ? "long" : "short"), textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(pendingCancelDetailText))
+    color displayCancelColor = color.new(displayLifecycleDirection == 1 ? color.orange : color.red, flowLabelTransparency)
+    label.new(bar_index, pendingCancelY, flowLabelText(pendingCancelCompactText, pendingCancelDetailText), style=flowLabelStyle(displayLifecycleDirection == 1 ? "long" : "short"), color=displayCancelColor, textcolor=color.white, size=size.small, tooltip=flowLabelTooltip(pendingCancelDetailText))
 
 // -----------------------------------------------------------------------------
 // Visuals
@@ -1930,21 +1932,21 @@ if not displayPlanLinesActive
         displayRunnerLine := na
 else
     int planLineStartBar = na(displayPlanLineStartBar) ? bar_index : displayPlanLineStartBar
-    int planLineEndBar = bar_index + 1
+    int planLineEndBar = bar_index + currentPlanLineForwardBars
     if na(displayEntryLine)
-        displayEntryLine := line.new(planLineStartBar, displayEntryPlan, planLineEndBar, displayEntryPlan, color=color.new(color.yellow, 0), width=2)
+        displayEntryLine := line.new(planLineStartBar, displayEntryPlan, planLineEndBar, displayEntryPlan, color=color.new(color.yellow, 0), width=3)
     else
         line.set_xy1(displayEntryLine, planLineStartBar, displayEntryPlan)
         line.set_xy2(displayEntryLine, planLineEndBar, displayEntryPlan)
         line.set_color(displayEntryLine, color.new(color.yellow, 0))
     if na(displayStopLine)
-        displayStopLine := line.new(planLineStartBar, displayStopPlan, planLineEndBar, displayStopPlan, color=color.new(color.red, 0), width=2)
+        displayStopLine := line.new(planLineStartBar, displayStopPlan, planLineEndBar, displayStopPlan, color=color.new(color.red, 0), width=3)
     else
         line.set_xy1(displayStopLine, planLineStartBar, displayStopPlan)
         line.set_xy2(displayStopLine, planLineEndBar, displayStopPlan)
         line.set_color(displayStopLine, color.new(color.red, 0))
     if na(displayTargetLine)
-        displayTargetLine := line.new(planLineStartBar, displayTargetPlan, planLineEndBar, displayTargetPlan, color=color.new(color.green, 0), width=2)
+        displayTargetLine := line.new(planLineStartBar, displayTargetPlan, planLineEndBar, displayTargetPlan, color=color.new(color.green, 0), width=3)
     else
         line.set_xy1(displayTargetLine, planLineStartBar, displayTargetPlan)
         line.set_xy2(displayTargetLine, planLineEndBar, displayTargetPlan)
@@ -1954,21 +1956,21 @@ else
             line.delete(displayRunnerLine)
             displayRunnerLine := na
     else if na(displayRunnerLine)
-        displayRunnerLine := line.new(planLineStartBar, displayRunnerActivation, planLineEndBar, displayRunnerActivation, color=color.new(color.blue, 0), width=2)
+        displayRunnerLine := line.new(planLineStartBar, displayRunnerActivation, planLineEndBar, displayRunnerActivation, color=color.new(color.blue, 0), width=3)
     else
         line.set_xy1(displayRunnerLine, planLineStartBar, displayRunnerActivation)
         line.set_xy2(displayRunnerLine, planLineEndBar, displayRunnerActivation)
         line.set_color(displayRunnerLine, color.new(color.blue, 0))
 
 var table flowStatus = table.new(position.top_right, 2, 7, border_width=1)
-string pendingDisplayStatus = displayPendingEntryTouchedNow ? "Core模拟触及" : displayPendingCancelNow ? "Core模拟撤销" : pendingDisplayWaiting ? "Core挂单中" : ""
+string pendingDisplayStatus = displayPendingEntryTouchedNow ? "Core模拟触及" : displayPendingCancelNow ? "撤销挂单" : pendingDisplayWaiting ? "Core挂单中" : ""
 string pendingDisplayDirectionName = displayLifecycleDirection == 1 ? "做多" : displayLifecycleDirection == -1 ? "做空" : "--"
 string pendingDisplayDirectionKey = displayLifecycleDirection == 1 ? "long" : displayLifecycleDirection == -1 ? "short" : ""
 string statusDirection = displayEnterShort ? "做空" : displayEnterLong ? "做多" : pendingDisplayStatus != "" ? pendingDisplayDirectionName : blockedNow ? directionDisplayName(blockedDirection) : activityScore > 0 ? directionDisplayName(candidateDirection) : "--"
 string statusText = displayEnterLong or displayEnterShort ? "Core挂单中" : pendingDisplayStatus != "" ? pendingDisplayStatus : blockedNow ? "过滤" + directionDisplayName(blockedDirection) : displayObserveNow ? "观察" + directionDisplayName(candidateDirection) : lowerWindowValid or upperWindowValid ? "窗口激活" : "等待"
 color statusColor = displayEnterLong ? flowStatusColor("entry", "long") : displayEnterShort ? flowStatusColor("entry", "short") : pendingDisplayStatus != "" and displayPendingCancelNow ? flowStatusColor("blocked", pendingDisplayDirectionKey) : pendingDisplayStatus != "" ? flowStatusColor("entry", pendingDisplayDirectionKey) : blockedNow ? flowStatusColor("blocked", blockedDirection) : displayObserveNow ? color.new(color.orange, 0) : lowerWindowValid ? flowStatusColor("activate_lower", dtpBearDominant ? "short" : "long") : upperWindowValid ? flowStatusColor("activate_upper", dtpBullDominant ? "long" : "short") : color.new(color.gray, 20)
 string statusSetup = pendingDisplayStatus != "" ? setupDisplayName(displayLifecycleSetup) : blockedNow ? setupDisplayName(blockedSetup) : activityScore > 0 ? setupDisplayName(candidateSetup) : "--"
-string statusComponents = pendingDisplayStatus != "" ? displayPendingCancelNow ? "Core模拟撤销: " + cancelReasonDisplayName(displayPendingCancelReason) : "成交确认看 Core" : blockedNow ? blockedComponentText + " · " + filterActionText(blockedReason, blockedDirection) : activityScore > 0 ? candidateComponentText + " · " + candidateWaitText : "--"
+string statusComponents = pendingDisplayStatus != "" ? displayPendingCancelNow ? "撤销挂单: " + cancelReasonDisplayName(displayPendingCancelReason) : "成交确认看 Core" : blockedNow ? blockedComponentText + " · " + filterActionText(blockedReason, blockedDirection) : activityScore > 0 ? candidateComponentText + " · " + candidateWaitText : "--"
 string statusDtp = dtpStateText(dtpDir, dtpPhase)
 string statusMtf = pendingDisplayStatus != "" ? "Display shadow / Core entry_fill" : blockedNow ? mtfSummaryForDirection(blockedDirection) : activityScore > 0 ? mtfSummaryForDirection(candidateDirection) : enableMtf ? "MTF 等待信号" : "off"
 string statusRisk = displayEnterLong ? "plan " + str.tostring(longEntryCandidate, "#.##") + " / TP " + str.tostring(longTargetCandidate, "#.##") + " / SL " + str.tostring(longStopCandidate, "#.##") : displayEnterShort ? "plan " + str.tostring(shortEntryCandidate, "#.##") + " / TP " + str.tostring(shortTargetCandidate, "#.##") + " / SL " + str.tostring(shortStopCandidate, "#.##") : pendingDisplayStatus != "" ? "plan " + str.tostring(displayLifecycleEntry, "#.##") + " / TP " + str.tostring(displayLifecycleTarget, "#.##") + " / SL " + str.tostring(displayLifecycleStop, "#.##") : "--"

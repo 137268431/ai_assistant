@@ -8,7 +8,7 @@ SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "s
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from ibkr_compute.broker.disconnect_reason import classify_ibkr_disconnect
+from ibkr_compute.broker.disconnect_reason import classify_ibkr_disconnect, classification_detail_fields
 from ibkr_compute.broker.ib_gateway_session import SocketSessionKeeper
 from ibkr_compute.core.time_utils import ET
 
@@ -69,6 +69,54 @@ class DisconnectReasonClassifierTest(unittest.TestCase):
                 "last_error": "Couldn't connect to TWS",
             },
             now=datetime(2026, 5, 24, 3, 0, tzinfo=ET),
+        )
+
+        self.assertEqual(result["reason_code"], "local_socket_unreachable")
+        self.assertEqual(result["level"], "warning")
+
+    def test_socket_errors_during_ibc_auto_restart_window_are_planned(self):
+        result = classify_ibkr_disconnect(
+            {
+                "gateway_running": True,
+                "status_code": 503,
+                "last_error_code": 1781395514559,
+                "last_error": "502",
+                "recent_errors": [
+                    {"code": 1781395514559, "message": "502"},
+                ],
+            },
+            gateway_status={
+                "running": True,
+                "status_code": 502,
+                "api_socket_listening": False,
+                "ibc_auto_restart_time": "08:05 PM",
+            },
+            now=datetime(2026, 6, 13, 20, 5, tzinfo=ET),
+        )
+
+        self.assertEqual(result["reason_code"], "scheduled_gateway_restart")
+        self.assertEqual(result["level"], "info")
+        self.assertEqual(result["evidence"]["error_codes"], [502])
+        self.assertTrue(result["evidence"]["in_ibc_auto_restart_window"])
+        detail = classification_detail_fields(result)
+        self.assertEqual(detail["IB错误码"], "502")
+        self.assertNotIn("1781395514559", detail["最近错误"])
+
+    def test_socket_errors_outside_ibc_auto_restart_window_remain_local(self):
+        result = classify_ibkr_disconnect(
+            {
+                "gateway_running": True,
+                "status_code": 503,
+                "last_error_code": 502,
+                "last_error": "Couldn't connect to TWS",
+            },
+            gateway_status={
+                "running": True,
+                "status_code": 502,
+                "api_socket_listening": False,
+                "ibc_auto_restart_time": "08:05 PM",
+            },
+            now=datetime(2026, 6, 13, 20, 30, tzinfo=ET),
         )
 
         self.assertEqual(result["reason_code"], "local_socket_unreachable")

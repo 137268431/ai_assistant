@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Any
 
@@ -8,6 +9,9 @@ from ibkr_compute.core.time_utils import ET
 
 IBKR_DAILY_RESET_START_MINUTE = 15
 IBKR_DAILY_RESET_END_MINUTE = 105
+DEFAULT_IBC_AUTO_RESTART_TIME = "02:35 AM"
+DEFAULT_IBC_AUTO_RESTART_WINDOW_MINUTES = 10
+EPOCH_MS_ERROR_CODE_FLOOR = 1_000_000_000_000
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -24,6 +28,25 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(float(text))
     except Exception:
         return default
+
+
+def _looks_like_epoch_ms(value: Any) -> bool:
+    return _safe_int(value) >= EPOCH_MS_ERROR_CODE_FLOOR
+
+
+def _looks_like_ib_error_code(value: Any) -> bool:
+    number = abs(_safe_int(value))
+    return 0 < number < 1_000_000
+
+
+def _normalize_error_code_and_message(code_value: Any, message_value: Any = "") -> tuple[int, str]:
+    code = _safe_int(code_value)
+    message = str(message_value or "")
+    if _looks_like_epoch_ms(code) and _looks_like_ib_error_code(message):
+        return _safe_int(message), ""
+    if _looks_like_epoch_ms(code):
+        return 0, message
+    return code, message
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -48,18 +71,144 @@ def in_ibkr_daily_reset_window(value: datetime | None = None) -> bool:
     return IBKR_DAILY_RESET_START_MINUTE <= minute < IBKR_DAILY_RESET_END_MINUTE
 
 
+def _parse_time_to_minute(value: Any) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    pieces = text.upper().replace(".", "").split()
+    time_part = pieces[0] if pieces else ""
+    suffix = pieces[1] if len(pieces) > 1 else ""
+    if time_part.endswith(("AM", "PM")):
+        suffix = time_part[-2:]
+        time_part = time_part[:-2]
+    if ":" in time_part:
+        hour_text, minute_text = time_part.split(":", 1)
+    else:
+        hour_text, minute_text = time_part, "0"
+    try:
+        hour = int(hour_text)
+        minute = int(minute_text)
+    except Exception:
+        return None
+    if minute < 0 or minute > 59:
+        return None
+    if suffix in {"AM", "PM"}:
+        if hour < 1 or hour > 12:
+            return None
+        if suffix == "AM":
+            hour = 0 if hour == 12 else hour
+        else:
+            hour = 12 if hour == 12 else hour + 12
+    elif hour < 0 or hour > 23:
+        return None
+    return hour * 60 + minute
+
+
+def _format_minute(minute: int) -> str:
+    value = int(minute or 0) % (24 * 60)
+    hour = value // 60
+    minute_part = value % 60
+    suffix = "AM" if hour < 12 else "PM"
+    hour_12 = hour % 12 or 12
+    return f"{hour_12:02d}:{minute_part:02d} {suffix}"
+
+
+def _circular_minute_distance(left: int, right: int) -> int:
+    distance = abs((int(left) % 1440) - (int(right) % 1440))
+    return min(distance, 1440 - distance)
+
+
+def _read_ibc_config_auto_restart_time(path: str) -> str:
+    candidate = str(path or "").strip()
+    if not candidate:
+        return ""
+    try:
+        with open(candidate, "r", encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                if key.strip() == "AutoRestartTime":
+                    return value.strip()
+    except Exception:
+        return ""
+    return ""
+
+
+def _first_restart_time_value(*payloads: dict[str, Any]) -> str:
+    keys = (
+        "ibc_auto_restart_time",
+        "auto_restart_time",
+        "ibkr_auto_restart_time",
+        "AutoRestartTime",
+        "IBKR_AUTO_RESTART_TIME",
+    )
+    for payload in payloads:
+        for key in keys:
+            value = str(payload.get(key) or "").strip()
+            if value:
+                return value
+        ibc = _as_dict(payload.get("ibc"))
+        for key in keys:
+            value = str(ibc.get(key) or "").strip()
+            if value:
+                return value
+    env_value = os.environ.get("IBKR_AUTO_RESTART_TIME", "").strip()
+    if env_value:
+        return env_value
+    config_value = _read_ibc_config_auto_restart_time(
+        os.environ.get("IBKR_IBC_INI", "").strip() or "/opt/ibc/config.ini"
+    )
+    return config_value or DEFAULT_IBC_AUTO_RESTART_TIME
+
+
+def _ibc_auto_restart_window(
+    now: datetime | None,
+    *payloads: dict[str, Any],
+) -> dict[str, Any]:
+    configured_time = _first_restart_time_value(*payloads)
+    configured_minute = _parse_time_to_minute(configured_time)
+    window_minutes = max(
+        1,
+        min(120, _safe_int(os.environ.get("IBKR_AUTO_RESTART_WINDOW_MINUTES"), DEFAULT_IBC_AUTO_RESTART_WINDOW_MINUTES)),
+    )
+    if configured_minute is None:
+        return {
+            "configured_time": configured_time,
+            "configured_minute": None,
+            "window_minutes": window_minutes,
+            "window_et": "",
+            "in_window": False,
+        }
+    current_minute = _coerce_et(now).hour * 60 + _coerce_et(now).minute
+    return {
+        "configured_time": configured_time,
+        "configured_minute": configured_minute,
+        "window_minutes": window_minutes,
+        "window_et": (
+            f"{_format_minute(configured_minute - window_minutes)}-"
+            f"{_format_minute(configured_minute + window_minutes)}"
+        ),
+        "in_window": _circular_minute_distance(current_minute, configured_minute) <= window_minutes,
+    }
+
+
 def _collect_recent_errors(*payloads: dict[str, Any]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     seen = set()
     for payload in payloads:
         for raw in _as_list(payload.get("recent_errors")):
             item = _as_dict(raw)
-            code = _safe_int(item.get("code") or item.get("error_code"))
+            code, message = _normalize_error_code_and_message(
+                item.get("code") or item.get("error_code"),
+                item.get("message") or item.get("error") or "",
+            )
             if not code:
                 continue
             normalized = {
                 "code": code,
-                "message": str(item.get("message") or item.get("error") or ""),
+                "message": message,
                 "req_id": _safe_int(item.get("req_id"), 0),
                 "at": str(item.get("at") or ""),
             }
@@ -67,9 +216,12 @@ def _collect_recent_errors(*payloads: dict[str, Any]) -> list[dict[str, Any]]:
             if key not in seen:
                 seen.add(key)
                 items.append(normalized)
-        code = _safe_int(payload.get("last_error_code"))
+        code, message = _normalize_error_code_and_message(
+            payload.get("last_error_code"),
+            payload.get("last_error") or "",
+        )
         if code:
-            last_message = str(payload.get("last_error") or "")
+            last_message = message
             if any(int(item.get("code") or 0) == code and not last_message for item in items):
                 continue
             normalized = {
@@ -117,6 +269,35 @@ def _format_recent_errors(errors: list[dict[str, Any]]) -> str:
         elif code:
             parts.append(str(code))
     return " | ".join(parts)
+
+
+def _socket_unreachable_like(
+    *,
+    status_code: int,
+    last_error_code: int,
+    last_error: str,
+    error_code_set: set[int],
+    gateway: dict[str, Any],
+) -> bool:
+    if status_code in {502, 504}:
+        return True
+    if last_error_code in {502, 504} or error_code_set.intersection({502, 504}):
+        return True
+    if gateway.get("api_socket_listening") is False:
+        return True
+    if status_code == 503 and _safe_int(last_error) in {502, 504}:
+        return True
+    normalized_error = str(last_error or "").lower()
+    return any(
+        marker in normalized_error
+        for marker in (
+            "couldn't connect to tws",
+            "could not connect to tws",
+            "connect to tws",
+            "connection refused",
+            "port_not_listening",
+        )
+    )
 
 
 def _build_result(
@@ -171,6 +352,7 @@ def classify_ibkr_disconnect(
         session.get("error"),
     )
     reset_window = in_ibkr_daily_reset_window(now)
+    auto_restart = _ibc_auto_restart_window(now, session, broker, gateway)
     gateway_running = _bool_from_payload(session, "gateway_running")
     if gateway_running is None:
         gateway_running = _bool_from_payload(session, "running")
@@ -196,6 +378,10 @@ def classify_ibkr_disconnect(
         "api_socket_reason": str(gateway.get("api_socket_reason") or ""),
         "in_daily_reset_window": bool(reset_window),
         "reset_window_et": "00:15-01:45",
+        "in_ibc_auto_restart_window": bool(auto_restart.get("in_window")),
+        "ibc_auto_restart_time": str(auto_restart.get("configured_time") or ""),
+        "ibc_auto_restart_window_et": str(auto_restart.get("window_et") or ""),
+        "ibc_auto_restart_window_minutes": _safe_int(auto_restart.get("window_minutes")),
     }
 
     if not gateway_running:
@@ -234,11 +420,27 @@ def classify_ibkr_disconnect(
             evidence=evidence,
         )
 
-    if (
-        status_code in {502, 504}
-        or error_code_set.intersection({502, 504})
-        or gateway.get("api_socket_listening") is False
-    ):
+    socket_unreachable = _socket_unreachable_like(
+        status_code=status_code,
+        last_error_code=last_error_code,
+        last_error=last_error,
+        error_code_set=error_code_set,
+        gateway=gateway,
+    )
+
+    if socket_unreachable and auto_restart.get("in_window"):
+        return _build_result(
+            reason_code="scheduled_gateway_restart",
+            reason_label="IBC/Gateway 计划自动重启窗口",
+            level="info",
+            confidence="high",
+            title="IBKR Gateway 计划自动重启窗口，正在静默恢复",
+            summary="检测到 Gateway API 短暂不可达，且发生在 IBC AutoRestartTime 配置窗口内，通常是计划内自动重启造成。",
+            recommendation="无需手动 2FA；等待静默探测恢复。若超过 2 分钟仍未认证，再检查 Gateway 日志和 2FA 状态。",
+            evidence=evidence,
+        )
+
+    if socket_unreachable:
         return _build_result(
             reason_code="local_socket_unreachable",
             reason_label="本地 Gateway Socket 不可达",
@@ -314,6 +516,8 @@ def classification_detail_fields(classification: dict[str, Any] | None) -> dict[
         "IB状态码": str(evidence.get("status_code") or ""),
         "原始错误": str(evidence.get("last_error") or ""),
         "Reset窗口": "yes" if evidence.get("in_daily_reset_window") else "no",
+        "IBC自动重启窗口": "yes" if evidence.get("in_ibc_auto_restart_window") else "no",
+        "IBC自动重启时间": str(evidence.get("ibc_auto_restart_time") or ""),
         "最近错误": str(evidence.get("recent_errors_text") or ""),
         "API端口监听": "yes" if evidence.get("api_socket_listening") else "no",
         "API端口": str(evidence.get("api_socket_port") or ""),
