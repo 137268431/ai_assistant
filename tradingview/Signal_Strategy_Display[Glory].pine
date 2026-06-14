@@ -1930,33 +1930,34 @@ if not displayPlanLinesActive
         displayRunnerLine := na
 else
     int planLineStartBar = na(displayPlanLineStartBar) ? bar_index : displayPlanLineStartBar
+    int planLineEndBar = bar_index + 1
     if na(displayEntryLine)
-        displayEntryLine := line.new(planLineStartBar, displayEntryPlan, bar_index, displayEntryPlan, color=color.new(color.yellow, 0), width=2)
+        displayEntryLine := line.new(planLineStartBar, displayEntryPlan, planLineEndBar, displayEntryPlan, color=color.new(color.yellow, 0), width=2)
     else
         line.set_xy1(displayEntryLine, planLineStartBar, displayEntryPlan)
-        line.set_xy2(displayEntryLine, bar_index, displayEntryPlan)
+        line.set_xy2(displayEntryLine, planLineEndBar, displayEntryPlan)
         line.set_color(displayEntryLine, color.new(color.yellow, 0))
     if na(displayStopLine)
-        displayStopLine := line.new(planLineStartBar, displayStopPlan, bar_index, displayStopPlan, color=color.new(color.red, 0), width=2)
+        displayStopLine := line.new(planLineStartBar, displayStopPlan, planLineEndBar, displayStopPlan, color=color.new(color.red, 0), width=2)
     else
         line.set_xy1(displayStopLine, planLineStartBar, displayStopPlan)
-        line.set_xy2(displayStopLine, bar_index, displayStopPlan)
+        line.set_xy2(displayStopLine, planLineEndBar, displayStopPlan)
         line.set_color(displayStopLine, color.new(color.red, 0))
     if na(displayTargetLine)
-        displayTargetLine := line.new(planLineStartBar, displayTargetPlan, bar_index, displayTargetPlan, color=color.new(color.green, 0), width=2)
+        displayTargetLine := line.new(planLineStartBar, displayTargetPlan, planLineEndBar, displayTargetPlan, color=color.new(color.green, 0), width=2)
     else
         line.set_xy1(displayTargetLine, planLineStartBar, displayTargetPlan)
-        line.set_xy2(displayTargetLine, bar_index, displayTargetPlan)
+        line.set_xy2(displayTargetLine, planLineEndBar, displayTargetPlan)
         line.set_color(displayTargetLine, color.new(color.green, 0))
     if na(displayRunnerActivation)
         if not na(displayRunnerLine)
             line.delete(displayRunnerLine)
             displayRunnerLine := na
     else if na(displayRunnerLine)
-        displayRunnerLine := line.new(planLineStartBar, displayRunnerActivation, bar_index, displayRunnerActivation, color=color.new(color.blue, 0), width=2)
+        displayRunnerLine := line.new(planLineStartBar, displayRunnerActivation, planLineEndBar, displayRunnerActivation, color=color.new(color.blue, 0), width=2)
     else
         line.set_xy1(displayRunnerLine, planLineStartBar, displayRunnerActivation)
-        line.set_xy2(displayRunnerLine, bar_index, displayRunnerActivation)
+        line.set_xy2(displayRunnerLine, planLineEndBar, displayRunnerActivation)
         line.set_color(displayRunnerLine, color.new(color.blue, 0))
 
 var table flowStatus = table.new(position.top_right, 2, 7, border_width=1)
