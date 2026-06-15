@@ -2,6 +2,7 @@ import sys
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -453,6 +454,49 @@ class AccountSnapshotFetchTest(unittest.TestCase):
             "orders_fast_summary_cache_unavailable",
             payload["orders_fast_bootstrap_fallback"]["reason"],
         )
+
+    def test_account_snapshot_refresh_falls_back_to_full_when_orders_fast_summary_is_stale(self):
+        app = _FakeApiApp()
+        app.IBKR_ACCOUNT_SNAPSHOT_STALE_SECONDS = 7200.0
+        service = _RefreshService()
+        service.order_lifecycle = _BuyingPowerLifecycle()
+        service._runtime_started_at = time.time()
+
+        _with_fake_api_app(app, lambda: _build_ibkr_account_snapshot(service, include_pnl=False))
+        initial_snapshot_calls = service.order_lifecycle.snapshot_calls
+        cache_key = ("paper", "DU123", False)
+        entry = app.ibkr_account_snapshot_cache[cache_key]
+        old_ts = time.time() - 1905.0
+        old_iso = datetime.fromtimestamp(old_ts, timezone.utc).isoformat()
+        entry["stored_at"] = old_ts
+        entry["fresh_until"] = old_ts - 1.0
+        entry["stale_until"] = time.time() + 3600.0
+        entry["payload"]["fetched_at"] = old_iso
+        entry["payload"]["summary_fetched_at"] = old_iso
+
+        with (
+            mock.patch.object(
+                service,
+                "_account_snapshot_refresh_safety_cache_state",
+                return_value={
+                    "safety_cache_available": True,
+                    "safety_cache_source": "full",
+                    "safety_cache_state": "stale",
+                    "safety_cache_error": "",
+                },
+            ),
+            mock.patch("ibkr_compute.observability.prometheus.set_account_snapshot_metrics"),
+        ):
+            payload = _with_fake_api_app(app, lambda: service._refresh_account_snapshot_once(reason="unit_test"))
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual("account_snapshot", payload["source"])
+        self.assertEqual("full_bootstrap_after_orders_fast_stale_summary", payload["refresh_profile"])
+        self.assertEqual(initial_snapshot_calls + 1, service.order_lifecycle.snapshot_calls)
+        fallback = payload["orders_fast_bootstrap_fallback"]
+        self.assertEqual("orders_fast_summary_cache_stale", fallback["reason"])
+        self.assertGreater(fallback["summary_cache_age_s"], 1800.0)
+        self.assertEqual(1800.0, fallback["summary_cache_max_age_s"])
 
     def test_account_snapshot_refresh_uses_orders_fast_when_account_data_gate_busy(self):
         service = _RefreshService()

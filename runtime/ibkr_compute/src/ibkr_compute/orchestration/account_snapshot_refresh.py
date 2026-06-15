@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+from datetime import datetime, timezone
 
 
 def _service_mod():
@@ -34,6 +35,46 @@ def _safe_float(value, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return float(default)
+
+
+def _parse_timestamp(value) -> float:
+    if value in (None, ""):
+        return 0.0
+    try:
+        number = float(value)
+        if number > 0:
+            return number / 1000.0 if number > 10_000_000_000 else number
+    except (TypeError, ValueError):
+        pass
+    try:
+        text = str(value or "").strip()
+        if not text:
+            return 0.0
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except Exception:
+        return 0.0
+
+
+def _payload_age_s(payload: dict, *keys: str) -> float | None:
+    data = payload if isinstance(payload, dict) else {}
+    for key in keys:
+        raw = data.get(key)
+        if raw in (None, ""):
+            continue
+        try:
+            age = float(raw)
+            if age >= 0:
+                return max(0.0, age)
+        except (TypeError, ValueError):
+            pass
+    for key in ("summary_fetched_at", "fetched_at", "snapshot_fetched_at"):
+        epoch = _parse_timestamp(data.get(key))
+        if epoch > 0:
+            return max(0.0, time.time() - epoch)
+    return None
 
 
 def _summary_has_safety_values(summary: dict) -> bool:
@@ -418,6 +459,17 @@ class TradingServiceAccountSnapshotRefreshMixin:
     def _account_snapshot_bootstrap_full_refresh_enabled(self) -> bool:
         return _env_bool("IBKR_ACCOUNT_SNAPSHOT_BOOTSTRAP_FULL_REFRESH_ENABLED", True)
 
+    def _account_snapshot_summary_cache_max_age_sec(self) -> float:
+        default = _env_float("IBKR_BUYING_POWER_STALE_SAFE_MAX_AGE_SEC", 1800.0)
+        getter = getattr(getattr(self, "config", None), "get_float_for_environment", None)
+        if callable(getter):
+            try:
+                service_mod = _service_mod()
+                return max(1.0, float(getter("ibkr_buying_power_stale_safe_max_age_sec", service_mod.ENVIRONMENT, default)))
+            except Exception:
+                pass
+        return max(1.0, default)
+
     @staticmethod
     def _orders_fast_summary_unavailable(payload: dict) -> bool:
         if not isinstance(payload, dict) or not bool(payload.get("orders_fast")):
@@ -427,6 +479,23 @@ class TradingServiceAccountSnapshotRefreshMixin:
         errors = payload.get("errors") if isinstance(payload.get("errors"), dict) else {}
         reason = str(errors.get("summary") or "").strip().lower()
         return reason in {"orders_fast_summary_cache_unavailable", "account_snapshot_unavailable"}
+
+    def _orders_fast_summary_stale(self, payload: dict) -> tuple[bool, dict]:
+        if not isinstance(payload, dict) or not bool(payload.get("orders_fast")):
+            return False, {}
+        if not bool(payload.get("summary_available")):
+            return False, {}
+        max_age_s = self._account_snapshot_summary_cache_max_age_sec()
+        age_s = _payload_age_s(payload, "summary_cache_age_s", "cache_age_s")
+        details = {
+            "reason": "orders_fast_summary_cache_stale",
+            "summary_cache_age_s": round(float(age_s), 1) if age_s is not None else None,
+            "summary_cache_max_age_s": round(float(max_age_s), 1),
+            "orders_fast_source": payload.get("source"),
+            "orders_fast_summary_source": payload.get("summary_source"),
+            "orders_fast_summary_fetched_at": payload.get("summary_fetched_at") or payload.get("fetched_at") or "",
+        }
+        return bool(age_s is not None and age_s > max_age_s), details
 
     def _refresh_account_snapshot_once(self, *, reason: str = "loop") -> dict:
         if not self._account_snapshot_refresh_enabled():
@@ -462,27 +531,39 @@ class TradingServiceAccountSnapshotRefreshMixin:
                 payload["refresh_profile_reason"] = orders_fast_reason
                 if (
                     self._account_snapshot_bootstrap_full_refresh_enabled()
-                    and self._orders_fast_summary_unavailable(payload)
                     and not bool(orders_fast_reason.get("account_data_guard_hard_active"))
                     and not bool(orders_fast_reason.get("order_pressure_active"))
                 ):
-                    fallback_reason = str(
-                        (payload.get("errors") or {}).get("summary")
-                        if isinstance(payload.get("errors"), dict)
-                        else ""
-                    ) or "orders_fast_summary_cache_unavailable"
-                    fallback_payload = refresh_account_snapshot_cache(self, include_pnl=False)
-                    if isinstance(fallback_payload, dict):
-                        fallback_payload["refresh_profile"] = "full_bootstrap_after_orders_fast_unavailable"
-                        fallback_payload["refresh_profile_reason"] = orders_fast_reason
-                        fallback_payload["orders_fast_bootstrap_fallback"] = {
-                            "enabled": True,
-                            "reason": fallback_reason,
-                            "orders_fast_source": payload.get("source"),
-                            "orders_fast_summary_source": payload.get("summary_source"),
-                        }
-                        payload = fallback_payload
-                        use_orders_fast = False
+                    fallback_reason = ""
+                    fallback_profile = ""
+                    fallback_details = {}
+                    if self._orders_fast_summary_unavailable(payload):
+                        fallback_reason = str(
+                            (payload.get("errors") or {}).get("summary")
+                            if isinstance(payload.get("errors"), dict)
+                            else ""
+                        ) or "orders_fast_summary_cache_unavailable"
+                        fallback_profile = "full_bootstrap_after_orders_fast_unavailable"
+                    else:
+                        summary_stale, stale_details = self._orders_fast_summary_stale(payload)
+                        if summary_stale:
+                            fallback_reason = stale_details.get("reason") or "orders_fast_summary_cache_stale"
+                            fallback_profile = "full_bootstrap_after_orders_fast_stale_summary"
+                            fallback_details = stale_details
+                    if fallback_reason:
+                        fallback_payload = refresh_account_snapshot_cache(self, include_pnl=False)
+                        if isinstance(fallback_payload, dict):
+                            fallback_payload["refresh_profile"] = fallback_profile
+                            fallback_payload["refresh_profile_reason"] = orders_fast_reason
+                            fallback_payload["orders_fast_bootstrap_fallback"] = {
+                                "enabled": True,
+                                "reason": fallback_reason,
+                                "orders_fast_source": payload.get("source"),
+                                "orders_fast_summary_source": payload.get("summary_source"),
+                                **fallback_details,
+                            }
+                            payload = fallback_payload
+                            use_orders_fast = False
         else:
             payload = refresh_account_snapshot_cache(self, include_pnl=False)
             if isinstance(payload, dict):

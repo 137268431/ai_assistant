@@ -4004,6 +4004,65 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         self.assertEqual("buying_power_snapshot_stale", guard["original_freshness_block_reason"])
         self.assertEqual(295000.0, ack_extra["buying_power_remaining_after"])
 
+    def test_buying_power_guard_force_refreshes_too_old_snapshot_before_blocking(self):
+        signal = self._signal("AAPL")
+        signal["shares"] = 50
+        stale_fetched_at = datetime.fromtimestamp(time.time() - 4000, timezone.utc).isoformat()
+        fresh_fetched_at = datetime.now(timezone.utc).isoformat()
+        pb = FakeSignalStatePBClient({"id": "row-aapl", "extra": {"source": "ibkr_compute"}})
+        service = FakeSignalService(
+            signal,
+            lifecycle=FakeLifecycle(),
+            pb=pb,
+            config=FakeConfig(
+                {
+                    "entry_pre_submit_guard_enabled": "false",
+                    "ibkr_buying_power_max_snapshot_age_sec": 180,
+                    "ibkr_buying_power_stale_safe_enabled": "true",
+                    "ibkr_buying_power_stale_safe_max_age_sec": 1800,
+                }
+            ),
+            account_snapshot={
+                "ok": True,
+                "summary": {"buying_power": 300000.0, "net_liquidation": 300000.0},
+                "buying_power_guard": {"available": True, "state": "ok", "source": "account_summary"},
+                "fetched_at": stale_fetched_at,
+                "source": "account_summary",
+            },
+        )
+        service.account_snapshot_provider = mock.Mock(
+            side_effect=[
+                {
+                    "ok": True,
+                    "summary": {"buying_power": 300000.0, "net_liquidation": 300000.0},
+                    "buying_power_guard": {"available": True, "state": "ok", "source": "account_summary"},
+                    "fetched_at": stale_fetched_at,
+                    "source": "account_summary",
+                },
+                {
+                    "ok": True,
+                    "summary": {"buying_power": 300000.0, "net_liquidation": 300000.0},
+                    "buying_power_guard": {"available": True, "state": "ok", "source": "account_summary"},
+                    "fetched_at": fresh_fetched_at,
+                    "source": "account_summary",
+                },
+            ]
+        )
+
+        service._process_signals()
+
+        self.assertEqual(["sig-aapl"], service.signal_router.processed)
+        self.assertEqual(1, len(service.order_placer.calls))
+        self.assertEqual(2, service.account_snapshot_provider.call_count)
+        self.assertEqual({"force_refresh": True}, service.account_snapshot_provider.call_args_list[-1].kwargs)
+        ack_extra = pb.acks[-1]["order"]["extra"]
+        guard = ack_extra["buying_power_guard"]
+        self.assertEqual("ok", guard["state"])
+        self.assertTrue(guard["snapshot_force_refresh_attempted"])
+        self.assertEqual("fresh", guard["snapshot_force_refresh_result"])
+        self.assertTrue(guard["snapshot_fresh"])
+        self.assertEqual(295000.0, ack_extra["buying_power_remaining_after"])
+
     def test_buying_power_guard_blocks_without_initial_baseline_when_snapshot_unavailable(self):
         signal = self._signal("AAPL")
         signal["shares"] = 50

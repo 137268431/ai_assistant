@@ -476,6 +476,7 @@ class Config:
         "ibkr_buying_power_stale_baseline_max_age_sec": "1800",
         "ibkr_buying_power_stale_safe_enabled": "true",
         "ibkr_buying_power_stale_safe_max_age_sec": "1800",
+        "ibkr_buying_power_stale_force_refresh_cooldown_sec": "15",
         "ibkr_buying_power_stale_safe_min_usd": "50000",
         "ibkr_buying_power_stale_safe_block_multiple": "5",
         "ibkr_buying_power_stale_safe_exposure_multiple": "3",

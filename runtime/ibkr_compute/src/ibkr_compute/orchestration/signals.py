@@ -3039,6 +3039,12 @@ class TradingServiceSignalsMixin:
             detail["本地预占订单数"] = guard.get("local_reserved_count")
         if (guard or {}).get("baseline_fetched_at"):
             detail["购买力基线时间"] = str(guard.get("baseline_fetched_at") or "")
+        if (guard or {}).get("snapshot_fetched_at"):
+            detail["购买力快照时间"] = str(guard.get("snapshot_fetched_at") or "")
+        if (guard or {}).get("snapshot_force_refresh_result") not in (None, ""):
+            detail["快照强制刷新"] = str(guard.get("snapshot_force_refresh_result") or "")
+            if (guard or {}).get("snapshot_force_refresh_reason"):
+                detail["强制刷新原因"] = str(guard.get("snapshot_force_refresh_reason") or "")
         if isinstance(previous, dict) and previous:
             detail["上一状态"] = str(previous.get("state") or "")
             detail["上一原因"] = str(previous.get("reason") or "")
@@ -3077,6 +3083,37 @@ class TradingServiceSignalsMixin:
             self._buying_power_max_snapshot_age_sec(),
             self._config_float("ibkr_buying_power_stale_safe_max_age_sec", 1800.0),
         )
+
+    def _buying_power_stale_force_refresh_cooldown_sec(self) -> float:
+        return max(0.0, self._config_float("ibkr_buying_power_stale_force_refresh_cooldown_sec", 15.0))
+
+    def _buying_power_stale_force_refresh_allowed(self) -> tuple[bool, float]:
+        cooldown_s = self._buying_power_stale_force_refresh_cooldown_sec()
+        if cooldown_s <= 0:
+            setattr(self, "_buying_power_stale_force_refresh_last_at", time.time())
+            return True, 0.0
+        now = time.time()
+        last_at = self._safe_float(getattr(self, "_buying_power_stale_force_refresh_last_at", 0.0), 0.0)
+        remaining_s = cooldown_s - max(0.0, now - last_at)
+        if last_at > 0 and remaining_s > 0:
+            return False, remaining_s
+        setattr(self, "_buying_power_stale_force_refresh_last_at", now)
+        return True, 0.0
+
+    def _buying_power_should_force_refresh_stale_snapshot(
+        self,
+        *,
+        stale_age_s: float | None,
+        freshness_block_reason: str,
+    ) -> bool:
+        reason = str(freshness_block_reason or "").strip()
+        if reason == "buying_power_snapshot_missing_timestamp":
+            return True
+        if not self._config_bool("ibkr_buying_power_stale_safe_enabled", True):
+            return True
+        if stale_age_s is None:
+            return True
+        return float(stale_age_s) > self._buying_power_stale_safe_max_age_sec()
 
     def _buying_power_stale_safe_required_remaining(self, guard: dict) -> float:
         min_usd = max(0.0, self._config_float("ibkr_buying_power_stale_safe_min_usd", 50000.0))
@@ -3165,11 +3202,17 @@ class TradingServiceSignalsMixin:
                 return max(0.0, time.time() - epoch)
         return None
 
-    def _account_buying_power_snapshot(self) -> dict:
+    def _account_buying_power_snapshot(self, *, force_refresh: bool = False) -> dict:
         provider = getattr(self, "account_snapshot_provider", None)
         if callable(provider):
             try:
-                snapshot = provider()
+                if force_refresh:
+                    try:
+                        snapshot = provider(force_refresh=True)
+                    except TypeError:
+                        snapshot = provider()
+                else:
+                    snapshot = provider()
                 return snapshot if isinstance(snapshot, dict) else {}
             except Exception as exc:
                 _service_mod().logger.warning("Buying-power snapshot provider failed: %s", exc)
@@ -3177,7 +3220,7 @@ class TradingServiceSignalsMixin:
         try:
             from ibkr_compute.api.account.snapshot import _build_ibkr_account_buying_power_snapshot
 
-            snapshot = _build_ibkr_account_buying_power_snapshot(self)
+            snapshot = _build_ibkr_account_buying_power_snapshot(self, force_refresh=bool(force_refresh))
             return snapshot if isinstance(snapshot, dict) else {}
         except Exception as exc:
             _service_mod().logger.warning("Buying-power snapshot failed: %s", exc)
@@ -3219,26 +3262,88 @@ class TradingServiceSignalsMixin:
         snapshot_age_s = None
         snapshot_fresh = False
         freshness_block_reason = ""
+        force_refresh_details = {}
         if baseline_fresh:
             account_summary = dict(baseline.get("summary") or {})
             account_summary_source = "baseline"
             guard_source = "local_baseline"
         else:
+            def evaluate_snapshot_payload(payload: dict) -> tuple[dict, float | None, dict, bool, bool]:
+                payload = payload if isinstance(payload, dict) else {}
+                candidate_guard = payload.get("buying_power_guard")
+                candidate_age_s = self._buying_power_payload_age_s(payload)
+                candidate_summary = dict(payload.get("summary") or {})
+                candidate_guard_available = (
+                    not isinstance(candidate_guard, dict)
+                    or candidate_guard.get("available") is not False
+                    or str(candidate_guard.get("state") or "").strip().lower() in {"ok", "warning", "blocked"}
+                )
+                candidate_fresh = bool(
+                    candidate_summary
+                    and candidate_guard_available
+                    and candidate_age_s is not None
+                    and candidate_age_s <= max_snapshot_age_s
+                )
+                return (
+                    candidate_guard if isinstance(candidate_guard, dict) else {},
+                    candidate_age_s,
+                    candidate_summary,
+                    bool(candidate_guard_available),
+                    bool(candidate_fresh),
+                )
+
             snapshot = self._account_buying_power_snapshot()
-            snapshot_guard = (snapshot or {}).get("buying_power_guard")
-            snapshot_age_s = self._buying_power_payload_age_s(snapshot)
-            snapshot_summary = dict((snapshot or {}).get("summary") or {})
-            snapshot_guard_available = (
-                not isinstance(snapshot_guard, dict)
-                or snapshot_guard.get("available") is not False
-                or str(snapshot_guard.get("state") or "").strip().lower() in {"ok", "warning", "blocked"}
-            )
-            snapshot_fresh = bool(
-                snapshot_summary
-                and snapshot_guard_available
-                and snapshot_age_s is not None
-                and snapshot_age_s <= max_snapshot_age_s
-            )
+            snapshot_guard, snapshot_age_s, snapshot_summary, snapshot_guard_available, snapshot_fresh = evaluate_snapshot_payload(snapshot)
+            if not snapshot_fresh:
+                candidate_summary = snapshot_summary or dict(baseline.get("summary") or {})
+                candidate_source = "snapshot" if snapshot_summary else "baseline" if baseline.get("summary") else ""
+                if candidate_summary and (baseline_available or snapshot_guard_available):
+                    candidate_reason = (
+                        "buying_power_snapshot_missing_timestamp"
+                        if snapshot_age_s is None and baseline_age_s is None
+                        else "buying_power_snapshot_stale"
+                    )
+                    stale_age_s = snapshot_age_s if candidate_source == "snapshot" else baseline_age_s
+                    if self._buying_power_should_force_refresh_stale_snapshot(
+                        stale_age_s=stale_age_s,
+                        freshness_block_reason=candidate_reason,
+                    ):
+                        allowed, retry_after_s = self._buying_power_stale_force_refresh_allowed()
+                        if allowed:
+                            forced_snapshot = self._account_buying_power_snapshot(force_refresh=True)
+                            (
+                                forced_guard,
+                                forced_age_s,
+                                forced_summary,
+                                forced_guard_available,
+                                forced_fresh,
+                            ) = evaluate_snapshot_payload(forced_snapshot)
+                            force_refresh_details = {
+                                "snapshot_force_refresh_attempted": True,
+                                "snapshot_force_refresh_result": "fresh" if forced_fresh else "stale" if forced_summary else "unavailable",
+                                "snapshot_force_refresh_reason": str(
+                                    forced_guard.get("reason")
+                                    or forced_snapshot.get("refresh_error")
+                                    or forced_snapshot.get("last_refresh_error")
+                                    or ""
+                                ),
+                                "snapshot_force_refresh_age_s": round(float(forced_age_s), 1) if forced_age_s is not None else None,
+                            }
+                            if forced_fresh:
+                                snapshot = forced_snapshot
+                                snapshot_guard = forced_guard
+                                snapshot_age_s = forced_age_s
+                                snapshot_summary = forced_summary
+                                snapshot_guard_available = forced_guard_available
+                                snapshot_fresh = True
+                            elif isinstance(forced_snapshot, dict) and forced_snapshot.get("hard_blocked") is not None:
+                                force_refresh_details["snapshot_force_refresh_hard_blocked"] = bool(forced_snapshot.get("hard_blocked"))
+                        else:
+                            force_refresh_details = {
+                                "snapshot_force_refresh_attempted": False,
+                                "snapshot_force_refresh_result": "cooldown",
+                                "snapshot_force_refresh_retry_after_s": round(float(retry_after_s), 1),
+                            }
             if snapshot_fresh:
                 baseline_updater = getattr(reservation_store, "update_baseline_from_snapshot", None)
                 if callable(baseline_updater):
@@ -3295,6 +3400,8 @@ class TradingServiceSignalsMixin:
             guard["source"] = guard_source
         else:
             self._merge_buying_power_snapshot_guard(guard, snapshot_guard if isinstance(snapshot_guard, dict) else None)
+        if force_refresh_details:
+            guard.update(force_refresh_details)
         if baseline_available:
             guard["baseline_available"] = True
             guard["baseline_source"] = str(baseline.get("source") or "")
@@ -3395,9 +3502,10 @@ class TradingServiceSignalsMixin:
         if not callable(notifier):
             return
         state = str((guard or {}).get("state") or "ok").strip().lower()
+        reason = str((guard or {}).get("reason") or "").strip()
         title = "自动开仓购买力预警"
         if state == "unavailable":
-            title = "自动开仓暂停：购买力风控不可用"
+            title = "自动开仓暂停：购买力快照过期" if reason == "buying_power_snapshot_stale" else "自动开仓暂停：购买力风控不可用"
         elif state == "blocked":
             title = "自动开仓已被动态购买力上限拦截"
         elif level == "info":

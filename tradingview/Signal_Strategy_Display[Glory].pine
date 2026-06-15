@@ -250,6 +250,38 @@ exitPnlLabelColor(float pnl) =>
 stopSourceDisplayName(string source) =>
     str.contains(source, "risk_floor") ? "$75 floor" : str.contains(source, "atr_floor") ? "ATR floor" : str.contains(source, "range_floor") ? "Range floor" : str.contains(source, "bps_floor") ? "Bps floor" : str.contains(source, "structure") or str.contains(source, "support") or str.contains(source, "resistance") ? "Structure" : source
 
+fmtPlanPrice(float value) =>
+    na(value) ? "--" : str.tostring(value, "#.##")
+
+entryAnchorSourceDisplayName(string source, bool isLong) =>
+    source == "trend_reclaim_marketable" ? (isLong ? "趋势回踩/支撑修复" : "趋势回抽/阻力修复") : source == "support_anchor" ? "结构支撑锚点" : source == "resistance_anchor" ? "结构压力锚点" : source == "marketable_cap" ? "当前价+cap" : source == "" ? "未记录锚点" : source
+
+normalizedAnchorReason(string reason) =>
+    reason == "" ? "none" : reason
+
+appendPlanChange(string existing, string nextValue) =>
+    existing == "" ? nextValue : existing + " / " + nextValue
+
+planChangeReasonText(string oldSetup, string newSetup, float oldEntry, float newEntry, float oldSubmitted, float newSubmitted, float oldStop, float newStop, float oldTarget, float newTarget, float oldRunner, float newRunner, float oldQty, float newQty, string oldAnchorSource, string newAnchorSource, string oldAnchorReason, string newAnchorReason) =>
+    string changes = ""
+    bool runnerChanged = na(oldRunner) != na(newRunner) or (not na(oldRunner) and not na(newRunner) and priceChanged(oldRunner, newRunner))
+    changes := oldSetup != newSetup ? appendPlanChange(changes, "setup") : changes
+    changes := priceChanged(oldEntry, newEntry) ? appendPlanChange(changes, "entry") : changes
+    changes := priceChanged(oldSubmitted, newSubmitted) ? appendPlanChange(changes, "submitted") : changes
+    changes := priceChanged(oldStop, newStop) ? appendPlanChange(changes, "SL") : changes
+    changes := priceChanged(oldTarget, newTarget) ? appendPlanChange(changes, "TP") : changes
+    changes := runnerChanged ? appendPlanChange(changes, "runner") : changes
+    changes := oldQty != newQty ? appendPlanChange(changes, "qty") : changes
+    changes := oldAnchorSource != newAnchorSource or oldAnchorReason != newAnchorReason ? appendPlanChange(changes, "锚点") : changes
+    changes == "" ? "同向信号刷新" : changes
+
+entryPlanBasisText(bool isLong, bool trendReclaimEntry, string anchorSource, string anchorReason, float referenceEntry, float anchorLevel, float plannedEntry, float submittedLimit, float atrValue) =>
+    string sideText = isLong ? "多" : "空"
+    string reasonText = normalizedAnchorReason(anchorReason)
+    string formulaText = trendReclaimEntry ? "公式: plan=close，趋势修复/回踩确认直接跟随当前价" : anchorSource == "marketable_cap" ? "公式: plan=close，submitted按cap限制" : "公式: plan=锚点" + (isLong ? "+" : "-") + str.tostring(entryAnchorZoneAtr, "#.##") + "ATR，再按tick取整"
+    string anchorPriceText = trendReclaimEntry or anchorSource == "marketable_cap" ? "--" : fmtPlanPrice(anchorLevel)
+    "依据: " + sideText + " " + entryAnchorSourceDisplayName(anchorSource, isLong) + " / " + reasonText + "\nref " + fmtPlanPrice(referenceEntry) + " / anchor " + anchorPriceText + " / ATR " + fmtPlanPrice(atrValue) + " / plan " + fmtPlanPrice(plannedEntry) + " / submitted " + fmtPlanPrice(submittedLimit) + "\n" + formulaText
+
 entryComment(string direction, string setup) =>
     direction == "short" ? "SELL 空 · " + setup : "BUY 多 · " + setup
 
@@ -1933,6 +1965,11 @@ var float displayShadowStop = na
 var float displayShadowTarget = na
 var float displayShadowRunnerActivation = na
 var float displayShadowQty = na
+var float displayShadowSubmittedLimit = na
+var float displayShadowReferenceEntry = na
+var float displayShadowAnchorLevel = na
+var string displayShadowAnchorSource = ""
+var string displayShadowAnchorReason = ""
 var bool displayShadowOpenPosition = false
 var float displayShadowActiveStop = na
 var float displayShadowActiveTarget = na
@@ -1986,6 +2023,11 @@ if isNewTradingDay
     displayShadowTarget := na
     displayShadowRunnerActivation := na
     displayShadowQty := na
+    displayShadowSubmittedLimit := na
+    displayShadowReferenceEntry := na
+    displayShadowAnchorLevel := na
+    displayShadowAnchorSource := ""
+    displayShadowAnchorReason := ""
     displayShadowOpenPosition := false
     displayShadowActiveStop := na
     displayShadowActiveTarget := na
@@ -2080,8 +2122,12 @@ bool displayPendingTrendInvalidated = displayPendingHardInvalidated
 bool displayPendingTrendStillValid = confirmed and showPendingEntryLifecycle and displayShadowPendingEntry and not displayPendingTrendInvalidated
 bool displayPlanSwitchLongRunnerChanged = na(displayShadowRunnerActivation) != na(longRunnerActivationCandidate) or (not na(displayShadowRunnerActivation) and not na(longRunnerActivationCandidate) and priceChanged(displayShadowRunnerActivation, longRunnerActivationCandidate))
 bool displayPlanSwitchShortRunnerChanged = na(displayShadowRunnerActivation) != na(shortRunnerActivationCandidate) or (not na(displayShadowRunnerActivation) and not na(shortRunnerActivationCandidate) and priceChanged(displayShadowRunnerActivation, shortRunnerActivationCandidate))
-bool displayPlanSwitchLongChanged = displayShadowDirection == 1 and (displayShadowSetup != longSetup or priceChanged(displayShadowEntry, longEntryCandidate) or priceChanged(displayShadowStop, longStopCandidate) or priceChanged(displayShadowTarget, longTargetCandidate) or displayPlanSwitchLongRunnerChanged or displayShadowQty != longQtyCandidate)
-bool displayPlanSwitchShortChanged = displayShadowDirection == -1 and (displayShadowSetup != shortSetup or priceChanged(displayShadowEntry, shortEntryCandidate) or priceChanged(displayShadowStop, shortStopCandidate) or priceChanged(displayShadowTarget, shortTargetCandidate) or displayPlanSwitchShortRunnerChanged or displayShadowQty != shortQtyCandidate)
+bool displayPlanSwitchLongSubmittedChanged = priceChanged(displayShadowSubmittedLimit, longSubmittedEntryLimit)
+bool displayPlanSwitchShortSubmittedChanged = priceChanged(displayShadowSubmittedLimit, shortSubmittedEntryLimit)
+bool displayPlanSwitchLongAnchorChanged = displayShadowAnchorSource != longEntryAnchorSource or displayShadowAnchorReason != normalizedAnchorReason(longEntryAnchorReason)
+bool displayPlanSwitchShortAnchorChanged = displayShadowAnchorSource != shortEntryAnchorSource or displayShadowAnchorReason != normalizedAnchorReason(shortEntryAnchorReason)
+bool displayPlanSwitchLongChanged = displayShadowDirection == 1 and (displayShadowSetup != longSetup or priceChanged(displayShadowEntry, longEntryCandidate) or displayPlanSwitchLongSubmittedChanged or priceChanged(displayShadowStop, longStopCandidate) or priceChanged(displayShadowTarget, longTargetCandidate) or displayPlanSwitchLongRunnerChanged or displayPlanSwitchLongAnchorChanged or displayShadowQty != longQtyCandidate)
+bool displayPlanSwitchShortChanged = displayShadowDirection == -1 and (displayShadowSetup != shortSetup or priceChanged(displayShadowEntry, shortEntryCandidate) or displayPlanSwitchShortSubmittedChanged or priceChanged(displayShadowStop, shortStopCandidate) or priceChanged(displayShadowTarget, shortTargetCandidate) or displayPlanSwitchShortRunnerChanged or displayPlanSwitchShortAnchorChanged or displayShadowQty != shortQtyCandidate)
 bool displayPlanSwitchLong = confirmed and showPendingEntryLifecycle and displayShadowPendingEntry and displayShadowDirection == 1 and bar_index > displayShadowSignalBar and longActionable and not shortActionable and not conflict and longQtyCandidate > 0.0 and displayPlanSwitchLongChanged and not displayPendingEodCancel and not displayPendingEntryWindowExpired and not displayPendingOppositeOrConflict
 bool displayPlanSwitchShort = confirmed and showPendingEntryLifecycle and displayShadowPendingEntry and displayShadowDirection == -1 and bar_index > displayShadowSignalBar and shortActionable and not longActionable and not conflict and shortQtyCandidate > 0.0 and displayPlanSwitchShortChanged and not displayPendingEodCancel and not displayPendingEntryWindowExpired and not displayPendingOppositeOrConflict
 bool displayPlanSwitchNow = displayPlanSwitchLong or displayPlanSwitchShort
@@ -2090,6 +2136,11 @@ string displayPlanSwitchOldSetup = displayShadowSetup
 float displayPlanSwitchOldEntry = displayShadowEntry
 float displayPlanSwitchOldStop = displayShadowStop
 float displayPlanSwitchOldTarget = displayShadowTarget
+float displayPlanSwitchOldRunnerActivation = displayShadowRunnerActivation
+float displayPlanSwitchOldQty = displayShadowQty
+float displayPlanSwitchOldSubmittedLimit = displayShadowSubmittedLimit
+string displayPlanSwitchOldAnchorSource = displayShadowAnchorSource
+string displayPlanSwitchOldAnchorReason = displayShadowAnchorReason
 int displayPlanSwitchOldSignalBar = displayShadowSignalBar
 int displayPlanSwitchFlowId = displayShadowFlowId
 string displayPlanSwitchNewSetup = displayPlanSwitchLong ? longSetup : displayPlanSwitchShort ? shortSetup : displayShadowSetup
@@ -2098,6 +2149,12 @@ float displayPlanSwitchNewStop = displayPlanSwitchLong ? longStopCandidate : dis
 float displayPlanSwitchNewTarget = displayPlanSwitchLong ? longTargetCandidate : displayPlanSwitchShort ? shortTargetCandidate : displayShadowTarget
 float displayPlanSwitchNewRunnerActivation = displayPlanSwitchLong ? longRunnerActivationCandidate : displayPlanSwitchShort ? shortRunnerActivationCandidate : displayShadowRunnerActivation
 float displayPlanSwitchNewSubmittedLimit = displayPlanSwitchLong ? longSubmittedEntryLimit : displayPlanSwitchShort ? shortSubmittedEntryLimit : na
+float displayPlanSwitchNewQty = displayPlanSwitchLong ? longQtyCandidate : displayPlanSwitchShort ? shortQtyCandidate : displayShadowQty
+float displayPlanSwitchNewReferenceEntry = displayPlanSwitchLong ? longReferenceEntry : displayPlanSwitchShort ? shortReferenceEntry : displayShadowReferenceEntry
+float displayPlanSwitchNewAnchorLevel = displayPlanSwitchLong ? longStructuralAnchorLevel : displayPlanSwitchShort ? shortStructuralAnchorLevel : displayShadowAnchorLevel
+string displayPlanSwitchNewAnchorSource = displayPlanSwitchLong ? longEntryAnchorSource : displayPlanSwitchShort ? shortEntryAnchorSource : displayShadowAnchorSource
+string displayPlanSwitchNewAnchorReason = displayPlanSwitchLong ? normalizedAnchorReason(longEntryAnchorReason) : displayPlanSwitchShort ? normalizedAnchorReason(shortEntryAnchorReason) : displayShadowAnchorReason
+bool displayPlanSwitchNewTrendReclaim = displayPlanSwitchLong ? longTrendReclaimEntry : displayPlanSwitchShort ? shortTrendReclaimEntry : false
 if displayPlanSwitchLong
     displayShadowPendingEntry := true
     displayShadowEntryTouched := false
@@ -2109,6 +2166,11 @@ if displayPlanSwitchLong
     displayShadowTarget := longTargetCandidate
     displayShadowRunnerActivation := longRunnerActivationCandidate
     displayShadowQty := longQtyCandidate
+    displayShadowSubmittedLimit := longSubmittedEntryLimit
+    displayShadowReferenceEntry := longReferenceEntry
+    displayShadowAnchorLevel := longStructuralAnchorLevel
+    displayShadowAnchorSource := longEntryAnchorSource
+    displayShadowAnchorReason := normalizedAnchorReason(longEntryAnchorReason)
     displayShadowOpenPosition := false
     displayShadowSignalBar := bar_index
     displayShadowExpiresBar := bar_index + entryOrderTtlBars
@@ -2125,6 +2187,11 @@ if displayPlanSwitchShort
     displayShadowTarget := shortTargetCandidate
     displayShadowRunnerActivation := shortRunnerActivationCandidate
     displayShadowQty := shortQtyCandidate
+    displayShadowSubmittedLimit := shortSubmittedEntryLimit
+    displayShadowReferenceEntry := shortReferenceEntry
+    displayShadowAnchorLevel := shortStructuralAnchorLevel
+    displayShadowAnchorSource := shortEntryAnchorSource
+    displayShadowAnchorReason := normalizedAnchorReason(shortEntryAnchorReason)
     displayShadowOpenPosition := false
     displayShadowSignalBar := bar_index
     displayShadowExpiresBar := bar_index + entryOrderTtlBars
@@ -2280,6 +2347,11 @@ if showPendingEntryLifecycle and displayEnterLong
     displayShadowTarget := longTargetCandidate
     displayShadowRunnerActivation := longRunnerActivationCandidate
     displayShadowQty := longQtyCandidate
+    displayShadowSubmittedLimit := longSubmittedEntryLimit
+    displayShadowReferenceEntry := longReferenceEntry
+    displayShadowAnchorLevel := longStructuralAnchorLevel
+    displayShadowAnchorSource := longEntryAnchorSource
+    displayShadowAnchorReason := normalizedAnchorReason(longEntryAnchorReason)
     displayShadowOpenPosition := false
     displayShadowSignalBar := bar_index
     displayShadowExpiresBar := bar_index + entryOrderTtlBars
@@ -2298,6 +2370,11 @@ if showPendingEntryLifecycle and displayEnterShort
     displayShadowTarget := shortTargetCandidate
     displayShadowRunnerActivation := shortRunnerActivationCandidate
     displayShadowQty := shortQtyCandidate
+    displayShadowSubmittedLimit := shortSubmittedEntryLimit
+    displayShadowReferenceEntry := shortReferenceEntry
+    displayShadowAnchorLevel := shortStructuralAnchorLevel
+    displayShadowAnchorSource := shortEntryAnchorSource
+    displayShadowAnchorReason := normalizedAnchorReason(shortEntryAnchorReason)
     displayShadowOpenPosition := false
     displayShadowSignalBar := bar_index
     displayShadowExpiresBar := bar_index + entryOrderTtlBars
@@ -2532,8 +2609,10 @@ if flowLabelsVisible and showPendingEntryLifecycle and displayPlanSwitchNow
         array.push(signalEventFlowConnectors, planSwitchConnector)
         int planSwitchConnectorSetIndex = array.size(signalEventFlowConnectorSetSizes) - 1
         array.set(signalEventFlowConnectorSetSizes, planSwitchConnectorSetIndex, array.get(signalEventFlowConnectorSetSizes, planSwitchConnectorSetIndex) + 1)
-    string planSwitchDetailText = flowEventDetailText(planSwitchFlowId, 4, "切换", "Plan切换\n" + directionDisplayName(switchDirectionKey) + " · " + setupDisplayName(displayPlanSwitchNewSetup) + "\n原因: " + cancelReasonDisplayName("same_direction_plan_replaced") + "\n旧plan " + str.tostring(displayPlanSwitchOldEntry, "#.##") + " / SL " + str.tostring(displayPlanSwitchOldStop, "#.##") + " / TP " + str.tostring(displayPlanSwitchOldTarget, "#.##") + "\n新plan " + str.tostring(displayPlanSwitchNewEntry, "#.##") + " / submitted " + str.tostring(displayPlanSwitchNewSubmittedLimit, "#.##") + " / SL " + str.tostring(displayPlanSwitchNewStop, "#.##") + " / TP " + str.tostring(displayPlanSwitchNewTarget, "#.##") + "\n旧signal bar " + str.tostring(displayPlanSwitchOldSignalBar, "#") + " / 新signal bar " + str.tostring(bar_index, "#") + " / 新过期bar " + str.tostring(bar_index + entryOrderTtlBars, "#") + "\n当前状态: 同向新信号替换旧挂单")
-    string planSwitchCompactText = flowEventCompactText(planSwitchFlowId, 4, "切换", "Plan切换 " + switchDirectionText + "·" + decisionSetupTag(displayPlanSwitchNewSetup) + " " + str.tostring(displayPlanSwitchNewEntry, "#.##"))
+    string planSwitchChangeText = planChangeReasonText(displayPlanSwitchOldSetup, displayPlanSwitchNewSetup, displayPlanSwitchOldEntry, displayPlanSwitchNewEntry, displayPlanSwitchOldSubmittedLimit, displayPlanSwitchNewSubmittedLimit, displayPlanSwitchOldStop, displayPlanSwitchNewStop, displayPlanSwitchOldTarget, displayPlanSwitchNewTarget, displayPlanSwitchOldRunnerActivation, displayPlanSwitchNewRunnerActivation, displayPlanSwitchOldQty, displayPlanSwitchNewQty, displayPlanSwitchOldAnchorSource, displayPlanSwitchNewAnchorSource, displayPlanSwitchOldAnchorReason, displayPlanSwitchNewAnchorReason)
+    string planSwitchBasisText = entryPlanBasisText(displayPlanSwitchDirection == 1, displayPlanSwitchNewTrendReclaim, displayPlanSwitchNewAnchorSource, displayPlanSwitchNewAnchorReason, displayPlanSwitchNewReferenceEntry, displayPlanSwitchNewAnchorLevel, displayPlanSwitchNewEntry, displayPlanSwitchNewSubmittedLimit, atrRaw)
+    string planSwitchDetailText = flowEventDetailText(planSwitchFlowId, 4, "替换", "同向Plan替换旧挂单\n旧信号: " + switchDirectionText + "·" + setupDisplayName(displayPlanSwitchOldSetup) + "\n新信号: " + switchDirectionText + "·" + setupDisplayName(displayPlanSwitchNewSetup) + "\n原因: " + cancelReasonDisplayName("same_direction_plan_replaced") + "\n变化项: " + planSwitchChangeText + "\n旧plan " + str.tostring(displayPlanSwitchOldEntry, "#.##") + " / submitted " + str.tostring(displayPlanSwitchOldSubmittedLimit, "#.##") + " / SL " + str.tostring(displayPlanSwitchOldStop, "#.##") + " / TP " + str.tostring(displayPlanSwitchOldTarget, "#.##") + " / qty " + str.tostring(displayPlanSwitchOldQty, "#") + "\n新plan " + str.tostring(displayPlanSwitchNewEntry, "#.##") + " / submitted " + str.tostring(displayPlanSwitchNewSubmittedLimit, "#.##") + " / SL " + str.tostring(displayPlanSwitchNewStop, "#.##") + " / TP " + str.tostring(displayPlanSwitchNewTarget, "#.##") + " / qty " + str.tostring(displayPlanSwitchNewQty, "#") + "\n" + planSwitchBasisText + "\n旧signal bar " + str.tostring(displayPlanSwitchOldSignalBar, "#") + " / 新signal bar " + str.tostring(bar_index, "#") + " / 新过期bar " + str.tostring(bar_index + entryOrderTtlBars, "#") + "\n当前状态: 同方向新信号更新计划价，不是多空反转")
+    string planSwitchCompactText = flowEventCompactText(planSwitchFlowId, 4, "替换", "同向替换 " + switchDirectionText + "·" + decisionSetupTag(displayPlanSwitchNewSetup) + "\n旧plan " + str.tostring(displayPlanSwitchOldEntry, "#.##") + " -> 新 " + str.tostring(displayPlanSwitchNewEntry, "#.##") + "\n依据: " + entryAnchorSourceDisplayName(displayPlanSwitchNewAnchorSource, displayPlanSwitchDirection == 1))
     label planSwitchLabel = label.new(bar_index, planSwitchY, flowLabelText(planSwitchCompactText, planSwitchDetailText), style=flowLabelStyle(switchDirectionKey), color=color.new(color.yellow, flowLabelTransparency), textcolor=color.black, size=size.small, tooltip=flowLabelTooltip(planSwitchDetailText))
     if showSignalEventFlow
         array.push(signalEventFlowLabels, planSwitchLabel)
@@ -2772,7 +2851,7 @@ else
         line.set_color(displayRunnerLine, color.new(color.blue, 0))
 
 var table flowStatus = table.new(position.top_right, 2, 7, border_width=1)
-string pendingDisplayStatus = displayShadowExitNow ? "Shadow退出" : displayShadowOpenPosition ? "Shadow持仓中" : displayPendingEntryTouchedNow ? "Core模拟触及" : displayPendingCancelNow ? "撤销挂单" : displayPlanSwitchNow ? "Plan切换" : pendingDisplayWaiting ? "Core挂单中" : ""
+string pendingDisplayStatus = displayShadowExitNow ? "Shadow退出" : displayShadowOpenPosition ? "Shadow持仓中" : displayPendingEntryTouchedNow ? "Core模拟触及" : displayPendingCancelNow ? "撤销挂单" : displayPlanSwitchNow ? "Plan替换" : pendingDisplayWaiting ? "Core挂单中" : ""
 string pendingDisplayDirectionName = displayLifecycleDirection == 1 ? "做多" : displayLifecycleDirection == -1 ? "做空" : "--"
 string pendingDisplayDirectionKey = displayLifecycleDirection == 1 ? "long" : displayLifecycleDirection == -1 ? "short" : ""
 string statusFlowId = pendingDisplayStatus != "" ? flowIdText(displayLifecycleFlowId) : not na(activeFlowId) ? flowIdText(activeFlowId) : "--"
