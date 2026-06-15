@@ -154,6 +154,8 @@ class MonitorFlagGraceTest(unittest.TestCase):
                     "running": True,
                     "reachable": True,
                     "broker": {
+                        "connected": True,
+                        "ready": True,
                         "last_error_code": 10197,
                         "last_error": "No market data during competing live session",
                         "last_error_at": datetime.now(timezone.utc).isoformat(),
@@ -185,6 +187,8 @@ class MonitorFlagGraceTest(unittest.TestCase):
                     "running": True,
                     "reachable": True,
                     "broker": {
+                        "connected": True,
+                        "ready": True,
                         "last_error_code": 10197,
                         "last_error": "No market data during competing live session",
                         "last_error_at": datetime.now(timezone.utc).isoformat(),
@@ -192,6 +196,8 @@ class MonitorFlagGraceTest(unittest.TestCase):
                 },
                 "session": {"authenticated": True},
                 "websocket": {"connected": True, "ready": True},
+                "order_flow": {"enabled": False},
+                "signal_router": {"signal_source": "tradingview"},
                 "market_data_session_conflict": {
                     "active": True,
                     "first_seen_at": "2026-06-15T14:17:46+00:00",
@@ -206,9 +212,70 @@ class MonitorFlagGraceTest(unittest.TestCase):
         )
 
         conflict = next(item for item in flags if item["code"] == "market_data_session_conflict")
+        self.assertEqual("Market data session conflict (orders still available)", conflict["title"])
         self.assertIn("首次记录", conflict["detail"])
         self.assertIn("累计次数：8", conflict["detail"])
+        self.assertIn("下单影响：当前不阻断下单", conflict["detail"])
+        self.assertIn("信号来源=tradingview", conflict["detail"])
+        self.assertIn("OrderFlow=disabled", conflict["detail"])
         self.assertIn("1-3 分钟", conflict["detail"])
+
+    def test_market_data_session_conflict_warns_when_order_flow_uses_quotes(self):
+        flags = _build_monitor_flags(
+            {
+                "gateway": {
+                    "running": True,
+                    "reachable": True,
+                    "broker": {
+                        "connected": True,
+                        "ready": True,
+                        "last_error_code": 10197,
+                        "last_error": "No market data during competing live session",
+                        "last_error_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                },
+                "session": {"authenticated": True},
+                "websocket": {"connected": True, "ready": True, "subscribed_count": 3, "pending_count": 0},
+                "order_flow": {"enabled": True},
+                "signal_router": {"signal_source": "tradingview"},
+            },
+            {"active_subscription_count": 3, "pending_subscription_count": 0},
+            {},
+            {},
+        )
+
+        conflict = next(item for item in flags if item["code"] == "market_data_session_conflict")
+        self.assertIn("orders still available", conflict["title"])
+        self.assertIn("下单影响：可能影响依赖实时报价的入场/出场", conflict["detail"])
+        self.assertIn("OrderFlow=enabled", conflict["detail"])
+
+    def test_market_data_session_conflict_does_not_claim_orders_ok_when_broker_not_ready(self):
+        flags = _build_monitor_flags(
+            {
+                "gateway": {
+                    "running": True,
+                    "reachable": True,
+                    "broker": {
+                        "connected": False,
+                        "ready": False,
+                        "last_error_code": 10197,
+                        "last_error": "No market data during competing live session",
+                        "last_error_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                },
+                "session": {"authenticated": False},
+                "websocket": {"connected": True, "ready": True, "subscribed_count": 3, "pending_count": 0},
+                "order_flow": {"enabled": False},
+                "signal_router": {"signal_source": "tradingview"},
+            },
+            {"active_subscription_count": 3, "pending_subscription_count": 0},
+            {},
+            {},
+        )
+
+        conflict = next(item for item in flags if item["code"] == "market_data_session_conflict")
+        self.assertEqual("Market data session conflict", conflict["title"])
+        self.assertIn("下单影响：订单通道可能受影响", conflict["detail"])
 
     def test_market_data_silent_is_suppressed_during_close_transition_with_default_late_thresholds(self):
         flags = self._build_market_data_flags("close_transition", 111.6)

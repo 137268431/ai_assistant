@@ -54,6 +54,76 @@ def _as_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+def _runtime_config_switch_enabled(runtime: dict[str, Any], key: str) -> bool | None:
+    switches = _as_dict(runtime.get("runtime_config_switches"))
+    items = switches.get("items")
+    if not isinstance(items, list):
+        return None
+    for item in items:
+        if not isinstance(item, dict) or _to_text(item.get("key")) != key:
+            continue
+        if isinstance(item.get("enabled"), bool):
+            return bool(item.get("enabled"))
+        if item.get("enabled") is not None:
+            value = _to_text(item.get("enabled")).lower()
+            if value in {"true", "1", "yes", "on"}:
+                return True
+            if value in {"false", "0", "no", "off"}:
+                return False
+        value = _to_text(item.get("value")).lower()
+        if value in {"true", "1", "yes", "on"}:
+            return True
+        if value in {"false", "0", "no", "off"}:
+            return False
+    return None
+
+
+def _market_data_conflict_order_impact(runtime: dict[str, Any]) -> dict[str, Any]:
+    gateway = _as_dict(runtime.get("gateway"))
+    broker = _as_dict(gateway.get("broker"))
+    session = _as_dict(runtime.get("session"))
+    websocket = _as_dict(runtime.get("websocket"))
+    order_flow = _as_dict(runtime.get("order_flow"))
+    signal_router = _as_dict(runtime.get("signal_router"))
+
+    order_flow_enabled = order_flow.get("enabled")
+    if order_flow_enabled is None:
+        order_flow_enabled = _runtime_config_switch_enabled(runtime, "ibkr_order_flow_enabled")
+    order_flow_known = order_flow_enabled is not None
+    order_flow_enabled = bool(order_flow_enabled)
+    signal_source = _to_text(signal_router.get("signal_source")).lower() or "unknown"
+    tradingview_signal = signal_source in {"tradingview", "tv", "tv_webhook", "webhook_tv"}
+    gateway_active = bool(gateway.get("running") or gateway.get("reachable"))
+    session_authenticated = bool(session.get("authenticated"))
+    broker_ready = bool(broker.get("ready") or broker.get("connected"))
+
+    subscribed_count = websocket.get("subscribed_count")
+    if subscribed_count is None:
+        subscribed_count = broker.get("subscriptions")
+    pending_count = websocket.get("pending_count")
+    if pending_count is None:
+        pending_count = 0
+
+    if gateway_active and session_authenticated and broker_ready and order_flow_known and not order_flow_enabled and tradingview_signal:
+        order_path = "正常"
+        impact = "当前不阻断下单"
+    elif gateway_active and session_authenticated and broker_ready and order_flow_enabled:
+        order_path = "正常但报价相关逻辑可能受影响"
+        impact = "可能影响依赖实时报价的入场/出场"
+    else:
+        order_path = "未知/可能受影响"
+        impact = "订单通道可能受影响"
+
+    return {
+        "order_path": order_path,
+        "impact": impact,
+        "signal_source": signal_source,
+        "order_flow": "enabled" if order_flow_enabled else ("disabled" if order_flow_known else "unknown"),
+        "subscribed_count": _to_int(subscribed_count, 0),
+        "pending_count": _to_int(pending_count, 0),
+    }
+
+
 def _config_int(
     config_value: ConfigValue | None,
     key: str,
@@ -289,14 +359,22 @@ def _detail(
     }
     conflict_state = _as_dict(runtime.get("market_data_session_conflict"))
     if conflict_state.get("active"):
+        impact = _market_data_conflict_order_impact(runtime)
         detail.update(
             {
                 "行情冲突": "active",
                 "冲突首次": _to_text(conflict_state.get("first_seen_at")) or "unknown",
                 "冲突最近": _to_text(conflict_state.get("last_seen_at") or conflict_state.get("last_error_at")) or "unknown",
+                "最近10197": _to_text(conflict_state.get("last_error_at")) or "unknown",
                 "冲突次数": _to_int(conflict_state.get("count"), 0),
+                "下单通道": impact["order_path"],
+                "下单影响": impact["impact"],
+                "信号来源": impact["signal_source"],
+                "OrderFlow": impact["order_flow"],
+                "行情订阅": f"subscribed:{impact['subscribed_count']} | pending:{impact['pending_count']}",
                 "处理建议": (
-                    "退出其它 TWS/IB Gateway/IBKR Desktop/Client Portal/手机或第三方行情客户端，"
+                    "这是 IBKR live 行情会话冲突，不等同于订单通道故障；如需恢复服务器 live 行情，"
+                    "退出其它 TWS/IB Gateway/IBKR Desktop/Client Portal/手机行情页或第三方行情客户端，"
                     "等待 1-3 分钟；仍未恢复再重启 Gateway。"
                 ),
             }

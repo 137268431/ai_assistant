@@ -110,6 +110,106 @@ def _format_conflict_status_detail(runtime_status: dict) -> str:
     return "；".join(parts)
 
 
+def _runtime_config_switch_enabled(runtime_status: dict, key: str) -> bool | None:
+    switches = runtime_status.get("runtime_config_switches") or {}
+    items = switches.get("items") if isinstance(switches, dict) else []
+    if not isinstance(items, list):
+        return None
+    for item in items:
+        if not isinstance(item, dict) or str(item.get("key") or "") != key:
+            continue
+        if isinstance(item.get("enabled"), bool):
+            return bool(item.get("enabled"))
+        if item.get("enabled") is not None:
+            value = str(item.get("enabled") or "").strip().lower()
+            if value in {"true", "1", "yes", "on"}:
+                return True
+            if value in {"false", "0", "no", "off"}:
+                return False
+        value = str(item.get("value") or "").strip().lower()
+        if value in {"true", "1", "yes", "on"}:
+            return True
+        if value in {"false", "0", "no", "off"}:
+            return False
+    return None
+
+
+def _safe_monitor_int(value, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _market_data_conflict_order_impact(runtime_status: dict) -> dict:
+    gateway = runtime_status.get("gateway") or {}
+    broker = gateway.get("broker") or {}
+    session = runtime_status.get("session") or {}
+    websocket = runtime_status.get("websocket") or {}
+    order_flow = runtime_status.get("order_flow") or {}
+    signal_router = runtime_status.get("signal_router") or {}
+
+    broker_ready = bool(broker.get("ready") or broker.get("connected"))
+    session_authenticated = bool(session.get("authenticated"))
+    gateway_active = bool(gateway.get("running") or gateway.get("reachable"))
+    order_flow_enabled = order_flow.get("enabled")
+    if order_flow_enabled is None:
+        order_flow_enabled = _runtime_config_switch_enabled(runtime_status, "ibkr_order_flow_enabled")
+    order_flow_known = order_flow_enabled is not None
+    order_flow_enabled = bool(order_flow_enabled)
+    signal_source = str(signal_router.get("signal_source") or "").strip().lower()
+    tradingview_signal = signal_source in {"tradingview", "tv", "tv_webhook", "webhook_tv"}
+
+    subscribed_count = websocket.get("subscribed_count")
+    if subscribed_count is None:
+        subscribed_count = broker.get("subscriptions")
+    pending_count = websocket.get("pending_count")
+    if pending_count is None:
+        pending_count = 0
+
+    if gateway_active and session_authenticated and broker_ready and order_flow_known and not order_flow_enabled and tradingview_signal:
+        impact = "当前不阻断下单"
+        reason = "订单通道正常，TradingView 信号源不依赖 IBKR L1 实时报价，OrderFlow 已关闭。"
+        order_path = "正常"
+        blocks_orders = False
+    elif gateway_active and session_authenticated and broker_ready and order_flow_enabled:
+        impact = "可能影响依赖实时报价的入场/出场"
+        reason = "OrderFlow 已开启，入场/出场确认或报价定价可能依赖 IBKR 实时 bid/ask。"
+        order_path = "正常但报价相关逻辑可能受影响"
+        blocks_orders = False
+    else:
+        impact = "订单通道可能受影响"
+        reason = "Session、Gateway 或 broker 状态未全部确认正常，不能断言不影响下单。"
+        order_path = "未知/可能受影响"
+        blocks_orders = True
+
+    return {
+        "impact": impact,
+        "reason": reason,
+        "order_path": order_path,
+        "blocks_orders": blocks_orders,
+        "signal_source": signal_source or "unknown",
+        "order_flow": "enabled" if order_flow_enabled else ("disabled" if order_flow_known else "unknown"),
+        "broker_ready": broker_ready,
+        "session_authenticated": session_authenticated,
+        "gateway_active": gateway_active,
+        "subscribed_count": _safe_monitor_int(subscribed_count, 0),
+        "pending_count": _safe_monitor_int(pending_count, 0),
+    }
+
+
+def _format_conflict_impact_detail(runtime_status: dict) -> str:
+    impact = _market_data_conflict_order_impact(runtime_status)
+    return (
+        f"下单影响：{impact['impact']}；"
+        f"下单通道：{impact['order_path']}；"
+        f"信号来源={impact['signal_source']}；"
+        f"OrderFlow={impact['order_flow']}；"
+        f"行情订阅={impact['subscribed_count']}，pending={impact['pending_count']}。"
+        f"{impact['reason']}"
+    )
+
+
 def _should_warn_no_active_targets(runtime_status: dict) -> bool:
     market_session = runtime_status.get("market_session") or {}
     market_session_kind = str(market_session.get("kind") or "").strip().lower()
@@ -496,15 +596,19 @@ def _build_monitor_flags(runtime_status: dict, api_utilization: dict, host_snaps
         conflict_detail = str(session_conflict.get("message") or last_trace_error or "").strip()
         status_detail = _format_conflict_status_detail(runtime_status)
         status_suffix = f" {status_detail}。" if status_detail else ""
+        impact = _market_data_conflict_order_impact(runtime_status)
+        impact_detail = _format_conflict_impact_detail(runtime_status)
+        title_suffix = " (orders still available)" if impact.get("blocks_orders") is False else ""
         _append_monitor_flag(
             flags,
             "error",
             MARKET_DATA_SESSION_CONFLICT_CODE,
-            "Market data session conflict",
+            f"Market data session conflict{title_suffix}",
             (
-                "IBKR 行情/历史数据会话疑似被另一个 IP 占用；"
-                "请先退出其他电脑/服务器/手机上的 TWS、IB Gateway、IBKR Desktop、Client Portal 或第三方行情程序，"
-                "等待 1-3 分钟释放 live 行情会话；仍未恢复时再重启 Gateway。"
+                "IBKR live 行情会话冲突：同一 IBKR 用户的实时行情可能被 live/paper 其它客户端或手机行情页占用。"
+                f"{impact_detail}"
+                " 处理建议：若要让服务器恢复 live 行情，请退出其它 TWS/IB Gateway/IBKR Desktop/"
+                "Client Portal/手机行情页或第三方行情客户端，等待 1-3 分钟；仍未恢复时再重启 Gateway。"
                 f" 原始错误：{conflict_detail or '--'}。{status_suffix}"
             ),
         )
