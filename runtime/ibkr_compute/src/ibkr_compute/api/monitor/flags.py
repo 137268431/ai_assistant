@@ -90,6 +90,26 @@ def _append_monitor_flag(flags: list[dict], severity: str, code: str, title: str
     )
 
 
+def _format_conflict_status_detail(runtime_status: dict) -> str:
+    state = runtime_status.get("market_data_session_conflict")
+    if not isinstance(state, dict) or not state:
+        return ""
+    parts: list[str] = []
+    first_seen = str(state.get("first_seen_at") or "").strip()
+    last_seen = str(state.get("last_seen_at") or "").strip()
+    last_error = str(state.get("last_error_at") or "").strip()
+    count = state.get("count")
+    if first_seen:
+        parts.append(f"首次记录：{first_seen}")
+    if last_seen:
+        parts.append(f"最近检测：{last_seen}")
+    if last_error:
+        parts.append(f"最近错误：{last_error}")
+    if count not in (None, ""):
+        parts.append(f"累计次数：{count}")
+    return "；".join(parts)
+
+
 def _should_warn_no_active_targets(runtime_status: dict) -> bool:
     market_session = runtime_status.get("market_session") or {}
     market_session_kind = str(market_session.get("kind") or "").strip().lower()
@@ -474,6 +494,8 @@ def _build_monitor_flags(runtime_status: dict, api_utilization: dict, host_snaps
     session_conflict_active = bool(session_conflict.get("active")) or fallback_session_conflict
     if session_conflict_active:
         conflict_detail = str(session_conflict.get("message") or last_trace_error or "").strip()
+        status_detail = _format_conflict_status_detail(runtime_status)
+        status_suffix = f" {status_detail}。" if status_detail else ""
         _append_monitor_flag(
             flags,
             "error",
@@ -481,8 +503,9 @@ def _build_monitor_flags(runtime_status: dict, api_utilization: dict, host_snaps
             "Market data session conflict",
             (
                 "IBKR 行情/历史数据会话疑似被另一个 IP 占用；"
-                "请退出其他电脑/服务器上的 TWS、IB Gateway 或 IBKR Desktop 后，再重启 Gateway。"
-                f" 原始错误：{conflict_detail or '--'}。"
+                "请先退出其他电脑/服务器/手机上的 TWS、IB Gateway、IBKR Desktop、Client Portal 或第三方行情程序，"
+                "等待 1-3 分钟释放 live 行情会话；仍未恢复时再重启 Gateway。"
+                f" 原始错误：{conflict_detail or '--'}。{status_suffix}"
             ),
         )
     elif last_trace_error or last_trace_retry_count > 0:

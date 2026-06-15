@@ -178,6 +178,38 @@ class MonitorFlagGraceTest(unittest.TestCase):
         self.assertNotIn("market_data_silent", flag_codes)
         self.assertNotIn("market_data_silent_critical", flag_codes)
 
+    def test_market_data_session_conflict_detail_includes_persisted_state(self):
+        flags = _build_monitor_flags(
+            {
+                "gateway": {
+                    "running": True,
+                    "reachable": True,
+                    "broker": {
+                        "last_error_code": 10197,
+                        "last_error": "No market data during competing live session",
+                        "last_error_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                },
+                "session": {"authenticated": True},
+                "websocket": {"connected": True, "ready": True},
+                "market_data_session_conflict": {
+                    "active": True,
+                    "first_seen_at": "2026-06-15T14:17:46+00:00",
+                    "last_seen_at": "2026-06-15T15:56:45+00:00",
+                    "last_error_at": "2026-06-15T15:56:45+00:00",
+                    "count": 8,
+                },
+            },
+            {"active_subscription_count": 2, "pending_subscription_count": 0},
+            {},
+            {},
+        )
+
+        conflict = next(item for item in flags if item["code"] == "market_data_session_conflict")
+        self.assertIn("首次记录", conflict["detail"])
+        self.assertIn("累计次数：8", conflict["detail"])
+        self.assertIn("1-3 分钟", conflict["detail"])
+
     def test_market_data_silent_is_suppressed_during_close_transition_with_default_late_thresholds(self):
         flags = self._build_market_data_flags("close_transition", 111.6)
 

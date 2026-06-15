@@ -5,6 +5,7 @@ from flask import request
 from ibkr_compute.api.monitor.views import _build_ibkr_monitor_snapshot
 from ibkr_compute.api.shared.route_request import coerce_request_bool
 from ibkr_compute.api.shared.service_status import _build_minimal_runtime_status, get_service_status_snapshot
+from ibkr_compute.api.support.market_data_session import record_market_data_session_conflict_state
 from ibkr_compute.api.runtime.common import (
     _api_app,
     _background_start_ibkr_service,
@@ -144,6 +145,18 @@ def _build_ibkr_status_response() -> tuple[dict, int]:
         status_payload.setdefault("status_mode", "full")
     if skip_compute_status:
         status_payload["compute_status_lookup_skipped"] = True
+    if "market_data_session_conflict" not in status_payload:
+        data_environment = (
+            status_payload.get("data_environment")
+            or status_payload.get("market_data_environment")
+            or status_payload.get("environment")
+            or "live"
+        )
+        status_payload["market_data_session_conflict"] = record_market_data_session_conflict_state(
+            service,
+            status_payload,
+            environment=str(data_environment or "live"),
+        )
     runtime_environment = normalize_broker_mode(
         status_payload.get("broker_mode") or status_payload.get("environment"),
         "live",

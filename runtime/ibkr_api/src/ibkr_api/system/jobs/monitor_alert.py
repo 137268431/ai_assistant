@@ -287,6 +287,20 @@ def _detail(
             else "unknown"
         ),
     }
+    conflict_state = _as_dict(runtime.get("market_data_session_conflict"))
+    if conflict_state.get("active"):
+        detail.update(
+            {
+                "行情冲突": "active",
+                "冲突首次": _to_text(conflict_state.get("first_seen_at")) or "unknown",
+                "冲突最近": _to_text(conflict_state.get("last_seen_at") or conflict_state.get("last_error_at")) or "unknown",
+                "冲突次数": _to_int(conflict_state.get("count"), 0),
+                "处理建议": (
+                    "退出其它 TWS/IB Gateway/IBKR Desktop/Client Portal/手机或第三方行情客户端，"
+                    "等待 1-3 分钟；仍未恢复再重启 Gateway。"
+                ),
+            }
+        )
     detail.update(_admission_preview_detail(admission_preview or {}))
     return detail
 

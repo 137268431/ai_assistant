@@ -3,6 +3,8 @@ from __future__ import annotations
 import time
 from datetime import datetime
 
+from ibkr_compute.api.support.market_data_session import record_market_data_session_conflict_state
+
 BAR_PIPELINE_DISABLED_STATUS = "disabled_tv_primary"
 BAR_PIPELINE_DISABLED_STATUSES = {"disabled", BAR_PIPELINE_DISABLED_STATUS, "legacy_bar_pipeline_disabled"}
 FALSE_TEXT = {"0", "false", "no", "off", "disabled", "disable"}
@@ -549,6 +551,17 @@ class TradingServiceRuntimeStatusMixin:
         watchlist_idle_topup = self._watchlist_idle_topup_status()
         order_lifecycle_status = self.order_lifecycle.status()
         gateway_status = self.gateway_manager.status()
+        market_data_session_conflict = record_market_data_session_conflict_state(
+            self,
+            {
+                "gateway": gateway_status,
+                "data_backfill": data_backfill_status,
+                "canonical_5m": official_5m,
+                "environment": service_mod.ENVIRONMENT,
+                "data_environment": service_mod.DATA_ENVIRONMENT,
+            },
+            environment=service_mod.DATA_ENVIRONMENT,
+        )
         runtime_config_switches = self._runtime_config_switch_status(service_mod)
         broker_status = gateway_status.get("broker") if isinstance(gateway_status.get("broker"), dict) else {}
         account_data_circuit = (
@@ -594,6 +607,7 @@ class TradingServiceRuntimeStatusMixin:
             "mode_mismatch": service_mod.BROKER_MODE != service_mod.GATEWAY_MODE,
             "ib_gateway_client_id": broker_client_id,
             "broker_client_id": broker_client_id,
+            "market_data_session_conflict": market_data_session_conflict,
             "market_session": market_session,
             "gateway": gateway_status,
             "runtime_config_switches": runtime_config_switches,
