@@ -1425,6 +1425,14 @@ shortEntryAnchorReason := structuralAnchorMode and shortEntryAnchorReason == "" 
 shortEntryAnchorReason := shortTrendReclaimEntry ? appendAnchorReason(shortEntryAnchorReason, "强空回踩确认") : shortEntryAnchorReason
 shortEntryAnchorReason := setupShortDtpBearReclaim ? appendAnchorReason(shortEntryAnchorReason, "DTP空头阻力修复") : shortEntryAnchorReason
 shortEntryAnchorReason := shortEntryAnchorTouched ? appendAnchorReason(shortEntryAnchorReason, "锚点已触及") : shortEntryAnchorReason
+entryAnchorReasonForSide(bool isLong) =>
+    isLong ? (longEntryAnchorReason == "" ? "none" : longEntryAnchorReason) : (shortEntryAnchorReason == "" ? "none" : shortEntryAnchorReason)
+
+entryDivSourceForSide(bool isLong) =>
+    isLong ? (bullDivSource == "" ? bullDivSourceNow : bullDivSource) : (bearDivSource == "" ? bearDivSourceNow : bearDivSource)
+
+entryTouchLineForSetup(bool isLong, string setup) =>
+    isLong ? setup == "trend_sdUpper" ? upperBullTrendTriggerLine : setup == "trend_sdLowerBreakout" ? "post_sd_lower_breakout" : "none" : setup == "trend_sdLower" ? lowerBearTrendTriggerLine : setup == "trend_sdUpperBreakdown" ? "post_sd_upper_breakdown" : setup == "trend_emaDeathContinuation" ? "ema_death_continuation" : "none"
 string longEntryAnchorSource = longTrendReclaimEntry ? "trend_reclaim_marketable" : structuralAnchorMode ? "support_anchor" : "marketable_cap"
 string shortEntryAnchorSource = shortTrendReclaimEntry ? "trend_reclaim_marketable" : structuralAnchorMode ? "resistance_anchor" : "marketable_cap"
 bool longEntryAnchorAllowed = longTrendReclaimEntry or not structuralAnchorMode or ((longEntryAnchorTouched or entryAnchorValid(longReferenceEntry, longEntryCandidate, atrRaw)) and longEntryCandidate <= longReferenceEntry)
@@ -1774,75 +1782,6 @@ volatilityPayload() =>
      jsonBool("volatility_entry_blocked", lowVolatilityEntryBlocked) +
      jsonBool("volatility_entry_allowed", not lowVolatilityEntryBlocked)
 
-profitSpacePayload(string direction, float qty, float entryPrice, float stopPrice, float targetPrice, float targetCheckpoint) =>
-    int directionSign = direction == "long" ? 1 : -1
-    float entryNotionalValue = profitSpaceEntryNotional(entryPrice, qty)
-    float estimatedCostValue = profitSpaceRoundTripCost(qty)
-    float grossProfitValue = profitSpaceGrossProfit(directionSign, entryPrice, targetPrice, qty)
-    float netProfitValue = grossProfitValue - estimatedCostValue
-    float netRoiPctValue = profitSpaceNetRoiPct(netProfitValue, entryNotionalValue)
-    float costPctValue = profitSpaceCostPct(estimatedCostValue, grossProfitValue)
-    float targetAtrValue = profitSpaceTargetAtrMultiple(entryPrice, targetPrice)
-    float checkpointGrossProfitValue = profitSpaceGrossProfit(directionSign, entryPrice, targetCheckpoint, qty)
-    float checkpointNetProfitValue = checkpointGrossProfitValue - estimatedCostValue
-    float checkpointNetRoiPctValue = profitSpaceNetRoiPct(checkpointNetProfitValue, entryNotionalValue)
-    float checkpointCostPctValue = profitSpaceCostPct(estimatedCostValue, checkpointGrossProfitValue)
-    float checkpointTargetAtrValue = profitSpaceTargetAtrMultiple(entryPrice, targetCheckpoint)
-    float finalGrossProfitValue = grossProfitValue
-    float finalNetProfitValue = netProfitValue
-    float finalNetRoiPctValue = netRoiPctValue
-    float finalTargetAtrValue = profitSpaceTargetAtrMultiple(entryPrice, targetPrice)
-    float riskPerShareValue = structureRiskPerShare(directionSign, entryPrice, stopPrice)
-    float rewardPerShareValue = structureRewardPerShare(directionSign, entryPrice, targetPrice)
-    float grossRiskValue = riskPerShareValue > 0.0 and qty > 0.0 ? riskPerShareValue * qty : na
-    float structureRewardRiskValue = rewardRiskMultiple(rewardPerShareValue, riskPerShareValue)
-    float netRewardRiskValue = grossRiskValue > 0.0 ? finalNetProfitValue / grossRiskValue : na
-    float checkpointNetRewardRiskValue = grossRiskValue > 0.0 ? checkpointNetProfitValue / grossRiskValue : na
-    float minRewardRiskValue = effectiveMinStructureRewardRiskForEntry
-    string failureReasonValue = profitSpaceFailureReason(netProfitValue, netRoiPctValue, costPctValue, targetAtrValue, structureRewardRiskValue, true, true, minRewardRiskValue)
-    bool entryAllowedValue = profitSpaceEntryAllowed(netProfitValue, netRoiPctValue, costPctValue, targetAtrValue, structureRewardRiskValue, true, true, minRewardRiskValue)
-    jsonBool("profit_space_filter_enabled", useProfitSpaceFilter) +
-     jsonBool("profit_space_entry_allowed", entryAllowedValue) +
-     jsonBool("profit_space_entry_blocked", useProfitSpaceFilter and not entryAllowedValue) +
-     jsonStr("profit_space_filter_reason", failureReasonValue) +
-     jsonStr("profit_space_basis", "final_structure_target") +
-     jsonNum("entry_notional", entryNotionalValue) +
-     jsonNum("gross_risk", grossRiskValue) +
-     jsonNum("expected_gross_profit", grossProfitValue) +
-     jsonNum("estimated_round_trip_cost", estimatedCostValue) +
-     jsonNum("expected_net_profit", netProfitValue) +
-     jsonNum("expected_net_roi_pct", netRoiPctValue) +
-     jsonNum("cost_pct_of_reward", costPctValue) +
-     jsonNum("structure_risk_per_share", riskPerShareValue) +
-     jsonNum("structure_reward_per_share", rewardPerShareValue) +
-     jsonNum("structure_reward_risk", structureRewardRiskValue) +
-     jsonNum("gross_reward_risk", structureRewardRiskValue) +
-     jsonNum("net_reward_risk", netRewardRiskValue) +
-     jsonNum("target_checkpoint_net_reward_risk", checkpointNetRewardRiskValue) +
-     jsonNum("target_distance_atr", targetAtrValue) +
-     jsonNum("profit_space_target_price", targetPrice) +
-     jsonNum("profit_space_checkpoint_price", targetCheckpoint) +
-     jsonNum("checkpoint_gross_profit", checkpointGrossProfitValue) +
-     jsonNum("checkpoint_net_profit", checkpointNetProfitValue) +
-     jsonNum("checkpoint_net_roi_pct", checkpointNetRoiPctValue) +
-     jsonNum("checkpoint_cost_pct_of_reward", checkpointCostPctValue) +
-     jsonNum("checkpoint_target_distance_atr", checkpointTargetAtrValue) +
-     jsonNum("profit_space_final_target_price", targetPrice) +
-     jsonNum("final_target_gross_profit", finalGrossProfitValue) +
-     jsonNum("final_target_net_profit", finalNetProfitValue) +
-     jsonNum("final_target_net_roi_pct", finalNetRoiPctValue) +
-     jsonNum("final_target_distance_atr", finalTargetAtrValue) +
-     jsonNum("min_net_profit_for_entry", effectiveMinNetProfitForEntry) +
-     jsonNum("min_net_roi_pct_for_entry", effectiveMinNetRoiPctForEntry) +
-     jsonNum("max_cost_pct_of_reward", maxCostPctOfReward) +
-     jsonNum("min_target_atr_multiple_for_entry", minTargetAtrMultipleForEntry) +
-     jsonNum("min_structure_reward_risk_for_entry", minRewardRiskValue) +
-     jsonNum("base_min_structure_reward_risk_for_entry", minStructureRewardRiskForEntry) +
-     jsonNum("weak_trend_min_structure_reward_risk_for_entry", minWeakTrendRewardRiskForEntry) +
-     jsonBool("weak_trend_or_low_vol_context", weakTrendOrLowVolContext) +
-     jsonNum("estimated_round_trip_fee", estimatedRoundTripFee) +
-     jsonNum("estimated_slippage_per_share_per_side", estimatedSlippagePerSharePerSide)
-
 // -----------------------------------------------------------------------------
 // Position/risk state.
 // -----------------------------------------------------------------------------
@@ -1927,34 +1866,22 @@ buildEntryPayload(string eventIdValue, string signalIdValue, string tradeGroupId
      jsonStr("entry_coid", entryOrderSignal(tradeGroupIdValue)) +
      jsonStr("tp_coid", tpOrderSignal(tradeGroupIdValue)) +
      jsonStr("sl_coid", slOrderSignal(tradeGroupIdValue)) +
-     jsonStr("signal_key_policy", "bar_time_trade_group_v1") +
-     jsonStr("order_lifecycle_model", "core_strategy_shadow_v1") +
-     jsonStr("fill_confirmation_source", "tv_strategy_position_size") +
-     jsonStr("limit_fill_note", "TradingView broker emulator controls actual fill") +
      jsonStr("direction", direction) +
      jsonStr("position_side", direction) +
      jsonStr("setup", setup) +
      jsonStr("reason", reason) +
-     jsonNum("quantity", qty) +
      jsonNum("shares", qty) +
-     jsonNum("entry_price", entryPrice) +
      jsonNum("entry", entryPrice) +
      jsonNum("reference_entry", referenceEntry) +
      jsonNum("planned_entry_price", plannedEntry) +
      jsonNum("signal_reference_price", referenceEntry) +
-     jsonNum("reference_stop_loss", stopPrice) +
-     jsonNum("reference_take_profit", targetPrice) +
      jsonNum("submitted_entry_limit_price", submittedLimitPrice) +
-     jsonNum("submitted_limit_cap_price", submittedLimitPrice) +
      jsonNum("submitted_limit_cap_bps", tvEntryLimitCapBps) +
      jsonBool("submitted_limit_cap_applied", not strictPlanEntryLimit and (trendReclaimEntry or not structuralAnchorMode)) +
      jsonBool("strict_plan_entry_limit", strictPlanEntryLimit) +
      jsonBool("plan_replaced", planReplaced) +
      jsonStr("replace_origin_signal_id", planReplaced and replaceOriginSignalId != "" ? replaceOriginSignalId : "none") +
      jsonStr("replace_reason", planReplaced ? replaceReason : "none") +
-     jsonBool("reference_protection_only", true) +
-     jsonBool("final_protection_from_fill", true) +
-     jsonStr("entry_order_type", "LMT") +
      jsonStr("entry_limit_intent", strictPlanEntryLimit ? "strict_plan_limit" : trendReclaimEntry ? "trend_reclaim_marketable" : structuralAnchorMode ? "structural_anchor" : "bounded_marketable") +
      jsonStr("entry_price_plan", strictPlanEntryLimit ? "strict_plan_limit" : trendReclaimEntry ? "trend_reclaim_bounded_limit" : structuralAnchorMode ? "structural_anchor_limit" : "tv_direct_bounded_limit") +
      jsonStr("entry_anchor_mode", entryAnchorMode) +
@@ -1980,9 +1907,6 @@ buildEntryPayload(string eventIdValue, string signalIdValue, string tradeGroupId
      jsonNum("runner_activation_r", runnerActivationR) +
      jsonBool("runner_enabled", runnerMode) +
      jsonBool("runner_active", false) +
-     jsonBool("tp_checkpoint_runner", runnerMode) +
-     jsonBool("target_is_hard", not runnerMode) +
-     jsonBool("target_checkpoint_is_exit", not runnerMode) +
      jsonStr("target_role", mrSetup ? "mr_mean_tp" : runnerMode ? "structure_safety_tp" : "structure_hard_tp") +
      jsonStr("mr_target_mode", mrSetup ? "mean_reversion_mixed" : "none") +
      jsonNum("mr_mean_target_price", mrSetup ? targetPrice : na) +
@@ -1990,8 +1914,6 @@ buildEntryPayload(string eventIdValue, string signalIdValue, string tradeGroupId
      jsonBool("mr_regime_allowed", mrRegimeAllowedValue) +
      jsonNum("mr_sd_slope_atr", sdSlopeAtr) +
      jsonStr("tp_sl_model", TP_SL_MODEL) +
-     jsonStr("rr_basis", "structure_stop_to_structure_target") +
-     jsonStr("atr_role", "buffer_and_filter_only") +
      jsonNum("atr_buffer_mult", structuralSlBufferAtr) +
      jsonNum("atr_buffer_amount", atrRaw * structuralSlBufferAtr) +
      jsonBool("structure_stop_available", structureStopAvailable) +
@@ -2002,17 +1924,13 @@ buildEntryPayload(string eventIdValue, string signalIdValue, string tradeGroupId
      jsonNum("min_stop_risk_floor_dollars", minStopRiskFloorDollars) +
      jsonNum("risk_floor_stop_distance", qty > 0.0 ? minStopRiskFloorDollars / qty : na) +
      jsonStr("stop_floor_source", structureStopSource) +
-     jsonNum("risk_sized_qty", qty) +
      jsonBool("risk_sized_qty_reduced", riskCapStopApplied) +
      jsonNum("initial_risk_per_share", riskPerShare) +
      jsonStr("structure_stop_source", structureStopSource) +
      jsonStr("structure_target_source", structureTargetSource) +
-     jsonNum("structure_stop_loss", stopPrice) +
-     jsonNum("structure_take_profit", targetPrice) +
      jsonNum("structure_reward_per_share", rewardPerShare) +
      jsonNum("structure_risk_per_share", riskPerShare) +
      jsonNum("structure_reward_risk", structureRewardRiskValue) +
-     jsonNum("gross_reward_risk", structureRewardRiskValue) +
      jsonNum("risk_per_share", riskPerShare) +
      jsonNum("reward_risk", structureRewardRiskValue) +
      jsonNum("configured_reward_risk", rrRatio) +
@@ -2029,7 +1947,6 @@ buildEntryPayload(string eventIdValue, string signalIdValue, string tradeGroupId
      jsonStr("activity_grade", activityGrade) +
      mtfPayloadForDirection(direction) +
      volatilityPayload() +
-     profitSpacePayload(direction, qty, entryPrice, stopPrice, targetPrice, targetCheckpoint) +
      jsonStr("sd_zone", sdZone == 1 ? "overbought" : sdZone == -1 ? "oversold" : "normal") +
      jsonStr("sd_trend", sdTrend == 1 ? "up" : sdTrend == -1 ? "down" : "flat") +
      jsonStr("dtp_dir", dtpDir == 1 ? "bullish" : dtpDir == -1 ? "bearish" : "neutral") +
@@ -2040,6 +1957,13 @@ buildEntryPayload(string eventIdValue, string signalIdValue, string tradeGroupId
      jsonNum("close", close) +
      jsonInt("bar_index", bar_index) +
      '}'
+
+buildSelectedEntryPayload(string eventIdValue, string direction, string setup, string reason, bool isLong, string divSource, string touchLine, bool planReplaced, string replaceOriginSignalId, string replaceReason) =>
+    bool structureStopAvailable = isLong ? longStructureStopAvailable : shortStructureStopAvailable
+    bool structureTargetAvailable = isLong ? longStructureTargetAvailable : shortStructureTargetAvailable
+    bool riskCapStopApplied = isLong ? longRiskCapStopApplied : shortRiskCapStopApplied
+    string structureStopSource = isLong ? longStopSource : shortStopSource
+    buildEntryPayload(eventIdValue, activeSignalId, activeTradeGroupId, activePositionId, activePlanId, direction, setup, reason, activeQty, activeReferenceEntry, activeEntry, activeSubmittedEntryLimit, activeStop, activeTarget, activeRunnerActivation, activeRunnerMode, structureStopAvailable, structureTargetAvailable, riskCapStopApplied, structureStopSource, structureTargetSourceForSetup(setup, direction), activeEntryAnchorSource, activeEntryAnchorReason, activeEntryOrderExpiresBar, divSource, touchLine, planReplaced, replaceOriginSignalId, replaceReason)
 
 buildEntryFillPayload(string eventIdValue, string positionIdValue, float actualFillPrice) =>
     string direction = activeDirection == 1 ? "long" : "short"
@@ -2060,20 +1984,13 @@ buildEntryFillPayload(string eventIdValue, string positionIdValue, float actualF
      jsonStr("entry_coid", entryOrderSignal(activeTradeGroupId)) +
      jsonStr("tp_coid", tpOrderSignal(activeTradeGroupId)) +
      jsonStr("sl_coid", slOrderSignal(activeTradeGroupId)) +
-     jsonStr("signal_key_policy", "bar_time_trade_group_v1") +
-     jsonStr("order_lifecycle_model", "core_strategy_shadow_v1") +
-     jsonStr("fill_confirmation_source", "tv_strategy_position_size") +
-     jsonStr("limit_fill_note", "TradingView broker emulator controls actual fill") +
      jsonStr("direction", direction) +
      jsonStr("position_side", direction) +
      jsonStr("setup", activeSetup) +
-     jsonNum("quantity", activeQty) +
      jsonNum("shares", activeQty) +
-     jsonNum("entry_price", actualFillPrice) +
      jsonNum("actual_fill_price", actualFillPrice) +
      jsonNum("planned_entry_price", activeEntry) +
      jsonNum("submitted_entry_limit_price", activeSubmittedEntryLimit) +
-     jsonNum("submitted_limit_cap_price", activeSubmittedEntryLimit) +
      jsonNum("reference_entry", activeReferenceEntry) +
      jsonIntNullable("entry_signal_bar_index", activeEntrySignalBar) +
      jsonInt("fill_bar_index", bar_index) +
@@ -2087,13 +2004,8 @@ buildEntryFillPayload(string eventIdValue, string positionIdValue, float actualF
      jsonNum("runner_activation_r", runnerActivationR) +
      jsonBool("runner_enabled", activeRunnerMode) +
      jsonBool("runner_active", false) +
-     jsonBool("tp_checkpoint_runner", activeRunnerMode) +
      jsonStr("target_role", setupIsMr(activeSetup) ? "mr_mean_tp" : activeRunnerMode ? "structure_safety_tp" : "structure_hard_tp") +
      jsonStr("tp_sl_model", TP_SL_MODEL) +
-     jsonStr("rr_basis", "structure_stop_to_structure_target") +
-     jsonStr("atr_role", "buffer_and_filter_only") +
-     jsonNum("structure_stop_loss", activeStop) +
-     jsonNum("structure_take_profit", activeTarget) +
      jsonNum("structure_reward_per_share", rewardPerShare) +
      jsonNum("structure_risk_per_share", riskPerShare) +
      jsonNum("structure_reward_risk", structureRewardRiskValue) +
@@ -2122,7 +2034,6 @@ buildRiskPayload(string eventIdValue, string positionIdValue, string updateReaso
      jsonStr("entry_coid", entryOrderSignal(activeTradeGroupId)) +
      jsonStr("tp_coid", tpOrderSignal(activeTradeGroupId)) +
      jsonStr("sl_coid", slOrderSignal(activeTradeGroupId)) +
-     jsonStr("signal_key_policy", "bar_time_trade_group_v1") +
      jsonStr("direction", activeDirection == 1 ? "long" : "short") +
      jsonStr("position_side", activeDirection == 1 ? "long" : "short") +
      jsonStr("setup", activeSetup) +
@@ -2133,8 +2044,6 @@ buildRiskPayload(string eventIdValue, string positionIdValue, string updateReaso
      jsonNum("mfe_r", activeMfeR) +
      jsonNum("mae_r", activeMaeR) +
      jsonRequestedSides(requestedSides) +
-     jsonNum("entry_price", activeEntry) +
-     jsonNum("quantity", activeQty) +
      jsonNum("previous_stop_loss", previousStop) +
      jsonNum("previous_take_profit", previousTarget) +
      jsonNum("new_stop_loss", newStop) +
@@ -2146,22 +2055,15 @@ buildRiskPayload(string eventIdValue, string positionIdValue, string updateReaso
      jsonNum("runner_activation_r", runnerActivationR) +
      jsonBool("runner_enabled", activeRunnerMode) +
      jsonBool("runner_active", activeRunnerActive) +
-     jsonBool("tp_checkpoint_runner", activeRunnerMode) +
      jsonBool("target_checkpoint_hit", activeRunnerActive) +
-     jsonBool("target_checkpoint_is_exit", not activeRunnerMode) +
      jsonStr("target_role", setupIsMr(activeSetup) ? "mr_mean_tp" : activeRunnerMode ? "structure_safety_tp" : "structure_hard_tp") +
      jsonStr("mr_target_mode", setupIsMr(activeSetup) ? "mean_reversion_mixed" : "none") +
      jsonStr("tp_sl_model", TP_SL_MODEL) +
-     jsonStr("rr_basis", "structure_stop_to_structure_target") +
-     jsonStr("atr_role", "buffer_and_filter_only") +
      jsonNum("atr_buffer_mult", structuralSlBufferAtr) +
      jsonNum("atr_buffer_amount", atrRaw * structuralSlBufferAtr) +
-     jsonNum("structure_stop_loss", effectiveStop) +
-     jsonNum("structure_take_profit", effectiveTarget) +
      jsonNum("structure_reward_per_share", rewardPerShare) +
      jsonNum("structure_risk_per_share", riskPerShare) +
      jsonNum("structure_reward_risk", structureRewardRiskValue) +
-     jsonNum("gross_reward_risk", structureRewardRiskValue) +
      jsonNum("risk_per_share", riskPerShare) +
      jsonNum("reward_risk", structureRewardRiskValue) +
      jsonNum("configured_reward_risk", rrRatio) +
@@ -2187,14 +2089,11 @@ buildExitPayload(string eventIdValue, string positionIdValue, string exitReason,
      jsonStr("entry_coid", entryOrderSignal(activeTradeGroupId)) +
      jsonStr("tp_coid", tpOrderSignal(activeTradeGroupId)) +
      jsonStr("sl_coid", slOrderSignal(activeTradeGroupId)) +
-     jsonStr("signal_key_policy", "bar_time_trade_group_v1") +
      jsonStr("direction", activeDirection == 1 ? "long" : "short") +
      jsonStr("position_side", activeDirection == 1 ? "long" : "short") +
      jsonStr("setup", activeSetup) +
      jsonStr("exit_reason", exitReason) +
-     jsonNum("entry_price", activeEntry) +
      jsonNum("exit_price", exitPrice) +
-     jsonNum("quantity", activeQty) +
      jsonNum("stop_loss", activeStop) +
      jsonNum("take_profit", activeTarget) +
      jsonNum("target_checkpoint", targetCheckpoint) +
@@ -2203,9 +2102,7 @@ buildExitPayload(string eventIdValue, string positionIdValue, string exitReason,
      jsonNum("runner_activation_r", runnerActivationR) +
      jsonBool("runner_enabled", activeRunnerMode) +
      jsonBool("runner_active", activeRunnerActive) +
-     jsonBool("tp_checkpoint_runner", activeRunnerMode) +
      jsonBool("target_checkpoint_hit", activeRunnerActive) +
-     jsonBool("target_checkpoint_is_exit", not activeRunnerMode) +
      jsonStr("target_role", setupIsMr(activeSetup) ? "mr_mean_tp" : activeRunnerMode ? "structure_safety_tp" : "structure_hard_tp") +
      jsonStr("mr_target_mode", setupIsMr(activeSetup) ? "mean_reversion_mixed" : "none") +
      jsonNum("pnl_per_share", pnlPerShare) +
@@ -2232,7 +2129,6 @@ buildCancelPayload(string eventIdValue, string positionIdValue, string cancelRea
      jsonStr("entry_coid", entryOrderSignal(activeTradeGroupId)) +
      jsonStr("tp_coid", tpOrderSignal(activeTradeGroupId)) +
      jsonStr("sl_coid", slOrderSignal(activeTradeGroupId)) +
-     jsonStr("signal_key_policy", "bar_time_trade_group_v1") +
      jsonStr("direction", direction) +
      jsonStr("position_side", direction) +
      jsonStr("setup", activeSetup) +
@@ -2240,12 +2136,9 @@ buildCancelPayload(string eventIdValue, string positionIdValue, string cancelRea
      jsonStr("reason", cancelReason) +
      jsonStr("cancel_scope", "trade_intent") +
      jsonStr("cancel_policy", "cancel_unfilled_or_close_filled") +
-     jsonNum("quantity", activeQty) +
-     jsonNum("entry_price", activeEntry) +
      jsonNum("reference_entry", activeReferenceEntry) +
      jsonNum("planned_entry_price", activeEntry) +
      jsonNum("submitted_entry_limit_price", activeSubmittedEntryLimit) +
-     jsonNum("submitted_limit_cap_price", activeSubmittedEntryLimit) +
      jsonNum("stop_loss", activeStop) +
      jsonNum("take_profit", activeTarget) +
      jsonNum("target_checkpoint", activeRunnerMode ? activeRunnerActivation : activeTarget) +
@@ -2277,50 +2170,16 @@ buildPreAlertPayload(string eventIdValue, string pendingPositionId, string activ
      jsonInt("quality_score", activityScore) +
      jsonBool("qualified", false) +
      jsonStr("activity_grade", activityGrade) +
-     jsonBool("trend_continuation_context", bullTrendContinuationContext or bearTrendContinuationContext) +
-     jsonStr("trend_trigger_source", candidateDirection == "short" ? lowerBearTrendTriggerLine : upperBullTrendTriggerLine) +
-     jsonStr("key_level_state", candidateSetup == "trend_sdUpper" and trendLongSupportLingerWait ? "support_linger_wait" : candidateSetup == "trend_sdLower" and trendShortResistanceLingerWait ? "resistance_linger_wait" : "none") +
-     jsonStr("direction_decision", candidateSetup == "trend_sdUpper" and bullTrendContinuationContext ? "dtp_bull_sd_upper_trend_long" : candidateSetup == "trend_sdLower" and bearTrendContinuationContext ? "dtp_bear_sd_lower_trend_short" : "none") +
-     jsonStr("primary_reason", missingComponents) +
-     jsonStr("secondary_reason", "none") +
-     volatilityPayload() +
      jsonStr("missing_components", missingComponents) +
-     jsonBool("lower_window_valid", lowerWindowValid) +
-     jsonBool("upper_window_valid", upperWindowValid) +
-     jsonBool("lower_mr_window_valid", lowerMrWindowValid) +
-     jsonBool("upper_mr_window_valid", upperMrWindowValid) +
-     jsonBool("lower_sd_extreme_fresh", lowerSdExtremeFresh) +
-     jsonBool("upper_sd_extreme_fresh", upperSdExtremeFresh) +
-     jsonBool("lower_post_reversal_used", lowerPostReversalUsed) +
-     jsonBool("upper_post_reversal_used", upperPostReversalUsed) +
-     jsonStr("long_mr_regime", longMrRegime) +
-     jsonStr("short_mr_regime", shortMrRegime) +
-     jsonBool("long_mr_regime_allowed", not longMrDtpBlocked) +
-     jsonBool("short_mr_regime_allowed", not shortMrDtpBlocked) +
-     jsonNum("mr_sd_slope_atr", sdSlopeAtr) +
-     jsonBool("bull_div_seen", bullDivSeen) +
-     jsonBool("bear_div_seen", bearDivSeen) +
-     jsonBool("ema_bull_touch_seen", upperBullTouchSeen) +
-     jsonBool("ema_bear_touch_seen", lowerBearTouchSeen) +
-     jsonBool("bear_pullback_resistance_seen", lowerBearPullbackSeen) +
-     jsonBool("bull_fractal_seen", lowerBullFractalSeen or upperBullFractalSeen or trendBullFractalSeen) +
-     jsonBool("bear_fractal_seen", lowerBearFractalSeen or upperBearFractalSeen or trendBearFractalSeen) +
-     jsonBool("bull_ema_cross_seen", lowerBullEmaCrossSeen or upperBullEmaCrossSeen or trendBullEmaCrossSeen) +
-     jsonBool("bear_ema_cross_seen", lowerBearEmaCrossSeen or upperBearEmaCrossSeen or trendBearEmaCrossSeen) +
-     jsonStr("bull_divergence_source", bullDivSource == "" ? "none" : bullDivSource) +
-     jsonStr("bear_divergence_source", bearDivSource == "" ? "none" : bearDivSource) +
-     jsonStr("sd_zone", sdZone == 1 ? "overbought" : sdZone == -1 ? "oversold" : "normal") +
-     jsonStr("dtp_dir", dtpDir == 1 ? "bullish" : dtpDir == -1 ? "bearish" : "neutral") +
-     jsonStr("dtp_phase", dtpPhase) +
-     jsonNum("close", close) +
-     jsonNum("atr", atrRaw) +
-     jsonNum("atr_pct", atrPct) +
+     jsonStr("entry_window_model", ENTRY_WINDOW_MODEL) +
+     jsonStr("entry_window_stage", entryWindowStage) +
      jsonInt("bar_index", bar_index) +
      '}'
 
 // -----------------------------------------------------------------------------
 // TV-primary event flow: pre_alert -> entry -> risk_update -> exit.
 // -----------------------------------------------------------------------------
+bool resetActiveBeforeEntry = false
 bool exitedNow = confirmed and activePositionId != "" and strategy.position_size == 0 and strategy.position_size[1] != 0
 if exitedNow
     float exitPrice = strategy.closedtrades > 0 ? strategy.closedtrades.exit_price(strategy.closedtrades - 1) : close
@@ -2335,35 +2194,7 @@ if exitedNow
     if enableAlerts
         alert(buildExitPayload(eventId("exit", exitReason), activePositionId, exitReason, exitPrice), alert.freq_all)
     pendingExitReason := ""
-    activePositionId := ""
-    activeSignalId := ""
-    activeTradeGroupId := ""
-    activePlanId := ""
-    activeDirection := 0
-    activeSetup := ""
-    activeReferenceEntry := na
-    activeEntry := na
-    activeSubmittedEntryLimit := na
-    activeEntryAnchorSource := ""
-    activeEntryAnchorReason := ""
-    activeEntryOrderExpiresBar := na
-    activeEntrySignalBar := na
-    activePendingEntry := false
-    activeCancelSent := false
-    activeStop := na
-    activeTarget := na
-    activeRunnerActivation := na
-    activeInitialRisk := na
-    activeQty := na
-    activeEntryBar := na
-    activeRunnerMode := false
-    activeRunnerActive := false
-    activeRunnerExtreme := na
-    activeBreakevenDone := false
-    activeMrCheckpointDone := false
-    activeMfeR := 0.0
-    activeMaeR := 0.0
-    activeRiskUpdateSeq := 0
+    resetActiveBeforeEntry := true
 
 bool pendingFilledNow = confirmed and activePendingEntry and strategy.position_size != 0
 if pendingFilledNow
@@ -2411,40 +2242,51 @@ float pendingLongSubmittedLimit = strictPlanEntryLimit ? longEntryCandidate : (l
 float pendingShortSubmittedLimit = strictPlanEntryLimit ? shortEntryCandidate : (shortTrendReclaimEntry or not structuralAnchorMode) ? calcSubmittedEntryLimit(shortEntryCandidate, -1) : shortEntryCandidate
 bool pendingLongRunnerChanged = na(activeRunnerActivation) != na(longRunnerActivationCandidate) or (not na(activeRunnerActivation) and not na(longRunnerActivationCandidate) and priceChanged(activeRunnerActivation, longRunnerActivationCandidate))
 bool pendingShortRunnerChanged = na(activeRunnerActivation) != na(shortRunnerActivationCandidate) or (not na(activeRunnerActivation) and not na(shortRunnerActivationCandidate) and priceChanged(activeRunnerActivation, shortRunnerActivationCandidate))
-bool pendingSameDirectionReplaceLongChanged = activeDirection == 1 and (activeSetup != longSetup or priceChanged(activeEntry, longEntryCandidate) or priceChanged(activeSubmittedEntryLimit, pendingLongSubmittedLimit) or priceChanged(activeStop, longStopCandidate) or priceChanged(activeTarget, longTargetCandidate) or pendingLongRunnerChanged or activeEntryAnchorSource != longEntryAnchorSource or activeEntryAnchorReason != (longEntryAnchorReason == "" ? "none" : longEntryAnchorReason) or activeQty != longQtyCandidate)
-bool pendingSameDirectionReplaceShortChanged = activeDirection == -1 and (activeSetup != shortSetup or priceChanged(activeEntry, shortEntryCandidate) or priceChanged(activeSubmittedEntryLimit, pendingShortSubmittedLimit) or priceChanged(activeStop, shortStopCandidate) or priceChanged(activeTarget, shortTargetCandidate) or pendingShortRunnerChanged or activeEntryAnchorSource != shortEntryAnchorSource or activeEntryAnchorReason != (shortEntryAnchorReason == "" ? "none" : shortEntryAnchorReason) or activeQty != shortQtyCandidate)
+bool pendingSameDirectionReplaceLongChanged = activeDirection == 1 and (activeSetup != longSetup or priceChanged(activeEntry, longEntryCandidate) or priceChanged(activeSubmittedEntryLimit, pendingLongSubmittedLimit) or priceChanged(activeStop, longStopCandidate) or priceChanged(activeTarget, longTargetCandidate) or pendingLongRunnerChanged or activeEntryAnchorSource != longEntryAnchorSource or activeEntryAnchorReason != entryAnchorReasonForSide(true) or activeQty != longQtyCandidate)
+bool pendingSameDirectionReplaceShortChanged = activeDirection == -1 and (activeSetup != shortSetup or priceChanged(activeEntry, shortEntryCandidate) or priceChanged(activeSubmittedEntryLimit, pendingShortSubmittedLimit) or priceChanged(activeStop, shortStopCandidate) or priceChanged(activeTarget, shortTargetCandidate) or pendingShortRunnerChanged or activeEntryAnchorSource != shortEntryAnchorSource or activeEntryAnchorReason != entryAnchorReasonForSide(false) or activeQty != shortQtyCandidate)
 bool pendingSameDirectionReplaceLong = confirmed and activePendingEntry and strategy.position_size == 0 and activeDirection == 1 and bar_index > activeEntrySignalBar and longActionable and not shortActionable and not conflict and longQtyCandidate > 0.0 and pendingSameDirectionReplaceLongChanged and not pendingEodCancel and not pendingEntryWindowExpired and not pendingOppositeOrConflict
 bool pendingSameDirectionReplaceShort = confirmed and activePendingEntry and strategy.position_size == 0 and activeDirection == -1 and bar_index > activeEntrySignalBar and shortActionable and not longActionable and not conflict and shortQtyCandidate > 0.0 and pendingSameDirectionReplaceShortChanged and not pendingEodCancel and not pendingEntryWindowExpired and not pendingOppositeOrConflict
 bool pendingSameDirectionReplaceNow = pendingSameDirectionReplaceLong or pendingSameDirectionReplaceShort
-if pendingSameDirectionReplaceLong
+if pendingSameDirectionReplaceNow
+    bool replaceLong = pendingSameDirectionReplaceLong
     string replaceOriginSignalId = activeSignalId
     string replaceOriginPositionId = activePositionId
     if enableAlerts
         alert(buildCancelPayload(eventId("cancel", "same_direction_plan_replaced"), replaceOriginPositionId, "same_direction_plan_replaced"), alert.freq_all)
-    strategy.cancel("TV-L")
-    float entryPrice = longEntryCandidate
-    float qty = longQtyCandidate
-    float stopPrice = longStopCandidate
-    bool runnerMode = longRunnerCandidate
-    float runnerActivationPrice = longRunnerActivationCandidate
-    float targetPrice = longTargetCandidate
-    float submittedLimitPrice = pendingLongSubmittedLimit
+    if replaceLong
+        strategy.cancel("TV-L")
+    else
+        strategy.cancel("TV-S")
+    int entryDirection = replaceLong ? 1 : -1
+    string entryDirectionText = replaceLong ? "long" : "short"
+    string setup = replaceLong ? longSetup : shortSetup
+    string reason = replaceLong ? longReason : shortReason
+    float referenceEntry = replaceLong ? longReferenceEntry : shortReferenceEntry
+    float entryPrice = replaceLong ? longEntryCandidate : shortEntryCandidate
+    float qty = replaceLong ? longQtyCandidate : shortQtyCandidate
+    float stopPrice = replaceLong ? longStopCandidate : shortStopCandidate
+    bool runnerMode = replaceLong ? longRunnerCandidate : shortRunnerCandidate
+    float runnerActivationPrice = replaceLong ? longRunnerActivationCandidate : shortRunnerActivationCandidate
+    float targetPrice = replaceLong ? longTargetCandidate : shortTargetCandidate
+    float submittedLimitPrice = replaceLong ? pendingLongSubmittedLimit : pendingShortSubmittedLimit
     int entryExpiresBar = bar_index + entryOrderTtlBars
-    string posId = positionId("long")
-    string planIdValue = scalePlanId("long", longSetup)
-    string tradeGroup = tradeGroupId("long", longSetup)
-    string entryEventId = eventId("entry", longSetup)
+    string posId = positionId(entryDirectionText)
+    string planIdValue = scalePlanId(entryDirectionText, setup)
+    string tradeGroup = tradeGroupId(entryDirectionText, setup)
+    string entryEventId = eventId("entry", setup)
+    string entryAnchorSourceValue = replaceLong ? longEntryAnchorSource : shortEntryAnchorSource
+    string entryAnchorReasonValue = entryAnchorReasonForSide(replaceLong)
     activePositionId := posId
     activeSignalId := tradeGroup
     activeTradeGroupId := tradeGroup
     activePlanId := planIdValue
-    activeDirection := 1
-    activeSetup := longSetup
-    activeReferenceEntry := longReferenceEntry
+    activeDirection := entryDirection
+    activeSetup := setup
+    activeReferenceEntry := referenceEntry
     activeEntry := entryPrice
     activeSubmittedEntryLimit := submittedLimitPrice
-    activeEntryAnchorSource := longEntryAnchorSource
-    activeEntryAnchorReason := longEntryAnchorReason == "" ? "none" : longEntryAnchorReason
+    activeEntryAnchorSource := entryAnchorSourceValue
+    activeEntryAnchorReason := entryAnchorReasonValue
     activeEntryOrderExpiresBar := entryExpiresBar
     activeEntrySignalBar := bar_index
     activePendingEntry := true
@@ -2452,89 +2294,40 @@ if pendingSameDirectionReplaceLong
     activeStop := stopPrice
     activeTarget := targetPrice
     activeRunnerActivation := runnerActivationPrice
-    activeInitialRisk := entryPrice - stopPrice
+    activeInitialRisk := entryDirection == 1 ? entryPrice - stopPrice : stopPrice - entryPrice
     activeQty := qty
     activeEntryBar := na
     activeRunnerMode := runnerMode
     activeRunnerActive := false
-    activeRunnerExtreme := high
+    activeRunnerExtreme := entryDirection == 1 ? high : low
     activeBreakevenDone := false
     activeMrCheckpointDone := false
     activeMfeR := 0.0
     activeMaeR := 0.0
     activeRiskUpdateSeq := 0
-    string divSourceForEntry = bullDivSource == "" ? bullDivSourceNow : bullDivSource
-    strategy.entry("TV-L", strategy.long, qty=qty, limit=submittedLimitPrice)
-    strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment_profit=exitOrderComment("take_profit", activeTarget), comment_loss=exitOrderComment("stop_loss", activeStop))
-    lowerPostReversalUsed := setupLongPostLowerBreakout ? true : lowerPostReversalUsed
-    lowerWindowUsed := longSetup == "mr_sdLower" ? true : lowerWindowUsed
-    upperWindowUsed := longSetup == "trend_sdUpper" ? true : upperWindowUsed
-    bullDivSeen := false
-    bullDivSource := ""
-    bullDivBar := na
+    string divSourceForEntry = entryDivSourceForSide(replaceLong)
+    if replaceLong
+        strategy.entry("TV-L", strategy.long, qty=qty, limit=submittedLimitPrice)
+        strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment_profit=exitOrderComment("take_profit", activeTarget), comment_loss=exitOrderComment("stop_loss", activeStop))
+        lowerPostReversalUsed := setupLongPostLowerBreakout ? true : lowerPostReversalUsed
+        lowerWindowUsed := setup == "mr_sdLower" ? true : lowerWindowUsed
+        upperWindowUsed := setup == "trend_sdUpper" ? true : upperWindowUsed
+        bullDivSeen := false
+        bullDivSource := ""
+        bullDivBar := na
+    else
+        strategy.entry("TV-S", strategy.short, qty=qty, limit=submittedLimitPrice)
+        strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment_profit=exitOrderComment("take_profit", activeTarget), comment_loss=exitOrderComment("stop_loss", activeStop))
+        upperPostReversalUsed := setupShortPostUpperBreakdown ? true : upperPostReversalUsed
+        emaDeathContinuationShortUsed := setupShortEmaDeathContinuation ? true : emaDeathContinuationShortUsed
+        upperWindowUsed := setup == "mr_sdUpper" ? true : upperWindowUsed
+        lowerWindowUsed := setup == "trend_sdLower" ? true : lowerWindowUsed
+        bearDivSeen := false
+        bearDivSource := ""
+        bearDivBar := na
     if enableAlerts
-        string touchLine = longSetup == "trend_sdUpper" ? upperBullTrendTriggerLine : longSetup == "trend_sdLowerBreakout" ? "post_sd_lower_breakout" : "none"
-        alert(buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, activePlanId, "long", longSetup, longReason, qty, longReferenceEntry, entryPrice, submittedLimitPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode, longStructureStopAvailable, longStructureTargetAvailable, longRiskCapStopApplied, longStopSource, structureTargetSourceForSetup(longSetup, "long"), longEntryAnchorSource, activeEntryAnchorReason, entryExpiresBar, divSourceForEntry, touchLine, true, replaceOriginSignalId, "same_direction_plan_replaced"), alert.freq_all)
-if pendingSameDirectionReplaceShort
-    string replaceOriginSignalId = activeSignalId
-    string replaceOriginPositionId = activePositionId
-    if enableAlerts
-        alert(buildCancelPayload(eventId("cancel", "same_direction_plan_replaced"), replaceOriginPositionId, "same_direction_plan_replaced"), alert.freq_all)
-    strategy.cancel("TV-S")
-    float entryPrice = shortEntryCandidate
-    float qty = shortQtyCandidate
-    float stopPrice = shortStopCandidate
-    bool runnerMode = shortRunnerCandidate
-    float runnerActivationPrice = shortRunnerActivationCandidate
-    float targetPrice = shortTargetCandidate
-    float submittedLimitPrice = pendingShortSubmittedLimit
-    int entryExpiresBar = bar_index + entryOrderTtlBars
-    string posId = positionId("short")
-    string planIdValue = scalePlanId("short", shortSetup)
-    string tradeGroup = tradeGroupId("short", shortSetup)
-    string entryEventId = eventId("entry", shortSetup)
-    activePositionId := posId
-    activeSignalId := tradeGroup
-    activeTradeGroupId := tradeGroup
-    activePlanId := planIdValue
-    activeDirection := -1
-    activeSetup := shortSetup
-    activeReferenceEntry := shortReferenceEntry
-    activeEntry := entryPrice
-    activeSubmittedEntryLimit := submittedLimitPrice
-    activeEntryAnchorSource := shortEntryAnchorSource
-    activeEntryAnchorReason := shortEntryAnchorReason == "" ? "none" : shortEntryAnchorReason
-    activeEntryOrderExpiresBar := entryExpiresBar
-    activeEntrySignalBar := bar_index
-    activePendingEntry := true
-    activeCancelSent := false
-    activeStop := stopPrice
-    activeTarget := targetPrice
-    activeRunnerActivation := runnerActivationPrice
-    activeInitialRisk := stopPrice - entryPrice
-    activeQty := qty
-    activeEntryBar := na
-    activeRunnerMode := runnerMode
-    activeRunnerActive := false
-    activeRunnerExtreme := low
-    activeBreakevenDone := false
-    activeMrCheckpointDone := false
-    activeMfeR := 0.0
-    activeMaeR := 0.0
-    activeRiskUpdateSeq := 0
-    string divSourceForEntry = bearDivSource == "" ? bearDivSourceNow : bearDivSource
-    strategy.entry("TV-S", strategy.short, qty=qty, limit=submittedLimitPrice)
-    strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment_profit=exitOrderComment("take_profit", activeTarget), comment_loss=exitOrderComment("stop_loss", activeStop))
-    upperPostReversalUsed := setupShortPostUpperBreakdown ? true : upperPostReversalUsed
-    emaDeathContinuationShortUsed := setupShortEmaDeathContinuation ? true : emaDeathContinuationShortUsed
-    upperWindowUsed := shortSetup == "mr_sdUpper" ? true : upperWindowUsed
-    lowerWindowUsed := shortSetup == "trend_sdLower" ? true : lowerWindowUsed
-    bearDivSeen := false
-    bearDivSource := ""
-    bearDivBar := na
-    if enableAlerts
-        string touchLine = shortSetup == "trend_sdLower" ? lowerBearTrendTriggerLine : shortSetup == "trend_sdUpperBreakdown" ? "post_sd_upper_breakdown" : shortSetup == "trend_emaDeathContinuation" ? "ema_death_continuation" : "none"
-        alert(buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, activePlanId, "short", shortSetup, shortReason, qty, shortReferenceEntry, entryPrice, submittedLimitPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode, shortStructureStopAvailable, shortStructureTargetAvailable, shortRiskCapStopApplied, shortStopSource, structureTargetSourceForSetup(shortSetup, "short"), shortEntryAnchorSource, activeEntryAnchorReason, entryExpiresBar, divSourceForEntry, touchLine, true, replaceOriginSignalId, "same_direction_plan_replaced"), alert.freq_all)
+        string touchLine = entryTouchLineForSetup(replaceLong, setup)
+        alert(buildSelectedEntryPayload(entryEventId, entryDirectionText, setup, reason, replaceLong, divSourceForEntry, touchLine, true, replaceOriginSignalId, "same_direction_plan_replaced"), alert.freq_all)
 bool pendingEntryRenewNow = pendingEntryExpired and pendingTrendStillValid and not pendingSoftRecheckFailed and not pendingSameDirectionReplaceNow and not pendingEodCancel and not pendingEntryWindowExpired and not pendingAnchorInvalidated and not pendingOppositeOrConflict
 if pendingEntryRenewNow
     int pendingRenewBars = pendingSoftInvalidated ? pendingTrendRecheckBars : entryOrderTtlBars
@@ -2549,37 +2342,9 @@ if pendingCancelNow
         strategy.cancel("TV-L")
     if activeDirection == -1
         strategy.cancel("TV-S")
-    activePositionId := ""
-    activeSignalId := ""
-    activeTradeGroupId := ""
-    activePlanId := ""
-    activeDirection := 0
-    activeSetup := ""
-    activeReferenceEntry := na
-    activeEntry := na
-    activeSubmittedEntryLimit := na
-    activeEntryAnchorSource := ""
-    activeEntryAnchorReason := ""
-    activeEntryOrderExpiresBar := na
-    activeEntrySignalBar := na
-    activePendingEntry := false
-    activeCancelSent := false
-    activeStop := na
-    activeTarget := na
-    activeRunnerActivation := na
-    activeInitialRisk := na
-    activeQty := na
-    activeEntryBar := na
-    activeRunnerMode := false
-    activeRunnerActive := false
-    activeRunnerExtreme := na
-    activeBreakevenDone := false
-    activeMrCheckpointDone := false
-    activeMfeR := 0.0
-    activeMaeR := 0.0
-    activeRiskUpdateSeq := 0
+    resetActiveBeforeEntry := true
 
-bool flatForEntry = activePositionId == "" and strategy.position_size == 0 and not exitedNow
+bool flatForEntry = (activePositionId == "" or resetActiveBeforeEntry) and strategy.position_size == 0 and not exitedNow
 bool enterLong = canOpenEntry and flatForEntry and allowLong and longSignalCandidate and not shortSignalCandidate and not blockLong and not conflict
 bool enterShort = canOpenEntry and flatForEntry and allowShort and shortSignalCandidate and not longSignalCandidate and not blockShort and not conflict
 
@@ -2600,31 +2365,42 @@ if lowerCandidateNotice or upperCandidateNotice
 if isNewTradingDay
     eodForceCloseDay := na
 
-if enterLong
-    float entryPrice = longEntryCandidate
-    float qty = longQtyCandidate
+bool entrySubmittedNow = false
+bool enterNow = enterLong or enterShort
+if enterNow
+    bool entryLong = enterLong
+    int entryDirection = entryLong ? 1 : -1
+    string entryDirectionText = entryLong ? "long" : "short"
+    string setup = entryLong ? longSetup : shortSetup
+    string reason = entryLong ? longReason : shortReason
+    float referenceEntry = entryLong ? longReferenceEntry : shortReferenceEntry
+    float entryPrice = entryLong ? longEntryCandidate : shortEntryCandidate
+    float qty = entryLong ? longQtyCandidate : shortQtyCandidate
     if qty > 0.0
-        float stopPrice = longStopCandidate
-        bool runnerMode = longRunnerCandidate
-        float runnerActivationPrice = longRunnerActivationCandidate
-        float targetPrice = longTargetCandidate
-        float submittedLimitPrice = strictPlanEntryLimit ? entryPrice : (longTrendReclaimEntry or not structuralAnchorMode) ? calcSubmittedEntryLimit(entryPrice, 1) : entryPrice
+        bool trendReclaimEntry = entryLong ? longTrendReclaimEntry : shortTrendReclaimEntry
+        float stopPrice = entryLong ? longStopCandidate : shortStopCandidate
+        bool runnerMode = entryLong ? longRunnerCandidate : shortRunnerCandidate
+        float runnerActivationPrice = entryLong ? longRunnerActivationCandidate : shortRunnerActivationCandidate
+        float targetPrice = entryLong ? longTargetCandidate : shortTargetCandidate
+        float submittedLimitPrice = strictPlanEntryLimit ? entryPrice : (trendReclaimEntry or not structuralAnchorMode) ? calcSubmittedEntryLimit(entryPrice, entryDirection) : entryPrice
         int entryExpiresBar = bar_index + entryOrderTtlBars
-        string posId = positionId("long")
-        string planIdValue = scalePlanId("long", longSetup)
-        string tradeGroup = tradeGroupId("long", longSetup)
-        string entryEventId = eventId("entry", longSetup)
+        string posId = positionId(entryDirectionText)
+        string planIdValue = scalePlanId(entryDirectionText, setup)
+        string tradeGroup = tradeGroupId(entryDirectionText, setup)
+        string entryEventId = eventId("entry", setup)
+        string entryAnchorSourceValue = entryLong ? longEntryAnchorSource : shortEntryAnchorSource
+        string entryAnchorReasonValue = entryAnchorReasonForSide(entryLong)
         activePositionId := posId
         activeSignalId := tradeGroup
         activeTradeGroupId := tradeGroup
         activePlanId := planIdValue
-        activeDirection := 1
-        activeSetup := longSetup
-        activeReferenceEntry := longReferenceEntry
+        activeDirection := entryDirection
+        activeSetup := setup
+        activeReferenceEntry := referenceEntry
         activeEntry := entryPrice
         activeSubmittedEntryLimit := submittedLimitPrice
-        activeEntryAnchorSource := longEntryAnchorSource
-        activeEntryAnchorReason := longEntryAnchorReason == "" ? "none" : longEntryAnchorReason
+        activeEntryAnchorSource := entryAnchorSourceValue
+        activeEntryAnchorReason := entryAnchorReasonValue
         activeEntryOrderExpiresBar := entryExpiresBar
         activeEntrySignalBar := bar_index
         activePendingEntry := true
@@ -2632,87 +2408,43 @@ if enterLong
         activeStop := stopPrice
         activeTarget := targetPrice
         activeRunnerActivation := runnerActivationPrice
-        activeInitialRisk := entryPrice - stopPrice
+        activeInitialRisk := entryDirection == 1 ? entryPrice - stopPrice : stopPrice - entryPrice
         activeQty := qty
         activeEntryBar := na
         activeRunnerMode := runnerMode
         activeRunnerActive := false
-        activeRunnerExtreme := high
+        activeRunnerExtreme := entryDirection == 1 ? high : low
         activeBreakevenDone := false
         activeMrCheckpointDone := false
         activeMfeR := 0.0
         activeMaeR := 0.0
         activeRiskUpdateSeq := 0
-        string divSourceForEntry = bullDivSource == "" ? bullDivSourceNow : bullDivSource
-        strategy.entry("TV-L", strategy.long, qty=qty, limit=submittedLimitPrice)
-        strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment_profit=exitOrderComment("take_profit", activeTarget), comment_loss=exitOrderComment("stop_loss", activeStop))
-        lowerPostReversalUsed := setupLongPostLowerBreakout ? true : lowerPostReversalUsed
-        lowerWindowUsed := longSetup == "mr_sdLower" ? true : lowerWindowUsed
-        upperWindowUsed := longSetup == "trend_sdUpper" ? true : upperWindowUsed
-        bullDivSeen := false
-        bullDivSource := ""
-        bullDivBar := na
+        entrySubmittedNow := true
+        string divSourceForEntry = entryDivSourceForSide(entryLong)
+        if entryLong
+            strategy.entry("TV-L", strategy.long, qty=qty, limit=submittedLimitPrice)
+            strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment_profit=exitOrderComment("take_profit", activeTarget), comment_loss=exitOrderComment("stop_loss", activeStop))
+            lowerPostReversalUsed := setupLongPostLowerBreakout ? true : lowerPostReversalUsed
+            lowerWindowUsed := setup == "mr_sdLower" ? true : lowerWindowUsed
+            upperWindowUsed := setup == "trend_sdUpper" ? true : upperWindowUsed
+            bullDivSeen := false
+            bullDivSource := ""
+            bullDivBar := na
+        else
+            strategy.entry("TV-S", strategy.short, qty=qty, limit=submittedLimitPrice)
+            strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment_profit=exitOrderComment("take_profit", activeTarget), comment_loss=exitOrderComment("stop_loss", activeStop))
+            upperPostReversalUsed := setupShortPostUpperBreakdown ? true : upperPostReversalUsed
+            emaDeathContinuationShortUsed := setupShortEmaDeathContinuation ? true : emaDeathContinuationShortUsed
+            upperWindowUsed := setup == "mr_sdUpper" ? true : upperWindowUsed
+            lowerWindowUsed := setup == "trend_sdLower" ? true : lowerWindowUsed
+            bearDivSeen := false
+            bearDivSource := ""
+            bearDivBar := na
         if enableAlerts
-            string touchLine = longSetup == "trend_sdUpper" ? upperBullTrendTriggerLine : longSetup == "trend_sdLowerBreakout" ? "post_sd_lower_breakout" : "none"
-            alert(buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, activePlanId, "long", longSetup, longReason, qty, longReferenceEntry, entryPrice, submittedLimitPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode, longStructureStopAvailable, longStructureTargetAvailable, longRiskCapStopApplied, longStopSource, structureTargetSourceForSetup(longSetup, "long"), longEntryAnchorSource, activeEntryAnchorReason, entryExpiresBar, divSourceForEntry, touchLine, false, "", "none"), alert.freq_all)
+            string touchLine = entryTouchLineForSetup(entryLong, setup)
+            alert(buildSelectedEntryPayload(entryEventId, entryDirectionText, setup, reason, entryLong, divSourceForEntry, touchLine, false, "", "none"), alert.freq_all)
 
-if enterShort
-    float entryPrice = shortEntryCandidate
-    float qty = shortQtyCandidate
-    if qty > 0.0
-        float stopPrice = shortStopCandidate
-        bool runnerMode = shortRunnerCandidate
-        float runnerActivationPrice = shortRunnerActivationCandidate
-        float targetPrice = shortTargetCandidate
-        float submittedLimitPrice = strictPlanEntryLimit ? entryPrice : (shortTrendReclaimEntry or not structuralAnchorMode) ? calcSubmittedEntryLimit(entryPrice, -1) : entryPrice
-        int entryExpiresBar = bar_index + entryOrderTtlBars
-        string posId = positionId("short")
-        string planIdValue = scalePlanId("short", shortSetup)
-        string tradeGroup = tradeGroupId("short", shortSetup)
-        string entryEventId = eventId("entry", shortSetup)
-        activePositionId := posId
-        activeSignalId := tradeGroup
-        activeTradeGroupId := tradeGroup
-        activePlanId := planIdValue
-        activeDirection := -1
-        activeSetup := shortSetup
-        activeReferenceEntry := shortReferenceEntry
-        activeEntry := entryPrice
-        activeSubmittedEntryLimit := submittedLimitPrice
-        activeEntryAnchorSource := shortEntryAnchorSource
-        activeEntryAnchorReason := shortEntryAnchorReason == "" ? "none" : shortEntryAnchorReason
-        activeEntryOrderExpiresBar := entryExpiresBar
-        activeEntrySignalBar := bar_index
-        activePendingEntry := true
-        activeCancelSent := false
-        activeStop := stopPrice
-        activeTarget := targetPrice
-        activeRunnerActivation := runnerActivationPrice
-        activeInitialRisk := stopPrice - entryPrice
-        activeQty := qty
-        activeEntryBar := na
-        activeRunnerMode := runnerMode
-        activeRunnerActive := false
-        activeRunnerExtreme := low
-        activeBreakevenDone := false
-        activeMrCheckpointDone := false
-        activeMfeR := 0.0
-        activeMaeR := 0.0
-        activeRiskUpdateSeq := 0
-        string divSourceForEntry = bearDivSource == "" ? bearDivSourceNow : bearDivSource
-        strategy.entry("TV-S", strategy.short, qty=qty, limit=submittedLimitPrice)
-        strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment_profit=exitOrderComment("take_profit", activeTarget), comment_loss=exitOrderComment("stop_loss", activeStop))
-        upperPostReversalUsed := setupShortPostUpperBreakdown ? true : upperPostReversalUsed
-        emaDeathContinuationShortUsed := setupShortEmaDeathContinuation ? true : emaDeathContinuationShortUsed
-        upperWindowUsed := shortSetup == "mr_sdUpper" ? true : upperWindowUsed
-        lowerWindowUsed := shortSetup == "trend_sdLower" ? true : lowerWindowUsed
-        bearDivSeen := false
-        bearDivSource := ""
-        bearDivBar := na
-        if enableAlerts
-            string touchLine = shortSetup == "trend_sdLower" ? lowerBearTrendTriggerLine : shortSetup == "trend_sdUpperBreakdown" ? "post_sd_upper_breakdown" : shortSetup == "trend_emaDeathContinuation" ? "ema_death_continuation" : "none"
-            alert(buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, activePlanId, "short", shortSetup, shortReason, qty, shortReferenceEntry, entryPrice, submittedLimitPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode, shortStructureStopAvailable, shortStructureTargetAvailable, shortRiskCapStopApplied, shortStopSource, structureTargetSourceForSetup(shortSetup, "short"), shortEntryAnchorSource, activeEntryAnchorReason, entryExpiresBar, divSourceForEntry, touchLine, false, "", "none"), alert.freq_all)
-
+bool resetActiveAfterFlow = resetActiveBeforeEntry and not entrySubmittedNow
 if confirmed and activePositionId != "" and strategy.position_size != 0
     float previousStop = activeStop
     float previousTarget = activeTarget
@@ -2824,6 +2556,8 @@ if eodCloseNow
     if enableAlerts
         alert(buildExitPayload(eventId("exit", "force_flat_eod"), eodPositionId, "force_flat_eod", eodExitPrice), alert.freq_all)
     pendingExitReason := ""
+    resetActiveAfterFlow := true
+if resetActiveAfterFlow
     activePositionId := ""
     activeSignalId := ""
     activeTradeGroupId := ""

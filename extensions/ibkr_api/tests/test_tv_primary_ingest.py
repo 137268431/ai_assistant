@@ -568,6 +568,89 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertEqual(saved["extra"]["structure_take_profit"], 127.90)
         self.assertEqual(pb.records[TV_EVENT_COLLECTION][-1]["status"], "routed")
 
+    def test_entry_routes_with_slim_core_payload(self):
+        pb = _FakePB()
+
+        def config_value(key, default, environment):
+            values = {
+                "tv_max_active_targets": "0",
+                "tv_entry_requires_active_target": "TRUE",
+                "tv_entry_requires_authorized_symbol": "FALSE",
+                "tv_entry_window_enforce_enabled": "TRUE",
+            }
+            return values.get(key, _config_value(key, default, environment))
+
+        pre_alert, pre_alert_status = _process(
+            pb,
+            {
+                "source": "tv",
+                "event_type": "pre_alert",
+                "event_id": "tv-pre-slim",
+                "symbol": "NVDA",
+                "activity_score": 88,
+                "quality_score": 88,
+                "qualified": False,
+                "activation_window": "upper",
+                "market_date": "2026-05-29",
+                "environment": "live",
+                "us_time": "2026-05-29 09:36:00",
+                "bar_time_ms": _et_ms("2026-05-29 09:36:00"),
+            },
+            config_value=config_value,
+        )
+        self.assertEqual(pre_alert_status, 200)
+        self.assertTrue(pre_alert["ok"])
+
+        response, status = _process(
+            pb,
+            {
+                "source": "tv",
+                "event_type": "entry",
+                "event_id": "tv-entry-slim",
+                "signal_id": "tv-entry-slim",
+                "trade_group_id": "tv-entry-slim-leg1",
+                "position_id": "nvda-long-slim",
+                "symbol": "NVDA",
+                "direction": "long",
+                "position_side": "long",
+                "setup": "trend_sdUpper",
+                "reason": "slim payload entry",
+                "entry": 122.50,
+                "shares": 8,
+                "stop_loss": 120.40,
+                "take_profit": 127.90,
+                "submitted_entry_limit_price": 122.45,
+                "runner_enabled": False,
+                "target_checkpoint": 127.90,
+                "entry_window_model": "continuous_layered_v1",
+                "entry_window_stage": "primary",
+                "market_date": "2026-05-29",
+                "environment": "paper",
+                "broker_mode": "paper",
+                "market_data_mode": "live",
+                "us_time": "2026-05-29 09:45:00",
+                "bar_time_ms": _et_ms("2026-05-29 09:45:00"),
+                "bar_close_ms": _et_ms("2026-05-29 09:47:00"),
+                "activity_score": 88,
+                "quality_score": 90,
+                **_mtf_payload(status="pass", score=100.0),
+            },
+            config_value=config_value,
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(response["ok"])
+        saved = pb.records["ibkr_signals"][0]
+        self.assertEqual(saved["entry"], 122.50)
+        self.assertEqual(saved["shares"], 8)
+        self.assertEqual(saved["stop_loss"], 120.40)
+        self.assertEqual(saved["take_profit"], 127.90)
+        self.assertEqual(saved["extra"]["trade_group_id"], "tv-entry-slim-leg1")
+        self.assertEqual(saved["extra"]["submitted_entry_limit_price"], 122.45)
+        self.assertNotIn("profit_space_entry_allowed", saved["extra"])
+        self.assertNotIn("entry_price", saved["extra"])
+        self.assertEqual(pb.records[TV_EVENT_COLLECTION][-1]["status"], "routed")
+
     def test_entry_uses_trade_watchlist_as_authorized_universe_without_active_rank(self):
         pb = _FakePB()
         pb.create_record(
