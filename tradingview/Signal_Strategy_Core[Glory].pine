@@ -50,9 +50,13 @@ atrLength = input.int(10, "ATR length", minval=1, group="05 Risk")
 atrSmoothing = input.string("RMA", "ATR smoothing", options=["RMA", "SMA", "EMA", "WMA"], group="05 Risk")
 atrMultiplier = input.float(1.5, "ATR multiplier", step=0.1, group="05 Risk")
 positionAmount = input.float(5000, "Notional per trade ($)", step=500, minval=100, group="05 Risk")
-maxLossPerTrade = input.float(150, "Max loss per trade ($)", step=10, minval=10, group="05 Risk")
+maxLossPerTrade = input.float(300, "Max loss per trade ($)", step=10, minval=10, group="05 Risk")
 scalePlanEnabled = input.bool(true, "Independent two-leg plan metadata", group="05 Risk")
-maxLegRisk = input.float(75.0, "Max loss per independent leg ($)", step=5.0, minval=1.0, group="05 Risk")
+maxLegRisk = input.float(150.0, "Max loss per independent leg ($)", step=5.0, minval=1.0, group="05 Risk")
+minStopRiskFloorDollars = input.float(75.0, "Minimum stop breathing room ($)", step=5.0, minval=0.0, group="05 Risk")
+minStopAtrMultipleForOrder = input.float(1.25, "Minimum stop distance (x ATR)", step=0.05, minval=0.0, maxval=10.0, group="05 Risk")
+minStopBpsForOrder = input.float(35.0, "Minimum stop distance (bps)", step=5.0, minval=0.0, maxval=1000.0, group="05 Risk")
+minStopRangeMultiple = input.float(0.25, "Minimum stop distance (range x)", step=0.05, minval=0.0, maxval=5.0, group="05 Risk")
 slAtrMult = input.float(2.0, "Stop loss (x ATR)", step=0.25, minval=0.25, maxval=12.0, group="05 Risk")
 rrRatio = input.float(1.5, "Reward/risk", step=0.1, minval=0.5, maxval=10.0, group="05 Risk")
 enableBreakeven = input.bool(true, "Trail stop to breakeven", group="05 Risk")
@@ -313,6 +317,13 @@ structureRiskPerShare(int direction, float entryPrice, float stopPrice) =>
 
 rewardRiskMultiple(float rewardPerShare, float riskPerShare) =>
     riskPerShare > 0.0 ? rewardPerShare / riskPerShare : na
+
+maxStopFloorDistance(float riskFloor, float atrFloor, float bpsFloor, float rangeFloor, float tickFloor) =>
+    math.max(math.max(riskFloor, atrFloor), math.max(math.max(bpsFloor, rangeFloor), tickFloor))
+
+stopFloorSource(float riskFloor, float atrFloor, float bpsFloor, float rangeFloor, float tickFloor) =>
+    float best = maxStopFloorDistance(riskFloor, atrFloor, bpsFloor, rangeFloor, tickFloor)
+    best == riskFloor ? "risk_floor" : best == atrFloor ? "atr_floor" : best == rangeFloor ? "range_floor" : best == bpsFloor ? "bps_floor" : "tick_floor"
 
 structureContextMinRewardRisk(bool weakOrLowVolContext) =>
     weakOrLowVolContext ? minWeakTrendRewardRiskForEntry : minStructureRewardRiskForEntry
@@ -1293,28 +1304,44 @@ bool shortPostReversalAnchorQualified = not setupShortPostUpperBreakdown or shor
 bool emaWeak = math.abs(calcSlope(emaFast, emaSlopeLookback)) < emaMinAngle or math.abs(slopeSlow) < emaMinAngle or not spacingOk
 bool weakTrendOrLowVolContext = (useVolatilityFilter and atrPct < minAtrPctForEntry * weakTrendAtrPctMultiplier) or emaWeak
 float effectiveMinStructureRewardRiskForEntry = math.max(structureContextMinRewardRisk(weakTrendOrLowVolContext), lateQualityEntryWindow ? minWeakTrendRewardRiskForEntry : minStructureRewardRiskForEntry)
-float longQtyCandidate = longEntryCandidate > 0.0 ? math.max(1.0, math.floor(positionAmount / longEntryCandidate)) : 0.0
+float stopRangeBase = not na(recentHigh) and not na(recentLow) and recentHigh > recentLow ? recentHigh - recentLow : high - low
+float stopRangeDistance = math.max(stopRangeBase, high - low)
+float stopTickFloor = syminfo.mintick * 2.0
+float longNotionalQtyCandidate = longEntryCandidate > 0.0 ? math.max(1.0, math.floor(positionAmount / longEntryCandidate)) : 0.0
+float longRiskFloorStopDistance = longNotionalQtyCandidate > 0.0 ? minStopRiskFloorDollars / longNotionalQtyCandidate : 0.0
+float longAtrFloorStopDistance = atrRaw * minStopAtrMultipleForOrder
+float longBpsFloorStopDistance = longEntryCandidate * minStopBpsForOrder / 10000.0
+float longRangeFloorStopDistance = stopRangeDistance * minStopRangeMultiple
+float longMinStopFloorDistance = maxStopFloorDistance(longRiskFloorStopDistance, longAtrFloorStopDistance, longBpsFloorStopDistance, longRangeFloorStopDistance, stopTickFloor)
+string longStopFloorSource = stopFloorSource(longRiskFloorStopDistance, longAtrFloorStopDistance, longBpsFloorStopDistance, longRangeFloorStopDistance, stopTickFloor)
 float longAtrStopCandidate = longEntryCandidate - atrVal * slAtrMult
-float longRiskStopCandidate = longQtyCandidate > 0.0 ? longEntryCandidate - effectiveMaxLegRisk / longQtyCandidate : longAtrStopCandidate
+float longFloorStopCandidate = math.min(longAtrStopCandidate, longEntryCandidate - longMinStopFloorDistance)
 float longStopSupportBase = nearestSupportBelow(longEntryCandidate, lastPivotLow, recentLow, sessionLow, longSupportEmaFast, longSupportEmaSlow, low, signalMid <= longEntryCandidate ? signalMid : noLevel, longSupportSd, noLevel)
 bool longStructureStopAvailable = not na(longStopSupportBase)
 float longStructureStopCandidate = longStructureStopAvailable ? longStopSupportBase - atrRaw * structuralSlBufferAtr : longAtrStopCandidate
-float longStopCandidate = math.max(longStructureStopCandidate, longRiskStopCandidate)
-bool longRiskCapStopApplied = longStructureStopAvailable and longRiskStopCandidate > longStructureStopCandidate
-string longStopSource = longStructureStopAvailable ? longRiskCapStopApplied ? "support_with_atr_buffer_risk_capped" : "support_with_atr_buffer" : "atr_fallback_no_structure"
+float longStopCandidate = longStructureStopAvailable ? math.min(longStructureStopCandidate, longFloorStopCandidate) : longFloorStopCandidate
+bool longFloorStopApplied = not longStructureStopAvailable or longFloorStopCandidate < longStructureStopCandidate
+float longRiskPerShareCandidate = structureRiskPerShare(1, longEntryCandidate, longStopCandidate)
+float longRiskSizedQty = longRiskPerShareCandidate > 0.0 ? math.floor(effectiveMaxLegRisk / longRiskPerShareCandidate) : longNotionalQtyCandidate
+float longQtyCandidate = longNotionalQtyCandidate > 0.0 ? math.max(0.0, math.min(longNotionalQtyCandidate, longRiskSizedQty)) : 0.0
+bool longRiskBudgetTooSmall = longRaw and longNotionalQtyCandidate > 0.0 and longQtyCandidate < 1.0
+bool longRiskCapStopApplied = longQtyCandidate < longNotionalQtyCandidate
+string longStopSource = longStructureStopAvailable and not longFloorStopApplied ? "support_with_atr_buffer" : longStructureStopAvailable ? longStopFloorSource + "_over_near_structure" : longStopFloorSource + "_no_structure"
 float longRunnerActivationRaw = setupUsesRunner(longSetup) and not setupIsMr(longSetup) ? calcRunnerActivationTarget(longEntryCandidate, longStopCandidate, 1) : na
 float longMrMeanTargetRaw = nearestResistanceAbove(longEntryCandidate, validResistanceLevel(longEntryCandidate, sdReg), validResistanceLevel(longEntryCandidate, emaFast), validResistanceLevel(longEntryCandidate, emaSlow), noLevel, noLevel, noLevel, noLevel, noLevel, noLevel)
 bool longMrMeanTargetAvailable = not na(longMrMeanTargetRaw)
 float longTrendNearestTargetRaw = nearestResistanceAbove(longEntryCandidate, validResistanceLevel(longEntryCandidate, lastPivotHigh), validResistanceLevel(longEntryCandidate, recentHigh), validResistanceLevel(longEntryCandidate, sessionHigh), validResistanceLevel(longEntryCandidate, sdSignalUpper), validResistanceLevel(longEntryCandidate, sdFilterUpper), validResistanceLevel(longEntryCandidate, sdReg), noLevel, noLevel, noLevel)
 float longTrendSafetyTargetRaw = farthestResistanceAbove(longEntryCandidate, validResistanceLevel(longEntryCandidate, lastPivotHigh), validResistanceLevel(longEntryCandidate, recentHigh), validResistanceLevel(longEntryCandidate, sessionHigh), validResistanceLevel(longEntryCandidate, sdSignalUpper), validResistanceLevel(longEntryCandidate, sdFilterUpper), noLevel, noLevel, noLevel, longTrendNearestTargetRaw)
-float longTrendStructureTargetRaw = setupUsesRunner(longSetup) and not na(longTrendSafetyTargetRaw) ? longTrendSafetyTargetRaw : longTrendNearestTargetRaw
+float longRunnerSafetyTargetRaw = setupUsesRunner(longSetup) and not setupIsMr(longSetup) ? calcTargetAtR(longEntryCandidate, longStopCandidate, 1, runnerSafetyR) : na
+float longTrendStructureTargetRaw = setupUsesRunner(longSetup) and not setupIsMr(longSetup) and not na(longRunnerSafetyTargetRaw) ? math.max(nz(longTrendSafetyTargetRaw, longRunnerSafetyTargetRaw), longRunnerSafetyTargetRaw) : longTrendNearestTargetRaw
 float longStructureTargetRaw = setupIsMr(longSetup) and longMrMeanTargetAvailable ? longMrMeanTargetRaw : longTrendStructureTargetRaw
 bool longStructureTargetAvailable = not na(longStructureTargetRaw)
 bool longRunnerCandidate = setupUsesRunner(longSetup) and not setupIsMr(longSetup) and longStructureTargetAvailable and not na(longRunnerActivationRaw) and longStructureTargetRaw > longRunnerActivationRaw and rewardRiskMultiple(structureRewardPerShare(1, longEntryCandidate, longStructureTargetRaw), structureRiskPerShare(1, longEntryCandidate, longStopCandidate)) >= runnerSafetyR
 float longRunnerActivationCandidate = longRunnerCandidate ? longRunnerActivationRaw : na
 float longTargetCandidate = longStructureTargetRaw
 bool longMrTargetQualified = not setupIsMr(longSetup) or longMrMeanTargetAvailable
-bool longStructureTpSlQualified = longStructureStopAvailable and longStructureTargetAvailable
+bool longStopAvailable = not na(longStopCandidate)
+bool longStructureTpSlQualified = longStopAvailable and longStructureTargetAvailable
 float longStructureRewardPerShare = structureRewardPerShare(1, longEntryCandidate, longTargetCandidate)
 float longStructureRiskPerShare = structureRiskPerShare(1, longEntryCandidate, longStopCandidate)
 float longStructureRewardRisk = rewardRiskMultiple(longStructureRewardPerShare, longStructureRiskPerShare)
@@ -1331,31 +1358,44 @@ float longCheckpointNetProfit = longCheckpointGrossProfit - longEstimatedCost
 float longCheckpointNetRoiPct = profitSpaceNetRoiPct(longCheckpointNetProfit, longEntryNotional)
 float longCheckpointCostPctOfReward = profitSpaceCostPct(longEstimatedCost, longCheckpointGrossProfit)
 float longCheckpointTargetDistanceAtr = profitSpaceTargetAtrMultiple(longEntryCandidate, longProfitCheckpoint)
-bool longProfitSpaceAllowed = profitSpaceEntryAllowed(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr, longStructureRewardRisk, longStructureStopAvailable, longStructureTargetAvailable, effectiveMinStructureRewardRiskForEntry)
+bool longProfitSpaceAllowed = profitSpaceEntryAllowed(longExpectedNetProfit, longExpectedNetRoiPct, longCostPctOfReward, longTargetDistanceAtr, longStructureRewardRisk, longStopAvailable, longStructureTargetAvailable, effectiveMinStructureRewardRiskForEntry)
 bool longProfitSpaceEntryBlocked = useProfitSpaceFilter and longRaw and not longProfitSpaceAllowed
 
-float shortQtyCandidate = shortEntryCandidate > 0.0 ? math.max(1.0, math.floor(positionAmount / shortEntryCandidate)) : 0.0
+float shortNotionalQtyCandidate = shortEntryCandidate > 0.0 ? math.max(1.0, math.floor(positionAmount / shortEntryCandidate)) : 0.0
+float shortRiskFloorStopDistance = shortNotionalQtyCandidate > 0.0 ? minStopRiskFloorDollars / shortNotionalQtyCandidate : 0.0
+float shortAtrFloorStopDistance = atrRaw * minStopAtrMultipleForOrder
+float shortBpsFloorStopDistance = shortEntryCandidate * minStopBpsForOrder / 10000.0
+float shortRangeFloorStopDistance = stopRangeDistance * minStopRangeMultiple
+float shortMinStopFloorDistance = maxStopFloorDistance(shortRiskFloorStopDistance, shortAtrFloorStopDistance, shortBpsFloorStopDistance, shortRangeFloorStopDistance, stopTickFloor)
+string shortStopFloorSource = stopFloorSource(shortRiskFloorStopDistance, shortAtrFloorStopDistance, shortBpsFloorStopDistance, shortRangeFloorStopDistance, stopTickFloor)
 float shortAtrStopCandidate = shortEntryCandidate + atrVal * slAtrMult
-float shortRiskStopCandidate = shortQtyCandidate > 0.0 ? shortEntryCandidate + effectiveMaxLegRisk / shortQtyCandidate : shortAtrStopCandidate
+float shortFloorStopCandidate = math.max(shortAtrStopCandidate, shortEntryCandidate + shortMinStopFloorDistance)
 float shortStopResistanceBase = nearestResistanceAbove(shortEntryCandidate, lastPivotHigh, recentHigh, sessionHigh, shortResistanceEmaFast, shortResistanceEmaSlow, high, signalMid >= shortEntryCandidate ? signalMid : noLevel, shortResistanceSd, noLevel)
 bool shortStructureStopAvailable = not na(shortStopResistanceBase)
 float shortStructureStopCandidate = shortStructureStopAvailable ? shortStopResistanceBase + atrRaw * structuralSlBufferAtr : shortAtrStopCandidate
-float shortStopCandidate = math.min(shortStructureStopCandidate, shortRiskStopCandidate)
-bool shortRiskCapStopApplied = shortStructureStopAvailable and shortRiskStopCandidate < shortStructureStopCandidate
-string shortStopSource = shortStructureStopAvailable ? shortRiskCapStopApplied ? "resistance_with_atr_buffer_risk_capped" : "resistance_with_atr_buffer" : "atr_fallback_no_structure"
+float shortStopCandidate = shortStructureStopAvailable ? math.max(shortStructureStopCandidate, shortFloorStopCandidate) : shortFloorStopCandidate
+bool shortFloorStopApplied = not shortStructureStopAvailable or shortFloorStopCandidate > shortStructureStopCandidate
+float shortRiskPerShareCandidate = structureRiskPerShare(-1, shortEntryCandidate, shortStopCandidate)
+float shortRiskSizedQty = shortRiskPerShareCandidate > 0.0 ? math.floor(effectiveMaxLegRisk / shortRiskPerShareCandidate) : shortNotionalQtyCandidate
+float shortQtyCandidate = shortNotionalQtyCandidate > 0.0 ? math.max(0.0, math.min(shortNotionalQtyCandidate, shortRiskSizedQty)) : 0.0
+bool shortRiskBudgetTooSmall = shortRaw and shortNotionalQtyCandidate > 0.0 and shortQtyCandidate < 1.0
+bool shortRiskCapStopApplied = shortQtyCandidate < shortNotionalQtyCandidate
+string shortStopSource = shortStructureStopAvailable and not shortFloorStopApplied ? "resistance_with_atr_buffer" : shortStructureStopAvailable ? shortStopFloorSource + "_over_near_structure" : shortStopFloorSource + "_no_structure"
 float shortRunnerActivationRaw = setupUsesRunner(shortSetup) and not setupIsMr(shortSetup) ? calcRunnerActivationTarget(shortEntryCandidate, shortStopCandidate, -1) : na
 float shortMrMeanTargetRaw = nearestSupportBelow(shortEntryCandidate, validSupportLevel(shortEntryCandidate, sdReg), validSupportLevel(shortEntryCandidate, emaFast), validSupportLevel(shortEntryCandidate, emaSlow), noLevel, noLevel, noLevel, noLevel, noLevel, noLevel)
 bool shortMrMeanTargetAvailable = not na(shortMrMeanTargetRaw)
 float shortTrendNearestTargetRaw = nearestSupportBelow(shortEntryCandidate, validSupportLevel(shortEntryCandidate, lastPivotLow), validSupportLevel(shortEntryCandidate, recentLow), validSupportLevel(shortEntryCandidate, sessionLow), validSupportLevel(shortEntryCandidate, sdSignalLower), validSupportLevel(shortEntryCandidate, sdFilterLower), validSupportLevel(shortEntryCandidate, sdReg), noLevel, noLevel, noLevel)
 float shortTrendSafetyTargetRaw = farthestSupportBelow(shortEntryCandidate, validSupportLevel(shortEntryCandidate, lastPivotLow), validSupportLevel(shortEntryCandidate, recentLow), validSupportLevel(shortEntryCandidate, sessionLow), validSupportLevel(shortEntryCandidate, sdSignalLower), validSupportLevel(shortEntryCandidate, sdFilterLower), noLevel, noLevel, noLevel, shortTrendNearestTargetRaw)
-float shortTrendStructureTargetRaw = setupUsesRunner(shortSetup) and not na(shortTrendSafetyTargetRaw) ? shortTrendSafetyTargetRaw : shortTrendNearestTargetRaw
+float shortRunnerSafetyTargetRaw = setupUsesRunner(shortSetup) and not setupIsMr(shortSetup) ? calcTargetAtR(shortEntryCandidate, shortStopCandidate, -1, runnerSafetyR) : na
+float shortTrendStructureTargetRaw = setupUsesRunner(shortSetup) and not setupIsMr(shortSetup) and not na(shortRunnerSafetyTargetRaw) ? math.min(nz(shortTrendSafetyTargetRaw, shortRunnerSafetyTargetRaw), shortRunnerSafetyTargetRaw) : shortTrendNearestTargetRaw
 float shortStructureTargetRaw = setupIsMr(shortSetup) and shortMrMeanTargetAvailable ? shortMrMeanTargetRaw : shortTrendStructureTargetRaw
 bool shortStructureTargetAvailable = not na(shortStructureTargetRaw)
 bool shortRunnerCandidate = setupUsesRunner(shortSetup) and not setupIsMr(shortSetup) and shortStructureTargetAvailable and not na(shortRunnerActivationRaw) and shortStructureTargetRaw < shortRunnerActivationRaw and rewardRiskMultiple(structureRewardPerShare(-1, shortEntryCandidate, shortStructureTargetRaw), structureRiskPerShare(-1, shortEntryCandidate, shortStopCandidate)) >= runnerSafetyR
 float shortRunnerActivationCandidate = shortRunnerCandidate ? shortRunnerActivationRaw : na
 float shortTargetCandidate = shortStructureTargetRaw
 bool shortMrTargetQualified = not setupIsMr(shortSetup) or shortMrMeanTargetAvailable
-bool shortStructureTpSlQualified = shortStructureStopAvailable and shortStructureTargetAvailable
+bool shortStopAvailable = not na(shortStopCandidate)
+bool shortStructureTpSlQualified = shortStopAvailable and shortStructureTargetAvailable
 float shortStructureRewardPerShare = structureRewardPerShare(-1, shortEntryCandidate, shortTargetCandidate)
 float shortStructureRiskPerShare = structureRiskPerShare(-1, shortEntryCandidate, shortStopCandidate)
 float shortStructureRewardRisk = rewardRiskMultiple(shortStructureRewardPerShare, shortStructureRiskPerShare)
@@ -1372,7 +1412,7 @@ float shortCheckpointNetProfit = shortCheckpointGrossProfit - shortEstimatedCost
 float shortCheckpointNetRoiPct = profitSpaceNetRoiPct(shortCheckpointNetProfit, shortEntryNotional)
 float shortCheckpointCostPctOfReward = profitSpaceCostPct(shortEstimatedCost, shortCheckpointGrossProfit)
 float shortCheckpointTargetDistanceAtr = profitSpaceTargetAtrMultiple(shortEntryCandidate, shortProfitCheckpoint)
-bool shortProfitSpaceAllowed = profitSpaceEntryAllowed(shortExpectedNetProfit, shortExpectedNetRoiPct, shortCostPctOfReward, shortTargetDistanceAtr, shortStructureRewardRisk, shortStructureStopAvailable, shortStructureTargetAvailable, effectiveMinStructureRewardRiskForEntry)
+bool shortProfitSpaceAllowed = profitSpaceEntryAllowed(shortExpectedNetProfit, shortExpectedNetRoiPct, shortCostPctOfReward, shortTargetDistanceAtr, shortStructureRewardRisk, shortStopAvailable, shortStructureTargetAvailable, effectiveMinStructureRewardRiskForEntry)
 bool shortProfitSpaceEntryBlocked = useProfitSpaceFilter and shortRaw and not shortProfitSpaceAllowed
 
 bool blockLong = false
@@ -1407,6 +1447,9 @@ else if mtfLongBlock and longRaw
 else if lowVolatilityEntryBlocked and longRaw
     blockLong := true
     blockLongReason := "low_volatility"
+else if longRiskBudgetTooSmall
+    blockLong := true
+    blockLongReason := "risk_budget_too_small"
 else if longSetup == "mr_sdLower" and (not longMrTargetQualified or longProfitSpaceEntryBlocked)
     blockLong := true
     blockLongReason := "mr_target_space_too_small"
@@ -1452,6 +1495,9 @@ else if mtfShortBlock and shortRaw
 else if lowVolatilityEntryBlocked and shortRaw
     blockShort := true
     blockShortReason := "low_volatility"
+else if shortRiskBudgetTooSmall
+    blockShort := true
+    blockShortReason := "risk_budget_too_small"
 else if shortSetup == "mr_sdUpper" and (not shortMrTargetQualified or shortProfitSpaceEntryBlocked)
     blockShort := true
     blockShortReason := "mr_target_space_too_small"
@@ -1578,6 +1624,10 @@ mtfPayloadForDirection(string direction) =>
 volatilityPayload() =>
     jsonBool("volatility_filter_enabled", useVolatilityFilter) +
      jsonNum("min_atr_pct_for_entry", minAtrPctForEntry) +
+     jsonNum("min_stop_risk_floor_dollars", minStopRiskFloorDollars) +
+     jsonNum("min_stop_atr_multiple_for_order", minStopAtrMultipleForOrder) +
+     jsonNum("min_stop_bps_for_order", minStopBpsForOrder) +
+     jsonNum("min_stop_range_multiple", minStopRangeMultiple) +
      jsonNum("volatility_atr_pct", atrPct) +
      jsonBool("volatility_entry_blocked", lowVolatilityEntryBlocked) +
      jsonBool("volatility_entry_allowed", not lowVolatilityEntryBlocked)
@@ -1685,6 +1735,26 @@ var float activeMaeR = 0.0
 var int activeRiskUpdateSeq = 0
 var string pendingExitReason = ""
 var int eodForceCloseDay = na
+
+fmtSignedMoneyCore(float value) =>
+    na(value) ? "--" : (value >= 0.0 ? "+$" : "-$") + str.tostring(math.abs(value), "#.##")
+
+fmtSignedPctCore(float value) =>
+    na(value) ? "--" : (value >= 0.0 ? "+" : "-") + str.tostring(math.abs(value), "#.##") + "%"
+
+fmtSignedRCore(float value) =>
+    na(value) ? "--R" : (value >= 0.0 ? "+" : "-") + str.tostring(math.abs(value), "#.##") + "R"
+
+exitReasonDisplayNameCore(string reason) =>
+    reason == "take_profit" ? "TP止盈" : reason == "runner_stop" ? "跟踪止盈" : reason == "stop_loss" ? "SL止损" : reason == "mr_time_stop" ? "MR超时退出" : reason == "mr_structure_invalidated" ? "MR结构失效" : reason == "adverse_early_stop" ? "早期反向止损" : reason == "opposite_structure_exit" ? "反向结构退出" : reason == "force_flat_eod" ? "EOD强平" : reason
+
+exitOrderComment(string reason, float exitPrice) =>
+    float pnlPerShare = activeDirection == 1 ? exitPrice - activeEntry : activeEntry - exitPrice
+    float pnlValue = pnlPerShare * activeQty
+    float pnlPct = activeEntry > 0.0 ? pnlPerShare / activeEntry * 100.0 : na
+    float pnlR = activeInitialRisk > 0.0 ? pnlPerShare / activeInitialRisk : na
+    exitReasonDisplayNameCore(reason) + " " + fmtSignedMoneyCore(pnlValue) + " / " + fmtSignedPctCore(pnlPct) + " / " + fmtSignedRCore(pnlR)
+
 buildEntryPayload(string eventIdValue, string signalIdValue, string tradeGroupIdValue, string positionIdValue, string planIdValue, string direction, string setup, string reason, float qty, float referenceEntry, float plannedEntry, float submittedLimitPrice, float stopPrice, float targetPrice, float runnerActivationPrice, bool runnerMode, bool structureStopAvailable, bool structureTargetAvailable, bool riskCapStopApplied, string structureStopSource, string structureTargetSource, string entryAnchorSource, string entryAnchorReason, int entryExpiresBar, string divSource, string touchLine) =>
     float entryPrice = plannedEntry
     int directionSign = direction == "long" ? 1 : -1
@@ -1769,9 +1839,16 @@ buildEntryPayload(string eventIdValue, string signalIdValue, string tradeGroupId
      jsonNum("atr_buffer_mult", structuralSlBufferAtr) +
      jsonNum("atr_buffer_amount", atrRaw * structuralSlBufferAtr) +
      jsonBool("structure_stop_available", structureStopAvailable) +
+     jsonBool("stop_loss_available", not na(stopPrice)) +
      jsonBool("structure_target_available", structureTargetAvailable) +
      jsonBool("target_is_structure", structureTargetAvailable) +
      jsonBool("risk_cap_stop_applied", riskCapStopApplied) +
+     jsonNum("min_stop_risk_floor_dollars", minStopRiskFloorDollars) +
+     jsonNum("risk_floor_stop_distance", qty > 0.0 ? minStopRiskFloorDollars / qty : na) +
+     jsonStr("stop_floor_source", structureStopSource) +
+     jsonNum("risk_sized_qty", qty) +
+     jsonBool("risk_sized_qty_reduced", riskCapStopApplied) +
+     jsonNum("initial_risk_per_share", riskPerShare) +
      jsonStr("structure_stop_source", structureStopSource) +
      jsonStr("structure_target_source", structureTargetSource) +
      jsonNum("structure_stop_loss", stopPrice) +
@@ -1938,6 +2015,9 @@ buildRiskPayload(string eventIdValue, string positionIdValue, string updateReaso
 
 buildExitPayload(string eventIdValue, string positionIdValue, string exitReason, float exitPrice) =>
     float pnlPerShare = activeDirection == 1 ? exitPrice - activeEntry : activeEntry - exitPrice
+    float pnlPct = activeEntry > 0.0 ? pnlPerShare / activeEntry * 100.0 : na
+    float pnlR = activeInitialRisk > 0.0 ? pnlPerShare / activeInitialRisk : na
+    string exitOutcome = pnlPerShare > 0.0 ? "profit" : pnlPerShare < 0.0 ? "loss" : "flat"
     float targetCheckpoint = activeRunnerMode ? activeRunnerActivation : activeTarget
     basePayload("exit", eventIdValue, positionIdValue) +
      jsonStr("signal_id", activeSignalId) +
@@ -1974,6 +2054,10 @@ buildExitPayload(string eventIdValue, string positionIdValue, string exitReason,
      jsonStr("mr_target_mode", setupIsMr(activeSetup) ? "mean_reversion_mixed" : "none") +
      jsonNum("pnl_per_share", pnlPerShare) +
      jsonNum("pnl_estimate", pnlPerShare * activeQty) +
+     jsonNum("pnl_pct", pnlPct) +
+     jsonNum("pnl_r", pnlR) +
+     jsonStr("exit_outcome", exitOutcome) +
+     jsonStr("pnl_source", "tv_closed_trade_exit_price") +
      jsonInt("entry_bar_index", activeEntryBar) +
      jsonInt("bar_index", bar_index) +
      '}'
@@ -2275,7 +2359,7 @@ if enterLong
         activeRiskUpdateSeq := 0
         string divSourceForEntry = bullDivSource == "" ? bullDivSourceNow : bullDivSource
         strategy.entry("TV-L", strategy.long, qty=qty, limit=submittedLimitPrice)
-        strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget)
+        strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment_profit=exitOrderComment("take_profit", activeTarget), comment_loss=exitOrderComment("stop_loss", activeStop))
         lowerPostReversalUsed := setupLongPostLowerBreakout ? true : lowerPostReversalUsed
         lowerWindowUsed := longSetup == "mr_sdLower" ? true : lowerWindowUsed
         upperWindowUsed := longSetup == "trend_sdUpper" ? true : upperWindowUsed
@@ -2331,7 +2415,7 @@ if enterShort
         activeRiskUpdateSeq := 0
         string divSourceForEntry = bearDivSource == "" ? bearDivSourceNow : bearDivSource
         strategy.entry("TV-S", strategy.short, qty=qty, limit=submittedLimitPrice)
-        strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget)
+        strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment_profit=exitOrderComment("take_profit", activeTarget), comment_loss=exitOrderComment("stop_loss", activeStop))
         upperPostReversalUsed := setupShortPostUpperBreakdown ? true : upperPostReversalUsed
         emaDeathContinuationShortUsed := setupShortEmaDeathContinuation ? true : emaDeathContinuationShortUsed
         upperWindowUsed := shortSetup == "mr_sdUpper" ? true : upperWindowUsed
@@ -2362,28 +2446,31 @@ if confirmed and activePositionId != "" and strategy.position_size != 0
     if mrStructureInvalidated
         pendingExitReason := "mr_structure_invalidated"
         if activeDirection == 1
-            strategy.close("TV-L")
+            strategy.close("TV-L", comment=exitOrderComment("mr_structure_invalidated", close))
         if activeDirection == -1
-            strategy.close("TV-S")
+            strategy.close("TV-S", comment=exitOrderComment("mr_structure_invalidated", close))
     else if mrTimeStopNow
         pendingExitReason := "mr_time_stop"
         if activeDirection == 1
-            strategy.close("TV-L")
+            strategy.close("TV-L", comment=exitOrderComment("mr_time_stop", close))
         if activeDirection == -1
-            strategy.close("TV-S")
+            strategy.close("TV-S", comment=exitOrderComment("mr_time_stop", close))
     bool noFollowEligible = setupIsTrend(activeSetup) and not activeRunnerActive and activeMfeR < noFollowThroughDisableAfterMfeR and initialRisk > 0.0
     bool activeLongStructureBroken = activeDirection == 1 and (close < activeReferenceEntry - atrRaw * pendingTrendInvalidationBufferAtr or (close < emaSlow and close < sdReg))
     bool activeShortStructureBroken = activeDirection == -1 and (close > activeReferenceEntry + atrRaw * pendingTrendInvalidationBufferAtr or (close > emaSlow and close > sdReg))
-    bool activeOppositeStructureBroken = activeLongStructureBroken or activeShortStructureBroken
+    bool activeLongClearOpposite = activeDirection == 1 and emaFast < emaSlow and close < emaSlow and (dtpDir == -1 or mtfLongStatus == "block")
+    bool activeShortClearOpposite = activeDirection == -1 and emaFast > emaSlow and close > emaSlow and (dtpDir == 1 or mtfShortStatus == "block")
+    bool activeOppositeStructureBroken = (activeLongStructureBroken and activeLongClearOpposite) or (activeShortStructureBroken and activeShortClearOpposite)
+    bool activeContinuationWeak = activeDirection == 1 ? (emaFast < emaSlow or close < emaSlow or dtpDir != 1 or mtfLongStatus == "block") : activeDirection == -1 ? (emaFast > emaSlow or close > emaSlow or dtpDir != -1 or mtfShortStatus == "block") : true
     bool earlyAdverseStopNow = noFollowEligible and barsInTrade <= earlyAdverseBars and activeMaeR >= earlyAdverseExitR and activeOppositeStructureBroken
     bool oppositeStructureExitNow = noFollowEligible and barsInTrade > earlyAdverseBars and activeMaeR >= earlyAdverseExitR and activeOppositeStructureBroken
-    bool noFollowCompressNow = noFollowEligible and barsInTrade >= noFollowThroughBars and activeMfeR < noFollowThroughMinMfeR
+    bool noFollowCompressNow = noFollowEligible and barsInTrade >= noFollowThroughBars and activeMfeR < noFollowThroughMinMfeR and activeContinuationWeak
     if earlyAdverseStopNow or oppositeStructureExitNow
         pendingExitReason := earlyAdverseStopNow ? "adverse_early_stop" : "opposite_structure_exit"
         if activeDirection == 1
-            strategy.close("TV-L")
+            strategy.close("TV-L", comment=exitOrderComment(pendingExitReason, close))
         if activeDirection == -1
-            strategy.close("TV-S")
+            strategy.close("TV-S", comment=exitOrderComment(pendingExitReason, close))
     else if noFollowCompressNow
         float compressedStop = activeDirection == 1 ? activeEntry - initialRisk * noFollowThroughCompressedStopR : activeEntry + initialRisk * noFollowThroughCompressedStopR
         compressedStop := activeDirection == 1 ? math.min(compressedStop, close - syminfo.mintick) : math.max(compressedStop, close + syminfo.mintick)
@@ -2445,7 +2532,7 @@ if eodCloseNow
     pendingExitReason := "force_flat_eod"
     eodForceCloseDay := dailyTime
     strategy.cancel_all()
-    strategy.close_all()
+    strategy.close_all(comment=exitOrderComment("force_flat_eod", eodExitPrice))
     if enableAlerts
         alert(buildExitPayload(eventId("exit", "force_flat_eod"), eodPositionId, "force_flat_eod", eodExitPrice), alert.freq_all)
     pendingExitReason := ""
@@ -2481,6 +2568,6 @@ if eodCloseNow
 
 if activePositionId != "" and not activePendingEntry and not eodCloseNow
     if activeDirection == 1
-        strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget)
+        strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment_profit=exitOrderComment("take_profit", activeTarget), comment_loss=exitOrderComment(activeRunnerActive and activeStop > activeEntry ? "runner_stop" : "stop_loss", activeStop))
     if activeDirection == -1
-        strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget)
+        strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment_profit=exitOrderComment("take_profit", activeTarget), comment_loss=exitOrderComment(activeRunnerActive and activeStop < activeEntry ? "runner_stop" : "stop_loss", activeStop))
