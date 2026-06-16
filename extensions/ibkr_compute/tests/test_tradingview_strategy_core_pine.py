@@ -258,6 +258,7 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         display = self.display_source
 
         self.assertIn('displayPreset = input.string("核心交易流程", "Display preset"', display)
+        self.assertIn('showStatusTable = input.bool(false, "Show status table"', display)
         self.assertIn('labelDetailMode = input.string("compact_tooltip", "Flow label detail mode"', display)
         self.assertIn('labelTextMode = input.string("auto", "Label text color"', display)
         self.assertIn('flowLabelText(string compactText, string detailText) =>', display)

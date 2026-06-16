@@ -81,7 +81,7 @@ entryOrderTtlBars = input.int(2, "Entry order TTL bars", minval=1, maxval=20, gr
 displayPreset = input.string("核心交易流程", "Display preset", options=["核心交易流程", "指标辅助", "调试全量"], group="04 Display")
 showSignalEventFlow = input.bool(true, "Show signal event flow", group="04 Display")
 showHistoricalPlanLines = input.bool(true, "Keep historical plan lines", group="04 Display")
-showStatusTable = input.bool(true, "Show status table", group="04 Display")
+showStatusTable = input.bool(false, "Show status table", group="04 Display")
 showEma = input.bool(true, "Show EMA fast/slow", group="04 Display")
 showBands = input.bool(true, "Show SD bands", group="04 Display")
 showSdHelperLines = input.bool(false, "Show SD mid line", group="04 Display")
