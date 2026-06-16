@@ -632,6 +632,26 @@ class TvPrimaryIngestTests(unittest.TestCase):
                 "trend_struct_pattern": "HH_HL",
                 "trend_anchor_price": 121.95,
                 "trend_support_sources": "today_HL,ema20,sd_mid",
+                "trend_regime": "dominant_bull",
+                "dominant_trend_side": "long",
+                "day_range_formed": True,
+                "day_range_atr": 2.6,
+                "level_role": "trend_pullback_support",
+                "exhaustion_side": "none",
+                "exhaustion_confirmed": False,
+                "exhaustion_reason": "none",
+                "momentum_decay_ratio": None,
+                "momentum_decay_streak": None,
+                "momentum_decay_confirm_bars": None,
+                "attack_volume_cooling": False,
+                "attack_volume_cooldown_bars": 4,
+                "structure_break_accepted": False,
+                "structure_break_accept_bars": None,
+                "prior_level_distance_atr": None,
+                "middle_retrace_ratio": None,
+                "right_retest_ratio": None,
+                "any_plan_gap_bars": 8,
+                "any_plan_distance_atr": 1.4,
                 "probe_pattern": "none",
                 "probe_filter_reason": "none",
                 "probe_anchor_price": None,
@@ -695,6 +715,26 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertEqual(saved["extra"]["trend_struct_pattern"], "HH_HL")
         self.assertEqual(saved["extra"]["trend_anchor_price"], 121.95)
         self.assertEqual(saved["extra"]["trend_support_sources"], "today_HL,ema20,sd_mid")
+        self.assertEqual(saved["extra"]["trend_regime"], "dominant_bull")
+        self.assertEqual(saved["extra"]["dominant_trend_side"], "long")
+        self.assertTrue(saved["extra"]["day_range_formed"])
+        self.assertEqual(saved["extra"]["day_range_atr"], 2.6)
+        self.assertEqual(saved["extra"]["level_role"], "trend_pullback_support")
+        self.assertEqual(saved["extra"]["exhaustion_side"], "none")
+        self.assertFalse(saved["extra"]["exhaustion_confirmed"])
+        self.assertEqual(saved["extra"]["exhaustion_reason"], "none")
+        self.assertIsNone(saved["extra"].get("momentum_decay_ratio"))
+        self.assertIsNone(saved["extra"].get("momentum_decay_streak"))
+        self.assertIsNone(saved["extra"].get("momentum_decay_confirm_bars"))
+        self.assertFalse(saved["extra"]["attack_volume_cooling"])
+        self.assertEqual(saved["extra"]["attack_volume_cooldown_bars"], 4)
+        self.assertFalse(saved["extra"]["structure_break_accepted"])
+        self.assertIsNone(saved["extra"].get("structure_break_accept_bars"))
+        self.assertIsNone(saved["extra"].get("prior_level_distance_atr"))
+        self.assertIsNone(saved["extra"].get("middle_retrace_ratio"))
+        self.assertIsNone(saved["extra"].get("right_retest_ratio"))
+        self.assertEqual(saved["extra"]["any_plan_gap_bars"], 8)
+        self.assertEqual(saved["extra"]["any_plan_distance_atr"], 1.4)
         self.assertEqual(saved["extra"]["probe_pattern"], "none")
         self.assertEqual(saved["extra"]["probe_filter_reason"], "none")
         self.assertIsNone(saved["extra"].get("probe_anchor_price"))

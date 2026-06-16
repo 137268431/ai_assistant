@@ -1902,6 +1902,8 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         *,
         flags=None,
         status="warning",
+        runtime=None,
+        service_monitor=None,
         config_overrides=None,
         now_us="2026-04-23 12:05:00",
         date="2026-04-23",
@@ -1923,9 +1925,9 @@ class SystemSchedulerJobsTest(unittest.TestCase):
             return {
                 "status": status,
                 "flags": flags,
-                "runtime": {"session": {"authenticated": True}, "websocket": {"connected": True}},
+                "runtime": runtime or {"session": {"authenticated": True}, "websocket": {"connected": True}},
                 "scheduler": {"latest_ingested_bar_time_ms": 1, "dispatch_lag_min": 0.0},
-                "service_monitor": {"status_counts": {"running": 8}, "services": {}},
+                "service_monitor": service_monitor or {"status_counts": {"running": 8}, "services": {}},
                 "pocketbase": {"disk": {"filesystem": {"used_pct": 10}}},
             }
 
@@ -2013,6 +2015,93 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(["websocket_not_ready"], payload["alert_flag_codes"])
         self.assertEqual([], payload["suppressed_flag_codes"])
         self.assertEqual(1, len(events))
+
+    def test_system_monitor_alert_emits_recovery_when_flags_clear(self):
+        flag = {"code": "websocket_not_ready", "severity": "warning", "title": "WS", "detail": "offline"}
+        states = {}
+        events = []
+
+        self._run_monitor_alert_guard(states=states, events=events, flags=[flag])
+        payload, status_code, _, events = self._run_monitor_alert_guard(
+            states=states,
+            events=events,
+            flags=[],
+            status="ok",
+            now_us="2026-04-23 12:10:00",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["triggered"])
+        self.assertTrue(payload["recovered"])
+        self.assertEqual(["websocket_not_ready"], payload["recovered_flag_codes"])
+        self.assertEqual(2, len(events))
+        self.assertEqual("IBKR Monitor 已恢复", events[1]["title"])
+        self.assertEqual("info", events[1]["level"])
+        self.assertEqual("IBKR Monitor 告警已恢复。", events[1]["detail"]["结论"])
+        state = states[("system_monitor_alert", "live")]
+        self.assertEqual("", state["last_monitor_alert_hash"])
+        self.assertEqual(["websocket_not_ready"], state["last_monitor_recovery_codes"])
+
+    def test_system_monitor_alert_emits_market_data_conflict_recovery_detail(self):
+        flag = {
+            "code": "market_data_session_conflict",
+            "severity": "warning",
+            "title": "Market data session conflict",
+            "detail": "No market data during competing live session",
+        }
+        active_runtime = {
+            "session": {"authenticated": True},
+            "websocket": {"connected": True, "subscribed_count": 2},
+            "gateway": {"running": True, "broker": {"connected": True, "ready": True}},
+            "market_data_session_conflict": {
+                "active": True,
+                "first_seen_at": "2026-06-16T12:20:24+00:00",
+                "last_seen_at": "2026-06-16T12:30:53+00:00",
+                "last_error_at": "2026-06-16T12:20:24+00:00",
+                "count": 15,
+            },
+        }
+        recovered_runtime = {
+            "session": {"authenticated": True},
+            "websocket": {"connected": True, "ready": True, "subscribed_count": 2},
+            "gateway": {"running": True, "broker": {"connected": True, "ready": True}},
+            "market_data_session_conflict": {
+                "active": False,
+                "first_seen_at": "2026-06-16T12:20:24+00:00",
+                "last_error_at": "2026-06-16T12:20:24+00:00",
+                "resolved_at": "2026-06-16T12:33:08+00:00",
+                "recovery_action": "resubscribed",
+                "resubscribed_count": 2,
+                "recovery_evidence": {
+                    "session_authenticated": True,
+                    "websocket_ready": True,
+                    "fresh_quotes": 2,
+                },
+            },
+        }
+        states = {}
+        events = []
+
+        self._run_monitor_alert_guard(states=states, events=events, flags=[flag], runtime=active_runtime)
+        payload, status_code, _, events = self._run_monitor_alert_guard(
+            states=states,
+            events=events,
+            flags=[],
+            status="ok",
+            runtime=recovered_runtime,
+            now_us="2026-06-16 08:35:00",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["recovered"])
+        self.assertEqual(["market_data_session_conflict"], payload["recovered_flag_codes"])
+        self.assertEqual(2, len(events))
+        self.assertEqual("IBKR 行情会话冲突已恢复", events[1]["title"])
+        self.assertEqual("已恢复", events[1]["detail"]["行情冲突"])
+        self.assertEqual("2026-06-16T12:33:08+00:00", events[1]["detail"]["恢复时间"])
+        self.assertEqual("resubscribed", events[1]["detail"]["恢复动作"])
+        self.assertEqual("2", events[1]["detail"]["重订阅数量"])
+        self.assertIn("fresh_quotes=2", events[1]["detail"]["恢复依据"])
 
     def test_system_monitor_alert_error_bypasses_account_warning_streak_gate(self):
         flag = {

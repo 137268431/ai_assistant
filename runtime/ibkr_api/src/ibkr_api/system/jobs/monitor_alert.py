@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ast import literal_eval
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -11,6 +12,7 @@ from ibkr_api.system.jobs.legacy_target_universe import (
 
 
 MONITOR_ALERT_STATE_KEY = "system_monitor_alert"
+MARKET_DATA_SESSION_CONFLICT_CODE = "market_data_session_conflict"
 DEFAULT_MONITOR_ALERT_ERROR_COOLDOWN_MIN = 15
 DEFAULT_MONITOR_ALERT_WARNING_COOLDOWN_MIN = 60
 DEFAULT_ACCOUNT_SNAPSHOT_WARNING_CONSECUTIVE_COUNT = 2
@@ -225,6 +227,26 @@ def _flag_codes(flags: list[dict[str, Any]]) -> list[str]:
     return [_to_text(item.get("code")) for item in flags if _to_text(item.get("code"))]
 
 
+def _issue_base_code(value: Any) -> str:
+    return _to_text(value).split(":", 1)[0]
+
+
+def _last_alert_codes_from_state(state: dict[str, Any]) -> list[str]:
+    codes = state.get("last_monitor_alert_codes")
+    if isinstance(codes, list):
+        return [_to_text(item) for item in codes if _to_text(item)]
+    fingerprint = _to_text(state.get("last_monitor_alert_hash"))
+    if not fingerprint:
+        return []
+    try:
+        parsed = literal_eval(fingerprint)
+    except Exception:
+        return []
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("flag_codes"), list):
+        return []
+    return [_to_text(item) for item in parsed.get("flag_codes") if _to_text(item)]
+
+
 def _is_error_flag(item: dict[str, Any]) -> bool:
     return _to_text(item.get("severity")).lower() == "error"
 
@@ -383,6 +405,60 @@ def _detail(
     return detail
 
 
+def _monitor_recovery_detail(
+    monitor_payload: dict[str, Any],
+    *,
+    timestamp_us: str,
+    recovered_codes: list[str],
+) -> dict[str, Any]:
+    detail = _detail(monitor_payload, [], timestamp_us=timestamp_us)
+    detail.update(
+        {
+            "结论": "IBKR Monitor 告警已恢复。",
+            "已恢复诊断码": ", ".join(recovered_codes) or "n/a",
+            "恢复时间": timestamp_us,
+            "建议": "已恢复项无需重复处理；继续观察后续 Monitor 状态。",
+        }
+    )
+    return detail
+
+
+def _market_data_conflict_recovery_detail(
+    monitor_payload: dict[str, Any],
+    *,
+    timestamp_us: str,
+    recovered_codes: list[str],
+) -> dict[str, Any]:
+    detail = _monitor_recovery_detail(
+        monitor_payload,
+        timestamp_us=timestamp_us,
+        recovered_codes=recovered_codes,
+    )
+    runtime = _as_dict(monitor_payload.get("runtime"))
+    state = _as_dict(runtime.get("market_data_session_conflict"))
+    recovery_evidence = _as_dict(state.get("recovery_evidence"))
+    detail.update(
+        {
+            "结论": "IBKR live 行情会话冲突已恢复。",
+            "影响": "服务器 live 行情已恢复检测，系统已按需重订阅当前行情。",
+            "原因": "最近 10197 已超过活动窗口，Gateway/Session/WebSocket/报价恢复证据通过。",
+            "建议": "后续手机端尽量只用于 2FA，避免停留在实时行情页。",
+            "行情冲突": "已恢复",
+            "冲突首次": _to_text(state.get("first_seen_at")) or "unknown",
+            "最近10197": _to_text(state.get("last_error_at")) or "unknown",
+            "恢复时间": _to_text(state.get("resolved_at")) or timestamp_us,
+            "恢复动作": _to_text(state.get("recovery_action")) or "cleared",
+            "重订阅数量": str(_to_int(state.get("resubscribed_count"), 0)),
+            "恢复依据": (
+                f"session={bool(recovery_evidence.get('session_authenticated'))}, "
+                f"ws={bool(recovery_evidence.get('websocket_ready'))}, "
+                f"fresh_quotes={_to_int(recovery_evidence.get('fresh_quotes'), 0)}"
+            ),
+        }
+    )
+    return detail
+
+
 def _should_load_admission_preview(flags: list[dict[str, Any]]) -> bool:
     preview_codes = {"no_active_targets", "no_execution_eligible_targets"}
     return any(_to_text(item.get("code")) in preview_codes for item in flags)
@@ -467,22 +543,58 @@ def build_system_monitor_alert_guard_response(
     }
 
     if not flags:
+        previous_codes = _last_alert_codes_from_state(state)
+        had_alert = bool(_to_text(state.get("last_monitor_alert_hash")) or _to_text(state.get("last_monitor_issue_at")))
+        recovered_bases = {_issue_base_code(item) for item in previous_codes}
+        recovery_event: dict[str, Any] = {}
         next_state.update(
             {
                 "last_monitor_issue_at": "",
                 "last_monitor_alert_hash": "",
                 "last_monitor_alert_ms": 0,
+                "last_monitor_alert_codes": [],
+                "last_monitor_alert_level": "",
                 "account_snapshot_warning_streak": 0,
             }
         )
+        if had_alert:
+            recovery_event = emit_system_event(
+                event_type="alert",
+                level="info",
+                source="ibkr-api",
+                title=(
+                    "IBKR 行情会话冲突已恢复"
+                    if MARKET_DATA_SESSION_CONFLICT_CODE in recovered_bases
+                    else "IBKR Monitor 已恢复"
+                ),
+                detail=(
+                    _market_data_conflict_recovery_detail(
+                        monitor_payload,
+                        timestamp_us=times["us"],
+                        recovered_codes=previous_codes,
+                    )
+                    if MARKET_DATA_SESSION_CONFLICT_CODE in recovered_bases
+                    else _monitor_recovery_detail(
+                        monitor_payload,
+                        timestamp_us=times["us"],
+                        recovered_codes=previous_codes,
+                    )
+                ),
+                environment=environment,
+            )
+            next_state["last_monitor_recovery_at"] = times["us"]
+            next_state["last_monitor_recovery_codes"] = previous_codes
         upsert_state(MONITOR_ALERT_STATE_KEY, environment, next_state, times["date"])
         return {
             "ok": True,
             "environment": environment,
             "job_id": "system_monitor_alert_guard",
-            "triggered": False,
+            "triggered": bool(recovery_event),
+            "recovered": bool(recovery_event),
             "flag_codes": [],
+            "recovered_flag_codes": previous_codes if recovery_event else [],
             "suppressed_flag_codes": _flag_codes(legacy_suppressed_flags),
+            "event": recovery_event,
             "state": next_state,
             "source": "ibkr-api",
         }, 200
@@ -541,6 +653,10 @@ def build_system_monitor_alert_guard_response(
                 "last_monitor_issue_at": times["us"],
                 "last_monitor_alert_hash": fingerprint,
                 "last_monitor_alert_ms": current_ms,
+                "last_monitor_alert_codes": _flag_codes(alert_flags),
+                "last_monitor_alert_level": level,
+                "last_monitor_recovery_at": "",
+                "last_monitor_recovery_codes": [],
             }
         )
     upsert_state(MONITOR_ALERT_STATE_KEY, environment, next_state, times["date"])
