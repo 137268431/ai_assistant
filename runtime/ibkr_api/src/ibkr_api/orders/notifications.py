@@ -113,7 +113,13 @@ PROTECTION_ROLES = PROTECTION_TP_ROLES | PROTECTION_SL_ROLES
 ACTIVE_CLOSE_ROLES = {"close", "manual_close", "market_close", "close_order", "reverse_close"}
 TERMINAL_ORDER_STATUSES = {"filled", "executed", "canceled", "cancelled", "apicancelled", "closed", "inactive", "rejected", "expired"}
 CANCELLED_ORDER_STATUS_KEYS = {"canceled", "cancelled", "apicancelled", "apicanceled"}
-GENERIC_ENTRY_REASONS = {"order_submitted_by_ibkr_compute", "entry_filled_and_protection_submitted"}
+GENERIC_ENTRY_REASONS = {
+    "order_submitted_by_ibkr_compute",
+    "entry_filled_and_protection_submitted",
+    "submitted_waiting_fill",
+    "tv_direct_ready",
+    "tv_direct_submitted",
+}
 
 COMMISSION_FIELDS = ("commission", "actual_fill_commission", "ibkr_commission")
 PNL_EPSILON = 1e-9
@@ -557,6 +563,13 @@ def _group_status(rows: list[dict[str, Any]]) -> str:
     return primary_status or (normalized_rows[0].get("status") if normalized_rows else "")
 
 
+def _group_status_display_text(status: str, rows: list[dict[str, Any]]) -> str:
+    protection_model = _protection_state_model(rows)
+    if status == "Filled" and protection_model.get("state") == "protected":
+        return "入场已成交 · 保护单挂单中"
+    return _status_text(status)
+
+
 def _group_notify_key(rows: list[dict[str, Any]], *, action: str, group_status: str, environment: str, trade_group_id: str) -> str:
     digest_rows = []
     for row in sorted(rows or [], key=_role_sort_key):
@@ -670,6 +683,25 @@ def _direction_display(value: Any) -> str:
     if normalized in {"short", "sell", "sell_to_open"}:
         return "做空 / SHORT"
     return text or "方向未知"
+
+
+def _order_group_direction(rows: list[dict[str, Any]], primary: dict[str, Any]) -> str:
+    for row in [primary, *(rows or [])]:
+        normalized = normalize_order_row(row)
+        for field_value in (
+            normalized.get("position_side"),
+            normalized.get("direction"),
+            _record_or_extra_value(row, "position_side", "direction", "trade_side"),
+        ):
+            side = _normalize_trade_side(field_value)
+            if side:
+                return side
+        role = normalized.get("role") or to_text(_record_or_extra_value(row, "role"))
+        if role in ACTIVE_CLOSE_ROLES:
+            side = _normalize_trade_side(_record_or_extra_value(row, "side", "action"), exit_order_direction=True)
+            if side:
+                return side
+    return ""
 
 
 def _trade_side(entry_order: dict[str, Any], exit_order: dict[str, Any]) -> str:
@@ -1170,7 +1202,7 @@ def _direct_exit_reason(row: dict[str, Any]) -> str:
         "last_status_reason",
     ):
         reason = to_text(_record_or_extra_value(row, field))
-        if reason and reason not in GENERIC_ENTRY_REASONS:
+        if reason and reason.lower() not in GENERIC_ENTRY_REASONS:
             return reason
     return ""
 
@@ -1194,8 +1226,12 @@ def _exit_reason_model(
     normalized = normalize_order_row(row)
     role = normalized.get("role") or to_text(_record_or_extra_value(row, "role"))
     if role in PROTECTION_TP_ROLES:
+        if not _row_is_filled(row):
+            return None
         return {"code": "take_profit", "label": ORDER_ROLE_LABELS.get(role, "止盈"), "source": "role"}
     if role in PROTECTION_SL_ROLES:
+        if not _row_is_filled(row):
+            return None
         reason = _direct_exit_reason(row)
         label = _exit_reason_label(reason, fallback=ORDER_ROLE_LABELS.get(role, "止损"))
         return {"code": _normalized_exit_reason(reason) or "stop_loss", "label": label, "source": "role"}
@@ -1208,7 +1244,7 @@ def _exit_reason_model(
 
     reason_model = _reason_source_for_row(row)
     reason = to_text((reason_model or {}).get("reason"))
-    if reason and reason not in GENERIC_ENTRY_REASONS:
+    if reason and reason.lower() not in GENERIC_ENTRY_REASONS:
         return {
             "code": _normalized_exit_reason(reason),
             "label": _exit_reason_label(reason, fallback=UNKNOWN_CLOSE_LABEL),
@@ -1218,7 +1254,7 @@ def _exit_reason_model(
     group_rows = dedupe_order_rows([row, *(related_rows or [])])
     group_reason_model = _order_group_reason_model(group_rows)
     group_reason = to_text((group_reason_model or {}).get("reason"))
-    if group_reason and group_reason not in GENERIC_ENTRY_REASONS:
+    if group_reason and group_reason.lower() not in GENERIC_ENTRY_REASONS:
         return {
             "code": _normalized_exit_reason(group_reason),
             "label": _exit_reason_label(group_reason, fallback=UNKNOWN_CLOSE_LABEL),
@@ -1288,14 +1324,14 @@ def _order_group_reason_model(rows: list[dict[str, Any]]) -> dict[str, Any] | No
     for row in sorted(terminal_protection_rows, key=_row_reason_recency, reverse=True):
         model = _reason_source_for_row(row)
         reason = to_text((model or {}).get("reason"))
-        if model and reason not in GENERIC_ENTRY_REASONS:
+        if model and reason.lower() not in GENERIC_ENTRY_REASONS:
             return model
 
     fallback_model: dict[str, Any] | None = None
     for row in sorted(rows or [], key=_role_sort_key):
         model = _reason_source_for_row(row)
         reason = to_text((model or {}).get("reason"))
-        if model and reason in GENERIC_ENTRY_REASONS and protection_model.get("state") == "missing_after_fill":
+        if model and reason.lower() in GENERIC_ENTRY_REASONS and protection_model.get("state") == "missing_after_fill":
             fallback_model = model
             continue
         if model:
@@ -1475,7 +1511,8 @@ def build_order_group_status_card(
     resolved_status = to_text(status or _group_status(rows) or _record_or_extra_value(primary, "status", "order_status", "current_status"))
     if protection_model.get("state") == "missing_after_fill" and resolved_status in {"", "Filled", "Submitted"}:
         resolved_status = "protection_incomplete"
-    status_text = _status_text(resolved_status)
+    status_text = _group_status_display_text(resolved_status, rows)
+    direction_display = _direction_display(_order_group_direction(rows, primary))
     pnl_model = _realized_group_pnl_model(rows)
     pnl_line = _realized_pnl_line(pnl_model)
     title_pnl = f" · {_pnl_outcome_label(pnl_model.get('value'))} {_format_signed_money(pnl_model.get('value'))}" if pnl_model else ""
@@ -1484,6 +1521,7 @@ def build_order_group_status_card(
         f"**状态**: {status_text}",
         f"**Symbol**: {symbol}",
         f"**Broker**: {broker_badge}",
+        f"**交易方向**: {direction_display}",
         f"**信号ID / 交易组**: {signal_id or '-'} / {trade_group_id or '-'}",
     ]
     protection_line = _protection_status_line(rows)
@@ -1510,7 +1548,7 @@ def build_order_group_status_card(
         "header": {
             "title": {
                 "tag": "plain_text",
-                "content": f"📦 订单组 · {broker_badge} · {status_text}{title_pnl} · {symbol}",
+                "content": f"📦 订单组 · {broker_badge} · {direction_display} · {status_text}{title_pnl} · {symbol}",
             },
             "template": _group_status_template(resolved_status, pnl_model.get("value") if pnl_model else None),
         },

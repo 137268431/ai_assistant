@@ -188,6 +188,8 @@ def register_account_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
                 "include_pnl",
                 "refresh_scope",
                 "scope",
+                "summary_refresh",
+                "buying_power_refresh",
                 "pnl_refresh",
                 "account_pnl_refresh",
                 "today_pnl_refresh",
@@ -243,6 +245,11 @@ def register_account_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             payload["proxy_upstream"] = selected_upstream
             payload["source"] = "ibkr-api"
             return payload, status_code if status_code >= 400 else 200
+
+        if _buying_power_refresh_request(query_payload):
+            payload, status_code = build_direct_runtime_payload(pnl_only=True)
+            response = jsonify(payload)
+            return response if status_code == 200 else (response, status_code)
 
         if _pnl_refresh_request(query_payload):
             payload, status_code = build_direct_runtime_payload(pnl_only=True)

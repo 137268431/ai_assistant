@@ -1496,7 +1496,7 @@ def set_buying_power_guard_effective_metrics(
 
     state = _sanitize_label(str(guard.get("state") or "unknown").strip().lower() or "unknown")
     if ACCOUNT_BUYING_POWER_GUARD_STATE is not None:
-        for candidate in ("ok", "warning", "blocked", "unavailable", "disabled", "unknown"):
+        for candidate in ("ok", "warning", "ledger_safe", "blocked", "unavailable", "disabled", "unknown"):
             ACCOUNT_BUYING_POWER_GUARD_STATE.labels(service, env, src, candidate).set(1.0 if state == candidate else 0.0)
 
 

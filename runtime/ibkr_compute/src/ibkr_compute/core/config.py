@@ -432,6 +432,8 @@ class Config:
         "ibkr_buying_power_warn_pct_net_liq": "20",
         "ibkr_buying_power_block_usd": "10000",
         "ibkr_buying_power_block_pct_net_liq": "10",
+        "ibkr_buying_power_max_snapshot_age_sec": "180",
+        "ibkr_buying_power_ledger_safe_enabled": "true",
         "ibkr_buying_power_notify_enabled": "true",
         "ibkr_buying_power_notify_cooldown_sec": "1800",
         "fixed_position_symbols": "BOXX,IBKR",

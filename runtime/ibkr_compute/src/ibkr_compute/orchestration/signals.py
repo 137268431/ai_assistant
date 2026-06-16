@@ -7,7 +7,7 @@ import queue
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from ibkr_compute.api.account.buying_power_guard import (
     build_buying_power_guard,
@@ -68,6 +68,25 @@ class TradingServiceSignalsMixin:
         "local_reserved_count",
         "local_reserved_order_ids",
         "local_reservation_state_key",
+        "ledger_safe_used",
+        "ledger_snapshot_fetched_at",
+        "ledger_snapshot_age_s",
+        "ledger_snapshot_source",
+        "ledger_snapshot_et_date",
+        "ledger_today_et_date",
+        "ledger_account_remaining_buying_power",
+        "ledger_today_open_exposure",
+        "ledger_pending_reserved_exposure",
+        "ledger_today_entry_count",
+        "ledger_pending_reserved_count",
+        "ledger_requested_exposure",
+        "ledger_remaining_after",
+        "ledger_remaining_before_request",
+        "ledger_remaining_pct_net_liq",
+        "ledger_remaining_after_pct_net_liq",
+        "ledger_next_refresh_at",
+        "ledger_safe_block_reason",
+        "refresh_block_reason",
     )
     TV_ENTRY_WORKING_ORDER_STATUSES = {
         "active",
@@ -2925,6 +2944,14 @@ class TradingServiceSignalsMixin:
             "buying_power_snapshot_max_age_s": guard.get("snapshot_max_age_s"),
             "buying_power_snapshot_fresh": guard.get("snapshot_fresh"),
             "buying_power_snapshot_stale_allowed": guard.get("snapshot_stale_allowed"),
+            "buying_power_ledger_safe_used": guard.get("ledger_safe_used"),
+            "buying_power_ledger_today_open_exposure": guard.get("ledger_today_open_exposure"),
+            "buying_power_ledger_pending_reserved_exposure": guard.get("ledger_pending_reserved_exposure"),
+            "buying_power_ledger_requested_exposure": guard.get("ledger_requested_exposure"),
+            "buying_power_ledger_remaining_before_request": guard.get("ledger_remaining_before_request"),
+            "buying_power_ledger_remaining_after": guard.get("ledger_remaining_after"),
+            "buying_power_ledger_next_refresh_at": guard.get("ledger_next_refresh_at"),
+            "buying_power_refresh_block_reason": guard.get("refresh_block_reason"),
         }
 
     def _merge_buying_power_snapshot_guard(self, guard: dict, snapshot_guard: dict | None) -> dict:
@@ -2999,7 +3026,7 @@ class TradingServiceSignalsMixin:
         state = str((guard or {}).get("state") or "ok").strip().lower() or "ok"
         previous = self._load_buying_power_guard_state()
         previous_state = str((previous or {}).get("state") or "ok").strip().lower() or "ok"
-        if state == "ok" and previous_state in {"warning", "blocked", "unavailable"}:
+        if state == "ok" and previous_state in {"warning", "blocked", "unavailable", "ledger_safe"}:
             self._notify_buying_power_recovered(sig, guard, previous)
         self._save_buying_power_guard_state(sig, guard)
 
@@ -3037,6 +3064,15 @@ class TradingServiceSignalsMixin:
             detail["本地已预占购买力"] = guard_number("local_reserved_exposure")
         if (guard or {}).get("local_reserved_count") not in (None, ""):
             detail["本地预占订单数"] = guard.get("local_reserved_count")
+        if (guard or {}).get("ledger_safe_used"):
+            detail["今日账本放行"] = "是"
+            detail["今日已开仓占用"] = guard_number("ledger_today_open_exposure")
+            detail["今日待提交预占"] = guard_number("ledger_pending_reserved_exposure")
+            detail["账本校验后剩余"] = guard_number("ledger_remaining_after")
+        if (guard or {}).get("ledger_next_refresh_at"):
+            detail["下次购买力刷新时间"] = str(guard.get("ledger_next_refresh_at") or "")
+        if (guard or {}).get("refresh_block_reason"):
+            detail["当前刷新受阻原因"] = str(guard.get("refresh_block_reason") or "")
         if (guard or {}).get("baseline_fetched_at"):
             detail["购买力基线时间"] = str(guard.get("baseline_fetched_at") or "")
         if (guard or {}).get("snapshot_fetched_at"):
@@ -3163,6 +3199,128 @@ class TradingServiceSignalsMixin:
             details["stale_safe_block_reason"] = "remaining_after_below_safe_floor"
             return False, details
         details["stale_safe_block_reason"] = ""
+        return True, details
+
+    def _buying_power_ledger_safe_enabled(self) -> bool:
+        return self._config_bool("ibkr_buying_power_ledger_safe_enabled", True)
+
+    @classmethod
+    def _buying_power_snapshot_et_date(cls, *payloads: dict | None) -> str:
+        for payload in payloads:
+            data = payload if isinstance(payload, dict) else {}
+            guard = data.get("buying_power_guard") if isinstance(data.get("buying_power_guard"), dict) else {}
+            for value in (
+                data.get("fetched_at"),
+                data.get("summary_fetched_at"),
+                data.get("snapshot_fetched_at"),
+                data.get("baseline_fetched_at"),
+                guard.get("snapshot_fetched_at"),
+                guard.get("baseline_fetched_at"),
+            ):
+                epoch = cls._parse_snapshot_timestamp(value)
+                if epoch > 0:
+                    return datetime.fromtimestamp(epoch, timezone.utc).astimezone(ET).strftime("%Y-%m-%d")
+        return ""
+
+    @staticmethod
+    def _buying_power_next_refresh_at(force_refresh_details: dict) -> str:
+        retry_after_s = 0.0
+        for key in ("snapshot_force_refresh_retry_after_s", "retry_after_s"):
+            try:
+                retry_after_s = max(retry_after_s, float((force_refresh_details or {}).get(key) or 0.0))
+            except (TypeError, ValueError):
+                pass
+        delay_s = max(30.0, retry_after_s)
+        return (datetime.now(timezone.utc) + timedelta(seconds=delay_s)).isoformat()
+
+    def _buying_power_ledger_safe_can_allow(
+        self,
+        guard: dict,
+        *,
+        reservation_snapshot: dict,
+        account_summary_source: str,
+        stale_age_s: float | None,
+        freshness_block_reason: str,
+        baseline: dict,
+        snapshot: dict,
+        force_refresh_details: dict,
+    ) -> tuple[bool, dict]:
+        details = {
+            "ledger_safe_enabled": self._buying_power_ledger_safe_enabled(),
+            "ledger_safe_freshness_reason": str(freshness_block_reason or ""),
+            "ledger_snapshot_source": str(account_summary_source or ""),
+            "ledger_snapshot_age_s": round(float(stale_age_s), 1) if stale_age_s is not None else None,
+            "ledger_next_refresh_at": self._buying_power_next_refresh_at(force_refresh_details),
+        }
+        if not details["ledger_safe_enabled"]:
+            details["ledger_safe_block_reason"] = "disabled"
+            return False, details
+        snapshot_date = self._buying_power_snapshot_et_date(
+            snapshot if account_summary_source == "snapshot" else {},
+            baseline if account_summary_source == "baseline" else {},
+            snapshot,
+            baseline,
+        )
+        today_et = datetime.now(ET).strftime("%Y-%m-%d")
+        details["ledger_snapshot_et_date"] = snapshot_date
+        details["ledger_today_et_date"] = today_et
+        if snapshot_date != today_et:
+            details["ledger_safe_block_reason"] = "snapshot_not_today"
+            return False, details
+        if not bool((reservation_snapshot or {}).get("today_entry_exposure_available")):
+            details["ledger_safe_block_reason"] = "today_entry_ledger_unavailable"
+            details["ledger_today_entry_exposure_error"] = str((reservation_snapshot or {}).get("today_entry_exposure_error") or "")
+            return False, details
+
+        requested = self._safe_float((guard or {}).get("requested_exposure"), 0.0)
+        account_remaining = self._safe_float(
+            (guard or {}).get("account_remaining_buying_power"),
+            self._safe_float((guard or {}).get("remaining"), 0.0)
+            + self._safe_float((guard or {}).get("local_reserved_exposure"), 0.0),
+        )
+        today_open_exposure = max(0.0, self._safe_float((reservation_snapshot or {}).get("today_entry_exposure"), 0.0))
+        pending_reserved = max(0.0, self._safe_float((reservation_snapshot or {}).get("pending_reservation_exposure"), 0.0))
+        ledger_remaining_before = max(0.0, account_remaining - today_open_exposure - pending_reserved)
+        ledger_remaining_after = max(0.0, ledger_remaining_before - requested)
+        block_floor = self._safe_float((guard or {}).get("block_floor"), 0.0)
+        warn_floor = self._safe_float((guard or {}).get("warn_floor"), 0.0)
+        net_liq = self._safe_float((guard or {}).get("net_liquidation"), 0.0)
+
+        details.update(
+            {
+                "ledger_safe_used": True,
+                "ledger_snapshot_fetched_at": str(
+                    (snapshot or {}).get("fetched_at")
+                    or (baseline or {}).get("fetched_at")
+                    or (guard or {}).get("snapshot_fetched_at")
+                    or ""
+                ),
+                "ledger_account_remaining_buying_power": round(account_remaining, 2),
+                "ledger_today_open_exposure": round(today_open_exposure, 2),
+                "ledger_pending_reserved_exposure": round(pending_reserved, 2),
+                "ledger_requested_exposure": round(requested, 2),
+                "ledger_remaining_before_request": round(ledger_remaining_before, 2),
+                "ledger_remaining_after": round(ledger_remaining_after, 2),
+                "ledger_today_entry_count": int((reservation_snapshot or {}).get("today_entry_count") or 0),
+                "ledger_pending_reserved_count": int((reservation_snapshot or {}).get("pending_reservation_count") or 0),
+                "refresh_block_reason": str(
+                    (force_refresh_details or {}).get("snapshot_force_refresh_reason")
+                    or (force_refresh_details or {}).get("snapshot_force_refresh_result")
+                    or ""
+                ),
+            }
+        )
+        details["ledger_remaining_after_pct_net_liq"] = (
+            ledger_remaining_after / net_liq * 100.0 if net_liq > 0 else None
+        )
+        details["ledger_remaining_pct_net_liq"] = (
+            ledger_remaining_before / net_liq * 100.0 if net_liq > 0 else None
+        )
+        if ledger_remaining_after < block_floor:
+            details["ledger_safe_block_reason"] = "remaining_after_below_block_floor"
+            return False, details
+        details["ledger_safe_block_reason"] = ""
+        details["ledger_safe_state"] = "warning" if warn_floor > 0 and ledger_remaining_after < warn_floor else "ledger_safe"
         return True, details
 
     @staticmethod
@@ -3447,10 +3605,46 @@ class TradingServiceSignalsMixin:
                     "stale_account_snapshot" if account_summary_source == "snapshot" else "stale_local_baseline"
                 )
             else:
-                guard["available"] = False
-                guard["state"] = "unavailable"
-                guard["reason"] = freshness_block_reason
-                guard["snapshot_error"] = freshness_block_reason
+                ledger_allowed, ledger_details = self._buying_power_ledger_safe_can_allow(
+                    guard,
+                    reservation_snapshot=reservation_snapshot,
+                    account_summary_source=account_summary_source,
+                    stale_age_s=stale_age_s,
+                    freshness_block_reason=freshness_block_reason,
+                    baseline=baseline,
+                    snapshot=snapshot,
+                    force_refresh_details=force_refresh_details,
+                )
+                guard.update(ledger_details)
+                if ledger_allowed:
+                    guard["available"] = True
+                    guard["state"] = str(ledger_details.get("ledger_safe_state") or "ledger_safe")
+                    guard["reason"] = "buying_power_ledger_safe_after_refresh_blocked"
+                    guard["snapshot_error"] = freshness_block_reason
+                    guard["snapshot_stale_allowed"] = True
+                    guard["snapshot_stale_allowed_reason"] = "today_ledger_safe"
+                    guard["original_freshness_block_reason"] = freshness_block_reason
+                    guard["source"] = "today_ledger_safe"
+                    guard["remaining"] = ledger_details.get("ledger_remaining_before_request")
+                    guard["remaining_after"] = ledger_details.get("ledger_remaining_after")
+                    guard["remaining_pct_net_liq"] = ledger_details.get("ledger_remaining_pct_net_liq")
+                    guard["remaining_after_pct_net_liq"] = ledger_details.get("ledger_remaining_after_pct_net_liq")
+                elif ledger_details.get("ledger_safe_block_reason") == "remaining_after_below_block_floor":
+                    guard["available"] = True
+                    guard["state"] = "blocked"
+                    guard["reason"] = "buying_power_ledger_below_block_threshold"
+                    guard["snapshot_error"] = freshness_block_reason
+                    guard["original_freshness_block_reason"] = freshness_block_reason
+                    guard["source"] = "today_ledger_safe"
+                    guard["remaining"] = ledger_details.get("ledger_remaining_before_request")
+                    guard["remaining_after"] = ledger_details.get("ledger_remaining_after")
+                    guard["remaining_pct_net_liq"] = ledger_details.get("ledger_remaining_pct_net_liq")
+                    guard["remaining_after_pct_net_liq"] = ledger_details.get("ledger_remaining_after_pct_net_liq")
+                else:
+                    guard["available"] = False
+                    guard["state"] = "unavailable"
+                    guard["reason"] = freshness_block_reason
+                    guard["snapshot_error"] = freshness_block_reason
         if not freshness_block_reason and exposure <= 0 and guard.get("enabled"):
             guard["state"] = "blocked"
             guard["reason"] = "buying_power_price_unavailable"
@@ -3508,6 +3702,8 @@ class TradingServiceSignalsMixin:
             title = "自动开仓暂停：购买力快照过期" if reason == "buying_power_snapshot_stale" else "自动开仓暂停：购买力风控不可用"
         elif state == "blocked":
             title = "自动开仓已被动态购买力上限拦截"
+        elif state == "ledger_safe" or (state == "warning" and (guard or {}).get("ledger_safe_used")):
+            title = "自动开仓按今日账本安全放行：账户刷新待重试"
         elif level == "info":
             title = "自动开仓已提交"
         try:

@@ -498,6 +498,49 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertGreater(fallback["summary_cache_age_s"], 1800.0)
         self.assertEqual(1800.0, fallback["summary_cache_max_age_s"])
 
+    def test_account_snapshot_refresh_idle_probes_stale_buying_power(self):
+        app = _FakeApiApp()
+        service = _RefreshService()
+        service.order_lifecycle = _BuyingPowerLifecycle()
+        stale_iso = datetime.fromtimestamp(time.time() - 600.0, timezone.utc).isoformat()
+        fresh_iso = datetime.now(timezone.utc).isoformat()
+        stale_buying_power = {
+            "ok": True,
+            "summary": {"buying_power": 50000.0, "net_liquidation": 100000.0},
+            "buying_power_guard": {"available": True, "state": "ok", "source": "account_summary"},
+            "fetched_at": stale_iso,
+            "source": "account_summary",
+            "stale": True,
+            "buying_power_refresh_state": "stale_after_error",
+        }
+        fresh_buying_power = {
+            "ok": True,
+            "summary": {"buying_power": 51000.0, "net_liquidation": 100000.0},
+            "buying_power_guard": {"available": True, "state": "ok", "source": "account_summary"},
+            "fetched_at": fresh_iso,
+            "source": "account_summary",
+            "buying_power_refresh_state": "refreshed",
+            "summary_available": True,
+        }
+
+        with (
+            mock.patch(
+                "ibkr_compute.api.account.snapshot._build_ibkr_account_buying_power_snapshot",
+                side_effect=[stale_buying_power, fresh_buying_power],
+            ) as buying_power_snapshot,
+            mock.patch("ibkr_compute.observability.prometheus.set_account_snapshot_metrics"),
+        ):
+            payload = _with_fake_api_app(app, lambda: service._refresh_account_snapshot_once(reason="unit_test"))
+
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["buying_power_request_attempted"])
+        self.assertEqual("account_summary", payload["buying_power_request_kind"])
+        self.assertEqual("buying_power_idle_probe", payload["buying_power_idle_probe"]["refresh_profile"])
+        self.assertEqual("refreshed", payload["buying_power_idle_probe"]["request_result"])
+        self.assertEqual(2, buying_power_snapshot.call_count)
+        self.assertEqual({"force_refresh": True}, buying_power_snapshot.call_args_list[-1].kwargs)
+        self.assertEqual("ok", payload["buying_power_metrics"]["state"])
+
     def test_account_snapshot_refresh_uses_orders_fast_when_account_data_gate_busy(self):
         service = _RefreshService()
         gate = {"owner_kind": "positions", "owner_age_s": 12.5, "serial_timeout_s": 30.0}

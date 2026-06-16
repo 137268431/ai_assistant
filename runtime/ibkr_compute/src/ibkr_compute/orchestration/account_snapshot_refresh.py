@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 
 def _service_mod():
@@ -470,6 +470,54 @@ class TradingServiceAccountSnapshotRefreshMixin:
                 pass
         return max(1.0, default)
 
+    def _account_snapshot_buying_power_max_age_sec(self) -> float:
+        default = _env_float("IBKR_BUYING_POWER_MAX_SNAPSHOT_AGE_SEC", 180.0)
+        getter = getattr(getattr(self, "config", None), "get_float_for_environment", None)
+        if callable(getter):
+            try:
+                service_mod = _service_mod()
+                return max(1.0, float(getter("ibkr_buying_power_max_snapshot_age_sec", service_mod.ENVIRONMENT, default)))
+            except Exception:
+                pass
+        return max(1.0, default)
+
+    def _account_snapshot_refresh_next_at(self, delay_s: float) -> str:
+        return (datetime.now(timezone.utc) + timedelta(seconds=max(1.0, float(delay_s or 0.0)))).isoformat()
+
+    def _buying_power_payload_fresh_enough(self, payload: dict) -> tuple[bool, dict]:
+        guard = payload.get("buying_power_guard") if isinstance((payload or {}).get("buying_power_guard"), dict) else {}
+        summary = payload.get("summary") if isinstance((payload or {}).get("summary"), dict) else {}
+        age_s = _payload_age_s(payload, "summary_cache_age_s", "cache_age_s")
+        max_age_s = self._account_snapshot_buying_power_max_age_sec()
+        guard_state = str(guard.get("state") or "").strip().lower()
+        available = bool(summary and guard.get("available") is not False and guard_state != "unavailable")
+        fresh = bool(available and age_s is not None and age_s <= max_age_s and not bool((payload or {}).get("stale")))
+        return fresh, {
+            "buying_power_snapshot_age_s": round(float(age_s), 1) if age_s is not None else None,
+            "buying_power_snapshot_max_age_s": round(float(max_age_s), 1),
+            "buying_power_guard_state": guard_state,
+            "buying_power_summary_available": bool(summary),
+            "buying_power_source": (payload or {}).get("source"),
+            "buying_power_refresh_state": (payload or {}).get("buying_power_refresh_state"),
+        }
+
+    def _buying_power_idle_probe_block_reason(self, details: dict) -> tuple[str, float]:
+        if details.get("account_data_circuit_active"):
+            return str(details.get("account_data_circuit_reason") or "account_data_circuit_open"), _safe_float(
+                details.get("account_data_circuit_remaining_s"),
+                0.0,
+            )
+        if details.get("account_data_gate_active"):
+            return "account_data_request_in_flight", 30.0
+        if details.get("account_data_pacing_hard_blocked"):
+            kinds = ",".join(details.get("account_data_pacing_hard_blocked_kinds") or [])
+            return f"account_data_pacing_blocked:{kinds}" if kinds else "account_data_pacing_blocked", 30.0
+        for prefix in ("account_lifecycle", "order_tracker"):
+            remaining = _safe_float(details.get(f"{prefix}_backoff_remaining_s"), 0.0)
+            if remaining > 0:
+                return str(details.get(f"{prefix}_backoff_reason") or f"{prefix}_backoff"), remaining
+        return "", 0.0
+
     @staticmethod
     def _orders_fast_summary_unavailable(payload: dict) -> bool:
         if not isinstance(payload, dict) or not bool(payload.get("orders_fast")):
@@ -591,6 +639,69 @@ class TradingServiceAccountSnapshotRefreshMixin:
                     }
                 else:
                     buying_power_payload = _build_ibkr_account_buying_power_snapshot(self)
+                idle_probe = {
+                    "enabled": True,
+                    "refresh_profile": "buying_power_idle_probe",
+                    "idle_phase": not bool(orders_fast_reason.get("order_pressure_active")),
+                    "request_kind": "account_summary",
+                    "request_attempted": False,
+                    "request_block_reason": "",
+                    "next_refresh_at": "",
+                }
+                fresh_enough, freshness_details = self._buying_power_payload_fresh_enough(
+                    buying_power_payload if isinstance(buying_power_payload, dict) else {}
+                )
+                idle_probe.update(freshness_details)
+                idle_probe["needed"] = bool(idle_probe["idle_phase"] and not fresh_enough)
+                if idle_probe["needed"]:
+                    if bool(orders_fast_reason.get("account_data_guard_hard_active")):
+                        block_reason, retry_after_s = self._buying_power_idle_probe_block_reason(orders_fast_reason)
+                        idle_probe.update(
+                            {
+                                "request_block_reason": block_reason or "account_data_guard_hard_active",
+                                "retry_after_s": round(float(retry_after_s), 1),
+                                "next_refresh_at": self._account_snapshot_refresh_next_at(max(30.0, retry_after_s)),
+                            }
+                        )
+                    else:
+                        probe_payload = _build_ibkr_account_buying_power_snapshot(self, force_refresh=True)
+                        probe_guard = (
+                            probe_payload.get("buying_power_guard")
+                            if isinstance(probe_payload, dict) and isinstance(probe_payload.get("buying_power_guard"), dict)
+                            else {}
+                        )
+                        retry_after_s = _safe_float((probe_payload or {}).get("retry_after_s"), 0.0)
+                        request_block_reason = str(
+                            (probe_payload or {}).get("last_refresh_error")
+                            or (probe_payload or {}).get("refresh_error")
+                            or probe_guard.get("reason")
+                            or ""
+                        )
+                        idle_probe.update(
+                            {
+                                "request_attempted": True,
+                                "request_result": (probe_payload or {}).get("buying_power_refresh_state")
+                                or ("ok" if (probe_payload or {}).get("ok") else "failed"),
+                                "request_block_reason": request_block_reason if (probe_payload or {}).get("hard_blocked") else "",
+                                "retry_after_s": round(float(retry_after_s), 1),
+                                "next_refresh_at": self._account_snapshot_refresh_next_at(max(30.0, retry_after_s)),
+                            }
+                        )
+                        probe_fresh, probe_freshness = self._buying_power_payload_fresh_enough(
+                            probe_payload if isinstance(probe_payload, dict) else {}
+                        )
+                        idle_probe["post_probe"] = probe_freshness
+                        if isinstance(probe_payload, dict) and (probe_fresh or probe_payload.get("summary_available")):
+                            buying_power_payload = probe_payload
+                if not idle_probe.get("next_refresh_at"):
+                    idle_probe["next_refresh_at"] = self._account_snapshot_refresh_next_at(
+                        self._account_snapshot_refresh_interval_sec(active=False)
+                    )
+                payload["buying_power_idle_probe"] = idle_probe
+                payload["buying_power_request_attempted"] = bool(idle_probe.get("request_attempted"))
+                payload["buying_power_request_kind"] = idle_probe.get("request_kind")
+                payload["buying_power_request_block_reason"] = idle_probe.get("request_block_reason")
+                payload["buying_power_next_refresh_at"] = idle_probe.get("next_refresh_at")
                 set_account_snapshot_metrics(buying_power_payload, source="")
                 if isinstance(buying_power_payload, dict):
                     payload["buying_power_metrics"] = {

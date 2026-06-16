@@ -13,6 +13,33 @@ STATE_KEY = "buying_power_reservations:v1"
 DEFAULT_RESERVATION_TTL_SECONDS = 24 * 60 * 60
 _STATE_LOCKS_GUARD = threading.Lock()
 _STATE_LOCKS: dict[tuple[str, str], threading.RLock] = {}
+LEDGER_SAFE_GUARD_META_KEYS = (
+    "ledger_safe_used",
+    "ledger_snapshot_fetched_at",
+    "ledger_snapshot_age_s",
+    "ledger_snapshot_source",
+    "ledger_snapshot_et_date",
+    "ledger_today_et_date",
+    "ledger_today_entry_exposure_available",
+    "ledger_today_entry_exposure_error",
+    "ledger_today_entry_order_ids",
+    "ledger_account_remaining_buying_power",
+    "ledger_today_open_exposure",
+    "ledger_pending_reserved_exposure",
+    "ledger_requested_exposure",
+    "ledger_remaining_after",
+    "ledger_remaining_before_request",
+    "ledger_remaining_pct_net_liq",
+    "ledger_remaining_after_pct_net_liq",
+    "ledger_next_refresh_at",
+    "ledger_safe_freshness_reason",
+    "ledger_safe_block_reason",
+    "ledger_today_entry_count",
+    "ledger_pending_reserved_count",
+    "refresh_block_reason",
+    "original_freshness_block_reason",
+    "snapshot_stale_allowed_reason",
+)
 
 
 def _now_utc() -> datetime:
@@ -64,6 +91,32 @@ def _parse_epoch(value: Any) -> float:
 
 def _active_date() -> str:
     return datetime.now(ET).strftime("%Y-%m-%d")
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+        if number > 0:
+            try:
+                return datetime.fromtimestamp(number / 1000.0 if number > 10_000_000_000 else number, timezone.utc)
+            except Exception:
+                return None
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        normalized = text.replace("Z", "+00:00")
+        if "T" not in normalized and len(normalized) >= 19:
+            parsed = datetime.strptime(normalized[:19], "%Y-%m-%d %H:%M:%S")
+            return parsed.replace(tzinfo=ET)
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+    except Exception:
+        return None
 
 
 def _state_data(record: dict[str, Any] | None) -> dict[str, Any]:
@@ -139,6 +192,26 @@ def _summary_has_substantive_value(summary: dict[str, Any]) -> bool:
         if number is None or number != 0.0:
             return True
     return bool(str(summary.get("account_type") or "").strip())
+
+
+def _row_extra(row: dict[str, Any] | None) -> dict[str, Any]:
+    extra = (row or {}).get("extra") if isinstance(row, dict) else {}
+    if isinstance(extra, str):
+        try:
+            extra = json.loads(extra)
+        except Exception:
+            extra = {}
+    return extra if isinstance(extra, dict) else {}
+
+
+def _row_value(row: dict[str, Any], *keys: str) -> Any:
+    extra = _row_extra(row)
+    for key in keys:
+        if row.get(key) not in (None, ""):
+            return row.get(key)
+        if extra.get(key) not in (None, ""):
+            return extra.get(key)
+    return ""
 
 
 def base_buying_power_summary(summary: dict[str, Any] | None) -> dict[str, Any]:
@@ -316,6 +389,140 @@ class BuyingPowerReservationStore:
             rows.extend(dict(row) for row in (batch or []) if isinstance(row, dict))
         return rows
 
+    @staticmethod
+    def _row_is_today(row: dict[str, Any]) -> bool:
+        target_date = _active_date()
+        for key in (
+            "us_time",
+            "order_time",
+            "fill_time",
+            "created",
+            "updated",
+            "broker_callback_received_at",
+        ):
+            raw = _row_value(row, key)
+            if raw in (None, ""):
+                continue
+            parsed = _parse_datetime(raw)
+            if parsed is None:
+                if str(raw).startswith(target_date):
+                    return True
+                continue
+            if parsed.astimezone(ET).strftime("%Y-%m-%d") == target_date:
+                return True
+        return False
+
+    @staticmethod
+    def _row_role(row: dict[str, Any]) -> str:
+        role = str(_row_value(row, "role", "leg_role", "order_role") or "").strip().lower()
+        if role:
+            return role
+        unique_id = str(_row_value(row, "unique_id", "order_ref", "orderRef", "coid") or "").strip().lower()
+        if unique_id.startswith("entry_"):
+            return "entry"
+        return ""
+
+    @staticmethod
+    def _row_status(row: dict[str, Any]) -> str:
+        return str(_row_value(row, "status", "order_status", "orderStatus", "current_status") or "").strip()
+
+    @staticmethod
+    def _row_is_countable_entry(row: dict[str, Any]) -> bool:
+        if BuyingPowerReservationStore._row_role(row) != "entry":
+            return False
+        status_key = BuyingPowerReservationStore._row_status(row).replace("_", "").replace(" ", "").lower()
+        filled_qty = _safe_float(_row_value(row, "filled_qty", "filledQuantity", "filled"), 0.0)
+        if status_key in {"canceled", "cancelled", "apicanceled", "apicancelled", "rejected", "expired", "inactive"}:
+            return filled_qty > 0
+        if status_key in {"closed"}:
+            return filled_qty > 0
+        return True
+
+    @staticmethod
+    def _row_entry_order_id(row: dict[str, Any]) -> str:
+        for key in ("broker_order_id", "order_id", "orderId", "id"):
+            value = str(_row_value(row, key) or "").strip()
+            if value:
+                return value
+        return ""
+
+    @staticmethod
+    def _row_entry_exposure(row: dict[str, Any]) -> float:
+        for key in (
+            "entry_notional",
+            "submitted_entry_notional",
+            "requested_exposure",
+            "exposure",
+        ):
+            value = _safe_float(_row_value(row, key), 0.0)
+            if value > 0:
+                return value
+        quantity = abs(_safe_float(_row_value(row, "quantity", "totalSize", "totalQuantity", "shares"), 0.0))
+        price = 0.0
+        for key in (
+            "fill_price",
+            "avg_price",
+            "avgFillPrice",
+            "entry_price",
+            "submitted_entry_limit_price",
+            "limit_price",
+            "price",
+        ):
+            price = abs(_safe_float(_row_value(row, key), 0.0))
+            if price > 0:
+                break
+        return max(0.0, quantity * price)
+
+    def today_entry_exposure_snapshot(self) -> dict[str, Any]:
+        getter = getattr(self.pb_client, "get_records", None)
+        if not callable(getter):
+            return {"available": False, "reason": "pb_client_unavailable", "date": _active_date()}
+        environment_filter = _escape_filter_value(self.environment)
+        try:
+            rows = getter(
+                "orders",
+                filter=f'environment = "{environment_filter}"',
+                sort="-updated",
+                per_page=500,
+            )
+        except Exception as exc:
+            return {"available": False, "reason": str(exc) or "orders_query_failed", "date": _active_date()}
+        entries: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        exposure = 0.0
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            if not self._row_is_today(row) or not self._row_is_countable_entry(row):
+                continue
+            order_id = self._row_entry_order_id(row)
+            dedupe_key = order_id or str(_row_value(row, "unique_id", "trade_group_id", "signal_id") or "")
+            if dedupe_key and dedupe_key in seen_ids:
+                continue
+            if dedupe_key:
+                seen_ids.add(dedupe_key)
+            row_exposure = self._row_entry_exposure(row)
+            if row_exposure <= 0:
+                continue
+            exposure += row_exposure
+            entries.append(
+                {
+                    "order_id": order_id,
+                    "symbol": str(_row_value(row, "symbol") or "").strip().upper(),
+                    "direction": str(_row_value(row, "direction", "position_side", "side") or "").strip().lower(),
+                    "status": self._row_status(row),
+                    "exposure": round(row_exposure, 2),
+                }
+            )
+        return {
+            "available": True,
+            "date": _active_date(),
+            "count": len(entries),
+            "exposure": exposure,
+            "order_ids": [item["order_id"] for item in entries if item.get("order_id")],
+            "entries": entries,
+        }
+
     def _reconcile_active_with_pb_locked(self, active: list[dict[str, Any]], data: dict[str, Any]) -> list[dict[str, Any]]:
         entry_ids = [
             str(item.get("entry_order_id") or "").strip()
@@ -387,6 +594,18 @@ class BuyingPowerReservationStore:
     def snapshot(self) -> dict[str, Any]:
         active = self.active_reservations()
         exposure = sum(max(0.0, _safe_float(item.get("exposure"), 0.0)) for item in active)
+        today_entries = self.today_entry_exposure_snapshot()
+        today_entry_order_ids = {
+            str(item or "").strip()
+            for item in (today_entries.get("order_ids") or [])
+            if str(item or "").strip()
+        }
+        pending_reservations = [
+            item for item in active
+            if not str(item.get("entry_order_id") or "").strip()
+            or str(item.get("entry_order_id") or "").strip() not in today_entry_order_ids
+        ]
+        pending_exposure = sum(max(0.0, _safe_float(item.get("exposure"), 0.0)) for item in pending_reservations)
         baseline = self.baseline_snapshot()
         return {
             "state_key": STATE_KEY,
@@ -402,6 +621,13 @@ class BuyingPowerReservationStore:
             ],
             "baseline": baseline if baseline.get("available") else {},
             "baseline_available": bool(baseline.get("available")),
+            "today_entry_exposure_available": bool(today_entries.get("available")),
+            "today_entry_exposure": float(today_entries.get("exposure") or 0.0),
+            "today_entry_count": int(today_entries.get("count") or 0),
+            "today_entry_order_ids": list(today_entries.get("order_ids") or []),
+            "today_entry_exposure_error": "" if today_entries.get("available") else str(today_entries.get("reason") or ""),
+            "pending_reservation_exposure": pending_exposure,
+            "pending_reservation_count": len(pending_reservations),
         }
 
     def reserve_entry(
@@ -527,7 +753,27 @@ class BuyingPowerReservationStore:
                 guard.get("account_remaining_buying_power"),
                 guard_remaining + guard_local_reserved,
             )
-            adjusted_remaining = max(0.0, account_remaining - current_reserved)
+            pending_reserved = current_reserved
+            pending_reservation_count = len(active)
+            today_entry_count = guard.get("ledger_today_entry_count")
+            if _guard_uses_ledger_safe(guard):
+                today_entries = self.today_entry_exposure_snapshot()
+                today_entry_order_ids = {
+                    str(item or "").strip()
+                    for item in (today_entries.get("order_ids") or [])
+                    if str(item or "").strip()
+                }
+                pending_reservations = [
+                    item for item in active
+                    if not str(item.get("entry_order_id") or "").strip()
+                    or str(item.get("entry_order_id") or "").strip() not in today_entry_order_ids
+                ]
+                pending_reserved = sum(max(0.0, _safe_float(item.get("exposure"), 0.0)) for item in pending_reservations)
+                pending_reservation_count = len(pending_reservations)
+                if today_entries.get("available"):
+                    today_entry_count = int(today_entries.get("count") or 0)
+            ledger_remaining = _ledger_adjusted_remaining_before_request(guard, pending_reserved)
+            adjusted_remaining = ledger_remaining if ledger_remaining is not None else max(0.0, account_remaining - current_reserved)
             recheck_guard = build_buying_power_guard(
                 {
                     "buying_power": adjusted_remaining,
@@ -559,9 +805,19 @@ class BuyingPowerReservationStore:
                 "risk_model_strategy_entry_order_count",
                 "risk_model_strategy_position_symbols",
                 "risk_model_strategy_entry_order_symbols",
+                *LEDGER_SAFE_GUARD_META_KEYS,
             ):
                 if guard.get(key) not in (None, ""):
                     recheck_guard[key] = guard.get(key)
+            if ledger_remaining is not None:
+                recheck_guard["source"] = "today_ledger_safe"
+                recheck_guard["ledger_safe_used"] = True
+                recheck_guard["ledger_pending_reserved_exposure"] = round(pending_reserved, 2)
+                recheck_guard["ledger_pending_reserved_count"] = pending_reservation_count
+                if today_entry_count not in (None, ""):
+                    recheck_guard["ledger_today_entry_count"] = int(today_entry_count or 0)
+                recheck_guard["ledger_remaining_before_request"] = round(adjusted_remaining, 2)
+                recheck_guard["ledger_remaining_after"] = round(max(0.0, adjusted_remaining - exposure_value), 2)
             recheck_guard["local_reserved_exposure"] = current_reserved
             recheck_guard["local_reserved_count"] = len(active)
             recheck_guard["local_reserved_order_ids"] = [
@@ -723,11 +979,49 @@ def merge_reservation_snapshot_into_guard(guard: dict[str, Any], snapshot: dict[
     guard["local_reserved_count"] = int(snapshot.get("count") or 0)
     guard["local_reserved_order_ids"] = list(snapshot.get("order_ids") or [])
     guard["local_reservation_state_key"] = STATE_KEY
+    for source_key, target_key in (
+        ("today_entry_exposure_available", "ledger_today_entry_exposure_available"),
+        ("today_entry_exposure", "ledger_today_open_exposure"),
+        ("today_entry_count", "ledger_today_entry_count"),
+        ("today_entry_order_ids", "ledger_today_entry_order_ids"),
+        ("today_entry_exposure_error", "ledger_today_entry_exposure_error"),
+        ("pending_reservation_exposure", "ledger_pending_reserved_exposure"),
+        ("pending_reservation_count", "ledger_pending_reserved_count"),
+    ):
+        if snapshot.get(source_key) not in (None, ""):
+            value = snapshot.get(source_key)
+            if source_key.endswith("_exposure"):
+                value = max(0.0, _safe_float(value, 0.0))
+            guard[target_key] = value
     return guard
+
+
+def _guard_uses_ledger_safe(guard: dict[str, Any] | None) -> bool:
+    payload = guard if isinstance(guard, dict) else {}
+    return bool(payload.get("ledger_safe_used")) or str(payload.get("source") or "").strip().lower() == "today_ledger_safe"
+
+
+def _ledger_adjusted_remaining_before_request(
+    guard: dict[str, Any] | None,
+    current_pending_reserved: Any,
+) -> float | None:
+    payload = guard if isinstance(guard, dict) else {}
+    if not _guard_uses_ledger_safe(payload):
+        return None
+    base = _optional_float(payload.get("ledger_remaining_before_request"))
+    if base is None:
+        base = _optional_float(payload.get("remaining"))
+    if base is None:
+        return None
+    previous_pending = max(0.0, _safe_float(payload.get("ledger_pending_reserved_exposure"), 0.0))
+    current_pending = max(0.0, _safe_float(current_pending_reserved, 0.0))
+    extra_pending = max(0.0, current_pending - previous_pending)
+    return max(0.0, float(base) - extra_pending)
 
 
 __all__ = [
     "BuyingPowerReservationStore",
+    "LEDGER_SAFE_GUARD_META_KEYS",
     "STATE_KEY",
     "apply_reservations_to_buying_power_summary",
     "base_buying_power_summary",

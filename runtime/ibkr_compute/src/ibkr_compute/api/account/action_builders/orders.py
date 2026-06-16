@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import time
+from datetime import datetime, timedelta, timezone
 
 from ibkr_compute.api.account.action_builders.common import _build_snapshot_action_response
 from ibkr_compute.api.account.buying_power_guard import (
@@ -15,7 +16,9 @@ from ibkr_compute.api.account.snapshot import (
     _build_ibkr_account_snapshot,
 )
 from ibkr_compute.api.account.snapshot_builder.context import build_fast_snapshot_status
+from ibkr_compute.core.time_utils import ET
 from ibkr_compute.order.buying_power_reservations import (
+    LEDGER_SAFE_GUARD_META_KEYS,
     apply_reservations_to_buying_power_summary,
     merge_reservation_snapshot_into_guard,
 )
@@ -35,6 +38,7 @@ BUYING_POWER_SNAPSHOT_META_KEYS = (
     "risk_model_strategy_entry_order_count",
     "risk_model_strategy_position_symbols",
     "risk_model_strategy_entry_order_symbols",
+    *LEDGER_SAFE_GUARD_META_KEYS,
 )
 
 
@@ -161,6 +165,242 @@ def _merge_snapshot_guard_metadata(guard: dict, snapshot_guard: dict | None) -> 
     return guard
 
 
+def _parse_snapshot_timestamp(value) -> float:
+    if value in (None, ""):
+        return 0.0
+    try:
+        number = float(value)
+        if number > 0:
+            return number / 1000.0 if number > 10_000_000_000 else number
+    except (TypeError, ValueError):
+        pass
+    try:
+        text = str(value or "").strip()
+        if not text:
+            return 0.0
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except Exception:
+        return 0.0
+
+
+def _snapshot_age_s(payload: dict | None) -> float | None:
+    data = payload if isinstance(payload, dict) else {}
+    guard = data.get("buying_power_guard") if isinstance(data.get("buying_power_guard"), dict) else {}
+    for value in (
+        data.get("fetched_at"),
+        data.get("summary_fetched_at"),
+        data.get("snapshot_fetched_at"),
+        data.get("baseline_fetched_at"),
+        guard.get("snapshot_fetched_at"),
+        guard.get("baseline_fetched_at"),
+    ):
+        epoch = _parse_snapshot_timestamp(value)
+        if epoch > 0:
+            return max(0.0, time.time() - epoch)
+    return None
+
+
+def _snapshot_et_date(*payloads: dict | None) -> str:
+    for payload in payloads:
+        data = payload if isinstance(payload, dict) else {}
+        guard = data.get("buying_power_guard") if isinstance(data.get("buying_power_guard"), dict) else {}
+        for value in (
+            data.get("fetched_at"),
+            data.get("summary_fetched_at"),
+            data.get("snapshot_fetched_at"),
+            data.get("baseline_fetched_at"),
+            guard.get("snapshot_fetched_at"),
+            guard.get("baseline_fetched_at"),
+        ):
+            epoch = _parse_snapshot_timestamp(value)
+            if epoch > 0:
+                return datetime.fromtimestamp(epoch, timezone.utc).astimezone(ET).strftime("%Y-%m-%d")
+    return ""
+
+
+def _snapshot_max_age_sec(service, environment: str) -> float:
+    config = getattr(service, "config", None)
+    getter = getattr(config, "get_float_for_environment", None)
+    if callable(getter):
+        try:
+            return max(1.0, float(getter("ibkr_buying_power_max_snapshot_age_sec", environment, 180.0)))
+        except Exception:
+            pass
+    getter = getattr(config, "get_float", None)
+    if callable(getter):
+        try:
+            return max(1.0, float(getter("ibkr_buying_power_max_snapshot_age_sec", 180.0)))
+        except Exception:
+            pass
+    return 180.0
+
+
+def _baseline_max_age_sec(service, environment: str) -> float:
+    config = getattr(service, "config", None)
+    default = 1800.0
+    getter = getattr(config, "get_float_for_environment", None)
+    if callable(getter):
+        try:
+            return max(_snapshot_max_age_sec(service, environment), float(getter("ibkr_buying_power_stale_baseline_max_age_sec", environment, default)))
+        except Exception:
+            pass
+    getter = getattr(config, "get_float", None)
+    if callable(getter):
+        try:
+            return max(_snapshot_max_age_sec(service, environment), float(getter("ibkr_buying_power_stale_baseline_max_age_sec", default)))
+        except Exception:
+            pass
+    return default
+
+
+def _ledger_next_refresh_at(force_refresh_details: dict) -> str:
+    retry_after_s = 0.0
+    for key in ("snapshot_force_refresh_retry_after_s", "retry_after_s"):
+        try:
+            retry_after_s = max(retry_after_s, float((force_refresh_details or {}).get(key) or 0.0))
+        except (TypeError, ValueError):
+            pass
+    return (datetime.now(timezone.utc) + timedelta(seconds=max(30.0, retry_after_s))).isoformat()
+
+
+def _buying_power_snapshot_summary(payload: dict | None) -> dict:
+    summary = (payload or {}).get("summary") if isinstance(payload, dict) else {}
+    return dict(summary or {}) if isinstance(summary, dict) else {}
+
+
+def _buying_power_guard_available(payload: dict | None) -> bool:
+    data = payload if isinstance(payload, dict) else {}
+    guard = data.get("buying_power_guard") if isinstance(data.get("buying_power_guard"), dict) else {}
+    state = str(guard.get("state") or "").strip().lower()
+    return bool(_buying_power_snapshot_summary(data) and guard.get("available") is not False and state != "unavailable")
+
+
+def _ledger_safe_can_allow_manual(
+    guard: dict,
+    *,
+    reservation_snapshot: dict,
+    account_summary_source: str,
+    stale_age_s: float | None,
+    freshness_block_reason: str,
+    baseline: dict,
+    snapshot: dict,
+    force_refresh_details: dict,
+) -> tuple[bool, dict]:
+    details = {
+        "ledger_safe_enabled": True,
+        "ledger_safe_freshness_reason": str(freshness_block_reason or ""),
+        "ledger_snapshot_source": str(account_summary_source or ""),
+        "ledger_snapshot_age_s": round(float(stale_age_s), 1) if stale_age_s is not None else None,
+        "ledger_next_refresh_at": _ledger_next_refresh_at(force_refresh_details),
+    }
+    snapshot_date = _snapshot_et_date(
+        snapshot if account_summary_source == "snapshot" else {},
+        baseline if account_summary_source == "baseline" else {},
+        snapshot,
+        baseline,
+    )
+    today_et = datetime.now(ET).strftime("%Y-%m-%d")
+    details["ledger_snapshot_et_date"] = snapshot_date
+    details["ledger_today_et_date"] = today_et
+    if snapshot_date != today_et:
+        details["ledger_safe_block_reason"] = "snapshot_not_today"
+        return False, details
+    if not bool((reservation_snapshot or {}).get("today_entry_exposure_available")):
+        details["ledger_safe_block_reason"] = "today_entry_ledger_unavailable"
+        details["ledger_today_entry_exposure_error"] = str((reservation_snapshot or {}).get("today_entry_exposure_error") or "")
+        return False, details
+
+    requested = _safe_float((guard or {}).get("requested_exposure"), 0.0)
+    account_remaining = _safe_float(
+        (guard or {}).get("account_remaining_buying_power"),
+        _safe_float((guard or {}).get("remaining"), 0.0)
+        + _safe_float((guard or {}).get("local_reserved_exposure"), 0.0),
+    )
+    today_open_exposure = max(0.0, _safe_float((reservation_snapshot or {}).get("today_entry_exposure"), 0.0))
+    pending_reserved = max(0.0, _safe_float((reservation_snapshot or {}).get("pending_reservation_exposure"), 0.0))
+    ledger_remaining_before = max(0.0, account_remaining - today_open_exposure - pending_reserved)
+    ledger_remaining_after = max(0.0, ledger_remaining_before - requested)
+    block_floor = _safe_float((guard or {}).get("block_floor"), 0.0)
+    warn_floor = _safe_float((guard or {}).get("warn_floor"), 0.0)
+    net_liq = _safe_float((guard or {}).get("net_liquidation"), 0.0)
+    details.update(
+        {
+            "ledger_safe_used": True,
+            "ledger_snapshot_fetched_at": str(
+                (snapshot or {}).get("fetched_at")
+                or (baseline or {}).get("fetched_at")
+                or (guard or {}).get("snapshot_fetched_at")
+                or ""
+            ),
+            "ledger_account_remaining_buying_power": round(account_remaining, 2),
+            "ledger_today_open_exposure": round(today_open_exposure, 2),
+            "ledger_pending_reserved_exposure": round(pending_reserved, 2),
+            "ledger_requested_exposure": round(requested, 2),
+            "ledger_remaining_before_request": round(ledger_remaining_before, 2),
+            "ledger_remaining_after": round(ledger_remaining_after, 2),
+            "ledger_today_entry_count": int((reservation_snapshot or {}).get("today_entry_count") or 0),
+            "ledger_pending_reserved_count": int((reservation_snapshot or {}).get("pending_reservation_count") or 0),
+            "ledger_remaining_after_pct_net_liq": ledger_remaining_after / net_liq * 100.0 if net_liq > 0 else None,
+            "ledger_remaining_pct_net_liq": ledger_remaining_before / net_liq * 100.0 if net_liq > 0 else None,
+            "refresh_block_reason": str(
+                (force_refresh_details or {}).get("snapshot_force_refresh_reason")
+                or (force_refresh_details or {}).get("snapshot_force_refresh_result")
+                or ""
+            ),
+        }
+    )
+    if ledger_remaining_after < block_floor:
+        details["ledger_safe_block_reason"] = "remaining_after_below_block_floor"
+        return False, details
+    details["ledger_safe_block_reason"] = ""
+    details["ledger_safe_state"] = "warning" if warn_floor > 0 and ledger_remaining_after < warn_floor else "ledger_safe"
+    return True, details
+
+
+def _apply_ledger_safe_decision(
+    guard: dict,
+    *,
+    ledger_allowed: bool,
+    ledger_details: dict,
+    freshness_block_reason: str,
+) -> dict:
+    guard.update(ledger_details)
+    if ledger_allowed:
+        guard["available"] = True
+        guard["state"] = str(ledger_details.get("ledger_safe_state") or "ledger_safe")
+        guard["reason"] = "buying_power_ledger_safe_after_refresh_blocked"
+        guard["snapshot_error"] = freshness_block_reason
+        guard["snapshot_stale_allowed"] = True
+        guard["snapshot_stale_allowed_reason"] = "today_ledger_safe"
+        guard["original_freshness_block_reason"] = freshness_block_reason
+        guard["source"] = "today_ledger_safe"
+        guard["remaining"] = ledger_details.get("ledger_remaining_before_request")
+        guard["remaining_after"] = ledger_details.get("ledger_remaining_after")
+        guard["remaining_pct_net_liq"] = ledger_details.get("ledger_remaining_pct_net_liq")
+        guard["remaining_after_pct_net_liq"] = ledger_details.get("ledger_remaining_after_pct_net_liq")
+        return guard
+    if ledger_details.get("ledger_safe_block_reason") == "remaining_after_below_block_floor":
+        guard["available"] = True
+        guard["state"] = "blocked"
+        guard["reason"] = "buying_power_ledger_below_block_threshold"
+        guard["snapshot_error"] = freshness_block_reason
+        guard["original_freshness_block_reason"] = freshness_block_reason
+        guard["source"] = "today_ledger_safe"
+        guard["remaining"] = ledger_details.get("ledger_remaining_before_request")
+        guard["remaining_after"] = ledger_details.get("ledger_remaining_after")
+        guard["remaining_pct_net_liq"] = ledger_details.get("ledger_remaining_pct_net_liq")
+        guard["remaining_after_pct_net_liq"] = ledger_details.get("ledger_remaining_after_pct_net_liq")
+        return guard
+    guard["available"] = False
+    guard["state"] = "unavailable"
+    guard["reason"] = freshness_block_reason
+    guard["snapshot_error"] = freshness_block_reason
+    return guard
+
+
 def _notify_manual_buying_power_event(
     service,
     *,
@@ -205,6 +445,15 @@ def _notify_manual_buying_power_event(
         detail["策略已占用"] = guard_number("risk_model_used_exposure")
     if (guard or {}).get("risk_model_remaining_slots") not in (None, ""):
         detail["估算剩余可开仓数"] = guard.get("risk_model_remaining_slots")
+    if (guard or {}).get("ledger_safe_used"):
+        detail["今日账本放行"] = "是"
+        detail["今日已开仓占用"] = guard_number("ledger_today_open_exposure")
+        detail["今日待提交预占"] = guard_number("ledger_pending_reserved_exposure")
+        detail["账本校验后剩余"] = guard_number("ledger_remaining_after")
+    if (guard or {}).get("ledger_next_refresh_at"):
+        detail["下次购买力刷新时间"] = str(guard.get("ledger_next_refresh_at") or "")
+    if (guard or {}).get("refresh_block_reason"):
+        detail["当前刷新受阻原因"] = str(guard.get("refresh_block_reason") or "")
     try:
         notifier(
             title,
@@ -416,7 +665,6 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
             "quantity": quantity,
             "order_type": order_type,
         }, 400
-    pre_submit_snapshot = _build_ibkr_account_buying_power_snapshot(service)
     reservation_store = getattr(service, "buying_power_reservations", None)
     reservation_snapshot = {}
     snapshotter = getattr(reservation_store, "snapshot", None)
@@ -425,8 +673,76 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
             reservation_snapshot = snapshotter()
         except Exception:
             reservation_snapshot = {}
+    baseline = {}
+    baseline_getter = getattr(reservation_store, "baseline_snapshot", None)
+    if callable(baseline_getter):
+        try:
+            candidate = baseline_getter()
+            baseline = candidate if isinstance(candidate, dict) else {}
+        except Exception:
+            baseline = {}
+
+    max_snapshot_age_s = _snapshot_max_age_sec(service, runtime_environment)
+    baseline_max_age_s = _baseline_max_age_sec(service, runtime_environment)
+    pre_submit_snapshot = _build_ibkr_account_buying_power_snapshot(service)
+
+    def evaluate_snapshot(payload: dict) -> tuple[dict, float | None, dict, bool, bool]:
+        payload = payload if isinstance(payload, dict) else {}
+        guard = payload.get("buying_power_guard") if isinstance(payload.get("buying_power_guard"), dict) else {}
+        age_s = _snapshot_age_s(payload)
+        summary = _buying_power_snapshot_summary(payload)
+        guard_available = bool(summary and guard.get("available") is not False and str(guard.get("state") or "").strip().lower() != "unavailable")
+        fresh = bool(guard_available and age_s is not None and age_s <= max_snapshot_age_s)
+        return guard, age_s, summary, guard_available, fresh
+
+    snapshot_guard, snapshot_age_s, snapshot_summary, snapshot_guard_available, snapshot_fresh = evaluate_snapshot(pre_submit_snapshot)
+    force_refresh_details = {}
+    if not snapshot_fresh:
+        forced_snapshot = _build_ibkr_account_buying_power_snapshot(service, force_refresh=True)
+        forced_guard, forced_age_s, forced_summary, forced_guard_available, forced_fresh = evaluate_snapshot(forced_snapshot)
+        force_refresh_details = {
+            "snapshot_force_refresh_attempted": True,
+            "snapshot_force_refresh_result": "fresh" if forced_fresh else "stale" if forced_summary else "unavailable",
+            "snapshot_force_refresh_reason": str(
+                forced_guard.get("reason")
+                or (forced_snapshot or {}).get("refresh_error")
+                or (forced_snapshot or {}).get("last_refresh_error")
+                or ""
+            ),
+            "snapshot_force_refresh_age_s": round(float(forced_age_s), 1) if forced_age_s is not None else None,
+        }
+        if isinstance(forced_snapshot, dict) and forced_snapshot.get("hard_blocked") is not None:
+            force_refresh_details["snapshot_force_refresh_hard_blocked"] = bool(forced_snapshot.get("hard_blocked"))
+        if (forced_snapshot or {}).get("retry_after_s") not in (None, ""):
+            force_refresh_details["snapshot_force_refresh_retry_after_s"] = (forced_snapshot or {}).get("retry_after_s")
+        if forced_fresh or (forced_summary and not snapshot_summary):
+            pre_submit_snapshot = forced_snapshot
+            snapshot_guard = forced_guard
+            snapshot_age_s = forced_age_s
+            snapshot_summary = forced_summary
+            snapshot_guard_available = forced_guard_available
+            snapshot_fresh = forced_fresh
+
+    baseline_available = bool((baseline or {}).get("available"))
+    baseline_age_s = _snapshot_age_s(baseline) if baseline_available else None
+    baseline_fresh = bool(baseline_available and baseline_age_s is not None and baseline_age_s <= baseline_max_age_s)
+    if not snapshot_fresh and baseline_fresh:
+        account_summary_source = "baseline"
+        account_summary = dict((baseline or {}).get("summary") or {})
+    else:
+        account_summary_source = "snapshot" if snapshot_summary else "baseline" if baseline_available else ""
+        account_summary = snapshot_summary or dict((baseline or {}).get("summary") or {})
+    freshness_block_reason = ""
+    if not snapshot_fresh and not baseline_fresh and account_summary and (baseline_available or snapshot_guard_available):
+        stale_age_s = snapshot_age_s if account_summary_source == "snapshot" else baseline_age_s
+        freshness_block_reason = (
+            "buying_power_snapshot_missing_timestamp"
+            if stale_age_s is None
+            else "buying_power_snapshot_stale"
+        )
+
     adjusted_summary = apply_reservations_to_buying_power_summary(
-        (pre_submit_snapshot or {}).get("summary") or {},
+        account_summary,
         reservation_snapshot,
     )
     buying_power_guard = build_buying_power_guard(
@@ -435,16 +751,52 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
         environment=runtime_environment,
         requested_exposure=requested_exposure,
     )
-    buying_power_guard["account_remaining_buying_power"] = _safe_float(
-        ((pre_submit_snapshot or {}).get("summary") or {}).get("remaining_buying_power"),
-        _safe_float(((pre_submit_snapshot or {}).get("summary") or {}).get("buying_power"), 0.0),
-    )
+    account_remaining_raw = account_summary.get("remaining_buying_power")
+    if account_remaining_raw in (None, ""):
+        account_remaining_raw = account_summary.get("buying_power")
+    if account_remaining_raw not in (None, ""):
+        buying_power_guard["account_remaining_buying_power"] = _safe_float(account_remaining_raw, 0.0)
     merge_reservation_snapshot_into_guard(buying_power_guard, reservation_snapshot)
-    snapshot_guard = (pre_submit_snapshot or {}).get("buying_power_guard")
     _merge_snapshot_guard_metadata(buying_power_guard, snapshot_guard if isinstance(snapshot_guard, dict) else None)
+    if force_refresh_details:
+        buying_power_guard.update(force_refresh_details)
+    if baseline_available:
+        buying_power_guard["baseline_available"] = True
+        buying_power_guard["baseline_source"] = str((baseline or {}).get("source") or "")
+        buying_power_guard["baseline_fetched_at"] = str((baseline or {}).get("fetched_at") or "")
+        buying_power_guard["baseline_stored_at"] = str((baseline or {}).get("stored_at") or "")
+        buying_power_guard["baseline_cache_state"] = str((baseline or {}).get("cache_state") or "")
+        if baseline_age_s is not None:
+            buying_power_guard["baseline_age_s"] = round(float(baseline_age_s), 1)
+        buying_power_guard["baseline_max_age_s"] = round(float(baseline_max_age_s), 1)
+        buying_power_guard["baseline_fresh"] = bool(baseline_fresh)
+    buying_power_guard["snapshot_fetched_at"] = (pre_submit_snapshot or {}).get("fetched_at") or (baseline or {}).get("fetched_at") or ""
+    if snapshot_age_s is not None:
+        buying_power_guard["snapshot_age_s"] = round(float(snapshot_age_s), 1)
+    buying_power_guard["snapshot_max_age_s"] = round(float(max_snapshot_age_s), 1)
+    buying_power_guard["snapshot_fresh"] = bool(snapshot_fresh or baseline_fresh)
     if isinstance((pre_submit_snapshot or {}).get("errors"), dict):
         buying_power_guard["snapshot_errors"] = dict((pre_submit_snapshot or {}).get("errors") or {})
-    if buying_power_guard.get("state") == "unavailable":
+    if freshness_block_reason and buying_power_guard.get("enabled"):
+        stale_age_s = snapshot_age_s if account_summary_source == "snapshot" else baseline_age_s
+        ledger_allowed, ledger_details = _ledger_safe_can_allow_manual(
+            buying_power_guard,
+            reservation_snapshot=reservation_snapshot,
+            account_summary_source=account_summary_source,
+            stale_age_s=stale_age_s,
+            freshness_block_reason=freshness_block_reason,
+            baseline=baseline,
+            snapshot=pre_submit_snapshot,
+            force_refresh_details=force_refresh_details,
+        )
+        _apply_ledger_safe_decision(
+            buying_power_guard,
+            ledger_allowed=ledger_allowed,
+            ledger_details=ledger_details,
+            freshness_block_reason=freshness_block_reason,
+        )
+    guard_state = str(buying_power_guard.get("state") or "").strip().lower()
+    if guard_state == "unavailable":
         _notify_manual_buying_power_event(
             service,
             title="手动开仓暂停：购买力风控不可用",
@@ -470,7 +822,7 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
             "buying_power_guard": buying_power_guard,
             "snapshot": pre_submit_snapshot,
         }, 503
-    if buying_power_guard.get("state") == "blocked":
+    if guard_state == "blocked":
         _notify_manual_buying_power_event(
             service,
             title="手动开仓已被动态购买力上限拦截",
@@ -496,7 +848,18 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
             "buying_power_guard": buying_power_guard,
             "snapshot": pre_submit_snapshot,
         }, 409
-    if buying_power_guard.get("state") == "warning":
+    if guard_state == "ledger_safe" or (guard_state == "warning" and buying_power_guard.get("ledger_safe_used")):
+        _notify_manual_buying_power_event(
+            service,
+            title="手动开仓按今日账本安全放行：账户刷新待重试",
+            level="warning",
+            environment=runtime_environment,
+            symbol=symbol,
+            direction=direction,
+            quantity=quantity,
+            guard=buying_power_guard,
+        )
+    elif guard_state == "warning":
         _notify_manual_buying_power_event(
             service,
             title="手动开仓购买力预警",

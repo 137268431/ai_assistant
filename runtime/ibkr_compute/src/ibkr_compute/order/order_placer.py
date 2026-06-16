@@ -18,6 +18,8 @@ from ibkr_compute.api.account.buying_power_guard import build_buying_power_guard
 from ibkr_compute.observability.prometheus import record_gateway_order_serial_event, record_order_event
 from ibkr_compute.order.buying_power_reservations import (
     BuyingPowerReservationStore,
+    LEDGER_SAFE_GUARD_META_KEYS,
+    _ledger_adjusted_remaining_before_request,
     merge_reservation_snapshot_into_guard,
 )
 from ibkr_compute.order.close_execution import build_close_execution_plan, infer_close_session, quote_from_sources
@@ -593,7 +595,12 @@ class OrderPlacer:
             guard_remaining + guard_local_reserved,
         )
         current_reserved = self._safe_float((reservation_snapshot or {}).get("exposure"), 0.0)
-        adjusted_remaining = max(0.0, account_remaining - current_reserved)
+        current_pending_reserved = self._safe_float(
+            (reservation_snapshot or {}).get("pending_reservation_exposure"),
+            current_reserved,
+        )
+        ledger_remaining = _ledger_adjusted_remaining_before_request(guard, current_pending_reserved)
+        adjusted_remaining = ledger_remaining if ledger_remaining is not None else max(0.0, account_remaining - current_reserved)
         summary = {
             "buying_power": adjusted_remaining,
             "remaining_buying_power": adjusted_remaining,
@@ -626,9 +633,19 @@ class OrderPlacer:
             "risk_model_strategy_entry_order_count",
             "risk_model_strategy_position_symbols",
             "risk_model_strategy_entry_order_symbols",
+            *LEDGER_SAFE_GUARD_META_KEYS,
         ):
             if guard.get(key) not in (None, ""):
                 recheck_guard[key] = guard.get(key)
+        if ledger_remaining is not None:
+            recheck_guard["source"] = "today_ledger_safe"
+            recheck_guard["ledger_safe_used"] = True
+            recheck_guard["ledger_pending_reserved_exposure"] = round(current_pending_reserved, 2)
+            recheck_guard["ledger_pending_reserved_count"] = int(
+                (reservation_snapshot or {}).get("pending_reservation_count") or 0
+            )
+            recheck_guard["ledger_remaining_before_request"] = round(adjusted_remaining, 2)
+            recheck_guard["ledger_remaining_after"] = round(max(0.0, adjusted_remaining - exposure), 2)
         merge_reservation_snapshot_into_guard(recheck_guard, reservation_snapshot)
         state = str(recheck_guard.get("state") or "").strip().lower()
         if state in {"blocked", "unavailable"}:

@@ -16,7 +16,7 @@ from ibkr_api.signals.ingest import build_signal_ingest_response, build_signals_
 from ibkr_api.signals.ingest_payloads import build_signal_record_payload, normalize_risk_reward_value
 from ibkr_api.signals.ingest_store import upsert_signal_record
 from ibkr_api.signals.notifications import build_signal_notification_card, build_signal_status_card
-from ibkr_api.orders.notifications import build_order_group_status_card, build_order_status_card
+from ibkr_api.orders.notifications import build_order_callback_ledger_card, build_order_group_status_card, build_order_status_card
 
 
 class _FakePB:
@@ -1038,6 +1038,8 @@ class SignalIngressBuildersTest(unittest.TestCase):
         content = card["elements"][0]["content"]
 
         self.assertIn("盈利 +$19.00", card["header"]["title"]["content"])
+        self.assertIn("做空 / SHORT", card["header"]["title"]["content"])
+        self.assertIn("**交易方向**: 做空 / SHORT", content)
         self.assertEqual("green", card["header"]["template"])
         self.assertIn("**实际盈亏**: 盈利 +$19.00", content)
         self.assertIn("入场 @50.00", content)
@@ -1118,6 +1120,100 @@ class SignalIngressBuildersTest(unittest.TestCase):
         self.assertIn("止损已取消", content)
         self.assertIn("Invalid Price", content)
         self.assertNotIn("order_submitted_by_ibkr_compute", content)
+
+    def test_order_group_status_card_shows_entry_filled_with_protection_working(self):
+        rows = [
+            {
+                "id": "order-entry",
+                "unique_id": "entry-aapl",
+                "order_type": "LMT",
+                "symbol": "AAPL",
+                "environment": "paper",
+                "status": "Filled",
+                "role": "entry",
+                "trade_group_id": "entry-aapl",
+                "direction": "long",
+                "quantity": 10,
+                "filled_qty": 10,
+                "fill_price": 100.0,
+            },
+            {
+                "id": "order-tp",
+                "unique_id": "tp-aapl",
+                "order_type": "LMT",
+                "symbol": "AAPL",
+                "environment": "paper",
+                "status": "Submitted",
+                "role": "take_profit",
+                "trade_group_id": "entry-aapl",
+                "quantity": 10,
+                "filled_qty": 0,
+                "limit_price": 104.0,
+            },
+            {
+                "id": "order-sl",
+                "unique_id": "sl-aapl",
+                "order_type": "STP",
+                "symbol": "AAPL",
+                "environment": "paper",
+                "status": "Submitted",
+                "role": "stop_loss",
+                "trade_group_id": "entry-aapl",
+                "quantity": 10,
+                "filled_qty": 0,
+                "limit_price": 98.0,
+            },
+        ]
+
+        card = build_order_group_status_card(rows, status="Filled", message="入场成交", console_base_url="https://console.example.com")
+        content = card["elements"][0]["content"]
+
+        self.assertIn("入场已成交 · 保护单挂单中", card["header"]["title"]["content"])
+        self.assertIn("**状态**: 入场已成交 · 保护单挂单中", content)
+        self.assertIn("做多 / LONG", card["header"]["title"]["content"])
+        self.assertIn("**交易方向**: 做多 / LONG", content)
+
+    def test_order_callback_ledger_does_not_label_unfilled_canceled_protection_as_exit(self):
+        order = {
+            "id": "order-sl",
+            "unique_id": "sl-aapl",
+            "order_type": "STP",
+            "symbol": "AAPL",
+            "environment": "paper",
+            "status": "Canceled",
+            "role": "stop_loss",
+            "broker_order_id": "86",
+            "trade_group_id": "entry-aapl",
+            "entry_order_unique_id": "entry-aapl",
+            "direction": "long",
+            "quantity": 10,
+            "filled_qty": 0,
+            "limit_price": 98.0,
+            "extra": {
+                "status_reason": "tv_direct_ready",
+                "broker_realtime_callback": True,
+                "ib_callback_type": "orderStatus",
+            },
+        }
+
+        card = build_order_callback_ledger_card(
+            order,
+            {
+                "event_type": "terminal_status",
+                "event_label": "已取消",
+                "reason": "terminal_status",
+                "status": "Canceled",
+                "filled_qty": 0,
+                "fill_delta": 0,
+                "callback_type": "orderStatus",
+            },
+        )
+        content = card["elements"][0]["content"]
+
+        self.assertIn("止损", card["header"]["title"]["content"])
+        self.assertIn("**角色 / 类型**: 止损 / STP", content)
+        self.assertNotIn("**平仓原因**", content)
+        self.assertNotIn("tv_direct_ready", content)
 
     def test_order_group_status_card_explains_order_flow_exit_and_ignores_default_zero_pnl(self):
         rows = [

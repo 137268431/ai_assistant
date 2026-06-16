@@ -20,6 +20,7 @@ from ibkr_compute.core.broker_mode import (
     resolve_data_environment,
     resolve_market_data_mode,
 )
+from ibkr_compute.core.time_utils import ET
 from ibkr_compute.order.order_placer import OrderPlacer
 from ibkr_compute.order.close_execution import build_close_execution_plan, infer_close_session
 from ibkr_compute.order.buying_power_reservations import BuyingPowerReservationStore
@@ -4122,6 +4123,193 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         self.assertEqual("fresh", guard["snapshot_force_refresh_result"])
         self.assertTrue(guard["snapshot_fresh"])
         self.assertEqual(295000.0, ack_extra["buying_power_remaining_after"])
+
+    def test_buying_power_guard_allows_today_ledger_when_refresh_blocked(self):
+        signal = self._signal("AAPL")
+        signal["shares"] = 50
+        stale_fetched_at = datetime.fromtimestamp(time.time() - 300, timezone.utc).isoformat()
+        today_text = datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S")
+        pb = FakeSignalStatePBClient({"id": "row-aapl", "extra": {"source": "ibkr_compute"}})
+        pb.upserts.append(
+            {
+                "environment": "paper",
+                "role": "entry",
+                "status": "Filled",
+                "broker_order_id": "old-entry-1",
+                "symbol": "MSFT",
+                "direction": "long",
+                "quantity": 250,
+                "filled_qty": 250,
+                "fill_price": 100.0,
+                "us_time": today_text,
+            }
+        )
+        store = BuyingPowerReservationStore(pb, environment="paper")
+        service = FakeSignalService(
+            signal,
+            lifecycle=FakeLifecycle(),
+            pb=pb,
+            config=FakeConfig(
+                {
+                    "entry_pre_submit_guard_enabled": "false",
+                    "ibkr_buying_power_max_snapshot_age_sec": 60,
+                    "ibkr_buying_power_stale_safe_enabled": "true",
+                    "ibkr_buying_power_stale_safe_max_age_sec": 120,
+                    "ibkr_buying_power_stale_safe_min_usd": 50000,
+                    "ibkr_buying_power_warn_usd": 15000,
+                    "ibkr_buying_power_warn_pct_net_liq": 10,
+                }
+            ),
+        )
+        service.buying_power_reservations = store
+        service.account_snapshot_provider = mock.Mock(
+            side_effect=[
+                {
+                    "ok": True,
+                    "summary": {"buying_power": 45000.0, "net_liquidation": 100000.0},
+                    "buying_power_guard": {"available": True, "state": "ok", "source": "account_summary"},
+                    "fetched_at": stale_fetched_at,
+                    "source": "account_summary",
+                },
+                {
+                    "ok": True,
+                    "summary": {"buying_power": 45000.0, "net_liquidation": 100000.0},
+                    "buying_power_guard": {
+                        "available": True,
+                        "state": "ok",
+                        "reason": "account_summary_pacing_blocked",
+                        "source": "account_summary",
+                    },
+                    "fetched_at": stale_fetched_at,
+                    "source": "account_summary",
+                    "stale": True,
+                    "hard_blocked": True,
+                    "retry_after_s": 45,
+                },
+            ]
+        )
+
+        service._process_signals()
+
+        self.assertEqual(["sig-aapl"], service.signal_router.processed)
+        self.assertEqual(1, len(service.order_placer.calls))
+        self.assertEqual(2, service.account_snapshot_provider.call_count)
+        ack_extra = pb.acks[-1]["order"]["extra"]
+        guard = ack_extra["buying_power_guard"]
+        self.assertEqual("ledger_safe", guard["state"])
+        self.assertEqual("today_ledger_safe", guard["source"])
+        self.assertTrue(guard["ledger_safe_used"])
+        self.assertEqual(25000.0, guard["ledger_today_open_exposure"])
+        self.assertEqual(15000.0, guard["ledger_remaining_after"])
+        self.assertTrue(guard["ledger_next_refresh_at"])
+        self.assertEqual("自动开仓按今日账本安全放行：账户刷新待重试", pb.events[-1]["title"])
+        self.assertIn("下次购买力刷新时间", pb.events[-1]["detail"])
+
+    def test_buying_power_guard_blocks_when_today_ledger_below_floor(self):
+        signal = self._signal("AAPL")
+        signal["shares"] = 50
+        stale_fetched_at = datetime.fromtimestamp(time.time() - 300, timezone.utc).isoformat()
+        today_text = datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S")
+        pb = FakeSignalStatePBClient({"id": "row-aapl", "extra": {"source": "ibkr_compute"}})
+        pb.upserts.append(
+            {
+                "environment": "paper",
+                "role": "entry",
+                "status": "Filled",
+                "broker_order_id": "old-entry-1",
+                "symbol": "MSFT",
+                "direction": "long",
+                "quantity": 250,
+                "filled_qty": 250,
+                "fill_price": 100.0,
+                "us_time": today_text,
+            }
+        )
+        service = FakeSignalService(
+            signal,
+            lifecycle=FakeLifecycle(),
+            pb=pb,
+            config=FakeConfig(
+                {
+                    "entry_pre_submit_guard_enabled": "false",
+                    "ibkr_buying_power_max_snapshot_age_sec": 60,
+                    "ibkr_buying_power_stale_safe_enabled": "true",
+                    "ibkr_buying_power_stale_safe_max_age_sec": 120,
+                    "ibkr_buying_power_stale_safe_min_usd": 50000,
+                }
+            ),
+        )
+        service.buying_power_reservations = BuyingPowerReservationStore(pb, environment="paper")
+        stale_snapshot = {
+            "ok": True,
+            "summary": {"buying_power": 35000.0, "net_liquidation": 100000.0},
+            "buying_power_guard": {"available": True, "state": "ok", "source": "account_summary"},
+            "fetched_at": stale_fetched_at,
+            "source": "account_summary",
+        }
+        service.account_snapshot_provider = mock.Mock(side_effect=[stale_snapshot, {**stale_snapshot, "stale": True, "hard_blocked": True}])
+
+        service._process_signals()
+
+        self.assertEqual([], service.order_placer.calls)
+        patch = pb.updates[-1][2]
+        guard = patch["extra"]["buying_power_guard"]
+        self.assertEqual("blocked", guard["state"])
+        self.assertEqual("buying_power_ledger_below_block_threshold", guard["reason"])
+        self.assertEqual(5000.0, guard["remaining_after"])
+        self.assertEqual("rejected", _broker_execution(patch)["status"])
+
+    def test_buying_power_guard_rejects_ledger_safe_when_snapshot_not_today(self):
+        signal = self._signal("AAPL")
+        signal["shares"] = 50
+        today_text = datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S")
+        pb = FakeSignalStatePBClient({"id": "row-aapl", "extra": {"source": "ibkr_compute"}})
+        pb.upserts.append(
+            {
+                "environment": "paper",
+                "role": "entry",
+                "status": "Filled",
+                "broker_order_id": "old-entry-1",
+                "symbol": "MSFT",
+                "direction": "long",
+                "quantity": 250,
+                "filled_qty": 250,
+                "fill_price": 100.0,
+                "us_time": today_text,
+            }
+        )
+        service = FakeSignalService(
+            signal,
+            lifecycle=FakeLifecycle(),
+            pb=pb,
+            config=FakeConfig(
+                {
+                    "entry_pre_submit_guard_enabled": "false",
+                    "ibkr_buying_power_max_snapshot_age_sec": 60,
+                    "ibkr_buying_power_stale_safe_enabled": "true",
+                    "ibkr_buying_power_stale_safe_max_age_sec": 120,
+                    "ibkr_buying_power_stale_safe_min_usd": 50000,
+                }
+            ),
+        )
+        service.buying_power_reservations = BuyingPowerReservationStore(pb, environment="paper")
+        old_snapshot = {
+            "ok": True,
+            "summary": {"buying_power": 45000.0, "net_liquidation": 100000.0},
+            "buying_power_guard": {"available": True, "state": "ok", "source": "account_summary"},
+            "fetched_at": "2026-01-01T14:30:00+00:00",
+            "source": "account_summary",
+        }
+        service.account_snapshot_provider = mock.Mock(side_effect=[old_snapshot, {**old_snapshot, "stale": True, "hard_blocked": True}])
+
+        service._process_signals()
+
+        self.assertEqual([], service.order_placer.calls)
+        patch = pb.updates[-1][2]
+        guard = patch["extra"]["buying_power_guard"]
+        self.assertEqual("unavailable", guard["state"])
+        self.assertEqual("snapshot_not_today", guard["ledger_safe_block_reason"])
+        self.assertEqual("waiting_for_account_snapshot", patch["extra"]["execution_state"])
 
     def test_buying_power_guard_blocks_without_initial_baseline_when_snapshot_unavailable(self):
         signal = self._signal("AAPL")
