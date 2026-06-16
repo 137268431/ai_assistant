@@ -35,7 +35,8 @@ probeMinSignalGapBars = input.int(6, "Probe min signal gap bars", minval=1, maxv
 probeMinSignalGapAtr = input.float(0.60, "Probe min signal gap (x ATR)", step=0.05, minval=0.10, maxval=5.0, group="01 Structure")
 structureClusterBandAtr = input.float(0.40, "Structure cluster band (x ATR)", step=0.05, minval=0.05, maxval=3.0, group="01 Structure")
 minStructureSeparationAtr = input.float(1.00, "Independent structure separation (x ATR)", step=0.05, minval=0.10, maxval=5.0, group="01 Structure")
-minMiddleSwingAtr = input.float(0.90, "Middle swing for second test (x ATR)", step=0.05, minval=0.10, maxval=5.0, group="01 Structure")
+minMiddleSwingAtr = input.float(1.00, "Middle swing for second test (x ATR)", step=0.05, minval=0.10, maxval=5.0, group="01 Structure")
+maxRetestAfterMiddleSwingBars = input.int(12, "Max bars after middle swing retest", minval=1, maxval=60, group="01 Structure")
 minSameSideSignalSeparationAtr = input.float(1.20, "Same-side signal separation (x ATR)", step=0.05, minval=0.10, maxval=8.0, group="01 Structure")
 failedBreakCloseBackAtr = input.float(0.10, "Failed break close-back (x ATR)", step=0.05, minval=0.0, maxval=2.0, group="01 Structure")
 planReplaceMinMoveAtr = input.float(0.25, "Plan replace min move (x ATR)", step=0.05, minval=0.05, maxval=5.0, group="01 Structure")
@@ -249,6 +250,8 @@ var float prevStructHigh = na
 var float prevStructLow = na
 var float lowSinceStructHigh = na
 var float highSinceStructLow = na
+var int lowSinceStructHighBar = na
+var int highSinceStructLowBar = na
 var bool topExhaustionUsed = false
 var bool bottomExhaustionUsed = false
 var int lastTopProbeSignalBar = na
@@ -277,6 +280,8 @@ if confirmed and referenceDayReset
     prevStructLow := na
     lowSinceStructHigh := na
     highSinceStructLow := na
+    lowSinceStructHighBar := na
+    highSinceStructLowBar := na
     topExhaustionUsed := false
     bottomExhaustionUsed := false
     lastTopProbeSignalBar := na
@@ -306,6 +311,7 @@ if confirmed and inReferenceSession
             todayStructHighZoneLow := todayHigh - highBand
             todayStructHighZoneHigh := todayHigh + highBand
             lowSinceStructHigh := low
+            lowSinceStructHighBar := bar_index
             topExhaustionUsed := false
         else
             todayStructHighZoneLow := na(todayStructHighZoneLow) ? todayHigh - highBand : math.min(todayStructHighZoneLow, todayHigh - highBand)
@@ -324,15 +330,18 @@ if confirmed and inReferenceSession
             todayStructLowZoneLow := todayLow - lowBand
             todayStructLowZoneHigh := todayLow + lowBand
             highSinceStructLow := high
+            highSinceStructLowBar := bar_index
             bottomExhaustionUsed := false
         else
             todayStructLowZoneLow := na(todayStructLowZoneLow) ? todayLow - lowBand : math.min(todayStructLowZoneLow, todayLow - lowBand)
             todayStructLowZoneHigh := na(todayStructLowZoneHigh) ? todayLow + lowBand : math.max(todayStructLowZoneHigh, todayLow + lowBand)
         lastProcessedLowCandidateBar := todayLowBar
-    if not na(todayStructHigh)
-        lowSinceStructHigh := na(lowSinceStructHigh) ? low : math.min(lowSinceStructHigh, low)
-    if not na(todayStructLow)
-        highSinceStructLow := na(highSinceStructLow) ? high : math.max(highSinceStructLow, high)
+    if not na(todayStructHigh) and (na(lowSinceStructHigh) or low < lowSinceStructHigh)
+        lowSinceStructHigh := low
+        lowSinceStructHighBar := bar_index
+    if not na(todayStructLow) and (na(highSinceStructLow) or high > highSinceStructLow)
+        highSinceStructLow := high
+        highSinceStructLowBar := bar_index
 
 bool trendHasHH = not na(todayStructHigh) and not na(prevStructHigh) and todayStructHigh > prevStructHigh + atr * trendMinSwingMoveAtr
 bool trendHasHL = not na(todayStructLow) and not na(prevStructLow) and todayStructLow > prevStructLow + atr * trendMinSwingMoveAtr
@@ -546,9 +555,11 @@ topSources := appendNearSource(topSources, dtpAvg, topBasis, tolerance, "dtp_avg
 bool strongTopProbeZone = topCount >= minConfluenceCount and not na(topZoneLow) and not na(topZoneHigh)
 int topAnchorAgeBars = not na(todayStructHighBar) ? bar_index - todayStructHighBar : 0
 float topPullbackAtr = not na(todayStructHigh) and not na(lowSinceStructHigh) ? (todayStructHigh - lowSinceStructHigh) / atr : na
-bool topAnchorReady = topAnchorAgeBars >= probeMinAnchorAgeBars and topPullbackAtr >= math.max(probeMinPullbackAtr, minMiddleSwingAtr)
+bool topMiddleSwingReady = not na(lowSinceStructHighBar) and topPullbackAtr >= math.max(probeMinPullbackAtr, minMiddleSwingAtr)
+bool topRetestFastEnough = topMiddleSwingReady and bar_index > lowSinceStructHighBar and bar_index - lowSinceStructHighBar <= maxRetestAfterMiddleSwingBars
+bool topAnchorReady = topAnchorAgeBars >= probeMinAnchorAgeBars and topRetestFastEnough
 bool topRetestBand = not na(topZoneLow) and not na(topZoneHigh) and high >= topZoneLow - atr * probeRetestBandAtr and low <= topZoneHigh + atr * probeRetestBandAtr
-bool topFirstExhaustion = strongTopProbeZone and not topExhaustionUsed and topPullbackAtr >= minMiddleSwingAtr and close < topZoneLow
+bool topFirstExhaustion = strongTopProbeZone and not topExhaustionUsed and topAnchorReady and topRetestBand and close < topZoneLow
 bool topRightShoulder = strongTopProbeZone and topAnchorReady and topRetestBand
 string topProbePattern = topRightShoulder ? "retest_2b_top" : topFirstExhaustion ? "extension_exhaustion_top" : "none"
 float topPredictEntry = strongTopProbeZone ? topZoneHigh - atr * predictiveEntryOffsetAtr : na
@@ -566,7 +577,7 @@ float topPredictQty = calcTrialQty(topPredictEntry, topPredictStop, predictiveMa
 float topConfirmQty = calcTrialQty(topConfirmEntry, topConfirmStop, confirmedMaxRiskDollars)
 bool topPredictAllowed = topPredictContext and smallStopTrialAllowed(topPredictEntry, topPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and topPredictQty >= 1.0
 bool topConfirmAllowed = topConfirmContext and smallStopTrialAllowed(topConfirmEntry, topConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and topConfirmQty >= 1.0
-string topProbeFilterReason = na(todayStructHigh) ? "no_today_struct_high" : not strongTopProbeZone ? "no_clear_structure" : not (topFirstExhaustion or topRightShoulder) ? (not topAnchorReady ? "anchor_too_fresh_or_no_pullback" : "not_retest_zone") : not topSignalBarsOk ? "signal_bars_too_close" : not topSignalPriceGapOk ? "micro_structure_too_close" : "passed"
+string topProbeFilterReason = na(todayStructHigh) ? "no_today_struct_high" : not strongTopProbeZone ? "no_clear_structure" : topAnchorAgeBars < probeMinAnchorAgeBars ? "anchor_too_fresh" : not topMiddleSwingReady ? "no_middle_swing" : not topRetestFastEnough ? "retest_too_slow" : not topRetestBand ? "not_retest_zone" : not topSignalBarsOk ? "signal_bars_too_close" : not topSignalPriceGapOk ? "micro_structure_too_close" : "passed"
 
 float bottomBasis = todayStructLow
 float bottomZoneLow = na(todayStructLowZoneLow) ? todayStructLow : todayStructLowZoneLow
@@ -600,9 +611,11 @@ bottomSources := appendNearSource(bottomSources, dtpAvg, bottomBasis, tolerance,
 bool strongBottomProbeZone = bottomCount >= minConfluenceCount and not na(bottomZoneLow) and not na(bottomZoneHigh)
 int bottomAnchorAgeBars = not na(todayStructLowBar) ? bar_index - todayStructLowBar : 0
 float bottomPullbackAtr = not na(todayStructLow) and not na(highSinceStructLow) ? (highSinceStructLow - todayStructLow) / atr : na
-bool bottomAnchorReady = bottomAnchorAgeBars >= probeMinAnchorAgeBars and bottomPullbackAtr >= math.max(probeMinPullbackAtr, minMiddleSwingAtr)
+bool bottomMiddleSwingReady = not na(highSinceStructLowBar) and bottomPullbackAtr >= math.max(probeMinPullbackAtr, minMiddleSwingAtr)
+bool bottomRetestFastEnough = bottomMiddleSwingReady and bar_index > highSinceStructLowBar and bar_index - highSinceStructLowBar <= maxRetestAfterMiddleSwingBars
+bool bottomAnchorReady = bottomAnchorAgeBars >= probeMinAnchorAgeBars and bottomRetestFastEnough
 bool bottomRetestBand = not na(bottomZoneLow) and not na(bottomZoneHigh) and low <= bottomZoneHigh + atr * probeRetestBandAtr and high >= bottomZoneLow - atr * probeRetestBandAtr
-bool bottomFirstExhaustion = strongBottomProbeZone and not bottomExhaustionUsed and bottomPullbackAtr >= minMiddleSwingAtr and close > bottomZoneHigh
+bool bottomFirstExhaustion = strongBottomProbeZone and not bottomExhaustionUsed and bottomAnchorReady and bottomRetestBand and close > bottomZoneHigh
 bool bottomRightShoulder = strongBottomProbeZone and bottomAnchorReady and bottomRetestBand
 string bottomProbePattern = bottomRightShoulder ? "retest_2b_bottom" : bottomFirstExhaustion ? "extension_exhaustion_bottom" : "none"
 float bottomPredictEntry = strongBottomProbeZone ? bottomZoneLow + atr * predictiveEntryOffsetAtr : na
@@ -620,7 +633,7 @@ float bottomPredictQty = calcTrialQty(bottomPredictEntry, bottomPredictStop, pre
 float bottomConfirmQty = calcTrialQty(bottomConfirmEntry, bottomConfirmStop, confirmedMaxRiskDollars)
 bool bottomPredictAllowed = bottomPredictContext and smallStopTrialAllowed(bottomPredictEntry, bottomPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and bottomPredictQty >= 1.0
 bool bottomConfirmAllowed = bottomConfirmContext and smallStopTrialAllowed(bottomConfirmEntry, bottomConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and bottomConfirmQty >= 1.0
-string bottomProbeFilterReason = na(todayStructLow) ? "no_today_struct_low" : not strongBottomProbeZone ? "no_clear_structure" : not (bottomFirstExhaustion or bottomRightShoulder) ? (not bottomAnchorReady ? "anchor_too_fresh_or_no_pullback" : "not_retest_zone") : not bottomSignalBarsOk ? "signal_bars_too_close" : not bottomSignalPriceGapOk ? "micro_structure_too_close" : "passed"
+string bottomProbeFilterReason = na(todayStructLow) ? "no_today_struct_low" : not strongBottomProbeZone ? "no_clear_structure" : bottomAnchorAgeBars < probeMinAnchorAgeBars ? "anchor_too_fresh" : not bottomMiddleSwingReady ? "no_middle_swing" : not bottomRetestFastEnough ? "retest_too_slow" : not bottomRetestBand ? "not_retest_zone" : not bottomSignalBarsOk ? "signal_bars_too_close" : not bottomSignalPriceGapOk ? "micro_structure_too_close" : "passed"
 
 bool longActionable = trendLongConfirmAllowed or bottomConfirmAllowed or trendLongPredictAllowed or bottomPredictAllowed
 bool shortActionable = trendShortConfirmAllowed or topConfirmAllowed or trendShortPredictAllowed or topPredictAllowed
@@ -702,16 +715,16 @@ fmtSignedRCore(float value) =>
     na(value) ? "--R" : (value >= 0.0 ? "+" : "-") + str.tostring(math.abs(value), "#.##") + "R"
 
 exitReasonDisplayNameCore(string reason) =>
-    reason == "take_profit" ? "TP" : reason == "runner_stop" ? "Runner" : reason == "stop_loss" ? "SL" : reason == "force_flat_eod" ? "EOD" : reason == "strategy_closed" ? "Closed" : reason
+    reason == "take_profit" ? "TP" : reason == "runner_stop" ? "RUN" : reason == "stop_loss" ? "SL" : reason == "force_flat_eod" ? "EOD" : reason == "strategy_closed" ? "CLS" : reason
 
 entryOrderComment(int direction, float entryPrice, float qty, float stopPrice, float targetPrice, float runnerPrice) =>
-    (direction == 1 ? "Long" : "Short") + " plan " + fmt(entryPrice) + " qty " + str.tostring(qty, "#") + " SL " + fmt(stopPrice) + " TP " + fmt(targetPrice) + " Runner " + fmt(runnerPrice)
+    (direction == 1 ? "L" : "S") + " E" + fmt(entryPrice) + " Q" + str.tostring(qty, "#") + " SL" + fmt(stopPrice) + " TP" + fmt(targetPrice) + " R" + fmt(runnerPrice)
 
 exitOrderComment(string reason, float exitPrice) =>
     float pnlPerShare = activeDirection == 1 ? exitPrice - activeEntry : activeEntry - exitPrice
     float pnlValue = pnlPerShare * activeQty
     float pnlR = activeInitialRisk > 0.0 ? pnlPerShare / activeInitialRisk : na
-    exitReasonDisplayNameCore(reason) + " " + fmtSignedMoneyCore(pnlValue) + " / " + fmtSignedRCore(pnlR) + " exit " + fmt(exitPrice) + " entry " + fmt(activeEntry) + " SL " + fmt(activeStop) + " TP " + fmt(activeTarget)
+    exitReasonDisplayNameCore(reason) + " " + fmtSignedMoneyCore(pnlValue) + " " + fmtSignedRCore(pnlR) + " X" + fmt(exitPrice)
 
 // -----------------------------------------------------------------------------
 // Payload builders
