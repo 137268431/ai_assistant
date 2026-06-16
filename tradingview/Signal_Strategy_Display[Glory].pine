@@ -111,6 +111,30 @@ fmt(float value) =>
 riskPerShare(float entryPrice, float stopPrice) =>
     math.abs(entryPrice - stopPrice)
 
+riskDollars(float entryPrice, float stopPrice, float qty) =>
+    not na(entryPrice) and not na(stopPrice) and not na(qty) and qty > 0.0 ? math.abs(entryPrice - stopPrice) * qty : na
+
+pnlDollars(float entryPrice, float levelPrice, int direction, float qty) =>
+    not na(entryPrice) and not na(levelPrice) and not na(qty) and qty > 0.0 and direction != 0 ? (levelPrice - entryPrice) * direction * qty : na
+
+moneyText(float value) =>
+    na(value) ? "$--" : (value >= 0.0 ? "+$" : "-$") + str.tostring(math.abs(value), "#.##")
+
+qtyText(float qty) =>
+    na(qty) ? "--" : str.tostring(qty, "#")
+
+planMoneyText(float entryPrice, float stopPrice, float runnerPrice, float targetPrice, int direction, float qty) =>
+    "SL " + moneyText(pnlDollars(entryPrice, stopPrice, direction, qty)) + " / Runner " + moneyText(pnlDollars(entryPrice, runnerPrice, direction, qty)) + " / TP " + moneyText(pnlDollars(entryPrice, targetPrice, direction, qty))
+
+planEntryLabelText(float entryPrice, float qty) =>
+    "Entry " + fmt(entryPrice) + "\nqty " + qtyText(qty)
+
+planLevelLabelText(string levelName, float price, float dollars) =>
+    levelName + " " + fmt(price) + "\n" + moneyText(dollars)
+
+planLineTooltipText(float entryPrice, float stopPrice, float runnerPrice, float targetPrice, int direction, float qty) =>
+    "Entry " + fmt(entryPrice) + " / qty " + qtyText(qty) + "\nRisk " + moneyText(-riskDollars(entryPrice, stopPrice, qty)) + "\n" + planMoneyText(entryPrice, stopPrice, runnerPrice, targetPrice, direction, qty)
+
 stopDistanceAtr(float entryPrice, float stopPrice, float atrValue) =>
     atrValue > 0.0 ? riskPerShare(entryPrice, stopPrice) / atrValue : na
 
@@ -763,6 +787,10 @@ var line currentEntryLine = na
 var line currentStopLine = na
 var line currentRunnerLine = na
 var line currentTargetLine = na
+var label currentEntryLabel = na
+var label currentStopLabel = na
+var label currentRunnerLabel = na
+var label currentTargetLabel = na
 
 newPlanNow = confirmed and showSignalEventFlow and selectedPlanValid and not shadowPending and not shadowOpen
 if newPlanNow
@@ -793,8 +821,8 @@ if newPlanNow
         lastBottomProbeSignalBar := bar_index
         lastBottomProbeSignalPrice := selectedEntry
         bottomExhaustionUsed := selectedProbePattern == "extension_exhaustion_bottom" ? true : bottomExhaustionUsed
-    string detail = "F" + str.tostring(flowId) + " ②" + intentName(selectedEntryIntent) + " " + dirName(selectedDirection) + "\n" + setupDisplayName(selectedSetup) + "\n主因: " + selectedMainReason + "\n次因: " + (selectedSecondaryReason == "" ? "none" : selectedSecondaryReason) + "\n结构锚点 " + fmt(selectedStructureAnchor) + " / expected " + fmt(selectedExpectedR) + "R\nplan " + fmt(selectedEntry) + " / SL " + fmt(selectedStop) + "\n蓝Runner " + fmt(selectedRunnerActivation) + " / 绿SafetyTP " + fmt(selectedTarget) + "\n小止损: " + selectedSmallStopGateReason + " / " + fmt(selectedStopDistanceAtr) + "ATR / " + fmt(selectedStopDistanceBps) + "bps\nprobe: " + selectedProbePattern + " / filter " + selectedProbeFilterReason + "\n风险模式: " + selectedTrialRiskMode + " $" + fmt(selectedRiskBudget) + " / TTL " + str.tostring(entryOrderTtlBars)
-    string compact = "F" + str.tostring(flowId) + " ②" + intentName(selectedEntryIntent) + " " + dirName(selectedDirection) + "\n" + setupDisplayName(selectedSetup) + "\nplan " + fmt(selectedEntry) + " / SL " + fmt(selectedStop)
+    string detail = "F" + str.tostring(flowId) + " ②" + intentName(selectedEntryIntent) + " " + dirName(selectedDirection) + "\n" + setupDisplayName(selectedSetup) + "\n主因: " + selectedMainReason + "\n次因: " + (selectedSecondaryReason == "" ? "none" : selectedSecondaryReason) + "\n结构锚点 " + fmt(selectedStructureAnchor) + " / expected " + fmt(selectedExpectedR) + "R\nplan " + fmt(selectedEntry) + " / qty " + qtyText(selectedQty) + "\n红SL " + fmt(selectedStop) + " " + moneyText(pnlDollars(selectedEntry, selectedStop, selectedDirection, selectedQty)) + "\n蓝Runner " + fmt(selectedRunnerActivation) + " " + moneyText(pnlDollars(selectedEntry, selectedRunnerActivation, selectedDirection, selectedQty)) + "\n绿SafetyTP " + fmt(selectedTarget) + " " + moneyText(pnlDollars(selectedEntry, selectedTarget, selectedDirection, selectedQty)) + "\n小止损: " + selectedSmallStopGateReason + " / " + fmt(selectedStopDistanceAtr) + "ATR / " + fmt(selectedStopDistanceBps) + "bps\nprobe: " + selectedProbePattern + " / filter " + selectedProbeFilterReason + "\n风险模式: " + selectedTrialRiskMode + " $" + fmt(selectedRiskBudget) + " / TTL " + str.tostring(entryOrderTtlBars)
+    string compact = "F" + str.tostring(flowId) + " ②" + intentName(selectedEntryIntent) + " " + dirName(selectedDirection) + "\n" + setupDisplayName(selectedSetup) + "\nplan " + fmt(selectedEntry) + " / SL " + moneyText(pnlDollars(selectedEntry, selectedStop, selectedDirection, selectedQty)) + " / TP " + moneyText(pnlDollars(selectedEntry, selectedTarget, selectedDirection, selectedQty))
     if flowLabelsVisible
         label.new(bar_index, selectedDirection == 1 ? low - atr * 1.5 : high + atr * 1.5, flowLabelText(compact, detail), style=flowStyle(selectedDirection), color=flowColor(selectedEntryIntent == "predictive_limit" ? "predictive" : "confirmed", selectedDirection), textcolor=labelTextColor(selectedEntryIntent == "predictive_limit" ? "predictive" : "confirmed", selectedDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(detail))
     int lineEnd = bar_index + entryOrderTtlBars
@@ -802,6 +830,16 @@ if newPlanNow
     currentStopLine := line.new(bar_index, shadowStop, lineEnd, shadowStop, color=color.new(color.red, 0), width=3)
     currentRunnerLine := line.new(bar_index, shadowRunner, lineEnd, shadowRunner, color=color.new(color.blue, 0), width=3)
     currentTargetLine := line.new(bar_index, shadowTarget, lineEnd, shadowTarget, color=color.new(color.green, 0), width=3)
+    currentEntryLabel := na
+    currentStopLabel := na
+    currentRunnerLabel := na
+    currentTargetLabel := na
+    if flowLabelsVisible
+        string lineDetail = "F" + str.tostring(flowId) + " plan levels\n" + planLineTooltipText(shadowEntry, shadowStop, shadowRunner, shadowTarget, shadowDirection, shadowQty)
+        currentEntryLabel := label.new(lineEnd, shadowEntry, flowLabelText(planEntryLabelText(shadowEntry, shadowQty), lineDetail), style=label.style_label_left, color=color.new(color.yellow, 0), textcolor=labelTextColor("predictive", shadowDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(lineDetail))
+        currentStopLabel := label.new(lineEnd, shadowStop, flowLabelText(planLevelLabelText("SL", shadowStop, pnlDollars(shadowEntry, shadowStop, shadowDirection, shadowQty)), lineDetail), style=label.style_label_left, color=color.new(color.red, 0), textcolor=labelTextColor("exit", shadowDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(lineDetail))
+        currentRunnerLabel := label.new(lineEnd, shadowRunner, flowLabelText(planLevelLabelText("Runner", shadowRunner, pnlDollars(shadowEntry, shadowRunner, shadowDirection, shadowQty)), lineDetail), style=label.style_label_left, color=color.new(color.blue, 0), textcolor=labelTextColor("runner", shadowDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(lineDetail))
+        currentTargetLabel := label.new(lineEnd, shadowTarget, flowLabelText(planLevelLabelText("SafetyTP", shadowTarget, pnlDollars(shadowEntry, shadowTarget, shadowDirection, shadowQty)), lineDetail), style=label.style_label_left, color=color.new(color.green, 0), textcolor=labelTextColor("confirmed", shadowDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(lineDetail))
 
 if showHistoricalPlanLines and (shadowPending or shadowOpen) and not na(shadowSignalBar)
     int lineEnd = math.max(bar_index, shadowSignalBar + 1)
@@ -814,6 +852,27 @@ if showHistoricalPlanLines and (shadowPending or shadowOpen) and not na(shadowSi
         line.set_x2(currentRunnerLine, lineEnd)
     if not na(currentTargetLine)
         line.set_x2(currentTargetLine, lineEnd)
+    string activePlanLineDetail = "F" + str.tostring(flowId) + " plan levels\n" + planLineTooltipText(shadowEntry, shadowStop, shadowRunner, shadowTarget, shadowDirection, shadowQty)
+    if not na(currentEntryLabel)
+        label.set_x(currentEntryLabel, lineEnd)
+        label.set_y(currentEntryLabel, shadowEntry)
+        label.set_text(currentEntryLabel, flowLabelText(planEntryLabelText(shadowEntry, shadowQty), activePlanLineDetail))
+        label.set_tooltip(currentEntryLabel, flowLabelTooltip(activePlanLineDetail))
+    if not na(currentStopLabel)
+        label.set_x(currentStopLabel, lineEnd)
+        label.set_y(currentStopLabel, shadowStop)
+        label.set_text(currentStopLabel, flowLabelText(planLevelLabelText("SL", shadowStop, pnlDollars(shadowEntry, shadowStop, shadowDirection, shadowQty)), activePlanLineDetail))
+        label.set_tooltip(currentStopLabel, flowLabelTooltip(activePlanLineDetail))
+    if not na(currentRunnerLabel)
+        label.set_x(currentRunnerLabel, lineEnd)
+        label.set_y(currentRunnerLabel, shadowRunner)
+        label.set_text(currentRunnerLabel, flowLabelText(planLevelLabelText("Runner", shadowRunner, pnlDollars(shadowEntry, shadowRunner, shadowDirection, shadowQty)), activePlanLineDetail))
+        label.set_tooltip(currentRunnerLabel, flowLabelTooltip(activePlanLineDetail))
+    if not na(currentTargetLabel)
+        label.set_x(currentTargetLabel, lineEnd)
+        label.set_y(currentTargetLabel, shadowTarget)
+        label.set_text(currentTargetLabel, flowLabelText(planLevelLabelText("SafetyTP", shadowTarget, pnlDollars(shadowEntry, shadowTarget, shadowDirection, shadowQty)), activePlanLineDetail))
+        label.set_tooltip(currentTargetLabel, flowLabelTooltip(activePlanLineDetail))
 
 bool pendingTouched = confirmed and shadowPending and bar_index > shadowSignalBar and (shadowDirection == 1 ? low <= shadowEntry : high >= shadowEntry)
 bool pendingExpired = confirmed and shadowPending and bar_index > shadowExpiresBar
@@ -903,8 +962,15 @@ plotshape(showComponentMarkers and bearDivNow, "Bear divergence", location=locat
 plotshape(newPlanNow and selectedDirection == 1, title="Predictive/confirmed long", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.tiny, text="多")
 plotshape(newPlanNow and selectedDirection == -1, title="Predictive/confirmed short", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny, text="空")
 
-var table statusTable = table.new(position.top_right, 2, 8)
+var table statusTable = table.new(position.top_right, 2, 9)
 if showStatusTable and barstate.islast
+    bool statusUsesShadowPlan = shadowPending or shadowOpen
+    float statusEntryPlan = statusUsesShadowPlan ? shadowEntry : selectedEntry
+    float statusStopPlan = statusUsesShadowPlan ? shadowStop : selectedStop
+    float statusRunnerPlan = statusUsesShadowPlan ? shadowRunner : selectedRunnerActivation
+    float statusTargetPlan = statusUsesShadowPlan ? shadowTarget : selectedTarget
+    int statusDirectionPlan = statusUsesShadowPlan ? shadowDirection : selectedDirection
+    float statusQtyPlan = statusUsesShadowPlan ? shadowQty : selectedQty
     table.cell(statusTable, 0, 0, "v3状态", text_color=tableTextColor(0), bgcolor=tableBgColor(0))
     table.cell(statusTable, 1, 0, shadowPending ? "预挂中" : shadowOpen ? "持仓影子" : selectedPlanValid ? "有计划" : "等待", text_color=tableTextColor(0), bgcolor=tableBgColor(0))
     table.cell(statusTable, 0, 1, "方向", text_color=tableTextColor(1), bgcolor=tableBgColor(1))
@@ -919,5 +985,7 @@ if showStatusTable and barstate.islast
     table.cell(statusTable, 1, 5, "Entry / SL / Runner / SafetyTP", text_color=tableTextColor(5), bgcolor=tableBgColor(5))
     table.cell(statusTable, 0, 6, "窗口", text_color=tableTextColor(6), bgcolor=tableBgColor(6))
     table.cell(statusTable, 1, 6, inEntryWindow ? "可入场" : "关闭", text_color=tableTextColor(6), bgcolor=tableBgColor(6))
-    table.cell(statusTable, 0, 7, "模型", text_color=tableTextColor(7), bgcolor=tableBgColor(7))
-    table.cell(statusTable, 1, 7, ENTRY_WINDOW_MODEL + " / 09:10-15:30", text_color=tableTextColor(7), bgcolor=tableBgColor(7))
+    table.cell(statusTable, 0, 7, "金额", text_color=tableTextColor(7), bgcolor=tableBgColor(7))
+    table.cell(statusTable, 1, 7, planMoneyText(statusEntryPlan, statusStopPlan, statusRunnerPlan, statusTargetPlan, statusDirectionPlan, statusQtyPlan), text_color=tableTextColor(7), bgcolor=tableBgColor(7))
+    table.cell(statusTable, 0, 8, "模型", text_color=tableTextColor(8), bgcolor=tableBgColor(8))
+    table.cell(statusTable, 1, 8, ENTRY_WINDOW_MODEL + " / 09:10-15:30", text_color=tableTextColor(8), bgcolor=tableBgColor(8))

@@ -647,6 +647,21 @@ var float activeRunnerExtreme = na
 var float activeMfeR = 0.0
 var int activeRiskUpdateSeq = 0
 
+fmtSignedMoneyCore(float value) =>
+    na(value) ? "$--" : (value >= 0.0 ? "+$" : "-$") + str.tostring(math.abs(value), "#.##")
+
+fmtSignedRCore(float value) =>
+    na(value) ? "--R" : (value >= 0.0 ? "+" : "-") + str.tostring(math.abs(value), "#.##") + "R"
+
+exitReasonDisplayNameCore(string reason) =>
+    reason == "take_profit" ? "TP" : reason == "runner_stop" ? "Runner" : reason == "stop_loss" ? "SL" : reason == "force_flat_eod" ? "EOD" : reason == "strategy_closed" ? "Closed" : reason
+
+exitOrderComment(string reason, float exitPrice) =>
+    float pnlPerShare = activeDirection == 1 ? exitPrice - activeEntry : activeEntry - exitPrice
+    float pnlValue = pnlPerShare * activeQty
+    float pnlR = activeInitialRisk > 0.0 ? pnlPerShare / activeInitialRisk : na
+    exitReasonDisplayNameCore(reason) + " " + fmtSignedMoneyCore(pnlValue) + " / " + fmtSignedRCore(pnlR)
+
 // -----------------------------------------------------------------------------
 // Payload builders
 // -----------------------------------------------------------------------------
@@ -912,10 +927,10 @@ if submitNewPlan
     activeRiskUpdateSeq := 0
     if selectedDirection == 1
         strategy.entry("TV-L", strategy.long, qty=selectedQty, limit=selectedEntry)
-        strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment_profit="take_profit", comment_loss="stop_loss")
+        strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment_profit=exitOrderComment("take_profit", activeTarget), comment_loss=exitOrderComment("stop_loss", activeStop))
     if selectedDirection == -1
         strategy.entry("TV-S", strategy.short, qty=selectedQty, limit=selectedEntry)
-        strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment_profit="take_profit", comment_loss="stop_loss")
+        strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment_profit=exitOrderComment("take_profit", activeTarget), comment_loss=exitOrderComment("stop_loss", activeStop))
     if enableAlerts
         string reason = selectedEntryIntent == "predictive_limit" ? "predictive_small_stop_trial" : "confirmed_small_stop_trial"
         alert(buildEntryPayload(eventPlanId, signalId, tradeGroupId, positionId, selectedDirection, selectedSetup, reason, selectedQty, selectedEntry, selectedStop, selectedTarget, selectedRunnerActivation, selectedActivationR, selectedEntryIntent, selectedTrialRiskMode, submitReplacementPlan, replaceOriginSignalId, submitReplacementPlan ? "same_direction_plan_replaced" : "none"), alert.freq_all)
@@ -966,9 +981,9 @@ if confirmed and activePosition and hasOpenStrategyPosition
         if enableAlerts
             alert(buildRiskUpdatePayload(planId("risk_update", activeSetup, activeEntryIntent), activePositionId, riskReason, previousStop, activeStop, previousTarget, activeTarget, requestedSides), alert.freq_all)
     if activeDirection == 1
-        strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment_profit="take_profit", comment_loss=activeRunnerActive and activeStop > activeEntry ? "runner_stop" : "stop_loss")
+        strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment_profit=exitOrderComment("take_profit", activeTarget), comment_loss=exitOrderComment(activeRunnerActive and activeStop > activeEntry ? "runner_stop" : "stop_loss", activeStop))
     if activeDirection == -1
-        strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment_profit="take_profit", comment_loss=activeRunnerActive and activeStop < activeEntry ? "runner_stop" : "stop_loss")
+        strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment_profit=exitOrderComment("take_profit", activeTarget), comment_loss=exitOrderComment(activeRunnerActive and activeStop < activeEntry ? "runner_stop" : "stop_loss", activeStop))
 
 if confirmed and activePosition and eodTimeReached and hasOpenStrategyPosition
     strategy.close(orderIdForDirection(activeDirection), comment="force_flat_eod")
