@@ -622,6 +622,35 @@ class TvPrimaryIngestTests(unittest.TestCase):
                 "submitted_entry_limit_price": 122.45,
                 "runner_enabled": False,
                 "target_checkpoint": 127.90,
+                "entry_intent": "predictive_limit",
+                "trial_risk_mode": "half",
+                "trade_model": "clear_structure_small_stop_v3",
+                "structure_clear": True,
+                "structure_anchor_price": 121.95,
+                "expected_r": 6.0,
+                "trend_struct_dir": "bull_HH_HL",
+                "trend_struct_pattern": "HH_HL",
+                "trend_anchor_price": 121.95,
+                "trend_support_sources": "today_HL,ema20,sd_mid",
+                "probe_pattern": "none",
+                "probe_filter_reason": "none",
+                "probe_anchor_price": None,
+                "probe_anchor_age_bars": None,
+                "probe_pullback_atr": None,
+                "today_struct_high": 124.20,
+                "today_struct_low": 121.95,
+                "prediction_level": 121.95,
+                "prediction_zone_low": 121.90,
+                "prediction_zone_high": 122.10,
+                "invalidation_price": 121.70,
+                "invalidation_source": "support_cluster_low",
+                "small_stop_gate_passed": True,
+                "small_stop_gate_reason": "passed",
+                "stop_distance_atr": 0.42,
+                "stop_distance_bps": 32.7,
+                "max_trial_risk_dollars": 37.5,
+                "main_reason": "dtp_bull_pullback_to_strong_support",
+                "secondary_reason": "ema20,sd_mid",
                 "entry_window_model": "continuous_layered_v1",
                 "entry_window_stage": "primary",
                 "market_date": "2026-05-29",
@@ -647,6 +676,35 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertEqual(saved["take_profit"], 127.90)
         self.assertEqual(saved["extra"]["trade_group_id"], "tv-entry-slim-leg1")
         self.assertEqual(saved["extra"]["submitted_entry_limit_price"], 122.45)
+        self.assertEqual(saved["extra"]["entry_intent"], "predictive_limit")
+        self.assertEqual(saved["extra"]["trial_risk_mode"], "half")
+        self.assertEqual(saved["extra"]["trade_model"], "clear_structure_small_stop_v3")
+        self.assertTrue(saved["extra"]["structure_clear"])
+        self.assertEqual(saved["extra"]["structure_anchor_price"], 121.95)
+        self.assertEqual(saved["extra"]["expected_r"], 6.0)
+        self.assertEqual(saved["extra"]["trend_struct_dir"], "bull_HH_HL")
+        self.assertEqual(saved["extra"]["trend_struct_pattern"], "HH_HL")
+        self.assertEqual(saved["extra"]["trend_anchor_price"], 121.95)
+        self.assertEqual(saved["extra"]["trend_support_sources"], "today_HL,ema20,sd_mid")
+        self.assertEqual(saved["extra"]["probe_pattern"], "none")
+        self.assertEqual(saved["extra"]["probe_filter_reason"], "none")
+        self.assertIsNone(saved["extra"].get("probe_anchor_price"))
+        self.assertIsNone(saved["extra"].get("probe_anchor_age_bars"))
+        self.assertIsNone(saved["extra"].get("probe_pullback_atr"))
+        self.assertEqual(saved["extra"]["today_struct_high"], 124.20)
+        self.assertEqual(saved["extra"]["today_struct_low"], 121.95)
+        self.assertEqual(saved["extra"]["prediction_level"], 121.95)
+        self.assertEqual(saved["extra"]["prediction_zone_low"], 121.90)
+        self.assertEqual(saved["extra"]["prediction_zone_high"], 122.10)
+        self.assertEqual(saved["extra"]["invalidation_price"], 121.70)
+        self.assertEqual(saved["extra"]["invalidation_source"], "support_cluster_low")
+        self.assertTrue(saved["extra"]["small_stop_gate_passed"])
+        self.assertEqual(saved["extra"]["small_stop_gate_reason"], "passed")
+        self.assertEqual(saved["extra"]["stop_distance_atr"], 0.42)
+        self.assertEqual(saved["extra"]["stop_distance_bps"], 32.7)
+        self.assertEqual(saved["extra"]["max_trial_risk_dollars"], 37.5)
+        self.assertEqual(saved["extra"]["main_reason"], "dtp_bull_pullback_to_strong_support")
+        self.assertEqual(saved["extra"]["secondary_reason"], "ema20,sd_mid")
         self.assertNotIn("profit_space_entry_allowed", saved["extra"])
         self.assertNotIn("entry_price", saved["extra"])
         self.assertEqual(pb.records[TV_EVENT_COLLECTION][-1]["status"], "routed")
