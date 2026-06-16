@@ -109,6 +109,7 @@ ACCOUNT_DATA_CIRCUIT_COOLDOWN_SECONDS = 60.0
 ACCOUNT_DATA_CIRCUIT_MIN_FAILURES = 4
 ACCOUNT_DATA_EXPECTED_UNSUBSCRIBE_GRACE_SECONDS = 5.0
 SMART_ROUTED_US_SEC_TYPES = {"STK", "ETF", "WAR"}
+_ORDER_CONTEXT_CLOSED_STATUSES = {"FILLED", "EXECUTED", "CANCELLED", "CANCELED", "INACTIVE", "REJECTED", "EXPIRED"}
 
 
 def _order_error_code(order_error: dict | None) -> int:
@@ -145,6 +146,81 @@ def _order_error_is_cancel_notice(order_error: dict | None) -> bool:
             or ("cannot be cancelled" in message and ("cancelled" in message or "canceled" in message))
         )
     return False
+
+
+def _order_context_text(payload: dict | None, *keys: str, upper: bool = False) -> str:
+    for key in keys:
+        value = (payload or {}).get(key) if isinstance(payload, dict) else ""
+        text = str(value or "").strip()
+        if text:
+            return text.upper() if upper else text
+    return ""
+
+
+def _order_context_conid(payload: dict | None) -> int:
+    try:
+        return int((payload or {}).get("conid") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _order_context_order_ref(payload: dict | None) -> str:
+    return _order_context_text(payload, "order_ref", "orderRef", "cOID", "coid")
+
+
+def _order_context_symbol(payload: dict | None) -> str:
+    return _order_context_text(payload, "symbol", "ticker", upper=True)
+
+
+def _order_context_has_identity(payload: dict | None) -> bool:
+    if not isinstance(payload, dict) or not payload:
+        return False
+    return bool(
+        _order_context_conid(payload)
+        or _order_context_symbol(payload)
+        or _order_context_order_ref(payload)
+        or _order_context_text(payload, "account", "acctId")
+    )
+
+
+def _order_context_mismatch_reasons(left: dict | None, right: dict | None) -> list[str]:
+    if not isinstance(left, dict) or not isinstance(right, dict) or not left or not right:
+        return []
+    reasons: list[str] = []
+    left_ref = _order_context_order_ref(left)
+    right_ref = _order_context_order_ref(right)
+    if left_ref and right_ref and left_ref != right_ref:
+        reasons.append("order_ref")
+    left_account = _order_context_text(left, "account", "acctId")
+    right_account = _order_context_text(right, "account", "acctId")
+    if left_account and right_account and left_account != right_account:
+        reasons.append("account")
+    left_conid = _order_context_conid(left)
+    right_conid = _order_context_conid(right)
+    if left_conid and right_conid and left_conid != right_conid:
+        reasons.append("conid")
+    left_symbol = _order_context_symbol(left)
+    right_symbol = _order_context_symbol(right)
+    if left_symbol and right_symbol and left_symbol != right_symbol:
+        reasons.append("symbol")
+    return reasons
+
+
+def _order_context_summary(payload: dict | None) -> str:
+    if not isinstance(payload, dict):
+        return "-"
+    parts = [
+        f"ref={_order_context_order_ref(payload) or '-'}",
+        f"symbol={_order_context_symbol(payload) or '-'}",
+        f"conid={_order_context_conid(payload) or '-'}",
+        f"account={_order_context_text(payload, 'account', 'acctId') or '-'}",
+    ]
+    return ",".join(parts)
+
+
+def _is_terminal_order_context(payload: dict | None) -> bool:
+    status = str((payload or {}).get("status") or (payload or {}).get("order_status") or (payload or {}).get("orderStatus") or "")
+    return status.strip().upper() in _ORDER_CONTEXT_CLOSED_STATUSES
 
 
 def _submission_confirmation_is_cancel_cleanup_notice(confirmation: dict | None) -> bool:
@@ -362,6 +438,55 @@ class _IBGatewayApp(EWrapper, EClient):
         self._account_updates_capture: Optional[_AccountUpdatesCapture] = None
         self._contract_cache_by_symbol: Dict[str, dict] = {}
         self._contract_cache_by_conid: Dict[int, dict] = {}
+
+    def _matching_order_executions_locked(
+        self,
+        order_id: str,
+        *,
+        reference: dict | None = None,
+        current_order: dict | None = None,
+        source: str = "",
+    ) -> list[dict]:
+        matched: list[dict] = []
+        excluded: list[tuple[dict, list[str]]] = []
+        reference_has_identity = _order_context_has_identity(reference)
+        current_has_identity = (
+            _order_context_has_identity(current_order)
+            and not (
+                reference_has_identity
+                and _order_context_mismatch_reasons(reference, current_order)
+            )
+        )
+        for item in self._executions.values():
+            if str(item.get("orderId") or item.get("order_id") or "") != str(order_id or ""):
+                continue
+            reasons: list[str] = []
+            if reference_has_identity:
+                reasons.extend(_order_context_mismatch_reasons(item, reference))
+            elif current_has_identity:
+                reasons.extend(_order_context_mismatch_reasons(item, current_order))
+            if reasons:
+                excluded.append((item, list(dict.fromkeys(reasons))))
+                continue
+            matched.append(item)
+        if excluded:
+            logger.warning(
+                "Excluded stale IB executions for reused orderId=%s source=%s matched=%s excluded=%s reference=%s current=%s",
+                order_id,
+                source or "-",
+                len(matched),
+                [
+                    {
+                        "exec_id": str(item.get("execId") or item.get("exec_id") or ""),
+                        "reasons": reasons,
+                        "context": _order_context_summary(item),
+                    }
+                    for item, reasons in excluded[:5]
+                ],
+                _order_context_summary(reference),
+                _order_context_summary(current_order),
+            )
+        return matched
 
     def _start_network_thread_locked(self):
         if self._thread is not None and self._thread.is_alive():
@@ -1419,7 +1544,6 @@ class _IBGatewayApp(EWrapper, EClient):
 
     def openOrder(self, orderId: int, contract, order, orderState):  # noqa: N802
         requested_snapshot = self._has_pending_request_kind("open_orders", "open_orders_all")
-        closed_statuses = {"FILLED", "EXECUTED", "CANCELLED", "CANCELED", "INACTIVE", "REJECTED", "EXPIRED"}
         normalized = {
             "orderId": str(orderId),
             "id": str(orderId),
@@ -1450,6 +1574,16 @@ class _IBGatewayApp(EWrapper, EClient):
         key = str(orderId)
         with self._state_lock:
             previous = dict(self._open_orders.get(key) or {})
+            mismatch_reasons = _order_context_mismatch_reasons(previous, normalized)
+            if mismatch_reasons and _order_context_has_identity(normalized):
+                logger.warning(
+                    "Resetting stale IB open order cache for reused orderId=%s reasons=%s previous=%s new=%s",
+                    key,
+                    list(dict.fromkeys(mismatch_reasons)),
+                    _order_context_summary(previous),
+                    _order_context_summary(normalized),
+                )
+                previous = {}
             previous_filled = _safe_float(previous.get("filledQuantity"), 0.0)
             previous_avg = _safe_float(previous.get("avgPrice") or previous.get("avgFillPrice"), 0.0)
             previous_remaining = _safe_float(previous.get("remainingQuantity"), 0.0)
@@ -1465,7 +1599,7 @@ class _IBGatewayApp(EWrapper, EClient):
             for key_name in ("lastFillPrice", "lastExecutionTime", "ib_exec_id", "execution_shares", "execution_price"):
                 if previous.get(key_name) not in (None, "") and normalized.get(key_name) in (None, ""):
                     normalized[key_name] = previous.get(key_name)
-            if str(previous.get("status") or "").strip().upper() in closed_statuses and str(normalized.get("status") or "").strip().upper() not in closed_statuses:
+            if _is_terminal_order_context(previous) and str(normalized.get("status") or "").strip().upper() not in _ORDER_CONTEXT_CLOSED_STATUSES:
                 normalized["status"] = previous.get("status")
             merged = {**previous, **normalized}
             self._open_orders[key] = merged
@@ -1689,11 +1823,22 @@ class _IBGatewayApp(EWrapper, EClient):
             return
         with self._state_lock:
             current = dict(self._open_orders.get(order_id) or {})
-            order_execs = [
-                item
-                for item in self._executions.values()
-                if str(item.get("orderId") or "") == order_id
-            ]
+            current_mismatch = _order_context_mismatch_reasons(current, execution_payload)
+            if current_mismatch and _order_context_has_identity(execution_payload):
+                logger.warning(
+                    "Resetting stale IB order snapshot before execution merge orderId=%s reasons=%s current=%s execution=%s",
+                    order_id,
+                    list(dict.fromkeys(current_mismatch)),
+                    _order_context_summary(current),
+                    _order_context_summary(execution_payload),
+                )
+                current = {}
+            order_execs = self._matching_order_executions_locked(
+                order_id,
+                reference=execution_payload,
+                current_order=current,
+                source="execDetails",
+            )
             cumulative_shares = sum(_safe_float(item.get("shares"), 0.0) for item in order_execs)
             fill_value = sum(
                 _safe_float(item.get("shares"), 0.0) * _safe_float(item.get("price"), 0.0)
@@ -1764,11 +1909,12 @@ class _IBGatewayApp(EWrapper, EClient):
                 order_id = str(self._executions[exec_id].get("orderId") or self._executions[exec_id].get("order_id") or "")
                 if order_id:
                     current = dict(self._open_orders.get(order_id) or {})
-                    order_execs = [
-                        item
-                        for item in self._executions.values()
-                        if str(item.get("orderId") or item.get("order_id") or "") == order_id
-                    ]
+                    order_execs = self._matching_order_executions_locked(
+                        order_id,
+                        reference=execution_update,
+                        current_order=current,
+                        source="commissionReport",
+                    )
                     commission = sum(abs(_safe_float(item.get("commission"), 0.0)) for item in order_execs)
                     commission_known = bool(order_execs) and all(bool(item.get("commission_known")) for item in order_execs)
                     current.update(

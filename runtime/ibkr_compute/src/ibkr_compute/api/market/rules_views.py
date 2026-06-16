@@ -1626,7 +1626,7 @@ def _orders_panel(environment: str) -> dict:
         "chips": [
             {"label": "Order Validity", "value": f"{_resolve_config_text(cfg, 'order_validity_minutes', environment, '30')[0]}m", "copy": "订单过期取消窗口"},
             {"label": "Reverse", "value": _resolve_config_text(cfg, "reverse_flip_enabled", environment, "false")[0], "copy": "reverse_flip_enabled"},
-            {"label": "SL Circuit", "value": _resolve_config_text(cfg, "consecutive_stop_loss_limit", environment, "3")[0], "copy": "连续止损熔断阈值"},
+            {"label": "SL Circuit", "value": _resolve_config_text(cfg, "consecutive_stop_loss_limit", environment, "10")[0], "copy": "连续止损熔断阈值"},
             {"label": "EOD", "value": _resolve_config_text(cfg, "eod_close_time", environment, "15:55")[0], "copy": "收盘处理时间"},
         ],
         "sections": [

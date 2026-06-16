@@ -379,7 +379,7 @@ const CONFIG_META = {
   order_window_end_time: meta('下单截止时间', '交易窗口', 320, '15:00', '超过该时间后新信号不再进入下单环节，ET 时区'),
 
   position_limit_max: meta('当日交易次数上限', '交易风控', 400, '36', '当日成功下单计数达到该上限后，新的交易信号将被拒绝；0 表示不限制每日交易次数'),
-  consecutive_stop_loss_limit: meta('连续止损停交易', '交易风控', 401, '3', '当天连续触发止损出场达到该次数后停止新开仓；非止损出场会重置连续计数'),
+  consecutive_stop_loss_limit: meta('连续止损停交易', '交易风控', 401, '10', '当天连续触发止损出场达到该次数后停止新开仓；非止损出场会重置连续计数'),
   max_strategy_open_positions: meta('策略同时持仓上限', '交易风控', 402, '0', '策略持仓与已提交未成交策略入场单合计达到该上限时，新信号保持 pending 等待容量；0 表示主要按动态购买力限制'),
   ibkr_gateway_order_serial_enabled: meta('Gateway写操作串行', '交易风控', 402.01, 'TRUE', '开启后开仓、平仓、撤单、改单共用进程内串行门，避免 IB Gateway 下单请求互相穿插'),
   ibkr_gateway_order_serial_timeout_sec: meta('Gateway写操作排队超时', '交易风控', 402.02, '900', 'Gateway 写操作等待串行门的最长秒数；45 个并发 bracket 单会串行排队，超时后返回 gateway_order_queue_timeout'),

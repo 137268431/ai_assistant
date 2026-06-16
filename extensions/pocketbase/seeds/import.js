@@ -165,6 +165,7 @@ const configData = [
   cfg('order_window_end_time', '15:00', '15:00', '下单截止时间', '交易窗口', 320, '超过该时间后新信号不再进入下单环节，ET 时区'),
 
   cfg('position_limit_max', '36', '36', '当日交易次数上限', '交易风控', 400, '当日成功下单计数达到该上限后，新的交易信号将被拒绝；0 表示不限制每日交易次数'),
+  cfg('consecutive_stop_loss_limit', '10', '10', '连续止损停交易', '交易风控', 401, '当天连续触发止损出场达到该次数后停止新开仓；非止损出场会重置连续计数'),
   cfg('max_strategy_open_positions', '0', '0', '策略同时持仓上限', '交易风控', 402, '策略持仓与已提交未成交策略入场单合计达到该上限时，新信号保持 pending 等待容量；0 表示主要按动态购买力限制'),
   cfg('ibkr_order_symbol_queue_enabled', 'TRUE', 'TRUE', '标的级订单队列', '交易风控', 402.01, '开启后同一标的的开仓、平仓、撤单、改单按队列顺序执行，不同标的允许并发执行'),
   cfg('ibkr_order_symbol_queue_max_active_symbols', '12', '12', '并发活跃标的数', '交易风控', 402.02, '标的级订单队列允许同时执行的最大标的数；实际 Gateway 写入仍会短暂串行保护 orderId/ibapi 写安全'),

@@ -907,11 +907,49 @@ class TradingServiceRuntimeOpsMixin:
             self._order_price_value(exit_order, "avgPrice", "avgFillPrice", "fill_price", "filled_price", "lastFillPrice")
             or self._order_price_value(exit_order, "price", "limit_price", "exit_price", "tp_price", "sl_price")
         )
-        quantity = (
-            self._order_price_value(exit_order, "filledQuantity", "filled_qty", "filled", "totalSize", "quantity")
-            or self._order_price_value(entry_row, "filled_qty", "quantity")
-            or self._signal_price_value(signal_record, "shares", "quantity")
-        )
+        exit_filled_qty_raw = self._order_price_value(exit_order, "filledQuantity", "filled_qty", "filled", "totalSize", "quantity")
+        entry_filled_qty = self._order_price_value(entry_row, "filledQuantity", "filled_qty", "filled")
+        entry_order_quantity = self._order_price_value(entry_row, "quantity")
+        signal_quantity = self._signal_price_value(signal_record, "shares", "quantity")
+        quantity_raw = exit_filled_qty_raw or entry_filled_qty or signal_quantity
+        quantity = quantity_raw
+        quantity_capped = False
+        quantity_cap_reason = ""
+        quantity_caps = [
+            ("entry_filled_qty", entry_filled_qty),
+            ("entry_order_quantity", entry_order_quantity),
+            ("signal_quantity", signal_quantity),
+        ]
+        positive_caps = [(name, value) for name, value in quantity_caps if value > 0]
+        if positive_caps:
+            cap_name, cap_value = min(positive_caps, key=lambda item: item[1])
+        else:
+            cap_name, cap_value = "", 0.0
+        if cap_value > 0 and quantity > cap_value + 1e-8:
+            quantity = cap_value
+            quantity_capped = True
+            quantity_cap_reason = f"exit_filled_exceeds_{cap_name}"
+        if quantity_capped:
+            entry_event_price = self._order_price_value(
+                entry_row,
+                "execution_price",
+                "last_fill_price",
+                "lastFillPrice",
+                "actual_fill_price",
+                "entry_fill_price",
+            )
+            exit_event_price = self._order_price_value(
+                exit_order,
+                "execution_price",
+                "last_fill_price",
+                "lastFillPrice",
+                "actual_fill_price",
+                "exit_fill_price",
+            )
+            if entry_event_price > 0:
+                entry_price = entry_event_price
+            if exit_event_price > 0:
+                exit_price = exit_event_price
         direction = (
             self._signal_text_value(signal_record, "direction")
             or str(entry_row.get("position_side") or entry_row.get("direction") or "").strip().lower()
@@ -923,18 +961,46 @@ class TradingServiceRuntimeOpsMixin:
                 direction = "long"
             elif exit_side == "BUY":
                 direction = "short"
+        signal_symbol = str((signal_record or {}).get("symbol") or "").strip().upper()
+        entry_symbol = str((entry_row or {}).get("symbol") or "").strip().upper()
+        exit_symbol = str((exit_order or {}).get("symbol") or (exit_order or {}).get("ticker") or "").strip().upper()
+        context_warnings: list[str] = []
+        if signal_symbol and entry_symbol and signal_symbol != entry_symbol:
+            context_warnings.append("signal_entry_symbol_mismatch")
+        if signal_symbol and exit_symbol and signal_symbol != exit_symbol:
+            context_warnings.append("signal_exit_symbol_mismatch")
+        if entry_symbol and exit_symbol and entry_symbol != exit_symbol:
+            context_warnings.append("entry_exit_symbol_mismatch")
+        entry_group = str((entry_row or {}).get("trade_group_id") or (entry_row or {}).get("entry_order_unique_id") or "").strip()
+        exit_group = str((exit_order or {}).get("trade_group_id") or (exit_order or {}).get("entry_order_unique_id") or "").strip()
+        if trade_group_id and entry_group and entry_group != trade_group_id:
+            context_warnings.append("entry_trade_group_mismatch")
+        if trade_group_id and exit_group and exit_group != trade_group_id:
+            context_warnings.append("exit_trade_group_mismatch")
         result = {
             "ok": False,
             "entry_price": entry_price,
             "exit_price": exit_price,
             "quantity": quantity,
+            "quantity_raw": quantity_raw,
+            "entry_filled_qty": entry_filled_qty,
+            "entry_order_quantity": entry_order_quantity,
+            "exit_filled_qty_raw": exit_filled_qty_raw,
+            "signal_quantity": signal_quantity,
+            "quantity_capped": quantity_capped,
+            "quantity_cap_reason": quantity_cap_reason,
             "direction": direction,
+            "context_ok": not context_warnings,
+            "context_warnings": context_warnings,
             "gross_pnl": 0.0,
             "commission": 0.0,
             "net_pnl": 0.0,
             "pnl_pct": 0.0,
             "source": "computed_from_entry_exit_fills",
         }
+        if context_warnings:
+            result["reason"] = "entry_exit_context_mismatch"
+            return result
         if entry_price <= 0 or exit_price <= 0 or quantity <= 0 or direction not in {"long", "short"}:
             result["reason"] = "missing_entry_exit_price_or_quantity"
             return result

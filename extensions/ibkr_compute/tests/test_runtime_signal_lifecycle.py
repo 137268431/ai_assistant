@@ -1498,6 +1498,54 @@ class RuntimeSignalLifecycleTest(unittest.TestCase):
         self.assertEqual(1, service.order_lifecycle.reset_count)
         self.assertEqual([], service.pb.events)
 
+    def test_exit_realized_pnl_caps_polluted_exit_quantity_to_entry_order_size(self):
+        service = _FakeService()
+        signal = service.pb.signals["sig-row-1"]
+        signal.update({"status": "protected_active", "symbol": "AAPL", "direction": "short"})
+        service.pb.orders[0].update(
+            {
+                "trade_group_id": "group_SIG_1",
+                "role": "entry",
+                "symbol": "AAPL",
+                "status": "Filled",
+                "quantity": 50,
+                "filled_qty": 121,
+                "fill_price": 81.715785,
+                "commission": 2.227643,
+                "extra": {"execution_price": 99.19, "last_fill_price": 99.19},
+            }
+        )
+
+        result = service._exit_realized_pnl(
+            signal_record=signal,
+            exit_order={
+                "signal_id": "SIG_1",
+                "trade_group_id": "group_SIG_1",
+                "symbol": "AAPL",
+                "role": "stop_loss",
+                "side": "BUY",
+                "avgPrice": 82.238512,
+                "filledQuantity": 121,
+                "quantity": 50,
+                "commission": 2.000363,
+                "execution_price": 98.97,
+                "last_fill_price": 98.97,
+            },
+            signal_id="SIG_1",
+            environment="live",
+            trade_group_id="group_SIG_1",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["quantity_capped"])
+        self.assertEqual("exit_filled_exceeds_entry_order_quantity", result["quantity_cap_reason"])
+        self.assertEqual(50, result["quantity"])
+        self.assertEqual(121, result["exit_filled_qty_raw"])
+        self.assertAlmostEqual(99.19, result["entry_price"])
+        self.assertAlmostEqual(98.97, result["exit_price"])
+        self.assertAlmostEqual(11.0, result["gross_pnl"])
+        self.assertAlmostEqual(6.772, result["net_pnl"], places=3)
+
     def test_duplicate_stop_loss_fill_does_not_retrigger_cooldown(self):
         service = _FakeService()
         service.pb.signals["sig-row-1"]["status"] = "protected_active"

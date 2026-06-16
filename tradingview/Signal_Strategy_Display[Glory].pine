@@ -253,7 +253,7 @@ dirName(int direction) =>
     direction == 1 ? "多" : direction == -1 ? "空" : "--"
 
 intentName(string intent) =>
-    intent == "predictive_limit" ? "预测挂单" : intent == "confirmed_limit" ? "确认挂单" : "无"
+    intent == "predictive_limit" ? "未确认观察" : intent == "confirmed_limit" ? "确认挂单" : "等待确认"
 
 flowColor(string state, int direction) =>
     state == "blocked" ? color.new(color.gray, flowLabelTransparency) : state == "predictive" ? color.new(color.orange, flowLabelTransparency) : state == "confirmed" ? color.new(color.teal, flowLabelTransparency) : state == "exit" ? color.new(color.purple, flowLabelTransparency) : direction == 1 ? color.new(color.green, flowLabelTransparency) : color.new(color.red, flowLabelTransparency)
@@ -454,9 +454,13 @@ var int topBreakAcceptStreak = 0
 var int bottomBreakAcceptStreak = 0
 var int topDecayStreak = 0
 var int bottomDecayStreak = 0
+var bool upperBreakAcceptedRegime = false
+var bool lowerBreakAcceptedRegime = false
 
 bool upperStructureBreakAccepted = false
 bool lowerStructureBreakAccepted = false
+bool upperStructureBreakExtended = false
+bool lowerStructureBreakExtended = false
 
 if confirmed and referenceDayReset
     todayHigh := na
@@ -499,6 +503,8 @@ if confirmed and referenceDayReset
     bottomBreakAcceptStreak := 0
     topDecayStreak := 0
     bottomDecayStreak := 0
+    upperBreakAcceptedRegime := false
+    lowerBreakAcceptedRegime := false
 
 if confirmed and volumeAttackUp
     lastVolumeAttackUpBar := bar_index
@@ -534,6 +540,7 @@ if confirmed and inReferenceSession
             topExhaustionUsed := false
             topBreakAcceptStreak := 0
             topDecayStreak := 0
+            upperBreakAcceptedRegime := false
         else
             todayStructHighZoneLow := na(todayStructHighZoneLow) ? todayHigh - highBand : math.min(todayStructHighZoneLow, todayHigh - highBand)
             todayStructHighZoneHigh := na(todayStructHighZoneHigh) ? todayHigh + highBand : math.max(todayStructHighZoneHigh, todayHigh + highBand)
@@ -556,6 +563,7 @@ if confirmed and inReferenceSession
             bottomExhaustionUsed := false
             bottomBreakAcceptStreak := 0
             bottomDecayStreak := 0
+            lowerBreakAcceptedRegime := false
         else
             todayStructLowZoneLow := na(todayStructLowZoneLow) ? todayLow - lowBand : math.min(todayStructLowZoneLow, todayLow - lowBand)
             todayStructLowZoneHigh := na(todayStructLowZoneHigh) ? todayLow + lowBand : math.max(todayStructLowZoneHigh, todayLow + lowBand)
@@ -577,6 +585,8 @@ if confirmed and inReferenceSession
         topDecayStreak := 0
         lastProcessedHighCandidateBar := todayHighBar
         lastVolumeAttackUpBar := na
+        upperBreakAcceptedRegime := true
+        lowerBreakAcceptedRegime := false
         upperStructureBreakAccepted := true
     bool lowerBreakAccepting = not na(todayStructLowZoneLow) and not na(todayStructHigh) and close < todayStructLowZoneLow - atr * structureBreakAcceptCloseAtr
     bottomBreakAcceptStreak := lowerBreakAccepting ? bottomBreakAcceptStreak + 1 : 0
@@ -595,7 +605,35 @@ if confirmed and inReferenceSession
         bottomDecayStreak := 0
         lastProcessedLowCandidateBar := todayLowBar
         lastVolumeAttackDownBar := na
+        lowerBreakAcceptedRegime := true
+        upperBreakAcceptedRegime := false
         lowerStructureBreakAccepted := true
+    bool upperBreakExt = upperBreakAcceptedRegime and not na(todayStructHigh) and not na(todayHigh) and todayHigh > todayStructHigh and todayHighBar != todayStructHighBar
+    if upperBreakExt
+        float highBand = atr * structureClusterBandAtr
+        todayStructHigh := todayHigh
+        todayStructHighBar := todayHighBar
+        todayStructHighZoneLow := todayHigh - highBand
+        todayStructHighZoneHigh := todayHigh + highBand
+        lowSinceStructHigh := low
+        lowSinceStructHighBar := bar_index
+        topExhaustionUsed := false
+        topDecayStreak := 0
+        lastProcessedHighCandidateBar := todayHighBar
+        upperStructureBreakExtended := true
+    bool lowerBreakExt = lowerBreakAcceptedRegime and not na(todayStructLow) and not na(todayLow) and todayLow < todayStructLow and todayLowBar != todayStructLowBar
+    if lowerBreakExt
+        float lowBand = atr * structureClusterBandAtr
+        todayStructLow := todayLow
+        todayStructLowBar := todayLowBar
+        todayStructLowZoneLow := todayLow - lowBand
+        todayStructLowZoneHigh := todayLow + lowBand
+        highSinceStructLow := high
+        highSinceStructLowBar := bar_index
+        bottomExhaustionUsed := false
+        bottomDecayStreak := 0
+        lastProcessedLowCandidateBar := todayLowBar
+        lowerStructureBreakExtended := true
     if not na(todayStructHigh) and (na(lowSinceStructHigh) or low < lowSinceStructHigh)
         lowSinceStructHigh := low
         lowSinceStructHighBar := bar_index
@@ -775,8 +813,8 @@ float trendLongPredictEntry = strongTrendSupport ? trendSupportZoneLow + atr * p
 float trendLongPredictStop = strongTrendSupport ? trendSupportZoneLow - invalidationBuffer : na
 float trendLongConfirmEntry = strongTrendSupport ? math.min(close, trendSupportZoneHigh) : na
 float trendLongConfirmStop = strongTrendSupport ? math.min(low, trendSupportZoneLow) - invalidationBuffer : na
-bool trendLongPredictContext = trendLongContext and strongTrendSupport and not volumeAttackDown and trendLongPredictEntry <= close and close - trendSupportZoneHigh <= atr * predictionArmDistanceAtr
-bool trendLongConfirmContext = trendLongContext and strongTrendSupport and not volumeAttackDown and low <= trendSupportZoneHigh and close > trendSupportZoneHigh and close > open
+bool trendLongPredictContext = trendLongContext and strongTrendSupport and not attackDownCooling and trendLongPredictEntry <= close and close - trendSupportZoneHigh <= atr * predictionArmDistanceAtr
+bool trendLongConfirmContext = trendLongContext and strongTrendSupport and not attackDownCooling and low <= trendSupportZoneHigh and close > trendSupportZoneHigh and close > open
 float trendLongPredictQty = calcTrialQty(trendLongPredictEntry, trendLongPredictStop, predictiveMaxRiskDollars)
 float trendLongConfirmQty = calcTrialQty(trendLongConfirmEntry, trendLongConfirmStop, confirmedMaxRiskDollars)
 bool trendLongPredictAllowed = trendLongPredictContext and smallStopTrialAllowed(trendLongPredictEntry, trendLongPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and trendLongPredictQty >= 1.0
@@ -786,8 +824,8 @@ float trendShortPredictEntry = strongTrendResistance ? trendResistanceZoneHigh -
 float trendShortPredictStop = strongTrendResistance ? trendResistanceZoneHigh + invalidationBuffer : na
 float trendShortConfirmEntry = strongTrendResistance ? math.max(close, trendResistanceZoneLow) : na
 float trendShortConfirmStop = strongTrendResistance ? math.max(high, trendResistanceZoneHigh) + invalidationBuffer : na
-bool trendShortPredictContext = trendShortContext and strongTrendResistance and not volumeAttackUp and trendShortPredictEntry >= close and trendResistanceZoneLow - close <= atr * predictionArmDistanceAtr
-bool trendShortConfirmContext = trendShortContext and strongTrendResistance and not volumeAttackUp and high >= trendResistanceZoneLow and close < trendResistanceZoneLow and close < open
+bool trendShortPredictContext = trendShortContext and strongTrendResistance and not attackUpCooling and trendShortPredictEntry >= close and trendResistanceZoneLow - close <= atr * predictionArmDistanceAtr
+bool trendShortConfirmContext = trendShortContext and strongTrendResistance and not attackUpCooling and high >= trendResistanceZoneLow and close < trendResistanceZoneLow and close < open
 float trendShortPredictQty = calcTrialQty(trendShortPredictEntry, trendShortPredictStop, predictiveMaxRiskDollars)
 float trendShortConfirmQty = calcTrialQty(trendShortConfirmEntry, trendShortConfirmStop, confirmedMaxRiskDollars)
 bool trendShortPredictAllowed = trendShortPredictContext and smallStopTrialAllowed(trendShortPredictEntry, trendShortPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and trendShortPredictQty >= 1.0
@@ -962,35 +1000,35 @@ bool bottomConfirmAllowed = bottomConfirmContext and smallStopTrialAllowed(botto
 string bottomProbeFilterReason = na(todayStructLow) ? "no_today_struct_low" : not dayRangeFormed ? "day_range_not_formed" : not dayRangeClear ? "day_range_too_small" : not strongBottomProbeZone ? "no_clear_structure" : bottomAnchorAgeBars < probeMinAnchorAgeBars ? "anchor_too_fresh" : not bottomVisualLeftOk ? "left_leg_too_small" : not bottomMiddleSwingReady ? "middle_leg_too_small" : not bottomRightRetestReady ? "right_retest_too_small" : not bottomRetestFastEnough ? "retest_too_slow" : not bottomRetestBand ? "not_retest_zone" : dominantTrendShort and not lowerExhaustionConfirmedLong ? "blocked_by_dominant_bear_trend" : not bottomPredictVolumeOk and not bottomSweepFailed ? (attackDownCooling ? "attack_volume_cooling" : "volume_attack_down_no_long") : not bottomSignalBarsOk ? "signal_bars_too_close" : not bottomSignalPriceGapOk ? "micro_structure_too_close" : "passed"
 
 bool trendLongConfirmNow = trendLongConfirmAllowed and not upperExhaustionZone
-bool trendLongPredictNow = trendLongPredictAllowed and not upperExhaustionZone
+bool trendLongPredictNow = false
 bool trendShortConfirmNow = trendShortConfirmAllowed and not lowerExhaustionZone
-bool trendShortPredictNow = trendShortPredictAllowed and not lowerExhaustionZone
-bool longActionable = trendLongConfirmNow or bottomConfirmAllowed or trendLongPredictNow or bottomPredictAllowed
-bool shortActionable = trendShortConfirmNow or topConfirmAllowed or trendShortPredictNow or topPredictAllowed
-int longScore = trendLongConfirmNow ? 160 + trendSupportCount : bottomConfirmAllowed ? 140 + bottomCount : trendLongPredictNow ? 100 + trendSupportCount : bottomPredictAllowed ? 80 + bottomCount : 0
-int shortScore = trendShortConfirmNow ? 160 + trendResistanceCount : topConfirmAllowed ? 140 + topCount : trendShortPredictNow ? 100 + trendResistanceCount : topPredictAllowed ? 80 + topCount : 0
+bool trendShortPredictNow = false
+bool longActionable = trendLongConfirmNow or bottomConfirmAllowed
+bool shortActionable = trendShortConfirmNow or topConfirmAllowed
+int longScore = trendLongConfirmNow ? 160 + trendSupportCount : bottomConfirmAllowed ? 140 + bottomCount : 0
+int shortScore = trendShortConfirmNow ? 160 + trendResistanceCount : topConfirmAllowed ? 140 + topCount : 0
 bool conflict = longActionable and shortActionable and longScore == shortScore
 bool selectedLong = longActionable and not conflict and (not shortActionable or longScore > shortScore)
 bool selectedShort = shortActionable and not conflict and (not longActionable or shortScore > longScore)
 int selectedDirection = selectedLong ? 1 : selectedShort ? -1 : 0
-string selectedSetup = selectedLong ? (trendLongConfirmNow ? "trend_support_long" : bottomConfirmAllowed ? "probe_2b_bottom_long" : trendLongPredictNow ? "trend_support_long" : "probe_2b_bottom_long") : selectedShort ? (trendShortConfirmNow ? "trend_resistance_short" : topConfirmAllowed ? "probe_2b_top_short" : trendShortPredictNow ? "trend_resistance_short" : "probe_2b_top_short") : "none"
+string selectedSetup = selectedLong ? (trendLongConfirmNow ? "trend_support_long" : "probe_2b_bottom_long") : selectedShort ? (trendShortConfirmNow ? "trend_resistance_short" : "probe_2b_top_short") : "none"
 bool selectedTrendSupport = selectedSetup == "trend_support_long"
 bool selectedTrendResistance = selectedSetup == "trend_resistance_short"
 bool selectedTopProbe = selectedSetup == "probe_2b_top_short"
 bool selectedBottomProbe = selectedSetup == "probe_2b_bottom_long"
-string selectedEntryIntent = selectedLong ? (trendLongConfirmNow or bottomConfirmAllowed ? "confirmed_limit" : "predictive_limit") : selectedShort ? (trendShortConfirmNow or topConfirmAllowed ? "confirmed_limit" : "predictive_limit") : "none"
-string selectedTrialRiskMode = selectedEntryIntent == "predictive_limit" ? "half" : selectedEntryIntent == "confirmed_limit" ? "full" : "none"
-float selectedEntry = selectedLong ? (trendLongConfirmNow ? trendLongConfirmEntry : bottomConfirmAllowed ? bottomConfirmEntry : trendLongPredictNow ? trendLongPredictEntry : bottomPredictEntry) : selectedShort ? (trendShortConfirmNow ? trendShortConfirmEntry : topConfirmAllowed ? topConfirmEntry : trendShortPredictNow ? trendShortPredictEntry : topPredictEntry) : na
-float selectedStop = selectedLong ? (trendLongConfirmNow ? trendLongConfirmStop : bottomConfirmAllowed ? bottomConfirmStop : trendLongPredictNow ? trendLongPredictStop : bottomPredictStop) : selectedShort ? (trendShortConfirmNow ? trendShortConfirmStop : topConfirmAllowed ? topConfirmStop : trendShortPredictNow ? trendShortPredictStop : topPredictStop) : na
-float selectedQty = selectedLong ? (trendLongConfirmNow ? trendLongConfirmQty : bottomConfirmAllowed ? bottomConfirmQty : trendLongPredictNow ? trendLongPredictQty : bottomPredictQty) : selectedShort ? (trendShortConfirmNow ? trendShortConfirmQty : topConfirmAllowed ? topConfirmQty : trendShortPredictNow ? trendShortPredictQty : topPredictQty) : 0.0
+string selectedEntryIntent = selectedDirection != 0 ? "confirmed_limit" : "none"
+string selectedTrialRiskMode = selectedDirection != 0 ? "full" : "none"
+float selectedEntry = selectedLong ? (trendLongConfirmNow ? trendLongConfirmEntry : bottomConfirmEntry) : selectedShort ? (trendShortConfirmNow ? trendShortConfirmEntry : topConfirmEntry) : na
+float selectedStop = selectedLong ? (trendLongConfirmNow ? trendLongConfirmStop : bottomConfirmStop) : selectedShort ? (trendShortConfirmNow ? trendShortConfirmStop : topConfirmStop) : na
+float selectedQty = selectedLong ? (trendLongConfirmNow ? trendLongConfirmQty : bottomConfirmQty) : selectedShort ? (trendShortConfirmNow ? trendShortConfirmQty : topConfirmQty) : 0.0
 float selectedZoneLow = selectedLong ? (selectedTrendSupport ? trendSupportZoneLow : bottomZoneLow) : selectedShort ? (selectedTrendResistance ? trendResistanceZoneLow : topZoneLow) : na
 float selectedZoneHigh = selectedLong ? (selectedTrendSupport ? trendSupportZoneHigh : bottomZoneHigh) : selectedShort ? (selectedTrendResistance ? trendResistanceZoneHigh : topZoneHigh) : na
 float selectedPredictionLevel = selectedDirection == 1 ? selectedZoneLow : selectedZoneHigh
 float selectedInvalidation = selectedStop
-float selectedRiskBudget = selectedEntryIntent == "predictive_limit" ? predictiveMaxRiskDollars : confirmedMaxRiskDollars
-float selectedMaxStopAtr = selectedEntryIntent == "predictive_limit" ? predictiveMaxStopAtr : confirmedMaxStopAtr
-float selectedMaxStopBps = selectedEntryIntent == "predictive_limit" ? predictiveMaxStopBps : confirmedMaxStopBps
-float selectedActivationR = selectedEntryIntent == "predictive_limit" ? predictiveRunnerActivationR : confirmedRunnerActivationR
+float selectedRiskBudget = selectedDirection != 0 ? confirmedMaxRiskDollars : na
+float selectedMaxStopAtr = selectedDirection != 0 ? confirmedMaxStopAtr : na
+float selectedMaxStopBps = selectedDirection != 0 ? confirmedMaxStopBps : na
+float selectedActivationR = selectedDirection != 0 ? confirmedRunnerActivationR : na
 float selectedRunnerActivation = selectedDirection != 0 ? calcTargetAtR(selectedEntry, selectedStop, selectedDirection, selectedActivationR) : na
 float selectedTarget = selectedDirection != 0 ? calcTargetAtR(selectedEntry, selectedStop, selectedDirection, runnerSafetyR) : na
 float selectedStopDistanceAtr = stopDistanceAtr(selectedEntry, selectedStop, atr)
@@ -1000,7 +1038,7 @@ bool selectedExpectedRPassed = selectedDirection != 0 and selectedExpectedR >= m
 bool selectedSmallStopGatePassed = selectedDirection != 0 and smallStopTrialAllowed(selectedEntry, selectedStop, atr, selectedRiskBudget, selectedMaxStopAtr, selectedMaxStopBps)
 string selectedSmallStopGateReason = selectedDirection == 0 ? "no_candidate" : smallStopGateReason(selectedEntry, selectedStop, atr, selectedRiskBudget, selectedMaxStopAtr, selectedMaxStopBps)
 float selectedStructureAnchor = selectedTrendSupport ? trendSupportBasis : selectedTrendResistance ? trendResistanceBasis : selectedTopProbe ? todayStructHigh : selectedBottomProbe ? todayStructLow : na
-bool selectedStructureClear = selectedTrendSupport ? trendLongContext and strongTrendSupport : selectedTrendResistance ? trendShortContext and strongTrendResistance : selectedTopProbe ? strongTopProbeZone and (topFirstExhaustion or topRightShoulder) : selectedBottomProbe ? strongBottomProbeZone and (bottomFirstExhaustion or bottomRightShoulder) : false
+bool selectedStructureClear = selectedTrendSupport ? trendLongContext and strongTrendSupport : selectedTrendResistance ? trendShortContext and strongTrendResistance : selectedTopProbe ? strongTopProbeZone and topConfirmedShort : selectedBottomProbe ? strongBottomProbeZone and bottomConfirmedLong : false
 string selectedProbePattern = selectedTopProbe ? topProbePattern : selectedBottomProbe ? bottomProbePattern : "none"
 string selectedProbeFilterReason = selectedTopProbe ? topProbeFilterReason : selectedBottomProbe ? bottomProbeFilterReason : "none"
 float selectedProbeAnchorAgeBars = selectedTopProbe ? topAnchorAgeBars * 1.0 : selectedBottomProbe ? bottomAnchorAgeBars * 1.0 : na
@@ -1237,6 +1275,14 @@ if structureBreakAcceptedEvent
     if flowLabelsVisible
         label.new(bar_index, acceptedDirection == 1 ? low - atr * 1.2 : high + atr * 1.2, flowLabelText(acceptedCompact, acceptedDetail), style=flowStyle(acceptedDirection), color=flowColor("blocked", acceptedDirection), textcolor=labelTextColor("blocked", acceptedDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(acceptedDetail))
 
+bool structureBreakExtendedEvent = confirmed and showSignalEventFlow and (upperStructureBreakExtended or lowerStructureBreakExtended)
+if structureBreakExtendedEvent
+    int extendedDirection = upperStructureBreakExtended ? -1 : 1
+    string extendedDetail = (upperStructureBreakExtended ? "前高延伸：结构高跟随最新日内高点" : "前低延伸：结构低跟随最新日内低点") + "\n这是趋势延续后的锚点刷新，不是反向挂单\n后续仍要等回落/反弹形成中段，再二次测试并动能衰减"
+    string extendedCompact = upperStructureBreakExtended ? "前高延伸\n结构跟随新高" : "前低延伸\n结构跟随新低"
+    if flowLabelsVisible
+        label.new(bar_index, extendedDirection == 1 ? low - atr * 1.2 : high + atr * 1.2, flowLabelText(extendedCompact, extendedDetail), style=flowStyle(extendedDirection), color=flowColor("blocked", extendedDirection), textcolor=labelTextColor("blocked", extendedDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(extendedDetail))
+
 bool blockedCandidate = confirmed and showSignalEventFlow and selectedDirection != 0 and (selectedBlockReason != "passed" or not inEntryWindow)
 if blockedCandidate
     string displayBlockReason = not inEntryWindow ? "outside_entry_session" : selectedBlockReason
@@ -1264,6 +1310,16 @@ if exhaustionWatchTop or exhaustionWatchBottom
     string watchCompact = (exhaustionWatchTop ? "前高二测" : "前低二测") + "\n等确认"
     if flowLabelsVisible
         label.new(bar_index, watchDirection == 1 ? low - atr * 1.2 : high + atr * 1.2, flowLabelText(watchCompact, watchDetail), style=flowStyle(watchDirection), color=flowColor("blocked", watchDirection), textcolor=labelTextColor("blocked", watchDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(watchDetail))
+
+bool unconfirmedTopWatch = confirmed and showSignalEventFlow and selectedDirection == 0 and strongTopProbeZone and (topFirstExhaustion or topRightShoulder) and not topConfirmAllowed and not volumeBlockedTop and not exhaustionWatchTop
+bool unconfirmedBottomWatch = confirmed and showSignalEventFlow and selectedDirection == 0 and strongBottomProbeZone and (bottomFirstExhaustion or bottomRightShoulder) and not bottomConfirmAllowed and not volumeBlockedBottom and not exhaustionWatchBottom
+if unconfirmedTopWatch or unconfirmedBottomWatch
+    int waitDirection = unconfirmedTopWatch ? -1 : 1
+    string waitReason = unconfirmedTopWatch ? topProbeFilterReason : bottomProbeFilterReason
+    string waitDetail = "观察 " + dirName(waitDirection) + "\n未确认，不挂单\n原因: " + waitReason + "\n只有 confirmed_limit 才会画 plan 并联动 Core/IBKR\n结构区 " + fmt(unconfirmedTopWatch ? topZoneLow : bottomZoneLow) + " - " + fmt(unconfirmedTopWatch ? topZoneHigh : bottomZoneHigh)
+    string waitCompact = "观察 " + dirName(waitDirection) + "\n未确认，不挂单"
+    if flowLabelsVisible
+        label.new(bar_index, waitDirection == 1 ? low - atr * 1.2 : high + atr * 1.2, flowLabelText(waitCompact, waitDetail), style=flowStyle(waitDirection), color=flowColor("blocked", waitDirection), textcolor=labelTextColor("blocked", waitDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(waitDetail))
 
 // Lightweight context plots for reading the structure; these are visual only.
 color dtpLineColor = dtpDir == 1 ? color.new(color.aqua, 0) : dtpDir == -1 ? color.new(color.red, 0) : color.new(color.gray, 25)

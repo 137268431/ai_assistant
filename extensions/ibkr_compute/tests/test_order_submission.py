@@ -2362,6 +2362,66 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
         self.assertEqual(0.0, ib_gateway._safe_float("1.7976931348623157e+308", 0.0))
         self.assertEqual(0.0, ib_gateway._safe_float(float("inf"), 0.0))
 
+    def test_exec_details_does_not_aggregate_reused_order_id_across_contracts(self):
+        def obj(**kwargs):
+            return type("Obj", (), kwargs)()
+
+        app = ib_gateway._IBGatewayApp.__new__(ib_gateway._IBGatewayApp)
+        app._pending_requests = {}
+        app._open_orders = {}
+        app._executions = {}
+        app._commission_reports = {}
+        app._state_lock = threading.RLock()
+        app._listener_lock = threading.RLock()
+        app._order_update_listeners = []
+        app._execution_fill_listeners = []
+
+        cvna_contract = obj(conId=274144952, symbol="CVNA", exchange="NYSE", secType="STK", multiplier=0)
+        cvna_exec = obj(
+            execId="old-cvna-fill",
+            orderId="11385",
+            permId="1",
+            clientId=31,
+            orderRef="sl_BATS_CVNA_short_20260615_1042_2_mr_sdUpper",
+            side="BOT",
+            shares=71,
+            price=70.45577464788732,
+            time="20260615 11:09:33 US/Eastern",
+            acctNumber="DUQ051640",
+            exchange="NYSE",
+        )
+        app.execDetails(-1, cvna_contract, cvna_exec)
+        app.commissionReport(obj(execId="old-cvna-fill", commission=1.000213, currency="USD", realizedPNL=-76.36579))
+
+        hood_contract = obj(conId=504546674, symbol="HOOD", exchange="NASDAQ", secType="STK", multiplier=0)
+        hood_exec = obj(
+            execId="new-hood-fill",
+            orderId="11385",
+            permId="2",
+            clientId=31,
+            orderRef="sl_BATS_HOOD_short_20260616_0946_2_mr_sdUpper",
+            side="BOT",
+            shares=50,
+            price=98.97,
+            time="20260616 09:48:24 US/Eastern",
+            acctNumber="DUQ051640",
+            exchange="NASDAQ",
+        )
+        app.execDetails(-1, hood_contract, hood_exec)
+        hood_order = app._open_orders["11385"]
+
+        self.assertEqual("HOOD", hood_order["ticker"])
+        self.assertEqual(50, hood_order["filledQuantity"])
+        self.assertAlmostEqual(98.97, hood_order["avgPrice"])
+
+        app.commissionReport(obj(execId="new-hood-fill", commission=2.000363, currency="USD", realizedPNL=11.0))
+        hood_order = app._open_orders["11385"]
+        self.assertEqual(50, hood_order["filledQuantity"])
+        self.assertAlmostEqual(98.97, hood_order["avgPrice"])
+        self.assertAlmostEqual(2.000363, hood_order["commission"])
+        self.assertIn("old-cvna-fill", app._executions)
+        self.assertIn("new-hood-fill", app._executions)
+
 
 class IBGatewayOrderSubmissionWarningTest(unittest.TestCase):
     @staticmethod

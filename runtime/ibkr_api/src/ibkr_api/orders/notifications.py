@@ -831,10 +831,39 @@ def _realized_pnl_model_for_entry_exit(
         "sl_price",
         "stop_loss",
     )
-    quantity = first_defined(
-        _positive_number(exit_order, "filled_qty", "quantity"),
-        _positive_number(entry_order, "filled_qty", "quantity"),
-    )
+    exit_quantity = _positive_number(exit_order, "filled_qty", "quantity")
+    entry_filled_quantity = _positive_number(entry_order, "filled_qty")
+    entry_order_quantity = _positive_number(entry_order, "quantity")
+    entry_quantity = first_defined(entry_filled_quantity, entry_order_quantity)
+    quantity = first_defined(exit_quantity, entry_quantity)
+    quantity_capped = False
+    cap_candidates = [value for value in (entry_filled_quantity, entry_order_quantity) if value is not None and value > 0]
+    if exit_quantity is not None and cap_candidates:
+        cap_value = min(cap_candidates)
+        if exit_quantity > cap_value + PNL_EPSILON:
+            quantity = cap_value
+            quantity_capped = True
+    if quantity_capped:
+        entry_event_price = _positive_number(
+            entry_order,
+            "execution_price",
+            "last_fill_price",
+            "lastFillPrice",
+            "actual_fill_price",
+            "entry_fill_price",
+        )
+        exit_event_price = _positive_number(
+            exit_order,
+            "execution_price",
+            "last_fill_price",
+            "lastFillPrice",
+            "actual_fill_price",
+            "exit_fill_price",
+        )
+        if entry_event_price is not None:
+            entry_price = entry_event_price
+        if exit_event_price is not None:
+            exit_price = exit_event_price
 
     value_is_net = net_pnl is not None
     value_source = net_field
@@ -862,6 +891,11 @@ def _realized_pnl_model_for_entry_exit(
         **_entry_slippage_model(entry_order, exit_order, entry_price),
         "exit_price": exit_price,
         "quantity": quantity,
+        "entry_quantity": entry_quantity,
+        "entry_filled_quantity": entry_filled_quantity,
+        "entry_order_quantity": entry_order_quantity,
+        "exit_quantity_raw": exit_quantity,
+        "quantity_capped": quantity_capped,
         "exit_role": normalized_exit.get("role") or to_text(_record_or_extra_value(exit_order, "role")) or "exit",
     }
 
@@ -916,6 +950,89 @@ def _realized_pnl_line(model: dict[str, Any] | None) -> str:
         return ""
     value = model.get("value")
     return f"**实际盈亏**: {_pnl_outcome_label(value)} {_format_signed_money(value)}{_realized_pnl_detail(model)}"
+
+
+def _trade_ledger_price_context(
+    order_record: dict[str, Any],
+    *,
+    related_rows: list[dict[str, Any]] | None = None,
+    pnl_model: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    rows = dedupe_order_rows([order_record, *(related_rows or [])])
+    normalized = normalize_order_row(order_record)
+    role = to_text(normalized.get("role") or _record_or_extra_value(order_record, "role"))
+    entry_order = next((row for row in rows if normalize_order_row(row).get("role") == "entry"), None)
+    exit_order = next(
+        (row for row in rows if normalize_order_row(row).get("role") in EXIT_ORDER_ROLES),
+        None,
+    )
+
+    entry_price = (pnl_model or {}).get("entry_price")
+    exit_price = (pnl_model or {}).get("exit_price")
+    if entry_price is None and entry_order:
+        entry_price = _positive_number(
+            entry_order,
+            "fill_price",
+            "avg_price",
+            "avg_fill_price",
+            "avgFillPrice",
+            "avgPrice",
+            "actual_fill_price",
+            "entry_fill_price",
+            "last_fill_price",
+            "lastFillPrice",
+            "execution_price",
+            "limit_price",
+            "price",
+        )
+    if entry_price is None and role == "entry":
+        entry_price = _trade_ledger_fill_price(order_record) or _positive_number(order_record, "limit_price", "price", "entry_price")
+    if exit_price is None and exit_order:
+        exit_price = _positive_number(
+            exit_order,
+            "fill_price",
+            "avg_price",
+            "avg_fill_price",
+            "avgFillPrice",
+            "avgPrice",
+            "actual_fill_price",
+            "exit_fill_price",
+            "last_fill_price",
+            "lastFillPrice",
+            "execution_price",
+            "price",
+            "limit_price",
+            "tp_price",
+            "take_profit",
+            "sl_price",
+            "stop_loss",
+        )
+    if exit_price is None and role in EXIT_ORDER_ROLES:
+        exit_price = _trade_ledger_fill_price(order_record)
+
+    latest_fill_price = _positive_number(
+        order_record,
+        "last_fill_price",
+        "lastFillPrice",
+        "execution_price",
+        "fill_price",
+        "avg_price",
+        "avg_fill_price",
+        "avgFillPrice",
+        "avgPrice",
+    )
+    pnl_quantity = (pnl_model or {}).get("quantity")
+    if pnl_quantity is None:
+        pnl_quantity = first_defined(
+            _positive_number(order_record, "quantity_for_pnl", "filled_qty", "quantity"),
+            _positive_number(entry_order or {}, "filled_qty", "quantity") if entry_order else None,
+        )
+    return {
+        "entry_price": entry_price,
+        "exit_price": exit_price,
+        "latest_fill_price": latest_fill_price,
+        "pnl_quantity": pnl_quantity,
+    }
 
 
 def _single_order_pnl_model(order_record: Any) -> dict[str, Any] | None:
@@ -1878,6 +1995,7 @@ def build_order_callback_ledger_card(
         pnl_model = {**pnl_model, "exit_label": display_role_label}
     pnl_line = _realized_pnl_line(pnl_model)
     title_pnl = f" · {_pnl_outcome_label(pnl_model.get('value'))} {_format_signed_money(pnl_model.get('value'))}" if pnl_model else ""
+    price_context = _trade_ledger_price_context(order_record, related_rows=related_rows, pnl_model=pnl_model)
 
     body_lines = [
         f"**回调判定**: {event_label}",
@@ -1896,6 +2014,10 @@ def build_order_callback_ledger_card(
             f"**角色 / 类型**: {display_role_label} / {order_type or '-'}",
             f"**数量 / 已成交**: {_format_quantity(_record_or_extra_value(order_record, 'quantity'))} / {_format_quantity(filled_qty)}",
             f"**均价 / 最新成交价**: {_format_price(_trade_ledger_fill_price(order_record))} / {_format_price(_record_or_extra_value(order_record, 'last_fill_price', 'lastFillPrice', 'execution_price'))}",
+            f"**入场价格**: {_format_price(price_context.get('entry_price'))}",
+            f"**出场价格**: {_format_price(price_context.get('exit_price'))}",
+            f"**本次成交价**: {_format_price(price_context.get('latest_fill_price'))}",
+            f"**PnL计算数量**: {_format_quantity(price_context.get('pnl_quantity'))}",
             fill_line,
         ]
     )

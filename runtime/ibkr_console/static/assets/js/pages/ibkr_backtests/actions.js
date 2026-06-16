@@ -105,7 +105,7 @@
                 max_borrow_amount: Number(document.getElementById('maxBorrowAmount').value || 0),
                 position_limit_max: Number(document.getElementById('positionLimitMax').value || 0),
                 max_strategy_open_positions: Number(document.getElementById('maxStrategyOpenPositions')?.value || 5),
-                consecutive_stop_loss_limit: Number(document.getElementById('consecutiveStopLossLimit')?.value || 3),
+                consecutive_stop_loss_limit: Number(document.getElementById('consecutiveStopLossLimit')?.value || 10),
                 signal_validity_minutes: Number(document.getElementById('signalValidityMinutes').value || 30),
                 trade_window_start_time: String(document.getElementById('tradeWindowStart').value || '09:35').trim(),
                 trade_window_end_time: String(document.getElementById('tradeWindowEnd').value || '15:30').trim(),

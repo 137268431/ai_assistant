@@ -435,7 +435,7 @@ class Config:
         "ibkr_buying_power_notify_enabled": "true",
         "ibkr_buying_power_notify_cooldown_sec": "1800",
         "fixed_position_symbols": "BOXX,IBKR",
-        "consecutive_stop_loss_limit": "3",
+        "consecutive_stop_loss_limit": "10",
         "order_validity_minutes": "30",
         "eod_close_time": "15:55",
         "eod_keep_symbols": "BOXX,IBKR",

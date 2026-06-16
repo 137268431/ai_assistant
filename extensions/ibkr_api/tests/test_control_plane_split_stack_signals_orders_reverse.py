@@ -1718,6 +1718,70 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
         self.assertEqual("green", card["header"]["template"])
         self.assertIn("**实际盈亏**: 盈利 +$20.00", content)
         self.assertIn("平仓（原因未记录） @95.00", content)
+        self.assertIn("**入场价格**: 100.00", content)
+        self.assertIn("**出场价格**: 95.00", content)
+        self.assertIn("**本次成交价**: 95.00", content)
+        self.assertIn("**PnL计算数量**: 4", content)
+
+    def test_order_callback_ledger_caps_reused_order_id_polluted_quantity(self):
+        entry = {
+            "id": "order-entry",
+            "unique_id": "entry_BATS_HOOD_short_20260616_0946_2_mr_sdUpper",
+            "order_type": "LMT",
+            "symbol": "HOOD",
+            "environment": "paper",
+            "status": "Filled",
+            "role": "entry",
+            "broker_order_id": "11383",
+            "trade_group_id": "BATS_HOOD_short_20260616_0946_2_mr_sdUpper",
+            "signal_id": "BATS_HOOD_short_20260616_0946_2_mr_sdUpper",
+            "direction": "short",
+            "quantity": 50,
+            "filled_qty": 121,
+            "fill_price": 81.715785,
+            "commission": 2.227643,
+            "extra": {"execution_price": 99.19, "last_fill_price": 99.19},
+        }
+        stop = {
+            "id": "order-sl",
+            "unique_id": "sl_BATS_HOOD_short_20260616_0946_2_mr_sdUpper",
+            "order_type": "STP",
+            "symbol": "HOOD",
+            "environment": "paper",
+            "status": "Filled",
+            "role": "stop_loss",
+            "broker_order_id": "11385",
+            "trade_group_id": "BATS_HOOD_short_20260616_0946_2_mr_sdUpper",
+            "signal_id": "BATS_HOOD_short_20260616_0946_2_mr_sdUpper",
+            "direction": "buy",
+            "quantity": 50,
+            "filled_qty": 121,
+            "fill_price": 82.238512,
+            "commission": 2.000363,
+            "extra": {
+                "environment": "paper",
+                "ib_callback_type": "execDetails",
+                "execution_price": 98.97,
+                "last_fill_price": 98.97,
+            },
+        }
+
+        card = build_order_callback_ledger_card(
+            stop,
+            {"event_type": "fill", "status": "Filled", "filled_qty": 121, "fill_delta": 121},
+            related_rows=[entry],
+        )
+        content = card["elements"][0]["content"]
+
+        self.assertIn("盈利 +$6.77", card["header"]["title"]["content"])
+        self.assertIn("**实际盈亏**: 盈利 +$6.77", content)
+        self.assertIn("止损 @98.97", content)
+        self.assertIn("入场 @99.19", content)
+        self.assertIn("50股", content)
+        self.assertIn("**入场价格**: 99.19", content)
+        self.assertIn("**出场价格**: 98.97", content)
+        self.assertIn("**本次成交价**: 98.97", content)
+        self.assertIn("**PnL计算数量**: 50", content)
 
     def test_sync_order_callback_ledger_notification_uses_position_cost_for_unlinked_close(self):
         class _LedgerPB:
