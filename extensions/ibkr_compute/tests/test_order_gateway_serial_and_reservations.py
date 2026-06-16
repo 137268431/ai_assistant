@@ -13,7 +13,11 @@ if str(SRC_ROOT) not in sys.path:
 from ibkr_compute.api.account.buying_power_guard import build_buying_power_guard  # noqa: E402
 from ibkr_compute.api.account.action_builders import common as action_common  # noqa: E402
 from ibkr_compute.broker.ib_gateway import BrokerAdapter, _IBGatewayApp  # noqa: E402
-from ibkr_compute.api.account.snapshot_builder.recovery import recover_live_open_orders  # noqa: E402
+from ibkr_compute.api.account.snapshot_builder.recovery import (  # noqa: E402
+    load_pb_fallback_order_rows,
+    pb_fallback_stale_seed_diagnostics,
+    recover_live_open_orders,
+)
 from ibkr_compute.order.buying_power_reservations import (  # noqa: E402
     BuyingPowerReservationStore,
     apply_reservations_to_buying_power_summary,
@@ -879,6 +883,63 @@ class GatewaySerialAndReservationTest(unittest.TestCase):
 
         self.assertEqual([], merged)
         self.assertEqual(["801"], payload["coverage"]["unresolved_order_ids"])
+
+    def test_pb_fallback_skips_active_seed_with_terminal_broker_id_conflict(self):
+        class _PB:
+            def get_records(self, collection, filter=None, sort=None, per_page=100, page=1):
+                text = filter or ""
+                if "Submitted" in text:
+                    return [
+                        {
+                            "id": "stale-tp",
+                            "environment": "paper",
+                            "broker_order_id": "11381",
+                            "order_id": "11381",
+                            "unique_id": "tp_BATS_VSAT_long_20260615_1038_2_mr_sdLower",
+                            "trade_group_id": "BATS_VSAT_long_20260615_1038_2_mr_sdLower",
+                            "symbol": "RBLX",
+                            "role": "take_profit",
+                            "status": "Submitted",
+                            "relation_status": "active",
+                            "quantity": 119,
+                        }
+                    ]
+                if "FILLED" in text:
+                    return [
+                        {
+                            "id": "close-rblx",
+                            "environment": "paper",
+                            "broker_order_id": "11381",
+                            "order_id": "11381",
+                            "unique_id": "close_RBLX_20260615_155514",
+                            "trade_group_id": "BATS_RBLX_long_20260615_1500",
+                            "symbol": "RBLX",
+                            "role": "close",
+                            "status": "Filled",
+                            "relation_status": "closed",
+                        }
+                    ]
+                return []
+
+        class _ApiApp:
+            pb = _PB()
+
+            class _Logger:
+                def debug(self, *args, **kwargs):
+                    pass
+
+            logger = _Logger()
+
+        class _Service:
+            environment = "paper"
+
+        api_app = _ApiApp()
+        rows = load_pb_fallback_order_rows(api_app, _Service())
+        diagnostics = pb_fallback_stale_seed_diagnostics(api_app)
+
+        self.assertEqual([], rows)
+        self.assertEqual(["11381"], diagnostics["stale_pb_seed_order_ids"])
+        self.assertEqual(1, diagnostics["stale_pb_seed_count"])
 
     def test_lifecycle_backoff_does_not_block_independent_account_summary_retry(self):
         lifecycle = OrderLifecycle.__new__(OrderLifecycle)

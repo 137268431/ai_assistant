@@ -6,7 +6,7 @@ import time
 from typing import Any, Callable
 
 from ibkr_api.app_core.value_utils import parse_boolean
-from ibkr_api.modes import request_broker_mode
+from ibkr_api.modes import request_broker_mode, request_market_data_mode
 from ibkr_api.orders.values import ensure_object, escape_filter_string, to_float, to_int, to_text
 from ibkr_api.account.snapshot_live_orders import build_managed_order_context, normalize_live_order
 from ibkr_api.account.snapshot_relations import build_relation_context
@@ -64,6 +64,26 @@ def _orders_fast_param(payload: dict[str, Any]) -> bool:
         or parse_boolean(payload.get("orders_fast"), False)
         or parse_boolean(payload.get("fast_orders"), False)
     )
+
+
+def _resolved_upstream_broker_mode(
+    upstream_payload: dict[str, Any],
+    requested_environment: str,
+    normalize_environment: NormalizeEnvironment,
+) -> str:
+    fallback = to_text(requested_environment) or "live"
+    for key in ("broker_mode", "broker_environment", "environment"):
+        value = to_text(ensure_object(upstream_payload).get(key))
+        if not value:
+            continue
+        try:
+            normalized = normalize_environment(value, fallback)
+        except Exception:
+            normalized = value
+        text = to_text(normalized).lower()
+        if text:
+            return text
+    return fallback
 
 
 def _quote_filter_value(value: Any) -> str:
@@ -482,10 +502,13 @@ def _enrich_buying_power_summary(payload: dict[str, Any]) -> None:
 def _is_broker_confirmed_live_order(order: dict[str, Any]) -> bool:
     item = ensure_object(order)
     authority = to_text(item.get("authority") or item.get("order_authority")).lower()
-    if authority in {"pb_stale", "pb_only", "pb_shadow"}:
+    if authority in {"pb_stale", "pb_only", "pb_shadow", "pb_active_seed", "pb_pending_fallback", "ambiguous"}:
         return False
     source = to_text(item.get("source") or item.get("order_source") or item.get("recovery_source") or item.get("_recovery_source")).lower()
-    if source in {"pb", "pocketbase", "pb_stale", "pb_only", "pb_shadow"}:
+    if source in {"pb", "pocketbase", "pb_stale", "pb_only", "pb_shadow", "pb_active_seed", "pb_pending_fallback", "ambiguous"}:
+        return False
+    match_state = to_text(item.get("match_state") or ensure_object(item.get("pb_context")).get("match_state")).lower()
+    if match_state in {"pb_stale", "pb_only", "pb_shadow", "pb_active_seed", "pb_pending_fallback", "ambiguous"}:
         return False
     symbol = to_text(item.get("symbol") or item.get("ticker") or item.get("contractDesc")).upper()
     client_order_id = to_text(item.get("client_order_id") or item.get("cOID") or item.get("coid") or item.get("order_ref") or item.get("orderRef"))
@@ -880,6 +903,8 @@ def build_account_snapshot_response(
 ) -> tuple[dict[str, Any], int]:
     started = time.monotonic()
     environment = request_broker_mode(payload)
+    requested_environment = environment
+    requested_market_data_mode = request_market_data_mode(payload)
     if _monitor_probe_param(payload):
         return _build_account_monitor_probe_response(
             environment=environment,
@@ -911,7 +936,6 @@ def build_account_snapshot_response(
         "manual_refresh",
         "force",
         "refresh",
-        "cache_bust",
         "open_orders_only",
         "orders_open_only",
         "live_orders_only",
@@ -930,6 +954,12 @@ def build_account_snapshot_response(
     upstream_elapsed_ms = float(result.get("elapsed_ms") or 0.0)
     status_code = int(result.get("status_code") or 200)
     upstream_payload = ensure_object(result.get("payload"))
+    runtime_environment = _resolved_upstream_broker_mode(
+        upstream_payload,
+        requested_environment,
+        normalize_environment,
+    )
+    market_data_mode = to_text(upstream_payload.get("market_data_mode")) or requested_market_data_mode
     selected_upstream = to_text(result.get("target_url")) or f"{runtime_base_url.rstrip('/')}/ibkr/account"
     diagnostics = {
         "account_snapshot": {
@@ -939,6 +969,10 @@ def build_account_snapshot_response(
             "total_elapsed_ms": round((time.monotonic() - started) * 1000.0, 1),
             "degraded": False,
             "upstream_status_code": status_code,
+            "requested_environment": requested_environment,
+            "requested_broker_mode": requested_environment,
+            "resolved_broker_mode": runtime_environment,
+            "market_data_mode": market_data_mode,
         }
     }
     if not upstream_payload or (status_code >= 400 and not upstream_payload.get("ok")):
@@ -967,9 +1001,9 @@ def build_account_snapshot_response(
         }, 502 if status_code < 400 else status_code
     enrich_started = time.monotonic()
     if orders_fast:
-        enriched = enrich_account_snapshot_orders_fast(dict(upstream_payload), environment)
+        enriched = enrich_account_snapshot_orders_fast(dict(upstream_payload), runtime_environment)
     else:
-        enriched = enrich_account_snapshot(pb, dict(upstream_payload), environment)
+        enriched = enrich_account_snapshot(pb, dict(upstream_payload), runtime_environment)
         stale_order_ids = _stale_pb_broker_order_ids(enriched)
         if stale_order_ids and diagnostic_broker_refresh:
             enriched = _set_stale_recheck(
@@ -988,7 +1022,7 @@ def build_account_snapshot_response(
             enriched = _apply_stale_order_recheck(
                 pb,
                 enriched=enriched,
-                environment=environment,
+                environment=runtime_environment,
                 request_json_request=request_json_request,
                 runtime_base_url=runtime_base_url,
                 upstream_timeout=upstream_timeout,
@@ -1005,10 +1039,17 @@ def build_account_snapshot_response(
             "total_elapsed_ms": total_elapsed_ms,
             "degraded": bool(ensure_object(enriched.get("errors")).get("summary") or ensure_object(enriched.get("errors")).get("positions") or ensure_object(enriched.get("errors")).get("orders")),
             "upstream_status_code": status_code,
+            "requested_environment": requested_environment,
+            "requested_broker_mode": requested_environment,
+            "resolved_broker_mode": runtime_environment,
+            "market_data_mode": market_data_mode,
         }
     )
     existing_diagnostics["account_snapshot"] = account_diagnostics
     enriched["diagnostics"] = existing_diagnostics
+    enriched["requested_environment"] = requested_environment
+    enriched["requested_broker_mode"] = requested_environment
+    enriched["market_data_mode"] = market_data_mode
     enriched["proxy_source"] = "ibkr-api"
     enriched["proxy_route"] = "/api/custom/ibkr/account_snapshot"
     enriched["proxy_upstream"] = selected_upstream

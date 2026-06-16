@@ -465,6 +465,82 @@ class OrderTracker:
         return True
 
     @classmethod
+    def _pb_order_matches_client_order_id(cls, row: Optional[Dict[str, Any]], client_order_id: str) -> bool:
+        if not isinstance(row, dict):
+            return False
+        normalized = cls._normalize_text(client_order_id)
+        if not normalized:
+            return False
+        extra = cls._ensure_object(row.get("extra"))
+        candidates = (
+            row.get("unique_id"),
+            row.get("client_order_id"),
+            row.get("order_ref"),
+            row.get("orderRef"),
+            row.get("cOID"),
+            row.get("coid"),
+            extra.get("unique_id"),
+            extra.get("client_order_id"),
+            extra.get("order_ref"),
+            extra.get("orderRef"),
+            extra.get("cOID"),
+            extra.get("coid"),
+        )
+        return any(cls._normalize_text(candidate) == normalized for candidate in candidates)
+
+    @classmethod
+    def _pb_order_row_is_terminal(cls, row: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(row, dict):
+            return False
+        relation_status = cls._normalize_text(row.get("relation_status")).lower()
+        status = cls._normalize_text(row.get("status") or row.get("order_status") or row.get("orderStatus")).upper()
+        return relation_status in {"closed", "canceled", "cancelled"} or status in {
+            "FILLED",
+            "EXECUTED",
+            "CANCELLED",
+            "CANCELED",
+            "INACTIVE",
+            "REJECTED",
+            "EXPIRED",
+            "API_CANCELLED",
+        }
+
+    @classmethod
+    def _pb_rows_have_identity_conflict(cls, left: Dict[str, Any], right: Dict[str, Any]) -> bool:
+        comparisons = (
+            (cls._normalize_text(left.get("unique_id")), cls._normalize_text(right.get("unique_id"))),
+            (cls._normalize_text(left.get("trade_group_id")), cls._normalize_text(right.get("trade_group_id"))),
+            (cls._normalize_text(left.get("entry_order_unique_id")), cls._normalize_text(right.get("entry_order_unique_id"))),
+            (cls._normalize_text(left.get("symbol")).upper(), cls._normalize_text(right.get("symbol")).upper()),
+            (cls._normalize_text(left.get("conid")), cls._normalize_text(right.get("conid"))),
+        )
+        for left_value, right_value in comparisons:
+            if left_value and right_value and left_value != right_value:
+                return True
+        return False
+
+    @classmethod
+    def _candidate_has_terminal_identity_conflict(
+        cls,
+        candidate: Dict[str, Any],
+        matches: List[Dict[str, Any]],
+    ) -> bool:
+        if cls._pb_order_row_role(candidate) == "close":
+            return False
+        candidate_id = cls._normalize_text(candidate.get("broker_order_id") or candidate.get("order_id"))
+        if not candidate_id:
+            return False
+        for row in matches or []:
+            if row is candidate:
+                continue
+            row_id = cls._normalize_text(row.get("broker_order_id") or row.get("order_id"))
+            if row_id != candidate_id or not cls._pb_order_row_is_terminal(row):
+                continue
+            if cls._pb_rows_have_identity_conflict(candidate, row):
+                return True
+        return False
+
+    @classmethod
     def _infer_position_side(
         cls,
         *,
@@ -1121,6 +1197,7 @@ class OrderTracker:
         runtime_environment: str,
         symbol: str = "",
         role: str = "",
+        client_order_id: str = "",
         per_page: int = 5,
     ) -> Optional[Dict[str, Any]]:
         normalized_order_id = self._normalize_text(order_id)
@@ -1141,8 +1218,65 @@ class OrderTracker:
         if not matches:
             return None
 
+        raw_matches = [dict(item) for item in matches if isinstance(item, dict)]
+        matches = raw_matches
         normalized_symbol = self._normalize_text(symbol).upper()
         normalized_role = self._normalize_pb_order_role(role)
+        normalized_client_order_id = self._normalize_text(client_order_id)
+
+        def safe_candidate(candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            if (
+                not normalized_client_order_id
+                and len(raw_matches) > 1
+                and self._candidate_has_terminal_identity_conflict(candidate, raw_matches)
+            ):
+                logger.warning(
+                    "PB broker_order_id candidate rejected due terminal identity conflict: order_id=%s symbol=%s role=%s environment=%s candidate=%s",
+                    normalized_order_id,
+                    normalized_symbol,
+                    normalized_role,
+                    runtime_environment,
+                    {
+                        "id": str(candidate.get("id") or ""),
+                        "unique_id": str(candidate.get("unique_id") or ""),
+                        "symbol": str(candidate.get("symbol") or ""),
+                        "role": str(candidate.get("role") or ""),
+                        "status": str(candidate.get("status") or ""),
+                    },
+                )
+                return None
+            return candidate
+
+        if normalized_client_order_id:
+            exact_matches = [
+                item for item in matches
+                if self._pb_order_matches_client_order_id(item, normalized_client_order_id)
+            ]
+            if len(exact_matches) == 1:
+                return exact_matches[0]
+            if len(exact_matches) > 1:
+                matches = exact_matches
+            else:
+                logger.warning(
+                    "PB broker_order_id match rejected without exact client identity: order_id=%s client_order_id=%s symbol=%s role=%s environment=%s candidates=%s",
+                    normalized_order_id,
+                    normalized_client_order_id,
+                    normalized_symbol,
+                    normalized_role,
+                    runtime_environment,
+                    [
+                        {
+                            "id": str(item.get("id") or ""),
+                            "unique_id": str(item.get("unique_id") or ""),
+                            "symbol": str(item.get("symbol") or ""),
+                            "role": str(item.get("role") or ""),
+                            "status": str(item.get("status") or ""),
+                        }
+                        for item in matches
+                    ],
+                )
+                return None
+
         has_identity_hint = bool(normalized_symbol or normalized_role)
         if has_identity_hint:
             hinted_matches = [
@@ -1150,7 +1284,7 @@ class OrderTracker:
                 if self._pb_order_matches_identity_hints(item, symbol=normalized_symbol, role=normalized_role)
             ]
             if len(hinted_matches) == 1:
-                return hinted_matches[0]
+                return safe_candidate(hinted_matches[0])
             if len(hinted_matches) > 1:
                 matches = hinted_matches
             else:
@@ -1173,7 +1307,7 @@ class OrderTracker:
                 )
                 return None
         elif len(matches) == 1:
-            return matches[0]
+            return safe_candidate(matches[0])
 
         open_matches = [
             item for item in matches
@@ -1181,7 +1315,7 @@ class OrderTracker:
             or self._normalize_text(item.get("status")).upper() in {"SUBMITTED", "PRESUBMITTED", "PENDINGSUBMIT", "PENDING", "INIT", "APIPENDING", "API_PENDING"}
         ]
         if len(open_matches) == 1:
-            return open_matches[0]
+            return safe_candidate(open_matches[0])
         if len(open_matches) > 1:
             matches = open_matches
 
@@ -1191,7 +1325,7 @@ class OrderTracker:
                 if self._normalize_text(item.get("symbol")).upper() == normalized_symbol
             ]
             if len(symbol_matches) == 1:
-                return symbol_matches[0]
+                return safe_candidate(symbol_matches[0])
             if len(symbol_matches) > 1:
                 matches = symbol_matches
 
@@ -1201,7 +1335,7 @@ class OrderTracker:
                 if self._pb_order_row_role(item) == "close"
             ]
             if len(close_matches) == 1:
-                return close_matches[0]
+                return safe_candidate(close_matches[0])
             if len(close_matches) > 1:
                 matches = close_matches
         if normalized_role:
@@ -1210,7 +1344,7 @@ class OrderTracker:
                 if self._pb_order_row_role(item) == normalized_role
             ]
             if len(role_matches) == 1:
-                return role_matches[0]
+                return safe_candidate(role_matches[0])
             if len(role_matches) > 1:
                 matches = role_matches
 
@@ -1323,6 +1457,74 @@ class OrderTracker:
             reverse=True,
         )
         return candidates[0]
+
+    def _close_same_trade_group_active_protection_rows(
+        self,
+        *,
+        runtime_environment: str,
+        trade_group_id: str,
+        entry_order_unique_id: str,
+        close_order_unique_id: str,
+        close_order_id: str,
+    ) -> None:
+        updater = getattr(self.pb_client, "update_record", None)
+        if not callable(updater):
+            return
+        group = self._normalize_text(trade_group_id)
+        entry_unique_id = self._normalize_text(entry_order_unique_id)
+        if not group and not entry_unique_id:
+            return
+        parts = []
+        if group:
+            parts.append(f'trade_group_id = "{self._escape_filter_value(group)}"')
+        if entry_unique_id:
+            parts.append(f'entry_order_unique_id = "{self._escape_filter_value(entry_unique_id)}"')
+        try:
+            rows = self.pb_client.get_records(
+                "orders",
+                filter=(
+                    f'environment = "{self._escape_filter_value(runtime_environment)}" && '
+                    f'({" || ".join(parts)}) && '
+                    '(role = "take_profit" || role = "stop_loss") && '
+                    '(relation_status = "active" || relation_status = "planned" || relation_status = "")'
+                ),
+                sort="-updated",
+                per_page=25,
+            )
+        except Exception as exc:
+            logger.debug("Protection close lookup failed after close fill: trade_group=%s error=%s", group, exc)
+            return
+        for row in rows or []:
+            if not isinstance(row, dict) or not self._normalize_text(row.get("id")):
+                continue
+            row_unique_id = self._normalize_text(row.get("unique_id"))
+            if row_unique_id and row_unique_id == self._normalize_text(close_order_unique_id):
+                continue
+            status = self._normalize_text(row.get("status")).upper()
+            relation_status = self._normalize_text(row.get("relation_status")).lower()
+            if relation_status == "closed" or status in {"FILLED", "EXECUTED", "CANCELLED", "CANCELED", "INACTIVE", "REJECTED", "EXPIRED"}:
+                continue
+            extra = self._ensure_object(row.get("extra"))
+            extra.update(
+                {
+                    "closed_by_close_order_unique_id": close_order_unique_id,
+                    "closed_by_close_order_id": close_order_id,
+                    "closed_by_order_tracker": True,
+                    "close_reason": "same_trade_group_close_filled",
+                }
+            )
+            try:
+                updater(
+                    "orders",
+                    row["id"],
+                    {
+                        "status": "Closed",
+                        "relation_status": "closed",
+                        "extra": extra,
+                    },
+                )
+            except Exception as exc:
+                logger.debug("Protection close update failed: id=%s error=%s", row.get("id"), exc)
 
     def _stamp_known_order(self, order: Dict, *, seen_live: bool) -> Dict:
         stamped = dict(order or {})
@@ -1991,6 +2193,7 @@ class OrderTracker:
                         runtime_environment=runtime_environment,
                         symbol=symbol,
                         role=broker_id_lookup_role,
+                        client_order_id=coid,
                     )
 
                 if existing_order:
@@ -2257,6 +2460,14 @@ class OrderTracker:
                 elif role == "take_profit" and limit_price > 0:
                     order_payload["tp_price"] = limit_price
                 self.pb_client.upsert_order(order_payload)
+                if role == "close" and mapped_status == "Filled":
+                    self._close_same_trade_group_active_protection_rows(
+                        runtime_environment=runtime_environment,
+                        trade_group_id=trade_group_id,
+                        entry_order_unique_id=entry_order_unique_id,
+                        close_order_unique_id=canonical_unique_id,
+                        close_order_id=order_id,
+                    )
                 record_order_event(
                     environment=self.environment,
                     operation="pb_order_sync",

@@ -627,6 +627,87 @@ class AccountSnapshotRoutesTest(unittest.TestCase):
         self.assertTrue(payload["orders_fast_enrichment"]["skipped_pb_relation_queries"])
         self.assertEqual([], pb.calls)
 
+    def test_build_account_snapshot_response_uses_runtime_broker_mode_for_enrichment(self):
+        calls = []
+
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            calls.append(list(params or []))
+            return {
+                "ok": True,
+                "status_code": 200,
+                "payload": {
+                    "ok": True,
+                    "environment": "paper",
+                    "summary": {},
+                    "positions": [],
+                    "orders": [],
+                    "live_open_orders": [],
+                    "counts": {},
+                },
+                "target_url": "http://runtime/ibkr/account",
+                "elapsed_ms": 1.0,
+                "timeout_s": timeout,
+            }
+
+        pb = _FakePB(rows={"orders": [], "ibkr_signals": []})
+        payload, status_code = build_account_snapshot_response(
+            pb,
+            payload={"environment": "live", "market_data_mode": "live"},
+            normalize_environment=lambda value, default="live": str(value or default).strip().lower() or default,
+            request_json_request=request_json_request,
+            runtime_base_url="http://runtime",
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertEqual("paper", payload["environment"])
+        self.assertEqual("paper", payload["broker_mode"])
+        self.assertEqual("live", payload["requested_environment"])
+        self.assertEqual("live", payload["market_data_mode"])
+        self.assertEqual(("broker_mode", "live"), calls[0][0])
+        order_filters = [call["filter"] or "" for call in pb.calls if call["collection"] == "orders"]
+        self.assertTrue(any('environment = "paper"' in item or 'environment="paper"' in item for item in order_filters))
+
+    def test_orders_fast_filters_pb_active_seed_from_broker_live_orders(self):
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            return {
+                "ok": True,
+                "status_code": 200,
+                "payload": {
+                    "ok": True,
+                    "environment": "paper",
+                    "summary": {},
+                    "positions": [],
+                    "orders": [],
+                    "live_open_orders": [
+                        {
+                            "order_id": "11381",
+                            "symbol": "RBLX",
+                            "status": "Submitted",
+                            "total_quantity": 119,
+                            "recovery_source": "pb_active_seed",
+                            "can_cancel": True,
+                        }
+                    ],
+                    "counts": {},
+                },
+                "target_url": "http://runtime/ibkr/account",
+                "elapsed_ms": 1.0,
+                "timeout_s": timeout,
+            }
+
+        payload, status_code = build_account_snapshot_response(
+            _FakePB(rows={"orders": [], "ibkr_signals": []}),
+            payload={"environment": "live", "orders_fast": "1", "snapshot_profile": "orders_fast"},
+            normalize_environment=lambda value, default="live": str(value or default).strip().lower() or default,
+            request_json_request=request_json_request,
+            runtime_base_url="http://runtime",
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertEqual("paper", payload["broker_mode"])
+        self.assertEqual([], payload["live_open_orders"])
+        self.assertEqual(0, payload["counts"]["open_orders"])
+
     def test_build_account_snapshot_response_forwards_open_orders_only_profile(self):
         calls = []
 

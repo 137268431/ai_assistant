@@ -531,6 +531,71 @@ class OrderTrackerIdentityTest(unittest.TestCase):
 
         self.assertEqual("tp-nvda", match["id"])
 
+    def test_broker_id_match_rejects_reused_terminal_conflict_without_client_id(self):
+        pb_client = FakePBClient(
+            rows=[
+                {
+                    "id": "stale-tp",
+                    "unique_id": "tp_BATS_VSAT_long_20260615_1038_2_mr_sdLower",
+                    "symbol": "RBLX",
+                    "environment": "paper",
+                    "role": "take_profit",
+                    "status": "Submitted",
+                    "relation_status": "active",
+                    "broker_order_id": "11381",
+                    "trade_group_id": "BATS_VSAT_long_20260615_1038_2_mr_sdLower",
+                },
+                {
+                    "id": "close-rblx",
+                    "unique_id": "close_RBLX_20260615_155514",
+                    "symbol": "RBLX",
+                    "environment": "paper",
+                    "role": "close",
+                    "status": "Filled",
+                    "relation_status": "closed",
+                    "broker_order_id": "11381",
+                    "trade_group_id": "BATS_RBLX_long_20260615_1500",
+                },
+            ]
+        )
+        tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="paper")
+
+        match = tracker._find_pb_order_by_broker_id(
+            "11381",
+            runtime_environment="paper",
+            symbol="RBLX",
+            role="take_profit",
+        )
+
+        self.assertIsNone(match)
+
+    def test_broker_id_match_requires_exact_client_id_when_provided(self):
+        pb_client = FakePBClient(
+            rows=[
+                {
+                    "id": "old-active",
+                    "unique_id": "tp_OLD_long_20260615",
+                    "symbol": "RBLX",
+                    "environment": "paper",
+                    "role": "take_profit",
+                    "status": "Submitted",
+                    "relation_status": "active",
+                    "broker_order_id": "11381",
+                }
+            ]
+        )
+        tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="paper")
+
+        match = tracker._find_pb_order_by_broker_id(
+            "11381",
+            runtime_environment="paper",
+            symbol="RBLX",
+            role="take_profit",
+            client_order_id="tp_NEW_long_20260616",
+        )
+
+        self.assertIsNone(match)
+
     def test_sync_close_callback_does_not_overwrite_reused_broker_id_entry(self):
         pb_client = FakePBClient(
             rows=[

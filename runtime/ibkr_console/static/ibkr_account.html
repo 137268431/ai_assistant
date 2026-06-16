@@ -1397,9 +1397,9 @@
 
         function isBrokerConfirmedOrder(order) {
             const authority = String(order?.authority || order?.order_authority || '').trim().toLowerCase();
-            if (['pb_stale', 'pb_only', 'pb_shadow'].includes(authority)) return false;
-            const source = String(order?.source || order?.order_source || '').trim().toLowerCase();
-            return !['pb', 'pocketbase', 'pb_stale', 'pb_only', 'pb_shadow'].includes(source);
+            if (['pb_active_seed', 'pb_pending_fallback', 'pb_stale', 'pb_only', 'pb_shadow', 'ambiguous'].includes(authority)) return false;
+            const source = String(order?.source || order?.order_source || order?.recovery_source || order?._recovery_source || '').trim().toLowerCase();
+            return !['pb', 'pocketbase', 'pb_active_seed', 'pb_pending_fallback', 'pb_stale', 'pb_only', 'pb_shadow', 'ambiguous'].includes(source);
         }
 
         function getLiveOrders(snapshot) {
@@ -1638,14 +1638,39 @@
             return renderStoredPnlCell(model);
         }
 
+        function getLiveOrderTrustState(order) {
+            const pbContext = order?.pb_context || {};
+            const authority = String(order?.authority || order?.order_authority || '').trim().toLowerCase();
+            const source = String(order?.source || order?.order_source || order?.recovery_source || order?._recovery_source || '').trim().toLowerCase();
+            const matchState = String(order?.match_state || pbContext.match_state || '').trim().toLowerCase();
+            const unsafe = new Set(['pb_active_seed', 'pb_pending_fallback', 'pb_stale', 'pb_only', 'pb_shadow', 'ambiguous']);
+            if (unsafe.has(authority)) return authority;
+            if (unsafe.has(source)) return source;
+            if (unsafe.has(matchState)) return matchState;
+            if (matchState) return matchState;
+            if (['bulk', 'broker', 'ibkr', 'callback_cache', 'order_status', 'live_orders'].includes(source)) return 'broker_confirmed';
+            return 'broker_only';
+        }
+
+        function isBrokerConfirmedLiveOrder(order) {
+            const trustState = getLiveOrderTrustState(order);
+            return trustState === 'matched' || trustState === 'broker_confirmed';
+        }
+
+        function canModifyLiveOrder(order) {
+            return Boolean(order?.can_modify && isBrokerConfirmedLiveOrder(order));
+        }
+
+        function canCancelLiveOrder(order) {
+            return Boolean(order?.can_cancel && isBrokerConfirmedLiveOrder(order));
+        }
+
         function buildFallbackLiveGroups(liveOrders) {
             const grouped = new Map();
             (liveOrders || []).forEach((order) => {
                 const key = String(order?.trade_group_id || order?.entry_order_unique_id || order?.parent_id || order?.order_id || order?.client_order_id || getOrderChainKey(order)).trim();
                 if (!key) return;
-                const orderMatchState = String(order?.match_state || order?.pb_context?.match_state || 'broker_only').trim().toLowerCase() === 'matched'
-                    ? 'matched'
-                    : 'broker_only';
+                const orderMatchState = getLiveOrderTrustState(order);
                 const recoverySource = String(order?.recovery_source || '').trim();
                 const current = grouped.get(key) || {
                     group_key: key,
@@ -1673,8 +1698,8 @@
                 current.matched_live_orders += orderMatchState === 'matched' ? 1 : 0;
                 current.broker_only_live_orders += orderMatchState === 'matched' ? 0 : 1;
                 if (orderMatchState === 'matched') current.match_state = 'matched';
-                if (order?.can_cancel) current.cancelable_orders += 1;
-                if (order?.can_modify) current.editable_orders += 1;
+                if (canCancelLiveOrder(order)) current.cancelable_orders += 1;
+                if (canModifyLiveOrder(order)) current.editable_orders += 1;
                 if (order?.outside_rth) current.outside_rth_orders += 1;
                 current.total_quantity += Math.abs(Number(order?.total_quantity || 0));
                 current.filled_quantity += Math.abs(Number(order?.filled_quantity || 0));
@@ -1838,8 +1863,8 @@
             if (normalized === 'matched') return matchState === 'matched' || Number(group?.matched_live_orders || 0) > 0;
             if (normalized === 'broker_only') return matchState === 'broker_only' || Number(group?.broker_only_live_orders || 0) > 0;
             if (normalized === 'pb_shadow') return Boolean(group?.is_pb_shadow);
-            if (normalized === 'cancelable') return orders.some((order) => order?.can_cancel);
-            if (normalized === 'editable') return orders.some((order) => order?.can_modify);
+            if (normalized === 'cancelable') return orders.some((order) => canCancelLiveOrder(order));
+            if (normalized === 'editable') return orders.some((order) => canModifyLiveOrder(order));
             if (normalized === 'entry' || normalized === 'tp' || normalized === 'stop') {
                 return orders.some((order) => {
                     const label = getOrderRoleLabel(order).toLowerCase();
@@ -2687,8 +2712,8 @@
                     <div class="record-actions">
                         ${signalId ? `<button class="action-btn view" type="button" onclick="viewSignal(${toJsStringLiteral(signalId)})">信号页</button>` : ''}
                         ${tradeGroupId ? `<button class="action-btn view" type="button" onclick="viewTradeGroup(${toJsStringLiteral(tradeGroupId)}, ${toJsStringLiteral(signalId)})">订单页</button>` : ''}
-                        ${order?.can_modify ? `<button class="action-btn modify" type="button" onclick="modifyOrder(${toJsStringLiteral(order?.order_id || '')}, ${Number(order?.price || 0)}, ${Number(order?.total_quantity || 0)}, ${Number(order?.remaining_quantity || 0)}, ${toJsStringLiteral(sideText || '')}, ${toJsStringLiteral(order?.order_type || '')})">改单</button>` : ''}
-                        ${order?.can_cancel ? `<button class="action-btn cancel" type="button" onclick="cancelOrder(${toJsStringLiteral(order?.order_id || '')})">撤单</button>` : ''}
+                        ${canModifyLiveOrder(order) ? `<button class="action-btn modify" type="button" onclick="modifyOrder(${toJsStringLiteral(order?.order_id || '')}, ${Number(order?.price || 0)}, ${Number(order?.total_quantity || 0)}, ${Number(order?.remaining_quantity || 0)}, ${toJsStringLiteral(sideText || '')}, ${toJsStringLiteral(order?.order_type || '')})">改单</button>` : ''}
+                        ${canCancelLiveOrder(order) ? `<button class="action-btn cancel" type="button" onclick="cancelOrder(${toJsStringLiteral(order?.order_id || '')})">撤单</button>` : ''}
                     </div>
                 </div>
             `;
@@ -2826,10 +2851,12 @@
 
         function renderLiveOrderActionButtons(order, signalId, tradeGroupId) {
             const sideText = getOrderSideLabel(order);
+            const canModify = canModifyLiveOrder(order);
+            const canCancel = canCancelLiveOrder(order);
             return renderOrderActionButtons([
-                order?.can_modify ? `<button class="action-btn modify" type="button" onclick="modifyOrder(${toJsStringAttribute(order?.order_id || '')}, ${Number(order?.price || 0)}, ${Number(order?.total_quantity || 0)}, ${Number(order?.remaining_quantity || 0)}, ${toJsStringAttribute(sideText || '')}, ${toJsStringAttribute(order?.order_type || '')})">改单</button>` : '',
-                order?.can_cancel ? `<button class="action-btn cancel" type="button" onclick="cancelOrder(${toJsStringAttribute(order?.order_id || '')})">撤单</button>` : '',
-                !order?.can_modify && !order?.can_cancel && tradeGroupId ? `<button class="action-btn view" type="button" onclick="viewTradeGroup(${toJsStringAttribute(tradeGroupId)}, ${toJsStringAttribute(signalId)})">详情</button>` : '',
+                canModify ? `<button class="action-btn modify" type="button" onclick="modifyOrder(${toJsStringAttribute(order?.order_id || '')}, ${Number(order?.price || 0)}, ${Number(order?.total_quantity || 0)}, ${Number(order?.remaining_quantity || 0)}, ${toJsStringAttribute(sideText || '')}, ${toJsStringAttribute(order?.order_type || '')})">改单</button>` : '',
+                canCancel ? `<button class="action-btn cancel" type="button" onclick="cancelOrder(${toJsStringAttribute(order?.order_id || '')})">撤单</button>` : '',
+                !canModify && !canCancel && tradeGroupId ? `<button class="action-btn view" type="button" onclick="viewTradeGroup(${toJsStringAttribute(tradeGroupId)}, ${toJsStringAttribute(signalId)})">详情</button>` : '',
             ]);
         }
 

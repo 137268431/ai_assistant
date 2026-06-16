@@ -1574,7 +1574,7 @@
                   "uid": "prometheus"
                 },
                 "editorMode": "code",
-                "expr": "max by (service, environment) (max_over_time(ibkr_account_buying_power_guard_state{source=\"effective_guard\", state=~\"ok|warning|blocked\"}[5m])) == bool 0",
+                "expr": "max by (service, environment) (max_over_time(ibkr_account_buying_power_guard_state{source=\"effective_guard\", state=~\"ok|warning|ledger_safe|blocked\"}[5m])) == bool 0",
                 "hide": false,
                 "instant": true,
                 "intervalMs": 1000,
@@ -1632,11 +1632,97 @@
           "execErrState": "Error",
           "for": "5m",
           "annotations": {
-            "summary": "账户购买力风控不可用",
-            "description": "account_snapshot 和 account_summary 在 5 分钟内都没有可用 buying-power guard，自动开仓会暂停。"
+            "summary": "账户购买力风控不可确认",
+            "description": "账户购买力风控不可确认，且今日账本兜底未生效；新开仓会等待账户余额/今日账本确认。"
           },
           "labels": {
             "severity": "critical",
+            "alert_source": "grafana"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "account_bp_ledger_safe_fallback_active",
+          "title": "AccountBuyingPowerLedgerSafeFallbackActive",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "max by (service, environment) (max_over_time(ibkr_account_buying_power_guard_state{source=\"effective_guard\", state=\"ledger_safe\"}[2m]))",
+                "hide": false,
+                "instant": true,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": false,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0.5
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "A"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "hide": false,
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "B",
+                "type": "classic_conditions"
+              }
+            }
+          ],
+          "dashboardUid": "quant-monitoring-overview",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "5m",
+          "annotations": {
+            "summary": "账户购买力风控使用今日账本兜底",
+            "description": "账户快照刷新受阻，但今日账本兜底已启用；只要今日账户余额覆盖今日已开仓、待提交预占和本次请求，可继续新开仓。"
+          },
+          "labels": {
+            "severity": "warning",
             "alert_source": "grafana"
           },
           "isPaused": false

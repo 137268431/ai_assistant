@@ -890,7 +890,7 @@
       "id": 12,
       "type": "stat",
       "title": "生效购买力保护 / Effective BP Guard",
-      "description": "交易实际使用的购买力保护状态；account snapshot 不可用但 local baseline 生效时这里仍应为 ok/warning/blocked。",
+      "description": "交易实际使用的账户购买力保护状态；environment=paper/live 表示账户执行环境。ok/warning/ledger_safe/blocked 都代表账户风控有效；ledger_safe 是今日账本兜底降级状态。",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -908,7 +908,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max(ibkr_account_buying_power_guard_state{service=~\"$service\", environment=~\"$environment\", source=\"effective_guard\", state=~\"ok|warning|blocked\"})",
+          "expr": "max(ibkr_account_buying_power_guard_state{service=~\"$service\", environment=~\"$environment\", source=\"effective_guard\", state=~\"ok|warning|ledger_safe|blocked\"})",
           "legendFormat": "",
           "range": true,
           "refId": "A"

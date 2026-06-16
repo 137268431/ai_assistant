@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from ibkr_compute.api.account.snapshot_builder.context import resolve_snapshot_runtime_environment
@@ -28,6 +29,161 @@ TERMINAL_ORDER_STATUSES = {
 
 def _normalize_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _ensure_object(value: Any) -> dict:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+            return dict(parsed) if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _order_row_id(row: dict) -> str:
+    return _normalize_text(row.get("broker_order_id") or row.get("order_id"))
+
+
+def _pb_fallback_stale_diag_attr() -> str:
+    return "ibkr_pb_fallback_stale_seed_diagnostics"
+
+
+def _set_pb_fallback_stale_seed_diagnostics(api_app, diagnostics: dict) -> None:
+    try:
+        setattr(api_app, _pb_fallback_stale_diag_attr(), dict(diagnostics or {}))
+    except Exception:
+        pass
+
+
+def pb_fallback_stale_seed_diagnostics(api_app) -> dict:
+    try:
+        value = getattr(api_app, _pb_fallback_stale_diag_attr(), {})
+    except Exception:
+        value = {}
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _row_identity_value(row: dict, *keys: str) -> str:
+    extra = _ensure_object(row.get("extra"))
+    for key in keys:
+        value = _normalize_text(row.get(key))
+        if value:
+            return value
+        value = _normalize_text(extra.get(key))
+        if value:
+            return value
+    return ""
+
+
+def _pb_order_row_is_terminal(row: dict) -> bool:
+    relation_status = _normalize_text(row.get("relation_status")).lower()
+    status = _normalize_text(row.get("status") or row.get("order_status") or row.get("orderStatus")).upper()
+    return relation_status in {"closed", "canceled", "cancelled"} or status in TERMINAL_ORDER_STATUSES
+
+
+def _rows_have_terminal_identity_conflict(active_row: dict, terminal_row: dict) -> bool:
+    active_order_id = _order_row_id(active_row)
+    terminal_order_id = _order_row_id(terminal_row)
+    if not active_order_id or active_order_id != terminal_order_id:
+        return False
+    comparisons = (
+        ("client_ref", _row_identity_value(active_row, "unique_id", "order_ref", "orderRef", "cOID", "coid"), _row_identity_value(terminal_row, "unique_id", "order_ref", "orderRef", "cOID", "coid")),
+        ("trade_group_id", _row_identity_value(active_row, "trade_group_id"), _row_identity_value(terminal_row, "trade_group_id")),
+        ("entry_order_unique_id", _row_identity_value(active_row, "entry_order_unique_id"), _row_identity_value(terminal_row, "entry_order_unique_id")),
+        ("symbol", _normalize_text(active_row.get("symbol")).upper(), _normalize_text(terminal_row.get("symbol")).upper()),
+        ("conid", _normalize_text(active_row.get("conid")), _normalize_text(terminal_row.get("conid"))),
+    )
+    for _, active_value, terminal_value in comparisons:
+        if active_value and terminal_value and active_value != terminal_value:
+            return True
+    # A terminal row for the same broker id makes a PB-only active seed unsafe even
+    # when the duplicate happens to carry the same client reference.
+    return True
+
+
+def _terminal_conflict_filter_for_order_id(environment: str, order_id: str) -> str:
+    order_id_filter = order_id.replace("\\", "\\\\").replace('"', '\\"')
+    environment_filter = environment.replace("\\", "\\\\").replace('"', '\\"')
+    status_values = TERMINAL_ORDER_STATUSES | {
+        "Filled",
+        "Executed",
+        "Cancelled",
+        "Canceled",
+        "Inactive",
+        "Rejected",
+        "Expired",
+        "ApiCancelled",
+    }
+    status_filter = " || ".join(f'status = "{status}"' for status in sorted(status_values))
+    return (
+        f'environment="{environment_filter}" && '
+        f'(broker_order_id="{order_id_filter}" || order_id="{order_id_filter}") && '
+        f'(relation_status="closed" || relation_status="canceled" || relation_status="cancelled" || {status_filter})'
+    )
+
+
+def _filter_terminal_conflicted_pb_rows(api_app, environment: str, rows: list[dict]) -> list[dict]:
+    diagnostics = {
+        "checked": True,
+        "raw_active_seed_count": len(rows or []),
+        "stale_pb_seed_count": 0,
+        "stale_pb_seed_order_ids": [],
+        "stale_pb_seed_rows": [],
+    }
+    if not rows:
+        _set_pb_fallback_stale_seed_diagnostics(api_app, diagnostics)
+        return []
+
+    terminal_by_order_id: dict[str, list[dict]] = {}
+    for order_id in sorted({_order_row_id(row) for row in rows if _order_row_id(row)}):
+        try:
+            terminal_rows = api_app.pb.get_records(
+                "orders",
+                filter=_terminal_conflict_filter_for_order_id(environment, order_id),
+                sort="-updated",
+                per_page=25,
+            ) or []
+        except Exception:
+            terminal_rows = []
+        terminal_by_order_id[order_id] = [
+            dict(row)
+            for row in terminal_rows
+            if isinstance(row, dict) and _pb_order_row_is_terminal(row)
+        ]
+
+    filtered: list[dict] = []
+    for row in rows:
+        order_id = _order_row_id(row)
+        conflicts = [
+            terminal
+            for terminal in terminal_by_order_id.get(order_id, [])
+            if _rows_have_terminal_identity_conflict(row, terminal)
+        ]
+        if conflicts:
+            diagnostics["stale_pb_seed_count"] += 1
+            diagnostics["stale_pb_seed_order_ids"].append(order_id)
+            diagnostics["stale_pb_seed_rows"].append(
+                {
+                    "order_id": order_id,
+                    "unique_id": _normalize_text(row.get("unique_id")),
+                    "symbol": _normalize_text(row.get("symbol")).upper(),
+                    "conflict_unique_ids": [
+                        _normalize_text(item.get("unique_id"))
+                        for item in conflicts
+                        if _normalize_text(item.get("unique_id"))
+                    ],
+                }
+            )
+            continue
+        filtered.append(row)
+
+    diagnostics["filtered_active_seed_count"] = len(filtered)
+    diagnostics["stale_pb_seed_order_ids"] = sorted({item for item in diagnostics["stale_pb_seed_order_ids"] if item})
+    _set_pb_fallback_stale_seed_diagnostics(api_app, diagnostics)
+    return filtered
 
 
 def _open_like_order_rows(rows: list[dict] | None) -> list[dict]:
@@ -199,13 +355,18 @@ def load_pb_fallback_order_rows(api_app, service) -> list[dict]:
             sort="-updated",
             per_page=200,
         )
-        return [
+        rows = [
             dict(row)
             for row in (pb_active or [])
             if isinstance(row, dict) and _pb_order_row_is_open_like(row)
         ]
+        return _filter_terminal_conflicted_pb_rows(api_app, runtime_environment, rows)
     except Exception as exc:
         api_app.logger.debug("Live orders PB fallback seed load failed: %s", exc)
+        _set_pb_fallback_stale_seed_diagnostics(
+            api_app,
+            {"checked": False, "error": str(exc or ""), "stale_pb_seed_count": 0, "stale_pb_seed_order_ids": []},
+        )
         return []
 
 
@@ -249,6 +410,12 @@ def _pb_order_row_to_live_order(row: dict) -> dict:
         "orderRef": str(row.get("unique_id") or "").strip(),
         "filledQuantity": float(row.get("filled_qty") or 0.0),
         "remainingQuantity": max(float(row.get("quantity") or 0.0) - float(row.get("filled_qty") or 0.0), 0.0),
+        "can_cancel": False,
+        "can_modify": False,
+        "cannot_cancel_order": True,
+        "order_not_editable": True,
+        "authority": "pb_active_seed",
+        "source": "pb_active_seed",
         "_recovery_source": "pb_active_seed",
         "_seed_sources": ["pb"],
     }

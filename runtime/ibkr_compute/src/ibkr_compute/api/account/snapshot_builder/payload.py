@@ -30,6 +30,7 @@ from ibkr_compute.api.account.snapshot_builder.recovery import (
     filter_trusted_pb_fallback_order_rows,
     load_pb_fallback_order_rows,
     pb_order_rows_to_live_orders,
+    pb_fallback_stale_seed_diagnostics,
     recover_live_open_orders,
 )
 from ibkr_compute.order.buying_power_reservations import (
@@ -1338,6 +1339,7 @@ def _build_fresh_ibkr_account_snapshot_payload(service, context: dict) -> dict:
     )
     diagnostics = live_open_payload.get("diagnostics") if isinstance(live_open_payload.get("diagnostics"), dict) else {}
     diagnostics["pb_fallback_trust"] = fallback_trust
+    diagnostics["pb_fallback_stale_seed_filter"] = pb_fallback_stale_seed_diagnostics(api_app)
     live_open_payload["diagnostics"] = diagnostics
     positions, orders, live_open_orders, live_open_payload = _normalize_snapshot_rows(
         context["account_id"],
@@ -1887,6 +1889,9 @@ def _build_orders_fast_ibkr_account_snapshot_payload(
     mark_timing("pb_fallback_orders_ms")
     merged_orders_raw = _merge_cached_and_pb_order_rows(cached_order_rows, fallback_rows)
     live_open_payload = _build_orders_fast_live_open_payload(cached_order_rows, fallback_rows)
+    live_open_diagnostics = live_open_payload.get("diagnostics") if isinstance(live_open_payload.get("diagnostics"), dict) else {}
+    live_open_diagnostics["pb_fallback_stale_seed_filter"] = pb_fallback_stale_seed_diagnostics(api_app)
+    live_open_payload["diagnostics"] = live_open_diagnostics
     cached_positions = (
         []
         if open_orders_only
@@ -2023,6 +2028,7 @@ def _build_orders_fast_ibkr_account_snapshot_payload(
             "pb_fallback_raw_order_count": len(fallback_rows_raw),
             "pb_fallback_skipped": bool(fallback_rows_raw and not fallback_rows),
             "pb_fallback_trust": fallback_trust,
+            "pb_fallback_stale_seed_filter": pb_fallback_stale_seed_diagnostics(api_app),
             "open_orders_only": bool(open_orders_only),
             "historical_orders_omitted": bool(open_orders_only),
             "positions_source": positions_source,

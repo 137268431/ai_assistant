@@ -56,6 +56,14 @@ attackVolumeCooldownBars = input.int(4, "Attack volume cooldown bars", minval=0,
 minSameSideSignalSeparationAtr = input.float(1.20, "Same-side signal separation (x ATR)", step=0.05, minval=0.10, maxval=8.0, group="01 Structure")
 failedBreakCloseBackAtr = input.float(0.10, "Failed break close-back (x ATR)", step=0.05, minval=0.0, maxval=2.0, group="01 Structure")
 failedBreakConfirmBars = input.int(3, "Failed break confirm bars", minval=1, maxval=8, group="01 Structure")
+weakNewExtremeMaxExtendAtr = input.float(0.60, "Weak new extreme max extension (x ATR)", step=0.05, minval=0.05, maxval=3.0, group="01 Structure")
+weakNewExtremeMaxVolumeRatio = input.float(1.05, "Weak new extreme max volume (x MA)", step=0.05, minval=0.10, maxval=3.0, group="01 Structure")
+weakNewExtremeVolumeDropRatio = input.float(0.75, "Weak new extreme volume drop vs attack", step=0.05, minval=0.10, maxval=1.50, group="01 Structure")
+weakNewExtremeCloseBackAtr = input.float(0.10, "Weak new extreme close back (x ATR)", step=0.05, minval=0.0, maxval=2.0, group="01 Structure")
+weakNewExtremeConfirmBars = input.int(3, "Weak new extreme confirm bars", minval=1, maxval=8, group="01 Structure")
+distributionDropVolumeMult = input.float(1.20, "Distribution/accumulation volume (x MA)", step=0.05, minval=0.50, maxval=5.0, group="01 Structure")
+distributionDropClosePosMax = input.float(0.45, "Distribution close position max", step=0.05, minval=0.05, maxval=0.95, group="01 Structure")
+distributionDropMaxDistanceAtr = input.float(0.80, "Distribution max distance (x ATR)", step=0.05, minval=0.05, maxval=5.0, group="01 Structure")
 structureBreakAcceptBars = input.int(3, "Structure break accept bars", minval=1, maxval=10, group="01 Structure")
 structureBreakAcceptCloseAtr = input.float(0.15, "Structure break accept close (x ATR)", step=0.05, minval=0.0, maxval=2.0, group="01 Structure")
 planReplaceMinMoveAtr = input.float(0.60, "Plan replace min move (x ATR)", step=0.05, minval=0.05, maxval=5.0, group="01 Structure")
@@ -108,7 +116,7 @@ showDtpLine = input.bool(true, "Show DTP trend line", group="04 Display")
 showStructureLines = input.bool(true, "Show today structure lines", group="04 Display")
 showDebugComponents = input.bool(false, "Show SD/F/D component markers", group="04 Display")
 showFractalMarkers = input.bool(false, "Show fractal markers", group="04 Display")
-showEmaCrossMarkers = input.bool(false, "Show EMA20/50 cross markers", group="04 Display")
+showEmaCrossMarkers = input.bool(true, "Show EMA20/50 cross markers", group="04 Display")
 flowLabelTransparency = input.int(12, "Flow label transparency", minval=0, maxval=90, group="04 Display")
 labelDetailMode = input.string("compact_tooltip", "Flow label detail mode", options=["compact_tooltip", "full_labels", "off"], group="04 Display")
 labelTextMode = input.string("auto", "Label text color", options=["auto", "white", "black"], group="04 Display")
@@ -127,6 +135,7 @@ bool showDtpTrendLine = showDtpLine or displayIndicatorMode or displayDebugMode
 bool showStructureGuideLines = showStructureLines or displayIndicatorMode or displayDebugMode
 bool showComponentMarkers = showDebugComponents or displayDebugMode
 bool showAnyFractalMarkers = showComponentMarkers or showFractalMarkers
+bool showAnyEmaCrossMarkers = showEmaCrossMarkers or displayIndicatorMode or displayDebugMode
 bool flowLabelsVisible = showSignalEventFlow and labelDetailMode != "off"
 float atrRaw = ta.atr(atrLength)
 float atr = math.max(nz(atrRaw, syminfo.mintick), syminfo.mintick)
@@ -449,6 +458,14 @@ var float lastLongPlanPrice = na
 var float lastShortPlanPrice = na
 var int lastAnyPlanBar = na
 var float lastAnyPlanPrice = na
+var float lastAttackUpVolume = na
+var float lastAttackDownVolume = na
+var int lastWeakNewHighBar = na
+var float lastWeakNewHighLow = na
+var float lastWeakNewHighHigh = na
+var int lastWeakNewLowBar = na
+var float lastWeakNewLowHigh = na
+var float lastWeakNewLowLow = na
 var int lastTopSweepBar = na
 var float lastTopSweepPrice = na
 var bool lastTopSweepVolumeAttack = false
@@ -504,6 +521,14 @@ if confirmed and referenceDayReset
     lastShortPlanPrice := na
     lastAnyPlanBar := na
     lastAnyPlanPrice := na
+    lastAttackUpVolume := na
+    lastAttackDownVolume := na
+    lastWeakNewHighBar := na
+    lastWeakNewHighLow := na
+    lastWeakNewHighHigh := na
+    lastWeakNewLowBar := na
+    lastWeakNewLowHigh := na
+    lastWeakNewLowLow := na
     lastTopSweepBar := na
     lastTopSweepPrice := na
     lastTopSweepVolumeAttack := false
@@ -521,8 +546,10 @@ if confirmed and referenceDayReset
 
 if confirmed and volumeAttackUp
     lastVolumeAttackUpBar := bar_index
+    lastAttackUpVolume := barVolume
 if confirmed and volumeAttackDown
     lastVolumeAttackDownBar := bar_index
+    lastAttackDownVolume := barVolume
 
 if confirmed and inReferenceSession
     float prevSessionHigh = todayHigh
@@ -557,6 +584,9 @@ if confirmed and inReferenceSession
             lastTopSweepBar := na
             lastTopSweepPrice := na
             lastTopSweepVolumeAttack := false
+            lastWeakNewHighBar := na
+            lastWeakNewHighLow := na
+            lastWeakNewHighHigh := na
         else
             todayStructHighZoneLow := na(todayStructHighZoneLow) ? todayHigh - highBand : math.min(todayStructHighZoneLow, todayHigh - highBand)
             todayStructHighZoneHigh := na(todayStructHighZoneHigh) ? todayHigh + highBand : math.max(todayStructHighZoneHigh, todayHigh + highBand)
@@ -583,6 +613,9 @@ if confirmed and inReferenceSession
             lastBottomSweepBar := na
             lastBottomSweepPrice := na
             lastBottomSweepVolumeAttack := false
+            lastWeakNewLowBar := na
+            lastWeakNewLowHigh := na
+            lastWeakNewLowLow := na
         else
             todayStructLowZoneLow := na(todayStructLowZoneLow) ? todayLow - lowBand : math.min(todayStructLowZoneLow, todayLow - lowBand)
             todayStructLowZoneHigh := na(todayStructLowZoneHigh) ? todayLow + lowBand : math.max(todayStructLowZoneHigh, todayLow + lowBand)
@@ -609,6 +642,9 @@ if confirmed and inReferenceSession
         lastTopSweepBar := na
         lastTopSweepPrice := na
         lastTopSweepVolumeAttack := false
+        lastWeakNewHighBar := na
+        lastWeakNewHighLow := na
+        lastWeakNewHighHigh := na
         upperStructureBreakAccepted := true
     bool lowerBreakAccepting = not na(todayStructLowZoneLow) and not na(todayStructHigh) and close < todayStructLowZoneLow - atr * structureBreakAcceptCloseAtr
     bottomBreakAcceptStreak := lowerBreakAccepting ? bottomBreakAcceptStreak + 1 : 0
@@ -632,6 +668,9 @@ if confirmed and inReferenceSession
         lastBottomSweepBar := na
         lastBottomSweepPrice := na
         lastBottomSweepVolumeAttack := false
+        lastWeakNewLowBar := na
+        lastWeakNewLowHigh := na
+        lastWeakNewLowLow := na
         lowerStructureBreakAccepted := true
     bool upperBreakExt = upperBreakAcceptedRegime and not na(todayStructHigh) and not na(todayHigh) and todayHigh > todayStructHigh and todayHighBar != todayStructHighBar
     if upperBreakExt
@@ -648,6 +687,9 @@ if confirmed and inReferenceSession
         lastTopSweepBar := na
         lastTopSweepPrice := na
         lastTopSweepVolumeAttack := false
+        lastWeakNewHighBar := na
+        lastWeakNewHighLow := na
+        lastWeakNewHighHigh := na
         upperStructureBreakExtended := true
     bool lowerBreakExt = lowerBreakAcceptedRegime and not na(todayStructLow) and not na(todayLow) and todayLow < todayStructLow and todayLowBar != todayStructLowBar
     if lowerBreakExt
@@ -664,6 +706,9 @@ if confirmed and inReferenceSession
         lastBottomSweepBar := na
         lastBottomSweepPrice := na
         lastBottomSweepVolumeAttack := false
+        lastWeakNewLowBar := na
+        lastWeakNewLowHigh := na
+        lastWeakNewLowLow := na
         lowerStructureBreakExtended := true
     if not na(todayStructHigh) and (na(lowSinceStructHigh) or low < lowSinceStructHigh)
         lowSinceStructHigh := low
@@ -916,6 +961,8 @@ bool topRetestBand = not na(topZoneLow) and not na(topZoneHigh) and high >= topZ
 bool topFirstExhaustion = strongTopProbeZone and not topExhaustionUsed and topAnchorReady and topRetestBand and close < topZoneLow
 bool topRightShoulder = strongTopProbeZone and topAnchorReady and topRetestBand
 string topProbePattern = topRightShoulder ? "retest_2b_top" : topFirstExhaustion ? "extension_exhaustion_top" : "none"
+float topWeakBase = upperBreakAcceptedRegime and not na(prevStructHigh) ? prevStructHigh : todayStructHigh
+float topWeakExtensionAtr = not na(topWeakBase) and atr > 0.0 ? (high - topWeakBase) / atr : na
 float topPredictEntry = strongTopProbeZone ? topZoneHigh - atr * predictiveEntryOffsetAtr : na
 float topPredictStop = strongTopProbeZone ? topZoneHigh + invalidationBuffer : na
 float topSignalDistanceAtr = not na(lastTopProbeSignalPrice) and atr > 0.0 ? math.abs(topPredictEntry - lastTopProbeSignalPrice) / atr : na
@@ -930,6 +977,21 @@ if topSweptStructure
 float barsSinceTopSweep = not na(lastTopSweepBar) ? (bar_index - lastTopSweepBar) * 1.0 : na
 bool recentTopSweepWindow = not na(barsSinceTopSweep) and barsSinceTopSweep <= failedBreakConfirmBars
 bool upperWeakClose = closePosition <= exhaustionClosePosShortMax or close < open
+bool topWeakStructureReady = strongTopProbeZone and topAnchorReady and topRetestBand
+bool topWeakNewHighEvent = confirmed and dayRangeClear and topWeakStructureReady and not na(topWeakBase) and high > topWeakBase + tickBuffer and not na(topWeakExtensionAtr) and topWeakExtensionAtr <= weakNewExtremeMaxExtendAtr
+if topWeakNewHighEvent
+    lastWeakNewHighBar := bar_index
+    lastWeakNewHighLow := low
+    lastWeakNewHighHigh := high
+float barsSinceWeakNewHigh = not na(lastWeakNewHighBar) ? (bar_index - lastWeakNewHighBar) * 1.0 : na
+bool recentWeakNewHighWindow = not na(barsSinceWeakNewHigh) and barsSinceWeakNewHigh <= weakNewExtremeConfirmBars
+bool topWeakVolumeQuiet = volumeRatio <= weakNewExtremeMaxVolumeRatio
+bool topWeakVolumeDropped = na(lastAttackUpVolume) ? topWeakVolumeQuiet : barVolume <= lastAttackUpVolume * weakNewExtremeVolumeDropRatio
+bool topWeakNewHighWatch = topWeakNewHighEvent and topWeakVolumeQuiet and topWeakVolumeDropped and topMomentumDecayed
+bool topWeakCloseBack = not na(topWeakBase) and close <= topWeakBase + atr * weakNewExtremeCloseBackAtr
+float topDistributionDistanceAtr = not na(topWeakBase) and atr > 0.0 ? math.abs(close - topWeakBase) / atr : na
+bool topWeakNewHighConfirmed = topWeakNewHighWatch and (topWeakCloseBack or upperWeakClose)
+bool topDistributionDropConfirmed = confirmed and recentWeakNewHighWindow and volumeRatio >= distributionDropVolumeMult and close < open and closePosition <= distributionDropClosePosMax and (topWeakCloseBack or not na(lastWeakNewHighLow) and close < lastWeakNewHighLow) and not na(topDistributionDistanceAtr) and topDistributionDistanceAtr <= distributionDropMaxDistanceAtr
 bool topDirectSweepFailed = confirmed and topSweptStructure and close < topZoneHigh - atr * failedBreakCloseBackAtr
 bool topRecentSweepFailed = confirmed and not topDirectSweepFailed and recentTopSweepWindow and close < topZoneHigh - atr * failedBreakCloseBackAtr and upperWeakClose
 bool topSweepFailed = topDirectSweepFailed or topRecentSweepFailed
@@ -941,14 +1003,15 @@ bool topMomentumDecayReady = topDecayStreak >= exhaustionDecayConfirmBars
 bool upperExhaustionZone = dayRangeClear and topRightShoulder and topRetestBand and upperNoVolumeExpansion and topMomentumDecayReady
 bool upperExhaustionConfirmedShort = confirmed and upperExhaustionZone and upperWeakClose
 string topExhaustionReason = not dayRangeFormed ? "day_range_not_formed" : not dayRangeClear ? "day_range_too_small" : not topMiddleSwingReady ? "middle_pullback_not_enough" : not topRightRetestReady ? "right_retest_too_small" : not topRetestBand ? "retest_not_near_prior_high" : not upperNoVolumeExpansion ? (attackUpCooling ? "attack_volume_cooling" : "volume_not_exhausted") : not topMomentumDecayed ? "momentum_not_decayed" : not topMomentumDecayReady ? "momentum_decay_not_continuous" : not upperWeakClose ? "no_weak_close_confirm" : "upper_exhaustion_confirmed"
-bool topConfirmedShort = topSweepFailed or upperExhaustionConfirmedShort
+bool topConfirmedShort = topSweepFailed or upperExhaustionConfirmedShort or topWeakNewHighConfirmed or topDistributionDropConfirmed
+topProbePattern := topDistributionDropConfirmed ? "distribution_drop_short" : topWeakNewHighConfirmed ? "weak_new_high_short" : topWeakNewHighWatch ? "weak_new_high_watch" : topProbePattern
 bool topPredictVolumeOk = not attackUpCooling
-bool topConfirmVolumeOk = topHighVolumeFailedBreak or not attackUpCooling or upperExhaustionConfirmedShort
-string topVolumeReason = topRecentSweepFailed ? "recent_failed_break" : topHighVolumeFailedBreak ? "high_volume_failed_break_ok" : attackUpCooling ? (volumeAttackUp ? "volume_attack_up_no_short" : "attack_volume_cooling") : upperExhaustionConfirmedShort ? "low_volume_momentum_decay_ok" : volumeQuietRetest ? "low_volume_retest_ok" : "normal_volume_retest_ok"
+bool topConfirmVolumeOk = topHighVolumeFailedBreak or not attackUpCooling or upperExhaustionConfirmedShort or topWeakNewHighConfirmed or topDistributionDropConfirmed
+string topVolumeReason = topDistributionDropConfirmed ? "distribution_drop_confirmed" : topWeakNewHighConfirmed ? "weak_new_high_confirmed" : topRecentSweepFailed ? "recent_failed_break" : topHighVolumeFailedBreak ? "high_volume_failed_break_ok" : attackUpCooling ? (volumeAttackUp ? "volume_attack_up_no_short" : "attack_volume_cooling") : upperExhaustionConfirmedShort ? "low_volume_momentum_decay_ok" : volumeQuietRetest ? "low_volume_retest_ok" : "normal_volume_retest_ok"
 float topConfirmEntry = topConfirmedShort ? math.max(close, topZoneLow - atr * predictiveEntryOffsetAtr) : na
 float topConfirmStop = topConfirmedShort ? math.max(high, topZoneHigh) + invalidationBuffer : na
 bool topPredictContext = (topFirstExhaustion or topRightShoulder) and topCounterTrendAllowed and topPredictEntry >= close and topPredictEntry - close <= atr * predictionArmDistanceAtr and topSignalGapOk and topPredictVolumeOk
-bool topConfirmContext = topConfirmedShort and (topCounterTrendAllowed or upperExhaustionConfirmedShort) and topSignalGapOk and topConfirmVolumeOk
+bool topConfirmContext = topConfirmedShort and (topCounterTrendAllowed or upperExhaustionConfirmedShort or topWeakNewHighConfirmed or topDistributionDropConfirmed) and topSignalGapOk and topConfirmVolumeOk
 float topPredictQty = calcTrialQty(topPredictEntry, topPredictStop, predictiveMaxRiskDollars)
 float topConfirmQty = calcTrialQty(topConfirmEntry, topConfirmStop, confirmedMaxRiskDollars)
 bool topPredictAllowed = topPredictContext and smallStopTrialAllowed(topPredictEntry, topPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and topPredictQty >= 1.0
@@ -1009,6 +1072,8 @@ bool bottomRetestBand = not na(bottomZoneLow) and not na(bottomZoneHigh) and low
 bool bottomFirstExhaustion = strongBottomProbeZone and not bottomExhaustionUsed and bottomAnchorReady and bottomRetestBand and close > bottomZoneHigh
 bool bottomRightShoulder = strongBottomProbeZone and bottomAnchorReady and bottomRetestBand
 string bottomProbePattern = bottomRightShoulder ? "retest_2b_bottom" : bottomFirstExhaustion ? "extension_exhaustion_bottom" : "none"
+float bottomWeakBase = lowerBreakAcceptedRegime and not na(prevStructLow) ? prevStructLow : todayStructLow
+float bottomWeakExtensionAtr = not na(bottomWeakBase) and atr > 0.0 ? (bottomWeakBase - low) / atr : na
 float bottomPredictEntry = strongBottomProbeZone ? bottomZoneLow + atr * predictiveEntryOffsetAtr : na
 float bottomPredictStop = strongBottomProbeZone ? bottomZoneLow - invalidationBuffer : na
 float bottomSignalDistanceAtr = not na(lastBottomProbeSignalPrice) and atr > 0.0 ? math.abs(bottomPredictEntry - lastBottomProbeSignalPrice) / atr : na
@@ -1023,6 +1088,21 @@ if bottomSweptStructure
 float barsSinceBottomSweep = not na(lastBottomSweepBar) ? (bar_index - lastBottomSweepBar) * 1.0 : na
 bool recentBottomSweepWindow = not na(barsSinceBottomSweep) and barsSinceBottomSweep <= failedBreakConfirmBars
 bool lowerStrongClose = closePosition >= exhaustionClosePosLongMin or close > open
+bool bottomWeakStructureReady = strongBottomProbeZone and bottomAnchorReady and bottomRetestBand
+bool bottomWeakNewLowEvent = confirmed and dayRangeClear and bottomWeakStructureReady and not na(bottomWeakBase) and low < bottomWeakBase - tickBuffer and not na(bottomWeakExtensionAtr) and bottomWeakExtensionAtr <= weakNewExtremeMaxExtendAtr
+if bottomWeakNewLowEvent
+    lastWeakNewLowBar := bar_index
+    lastWeakNewLowHigh := high
+    lastWeakNewLowLow := low
+float barsSinceWeakNewLow = not na(lastWeakNewLowBar) ? (bar_index - lastWeakNewLowBar) * 1.0 : na
+bool recentWeakNewLowWindow = not na(barsSinceWeakNewLow) and barsSinceWeakNewLow <= weakNewExtremeConfirmBars
+bool bottomWeakVolumeQuiet = volumeRatio <= weakNewExtremeMaxVolumeRatio
+bool bottomWeakVolumeDropped = na(lastAttackDownVolume) ? bottomWeakVolumeQuiet : barVolume <= lastAttackDownVolume * weakNewExtremeVolumeDropRatio
+bool bottomWeakNewLowWatch = bottomWeakNewLowEvent and bottomWeakVolumeQuiet and bottomWeakVolumeDropped and bottomMomentumDecayed
+bool bottomWeakCloseBack = not na(bottomWeakBase) and close >= bottomWeakBase - atr * weakNewExtremeCloseBackAtr
+float bottomAccumulationDistanceAtr = not na(bottomWeakBase) and atr > 0.0 ? math.abs(close - bottomWeakBase) / atr : na
+bool bottomWeakNewLowConfirmed = bottomWeakNewLowWatch and (bottomWeakCloseBack or lowerStrongClose)
+bool bottomAccumulationRiseConfirmed = confirmed and recentWeakNewLowWindow and volumeRatio >= distributionDropVolumeMult and close > open and closePosition >= 1.0 - distributionDropClosePosMax and (bottomWeakCloseBack or not na(lastWeakNewLowHigh) and close > lastWeakNewLowHigh) and not na(bottomAccumulationDistanceAtr) and bottomAccumulationDistanceAtr <= distributionDropMaxDistanceAtr
 bool bottomDirectSweepFailed = confirmed and bottomSweptStructure and close > bottomZoneLow + atr * failedBreakCloseBackAtr
 bool bottomRecentSweepFailed = confirmed and not bottomDirectSweepFailed and recentBottomSweepWindow and close > bottomZoneLow + atr * failedBreakCloseBackAtr and lowerStrongClose
 bool bottomSweepFailed = bottomDirectSweepFailed or bottomRecentSweepFailed
@@ -1034,14 +1114,15 @@ bool bottomMomentumDecayReady = bottomDecayStreak >= exhaustionDecayConfirmBars
 bool lowerExhaustionZone = dayRangeClear and bottomRightShoulder and bottomRetestBand and lowerNoVolumeExpansion and bottomMomentumDecayReady
 bool lowerExhaustionConfirmedLong = confirmed and lowerExhaustionZone and lowerStrongClose
 string bottomExhaustionReason = not dayRangeFormed ? "day_range_not_formed" : not dayRangeClear ? "day_range_too_small" : not bottomMiddleSwingReady ? "middle_pullback_not_enough" : not bottomRightRetestReady ? "right_retest_too_small" : not bottomRetestBand ? "retest_not_near_prior_low" : not lowerNoVolumeExpansion ? (attackDownCooling ? "attack_volume_cooling" : "volume_not_exhausted") : not bottomMomentumDecayed ? "momentum_not_decayed" : not bottomMomentumDecayReady ? "momentum_decay_not_continuous" : not lowerStrongClose ? "no_strong_close_confirm" : "lower_exhaustion_confirmed"
-bool bottomConfirmedLong = bottomSweepFailed or lowerExhaustionConfirmedLong
+bool bottomConfirmedLong = bottomSweepFailed or lowerExhaustionConfirmedLong or bottomWeakNewLowConfirmed or bottomAccumulationRiseConfirmed
+bottomProbePattern := bottomAccumulationRiseConfirmed ? "accumulation_rise_long" : bottomWeakNewLowConfirmed ? "weak_new_low_long" : bottomWeakNewLowWatch ? "weak_new_low_watch" : bottomProbePattern
 bool bottomPredictVolumeOk = not attackDownCooling
-bool bottomConfirmVolumeOk = bottomHighVolumeFailedBreak or not attackDownCooling or lowerExhaustionConfirmedLong
-string bottomVolumeReason = bottomRecentSweepFailed ? "recent_failed_break" : bottomHighVolumeFailedBreak ? "high_volume_failed_break_ok" : attackDownCooling ? (volumeAttackDown ? "volume_attack_down_no_long" : "attack_volume_cooling") : lowerExhaustionConfirmedLong ? "low_volume_momentum_decay_ok" : volumeQuietRetest ? "low_volume_retest_ok" : "normal_volume_retest_ok"
+bool bottomConfirmVolumeOk = bottomHighVolumeFailedBreak or not attackDownCooling or lowerExhaustionConfirmedLong or bottomWeakNewLowConfirmed or bottomAccumulationRiseConfirmed
+string bottomVolumeReason = bottomAccumulationRiseConfirmed ? "accumulation_rise_confirmed" : bottomWeakNewLowConfirmed ? "weak_new_low_confirmed" : bottomRecentSweepFailed ? "recent_failed_break" : bottomHighVolumeFailedBreak ? "high_volume_failed_break_ok" : attackDownCooling ? (volumeAttackDown ? "volume_attack_down_no_long" : "attack_volume_cooling") : lowerExhaustionConfirmedLong ? "low_volume_momentum_decay_ok" : volumeQuietRetest ? "low_volume_retest_ok" : "normal_volume_retest_ok"
 float bottomConfirmEntry = bottomConfirmedLong ? math.min(close, bottomZoneHigh + atr * predictiveEntryOffsetAtr) : na
 float bottomConfirmStop = bottomConfirmedLong ? math.min(low, bottomZoneLow) - invalidationBuffer : na
 bool bottomPredictContext = (bottomFirstExhaustion or bottomRightShoulder) and bottomCounterTrendAllowed and bottomPredictEntry <= close and close - bottomPredictEntry <= atr * predictionArmDistanceAtr and bottomSignalGapOk and bottomPredictVolumeOk
-bool bottomConfirmContext = bottomConfirmedLong and (bottomCounterTrendAllowed or lowerExhaustionConfirmedLong) and bottomSignalGapOk and bottomConfirmVolumeOk
+bool bottomConfirmContext = bottomConfirmedLong and (bottomCounterTrendAllowed or lowerExhaustionConfirmedLong or bottomWeakNewLowConfirmed or bottomAccumulationRiseConfirmed) and bottomSignalGapOk and bottomConfirmVolumeOk
 float bottomPredictQty = calcTrialQty(bottomPredictEntry, bottomPredictStop, predictiveMaxRiskDollars)
 float bottomConfirmQty = calcTrialQty(bottomConfirmEntry, bottomConfirmStop, confirmedMaxRiskDollars)
 bool bottomPredictAllowed = bottomPredictContext and smallStopTrialAllowed(bottomPredictEntry, bottomPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and bottomPredictQty >= 1.0
@@ -1054,8 +1135,10 @@ bool trendShortConfirmNow = trendShortConfirmAllowed and not lowerExhaustionZone
 bool trendShortPredictNow = false
 bool longActionable = trendLongConfirmNow or bottomConfirmAllowed
 bool shortActionable = trendShortConfirmNow or topConfirmAllowed
-int longScore = trendLongConfirmNow ? 160 + trendSupportCount : bottomConfirmAllowed ? 140 + bottomCount : 0
-int shortScore = trendShortConfirmNow ? 160 + trendResistanceCount : topConfirmAllowed ? 140 + topCount : 0
+bool bottomWeakLongAllowed = bottomConfirmAllowed and (bottomWeakNewLowConfirmed or bottomAccumulationRiseConfirmed)
+bool topWeakShortAllowed = topConfirmAllowed and (topWeakNewHighConfirmed or topDistributionDropConfirmed)
+int longScore = trendLongConfirmNow ? 160 + trendSupportCount : bottomConfirmAllowed ? (bottomWeakLongAllowed ? 145 : 140) + bottomCount : 0
+int shortScore = trendShortConfirmNow ? 160 + trendResistanceCount : topConfirmAllowed ? (topWeakShortAllowed ? 145 : 140) + topCount : 0
 bool conflict = longActionable and shortActionable and longScore == shortScore
 bool selectedLong = longActionable and not conflict and (not shortActionable or longScore > shortScore)
 bool selectedShort = shortActionable and not conflict and (not longActionable or shortScore > longScore)
@@ -1115,7 +1198,7 @@ float selectedProbeAnchorPrice = selectedTopProbe ? todayStructHigh : selectedBo
 string trendStructDir = strongStructTrendLong ? "bull_HH_HL" : strongStructTrendShort ? "bear_LL_LH" : dominantTrendLong ? "dominant_bull" : dominantTrendShort ? "dominant_bear" : "none"
 string selectedTrendStructPattern = selectedTrendSupport ? "HH_HL" : selectedTrendResistance ? "LL_LH" : "none"
 string selectedTrendSources = selectedTrendSupport ? trendSupportSources : selectedTrendResistance ? trendResistanceSources : "none"
-string selectedMainReason = selectedTrendSupport ? "clear_bull_pullback_to_support" : selectedTrendResistance ? "clear_bear_rebound_to_resistance" : selectedTopProbe ? (upperExhaustionConfirmedShort ? "prior_high_second_test_momentum_decay" : "today_struct_high_probe_failed_breakout") : selectedBottomProbe ? (lowerExhaustionConfirmedLong ? "prior_low_second_test_momentum_decay" : "today_struct_low_probe_failed_breakout") : "none"
+string selectedMainReason = selectedTrendSupport ? "clear_bull_pullback_to_support" : selectedTrendResistance ? "clear_bear_rebound_to_resistance" : selectedTopProbe ? (topDistributionDropConfirmed ? "new_high_distribution_drop" : topWeakNewHighConfirmed ? "weak_new_high_confirmed" : upperExhaustionConfirmedShort ? "prior_high_second_test_momentum_decay" : "today_struct_high_probe_failed_breakout") : selectedBottomProbe ? (bottomAccumulationRiseConfirmed ? "new_low_accumulation_rise" : bottomWeakNewLowConfirmed ? "weak_new_low_confirmed" : lowerExhaustionConfirmedLong ? "prior_low_second_test_momentum_decay" : "today_struct_low_probe_failed_breakout") : "none"
 string selectedSecondaryReason = selectedTrendSupport ? trendSupportSources : selectedTrendResistance ? trendResistanceSources : selectedTopProbe ? topSources : selectedBottomProbe ? bottomSources : "none"
 
 bool inEntryWindow = not useIntradayEntryWindow or not na(time(timeframe.period, entrySession))
@@ -1351,6 +1434,23 @@ if volumeBlockedTop or volumeBlockedBottom
     if flowLabelsVisible
         label.new(bar_index, blockedDirection == 1 ? low - atr * 1.2 : high + atr * 1.2, flowLabelText(blockedCompact, blockedDetail), style=flowStyle(blockedDirection), color=flowColor("blocked", blockedDirection), textcolor=labelTextColor("blocked", blockedDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(blockedDetail))
 
+bool weakNewTopWatchEvent = confirmed and showSignalEventFlow and selectedDirection == 0 and topWeakNewHighWatch and not topWeakNewHighConfirmed and not topDistributionDropConfirmed
+bool weakNewBottomWatchEvent = confirmed and showSignalEventFlow and selectedDirection == 0 and bottomWeakNewLowWatch and not bottomWeakNewLowConfirmed and not bottomAccumulationRiseConfirmed
+if weakNewTopWatchEvent or weakNewBottomWatchEvent
+    int weakWatchDirection = weakNewTopWatchEvent ? -1 : 1
+    string weakWatchDetail = (weakNewTopWatchEvent ? "弱新高观察 空\n新高缩量\n等待弱收确认" : "弱新低观察 多\n新低缩量\n等待强收确认") + "\n不挂单\nbase " + fmt(weakNewTopWatchEvent ? topWeakBase : bottomWeakBase) + "\next " + fmt(weakNewTopWatchEvent ? topWeakExtensionAtr : bottomWeakExtensionAtr) + "ATR\nvol/MA " + fmt(volumeRatio)
+    string weakWatchCompact = weakNewTopWatchEvent ? "弱新高观察 空\n等待弱收确认" : "弱新低观察 多\n等待强收确认"
+    if flowLabelsVisible
+        label.new(bar_index, weakWatchDirection == 1 ? low - atr * 1.2 : high + atr * 1.2, flowLabelText(weakWatchCompact, weakWatchDetail), style=flowStyle(weakWatchDirection), color=flowColor("blocked", weakWatchDirection), textcolor=labelTextColor("blocked", weakWatchDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(weakWatchDetail))
+
+bool distributionConfirmEvent = confirmed and showSignalEventFlow and (topDistributionDropConfirmed or bottomAccumulationRiseConfirmed)
+if distributionConfirmEvent
+    int distributionDirection = topDistributionDropConfirmed ? -1 : 1
+    string distributionDetail = (topDistributionDropConfirmed ? "分歧转空确认\n新高后放量下跌" : "分歧转多确认\n新低后放量上涨") + "\nvolume " + fmt(volumeRatio) + "x / closePos " + fmt(closePosition) + "\nbase " + fmt(topDistributionDropConfirmed ? topWeakBase : bottomWeakBase) + "\ndistance " + fmt(topDistributionDropConfirmed ? topDistributionDistanceAtr : bottomAccumulationDistanceAtr) + "ATR"
+    string distributionCompact = topDistributionDropConfirmed ? "分歧转空确认\n新高后放量下跌" : "分歧转多确认\n新低后放量上涨"
+    if flowLabelsVisible
+        label.new(bar_index, distributionDirection == 1 ? low - atr * 1.35 : high + atr * 1.35, flowLabelText(distributionCompact, distributionDetail), style=flowStyle(distributionDirection), color=flowColor("confirmed", distributionDirection), textcolor=labelTextColor("confirmed", distributionDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(distributionDetail))
+
 bool exhaustionWatchTop = confirmed and showSignalEventFlow and selectedDirection == 0 and dayRangeClear and topRightShoulder and topRetestBand and upperNoVolumeExpansion and topMomentumDecayed and not upperExhaustionConfirmedShort
 bool exhaustionWatchBottom = confirmed and showSignalEventFlow and selectedDirection == 0 and dayRangeClear and bottomRightShoulder and bottomRetestBand and lowerNoVolumeExpansion and bottomMomentumDecayed and not lowerExhaustionConfirmedLong
 if exhaustionWatchTop or exhaustionWatchBottom
@@ -1391,8 +1491,8 @@ plotshape(showComponentMarkers and sdLowerHit, "SD lower hit", location=location
 plotshape(showComponentMarkers and sdUpperHit, "SD upper hit", location=location.abovebar, style=shape.triangledown, color=color.new(color.orange, 0), size=size.tiny, text="SD-U")
 plotshape(showAnyFractalMarkers and fractalBull, "Fractal bull", location=location.belowbar, style=shape.circle, color=color.new(color.aqua, 0), size=size.tiny, text="F+", offset=-fractalPeriod)
 plotshape(showAnyFractalMarkers and fractalBear, "Fractal bear", location=location.abovebar, style=shape.circle, color=color.new(color.fuchsia, 0), size=size.tiny, text="F-", offset=-fractalPeriod)
-plotshape(showEmaCrossMarkers and emaGoldenCross, "EMA20/50 golden cross", location=location.belowbar, style=shape.triangleup, color=color.new(color.lime, 0), size=size.small, text="20/50金叉")
-plotshape(showEmaCrossMarkers and emaDeathCross, "EMA20/50 death cross", location=location.abovebar, style=shape.triangledown, color=color.new(color.red, 0), size=size.small, text="20/50死叉")
+plotshape(showAnyEmaCrossMarkers and emaGoldenCross, "EMA20/50 golden cross", location=location.belowbar, style=shape.triangleup, color=color.new(color.lime, 0), size=size.small, text="20/50金叉")
+plotshape(showAnyEmaCrossMarkers and emaDeathCross, "EMA20/50 death cross", location=location.abovebar, style=shape.triangledown, color=color.new(color.red, 0), size=size.small, text="20/50死叉")
 plotshape(showComponentMarkers and bullDivNow, "Bull divergence", location=location.belowbar, style=shape.diamond, color=color.new(color.lime, 0), size=size.tiny, text="D+")
 plotshape(showComponentMarkers and bearDivNow, "Bear divergence", location=location.abovebar, style=shape.diamond, color=color.new(color.red, 0), size=size.tiny, text="D-")
 plotshape(newPlanNow and selectedDirection == 1, title="Predictive/confirmed long", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.tiny, text="多")
