@@ -1573,6 +1573,10 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
                     "quantity": 10,
                     "filled_qty": 10,
                     "fill_price": 100.0,
+                    "extra": {
+                        "reference_entry": 99.5,
+                        "submitted_entry_limit_price": 99.8,
+                    },
                 }
                 self.order = {
                     "id": "order-close",
@@ -1631,6 +1635,11 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
         self.assertEqual("red", card["header"]["template"])
         self.assertIn("**实际盈亏**: 亏损 -$10.00", content)
         self.assertIn("平仓（原因未记录） @99.00", content)
+        self.assertIn("入场 @100.00", content)
+        self.assertIn("参考 99.50", content)
+        self.assertIn("提交 99.80", content)
+        self.assertIn("成本/滑点 +50.25bps", content)
+        self.assertIn("+$0.50/股", content)
         self.assertIn("10股", content)
         self.assertIn("未计手续费", content)
 

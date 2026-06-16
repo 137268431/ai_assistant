@@ -1005,8 +1005,13 @@ class SignalIngressBuildersTest(unittest.TestCase):
                 "direction": "short",
                 "quantity": 4,
                 "filled_qty": 4,
+                "limit_price": 50.2,
                 "fill_price": 50.0,
                 "commission": 0.5,
+                "extra": {
+                    "reference_entry": 50.5,
+                    "submitted_entry_limit_price": 50.2,
+                },
             },
             {
                 "id": "order-close",
@@ -1035,6 +1040,12 @@ class SignalIngressBuildersTest(unittest.TestCase):
         self.assertIn("盈利 +$19.00", card["header"]["title"]["content"])
         self.assertEqual("green", card["header"]["template"])
         self.assertIn("**实际盈亏**: 盈利 +$19.00", content)
+        self.assertIn("入场 @50.00", content)
+        self.assertIn("参考 50.50", content)
+        self.assertIn("提交 50.20", content)
+        self.assertIn("成本/滑点 +99.01bps", content)
+        self.assertIn("+$0.50/股", content)
+        self.assertIn("50.00（限价 50.20）", content)
         self.assertIn("含手续费 $1.00", content)
 
     def test_order_group_status_card_flags_filled_entry_with_canceled_protection(self):

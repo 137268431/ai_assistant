@@ -487,6 +487,113 @@ class OrderTrackerIdentityTest(unittest.TestCase):
         self.assertEqual("entry_BATS_LITE_short_20260610_1014_2_mr_sdUpper", upsert["parent_order_unique_id"])
         self.assertEqual("LITE_20260610_1014_mr_U", upsert["signal_id"])
 
+    def test_broker_id_match_rejects_single_candidate_when_role_hint_conflicts(self):
+        pb_client = FakePBClient(
+            rows=[
+                {
+                    "id": "vsat-entry",
+                    "unique_id": "entry_BATS_VSAT_long_20260615_1038_2_mr_sdLower",
+                    "symbol": "MDB",
+                    "environment": "paper",
+                    "role": "entry",
+                    "status": "Filled",
+                    "broker_order_id": "11380",
+                    "trade_group_id": "BATS_VSAT_long_20260615_1038_2_mr_sdLower",
+                    "entry_order_unique_id": "entry_BATS_VSAT_long_20260615_1038_2_mr_sdLower",
+                    "signal_id": "BATS_VSAT_long_20260615_1038_2_mr_sdLower",
+                    "direction": "long",
+                }
+            ]
+        )
+        tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="paper")
+
+        match = tracker._find_pb_order_by_broker_id("11380", runtime_environment="paper", symbol="MDB", role="close")
+
+        self.assertIsNone(match)
+
+    def test_broker_id_match_accepts_blank_symbol_when_role_hint_matches_unique_id(self):
+        pb_client = FakePBClient(
+            rows=[
+                {
+                    "id": "tp-nvda",
+                    "unique_id": "tp_NVDA_long_20260615_1038",
+                    "symbol": "",
+                    "environment": "paper",
+                    "role": "",
+                    "status": "Submitted",
+                    "broker_order_id": "22001",
+                }
+            ]
+        )
+        tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="paper")
+
+        match = tracker._find_pb_order_by_broker_id("22001", runtime_environment="paper", symbol="NVDA", role="take_profit")
+
+        self.assertEqual("tp-nvda", match["id"])
+
+    def test_sync_close_callback_does_not_overwrite_reused_broker_id_entry(self):
+        pb_client = FakePBClient(
+            rows=[
+                {
+                    "id": "vsat-entry",
+                    "unique_id": "entry_BATS_VSAT_long_20260615_1038_2_mr_sdLower",
+                    "symbol": "MDB",
+                    "environment": "paper",
+                    "role": "entry",
+                    "status": "Filled",
+                    "broker_order_id": "11380",
+                    "trade_group_id": "BATS_VSAT_long_20260615_1038_2_mr_sdLower",
+                    "entry_order_unique_id": "entry_BATS_VSAT_long_20260615_1038_2_mr_sdLower",
+                    "signal_id": "BATS_VSAT_long_20260615_1038_2_mr_sdLower",
+                    "direction": "long",
+                    "quantity": 14,
+                    "filled_qty": 14,
+                },
+                {
+                    "id": "mdb-entry",
+                    "unique_id": "entry_BATS_MDB_short_20260612_0946_2_mr_sdUpper",
+                    "symbol": "MDB",
+                    "environment": "paper",
+                    "role": "entry",
+                    "status": "Filled",
+                    "broker_order_id": "11365",
+                    "trade_group_id": "BATS_MDB_short_20260612_0946_2_mr_sdUpper",
+                    "entry_order_unique_id": "entry_BATS_MDB_short_20260612_0946_2_mr_sdUpper",
+                    "signal_id": "BATS_MDB_short_20260612_0946_2_mr_sdUpper",
+                    "direction": "short",
+                    "quantity": 14,
+                    "filled_qty": 14,
+                },
+            ]
+        )
+        tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="paper")
+
+        tracker._sync_to_pb(
+            {
+                "orderId": "11380",
+                "ticker": "MDB",
+                "side": "BUY",
+                "orderType": "MKT",
+                "totalSize": 14,
+                "filledQuantity": 14,
+                "avgPrice": 354.17,
+                "price": 354.70,
+                "status": "Filled",
+                "cOID": "close_MDB_20260615_155501",
+                "commission": 2.000264,
+            }
+        )
+
+        self.assertEqual(1, len(pb_client.upserts))
+        upsert = pb_client.upserts[0]
+        self.assertEqual("close_MDB_20260615_155501", upsert["unique_id"])
+        self.assertEqual("close", upsert["role"])
+        self.assertEqual("BATS_MDB_short_20260612_0946_2_mr_sdUpper", upsert["trade_group_id"])
+        self.assertEqual("entry_BATS_MDB_short_20260612_0946_2_mr_sdUpper", upsert["entry_order_unique_id"])
+        self.assertEqual("entry_BATS_MDB_short_20260612_0946_2_mr_sdUpper", upsert["parent_order_unique_id"])
+        self.assertEqual("BATS_MDB_short_20260612_0946_2_mr_sdUpper", upsert["signal_id"])
+        self.assertEqual("short", upsert["position_side"])
+
     def test_sync_exit_order_keeps_position_side_from_chain_identity(self):
         pb_client = FakePBClient()
         tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="live")

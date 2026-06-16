@@ -418,6 +418,53 @@ class OrderTracker:
         return cls._normalize_text(value).lower().startswith(("close_", "manual_close_", "market_close_"))
 
     @classmethod
+    def _normalize_pb_order_role(cls, value: Any) -> str:
+        normalized = cls._normalize_text(value).lower()
+        if normalized in {"tp", "takeprofit", "take_profit", "profit_target", "target"}:
+            return "take_profit"
+        if normalized in {"sl", "stop", "stoploss", "stop_loss"}:
+            return "stop_loss"
+        if normalized in {"close", "manual_close", "market_close", "close_order", "reverse_close"}:
+            return "close"
+        return normalized
+
+    @classmethod
+    def _pb_order_row_role(cls, row: Optional[Dict[str, Any]]) -> str:
+        if not isinstance(row, dict):
+            return ""
+        role = cls._normalize_pb_order_role(row.get("role") or row.get("order_role") or row.get("leg_role"))
+        if role:
+            return role
+        order_type_role = cls._normalize_pb_order_role(row.get("order_type") or row.get("orderType"))
+        if order_type_role in {"entry", "take_profit", "stop_loss", "close"}:
+            return order_type_role
+        unique_id = cls._normalize_text(row.get("unique_id")).lower()
+        if unique_id.startswith("entry_"):
+            return "entry"
+        if unique_id.startswith("tp_"):
+            return "take_profit"
+        if unique_id.startswith("sl_"):
+            return "stop_loss"
+        if cls._looks_like_close_order_ref(unique_id):
+            return "close"
+        return ""
+
+    @classmethod
+    def _pb_order_matches_identity_hints(cls, row: Optional[Dict[str, Any]], *, symbol: str = "", role: str = "") -> bool:
+        if not isinstance(row, dict):
+            return False
+        normalized_symbol = cls._normalize_text(symbol).upper()
+        row_symbol = cls._normalize_text(row.get("symbol")).upper()
+        if normalized_symbol and row_symbol and row_symbol != normalized_symbol:
+            return False
+        normalized_role = cls._normalize_pb_order_role(role)
+        if normalized_role:
+            row_role = cls._pb_order_row_role(row)
+            if row_role != normalized_role:
+                return False
+        return True
+
+    @classmethod
     def _infer_position_side(
         cls,
         *,
@@ -1093,7 +1140,39 @@ class OrderTracker:
         )
         if not matches:
             return None
-        if len(matches) == 1:
+
+        normalized_symbol = self._normalize_text(symbol).upper()
+        normalized_role = self._normalize_pb_order_role(role)
+        has_identity_hint = bool(normalized_symbol or normalized_role)
+        if has_identity_hint:
+            hinted_matches = [
+                item for item in matches
+                if self._pb_order_matches_identity_hints(item, symbol=normalized_symbol, role=normalized_role)
+            ]
+            if len(hinted_matches) == 1:
+                return hinted_matches[0]
+            if len(hinted_matches) > 1:
+                matches = hinted_matches
+            else:
+                logger.warning(
+                    "PB broker_order_id match rejected by identity hints: order_id=%s symbol=%s role=%s environment=%s candidates=%s",
+                    normalized_order_id,
+                    normalized_symbol,
+                    normalized_role,
+                    runtime_environment,
+                    [
+                        {
+                            "id": str(item.get("id") or ""),
+                            "unique_id": str(item.get("unique_id") or ""),
+                            "symbol": str(item.get("symbol") or ""),
+                            "role": str(item.get("role") or ""),
+                            "status": str(item.get("status") or ""),
+                        }
+                        for item in matches
+                    ],
+                )
+                return None
+        elif len(matches) == 1:
             return matches[0]
 
         open_matches = [
@@ -1106,7 +1185,6 @@ class OrderTracker:
         if len(open_matches) > 1:
             matches = open_matches
 
-        normalized_symbol = self._normalize_text(symbol).upper()
         if normalized_symbol:
             symbol_matches = [
                 item for item in matches
@@ -1117,12 +1195,10 @@ class OrderTracker:
             if len(symbol_matches) > 1:
                 matches = symbol_matches
 
-        normalized_role = self._normalize_text(role)
         if not normalized_role:
             close_matches = [
                 item for item in matches
-                if self._normalize_text(item.get("role")) == "close"
-                or self._normalize_text(item.get("unique_id")).lower().startswith("close_")
+                if self._pb_order_row_role(item) == "close"
             ]
             if len(close_matches) == 1:
                 return close_matches[0]
@@ -1131,7 +1207,7 @@ class OrderTracker:
         if normalized_role:
             role_matches = [
                 item for item in matches
-                if self._normalize_text(item.get("role")) == normalized_role
+                if self._pb_order_row_role(item) == normalized_role
             ]
             if len(role_matches) == 1:
                 return role_matches[0]

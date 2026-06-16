@@ -535,6 +535,36 @@ class RuntimeSignalLifecycleTest(unittest.TestCase):
             ]
         )
 
+    def test_event_order_lookup_rejects_reused_broker_id_when_identity_conflicts(self):
+        service = _FakeService()
+        service.pb.orders = [
+            {
+                "id": "vsat-entry",
+                "unique_id": "entry_BATS_VSAT_long_20260615_1038_2_mr_sdLower",
+                "entry_order_unique_id": "entry_BATS_VSAT_long_20260615_1038_2_mr_sdLower",
+                "order_id": "11380",
+                "broker_order_id": "11380",
+                "signal_id": "BATS_VSAT_long_20260615_1038_2_mr_sdLower",
+                "environment": "live",
+                "symbol": "MDB",
+                "role": "entry",
+                "status": "Filled",
+                "direction": "long",
+            }
+        ]
+        order = {
+            "orderId": "11380",
+            "ticker": "MDB",
+            "side": "BUY",
+            "orderType": "MKT",
+            "status": "Filled",
+            "cOID": "close_MDB_20260615_155501",
+        }
+
+        self.assertEqual({}, service._load_pb_order_for_event(order, "live"))
+        self.assertEqual("", service._resolve_order_role_for_fill_event(order, "live"))
+        self.assertEqual("", service._resolve_signal_id_for_order(order, "live"))
+
     def test_entry_fill_moves_submitted_signal_to_protected_active(self):
         service = _FakeService()
         service.pb.orders.extend(

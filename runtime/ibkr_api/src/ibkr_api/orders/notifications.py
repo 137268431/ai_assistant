@@ -226,6 +226,28 @@ def _format_signed_money(value: Any) -> str:
     return "$0.00"
 
 
+def _format_signed_bps(value: Any) -> str:
+    parsed = to_float(value)
+    if parsed is None:
+        return "-"
+    if parsed > 0:
+        return f"+{parsed:,.2f}bps"
+    if parsed < 0:
+        return f"-{abs(parsed):,.2f}bps"
+    return "0.00bps"
+
+
+def _format_signed_price_delta(value: Any) -> str:
+    parsed = to_float(value)
+    if parsed is None:
+        return "-"
+    if parsed > 0:
+        return f"+${parsed:,.2f}"
+    if parsed < 0:
+        return f"-${abs(parsed):,.2f}"
+    return "$0.00"
+
+
 def _status_text(status: Any) -> str:
     text = to_text(status)
     return ORDER_STATUS_TEXT_MAP.get(text, text or "-")
@@ -677,6 +699,49 @@ def _directional_pnl(direction: Any, entry_price: Any, exit_price: Any, quantity
     return per_share * abs(qty)
 
 
+def _entry_reference_price(entry_order: dict[str, Any]) -> float | None:
+    return _positive_number(
+        entry_order,
+        "reference_entry",
+        "tv_reference_entry",
+        "original_entry",
+        "signal_reference_price",
+        "entry_anchor",
+        "entry",
+    )
+
+
+def _entry_submitted_price(entry_order: dict[str, Any]) -> float | None:
+    return _positive_number(
+        entry_order,
+        "submitted_entry_limit_price",
+        "submitted_limit_cap_price",
+        "planned_entry_price",
+        "entry_limit_price",
+        "bounded_limit_price",
+        "limit_price",
+        "price",
+    )
+
+
+def _entry_slippage_model(entry_order: dict[str, Any], exit_order: dict[str, Any], entry_price: Any) -> dict[str, Any]:
+    reference_price = _entry_reference_price(entry_order)
+    submitted_price = _entry_submitted_price(entry_order)
+    side = _trade_side(entry_order, exit_order)
+    actual_entry = to_float(entry_price)
+    cost_per_share: float | None = None
+    cost_bps: float | None = None
+    if side in {"long", "short"} and actual_entry is not None and reference_price is not None and reference_price > 0:
+        cost_per_share = reference_price - actual_entry if side == "short" else actual_entry - reference_price
+        cost_bps = (cost_per_share / reference_price) * 10000.0
+    return {
+        "entry_reference_price": reference_price,
+        "entry_submitted_price": submitted_price,
+        "entry_cost_per_share": cost_per_share,
+        "entry_cost_bps": cost_bps,
+    }
+
+
 def _exit_order_row(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     for row in sorted(rows or [], key=_role_sort_key):
         normalized = normalize_order_row(row)
@@ -794,6 +859,7 @@ def _realized_pnl_model_for_entry_exit(
         "commission": commission,
         "commission_known": commission_known,
         "entry_price": entry_price,
+        **_entry_slippage_model(entry_order, exit_order, entry_price),
         "exit_price": exit_price,
         "quantity": quantity,
         "exit_role": normalized_exit.get("role") or to_text(_record_or_extra_value(exit_order, "role")) or "exit",
@@ -812,9 +878,28 @@ def _realized_pnl_detail(model: dict[str, Any]) -> str:
     parts: list[str] = []
     role = to_text(model.get("exit_label")) or ORDER_ROLE_LABELS.get(to_text(model.get("exit_role")), "退出")
     exit_price = model.get("exit_price")
+    entry_price = model.get("entry_price")
     quantity = model.get("quantity")
     if exit_price is not None:
         parts.append(f"{role} @{_format_price(exit_price)}")
+    if entry_price is not None:
+        entry_parts = [f"入场 @{_format_price(entry_price)}"]
+        entry_context: list[str] = []
+        reference_price = model.get("entry_reference_price")
+        submitted_price = model.get("entry_submitted_price")
+        cost_bps = model.get("entry_cost_bps")
+        cost_per_share = model.get("entry_cost_per_share")
+        if reference_price is not None:
+            entry_context.append(f"参考 {_format_price(reference_price)}")
+        if submitted_price is not None:
+            entry_context.append(f"提交 {_format_price(submitted_price)}")
+        if cost_bps is not None:
+            entry_context.append(f"成本/滑点 {_format_signed_bps(cost_bps)}")
+        if cost_per_share is not None:
+            entry_context.append(f"{_format_signed_price_delta(cost_per_share)}/股")
+        if entry_context:
+            entry_parts.append(f"（{'，'.join(entry_context)}）")
+        parts.append("".join(entry_parts))
     if quantity is not None:
         parts.append(f"{_format_quantity(quantity)}股")
     if bool(model.get("is_net")):
@@ -1216,16 +1301,29 @@ def _leg_line(row: dict[str, Any]) -> str:
     order_id = normalized.get("broker_order_id") or to_text(_record_or_extra_value(row, "order_id", "broker_order_id"))
     quantity = _format_quantity(_record_or_extra_value(row, "quantity"))
     filled = _format_quantity(_record_or_extra_value(row, "filled_qty"))
-    price = _format_price(
-        _record_or_extra_value(
-            row,
-            "limit_price",
-            "price",
-            "fill_price",
-            "avg_price",
-            "avg_fill_price",
-        )
+    fill_price = _positive_number(
+        row,
+        "fill_price",
+        "avg_price",
+        "avg_fill_price",
+        "actual_fill_price",
+        "last_fill_price",
+        "lastFillPrice",
+        "execution_price",
     )
+    planned_price = _positive_number(
+        row,
+        "limit_price",
+        "price",
+        "tp_price",
+        "take_profit",
+        "sl_price",
+        "stop_loss",
+    )
+    display_price = fill_price if _row_is_filled(row) and fill_price is not None else first_defined(planned_price, fill_price)
+    price = _format_price(display_price)
+    if fill_price is not None and planned_price is not None and abs(fill_price - planned_price) > 0.005:
+        price = f"{price}（限价 {_format_price(planned_price)}）"
     return f"**{label}**: {_status_text(status)} · ID {order_id or '-'} · {filled}/{quantity} · {price}"
 
 

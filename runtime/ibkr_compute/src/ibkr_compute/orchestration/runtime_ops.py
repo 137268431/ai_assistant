@@ -59,7 +59,14 @@ class TradingServiceRuntimeOpsMixin:
     def _order_role(order: dict[str, Any]) -> str:
         extra = order.get("extra") if isinstance(order.get("extra"), dict) else {}
         role = str(order.get("role") or extra.get("role") or order.get("order_type") or "").strip().lower()
-        unique_id = str(order.get("unique_id") or order.get("cOID") or order.get("coid") or "").strip().lower()
+        unique_id = str(
+            order.get("unique_id")
+            or order.get("cOID")
+            or order.get("coid")
+            or order.get("orderRef")
+            or order.get("order_ref")
+            or ""
+        ).strip().lower()
         if not role and unique_id.startswith("tp_"):
             return "take_profit"
         if not role and unique_id.startswith("sl_"):
@@ -80,6 +87,81 @@ class TradingServiceRuntimeOpsMixin:
         if normalized in {"close", "manual_close", "market_close", "close_order", "reverse_close"}:
             return "close"
         return normalized
+
+    @staticmethod
+    def _event_order_coid(order: dict[str, Any]) -> str:
+        return str(
+            (order or {}).get("cOID")
+            or (order or {}).get("coid")
+            or (order or {}).get("orderRef")
+            or (order or {}).get("order_ref")
+            or (order or {}).get("unique_id")
+            or ""
+        ).strip()
+
+    @staticmethod
+    def _event_order_id(order: dict[str, Any]) -> str:
+        return str(
+            (order or {}).get("orderId")
+            or (order or {}).get("order_id")
+            or (order or {}).get("broker_order_id")
+            or ""
+        ).strip()
+
+    @staticmethod
+    def _event_order_symbol(order: dict[str, Any]) -> str:
+        return str((order or {}).get("ticker") or (order or {}).get("symbol") or "").strip().upper()
+
+    @classmethod
+    def _event_order_role_hint(cls, order: dict[str, Any]) -> str:
+        explicit = cls._normalize_order_role(cls._order_role(order or {}))
+        if explicit in {"entry", "take_profit", "stop_loss", "close"}:
+            return explicit
+        coid = cls._event_order_coid(order).lower()
+        if coid.startswith("close_"):
+            return "close"
+        if coid.startswith("entry_"):
+            return "entry"
+        if coid.startswith("tp_"):
+            return "take_profit"
+        if coid.startswith("sl_"):
+            return "stop_loss"
+        parent_id = str((order or {}).get("parentId") or (order or {}).get("parent_id") or "").strip()
+        order_type = str((order or {}).get("orderType") or (order or {}).get("order_type") or "").strip().upper()
+        if parent_id and order_type in {"STP", "STOP", "STOPLOSS"}:
+            return "stop_loss"
+        if parent_id:
+            return "take_profit"
+        return ""
+
+    def _order_candidate_matches_event(self, row: dict[str, Any], order: dict[str, Any]) -> bool:
+        symbol = self._event_order_symbol(order)
+        row_symbol = str((row or {}).get("symbol") or "").strip().upper()
+        if symbol and row_symbol and row_symbol != symbol:
+            return False
+        role_hint = self._event_order_role_hint(order)
+        if role_hint:
+            row_role = self._normalize_order_role(self._order_role(row or {}))
+            if row_role != role_hint:
+                return False
+        return True
+
+    def _matching_order_rows_for_event_filter(
+        self,
+        order: dict[str, Any],
+        *,
+        filter_expr: str,
+        per_page: int = 10,
+    ) -> list[dict[str, Any]]:
+        try:
+            rows = self.pb.get_records("orders", filter=filter_expr, sort="-updated", per_page=per_page) or []
+        except Exception:
+            return []
+        return [
+            dict(row)
+            for row in rows
+            if isinstance(row, dict) and self._order_candidate_matches_event(row, order)
+        ]
 
     @staticmethod
     def _order_status(order: dict[str, Any]) -> str:
@@ -308,19 +390,8 @@ class TradingServiceRuntimeOpsMixin:
         if signal_id:
             return signal_id
 
-        coid = str(
-            (order or {}).get("cOID")
-            or (order or {}).get("coid")
-            or (order or {}).get("orderRef")
-            or (order or {}).get("order_ref")
-            or ""
-        ).strip()
-        order_id = str(
-            (order or {}).get("orderId")
-            or (order or {}).get("order_id")
-            or (order or {}).get("broker_order_id")
-            or ""
-        ).strip()
+        coid = self._event_order_coid(order)
+        order_id = self._event_order_id(order)
         if not coid and not order_id:
             return ""
 
@@ -336,9 +407,8 @@ class TradingServiceRuntimeOpsMixin:
             filters.append(f'broker_order_id = "{safe_order_id}" && environment = "{env_filter}"')
 
         for filter_expr in filters:
-            rows = self.pb.get_records("orders", filter=filter_expr, sort="-updated", per_page=1)
-            if rows:
-                signal_id = str((rows[0] or {}).get("signal_id") or "").strip()
+            for row in self._matching_order_rows_for_event_filter(order, filter_expr=filter_expr):
+                signal_id = str((row or {}).get("signal_id") or "").strip()
                 if signal_id:
                     return signal_id
         return ""
@@ -431,19 +501,8 @@ class TradingServiceRuntimeOpsMixin:
         return rows
 
     def _resolve_order_role_for_fill_event(self, order: dict, runtime_environment: str) -> str:
-        coid = str(
-            (order or {}).get("cOID")
-            or (order or {}).get("coid")
-            or (order or {}).get("orderRef")
-            or (order or {}).get("order_ref")
-            or ""
-        ).strip()
-        order_id = str(
-            (order or {}).get("orderId")
-            or (order or {}).get("order_id")
-            or (order or {}).get("broker_order_id")
-            or ""
-        ).strip()
+        coid = self._event_order_coid(order)
+        order_id = self._event_order_id(order)
         if not getattr(self, "pb", None) or not (coid or order_id):
             return ""
 
@@ -457,29 +516,14 @@ class TradingServiceRuntimeOpsMixin:
             filters.append(f'order_id = "{safe_order_id}" && environment = "{env_filter}"')
             filters.append(f'broker_order_id = "{safe_order_id}" && environment = "{env_filter}"')
         for filter_expr in filters:
-            try:
-                rows = self.pb.get_records("orders", filter=filter_expr, sort="-updated", per_page=1) or []
-            except Exception:
-                rows = []
+            rows = self._matching_order_rows_for_event_filter(order, filter_expr=filter_expr)
             if rows:
                 return self._normalize_order_role(self._order_role(rows[0]))
         return ""
 
     def _load_pb_order_for_event(self, order: dict, runtime_environment: str) -> dict[str, Any]:
-        coid = str(
-            (order or {}).get("cOID")
-            or (order or {}).get("coid")
-            or (order or {}).get("orderRef")
-            or (order or {}).get("order_ref")
-            or (order or {}).get("unique_id")
-            or ""
-        ).strip()
-        order_id = str(
-            (order or {}).get("orderId")
-            or (order or {}).get("order_id")
-            or (order or {}).get("broker_order_id")
-            or ""
-        ).strip()
+        coid = self._event_order_coid(order)
+        order_id = self._event_order_id(order)
         if not getattr(self, "pb", None) or not (coid or order_id):
             return {}
         filters = []
@@ -492,10 +536,7 @@ class TradingServiceRuntimeOpsMixin:
             filters.append(f'order_id = "{safe_order_id}" && environment = "{env_filter}"')
             filters.append(f'broker_order_id = "{safe_order_id}" && environment = "{env_filter}"')
         for filter_expr in filters:
-            try:
-                rows = self.pb.get_records("orders", filter=filter_expr, sort="-updated", per_page=1) or []
-            except Exception:
-                rows = []
+            rows = self._matching_order_rows_for_event_filter(order, filter_expr=filter_expr)
             if rows:
                 return dict(rows[0])
         return {}
