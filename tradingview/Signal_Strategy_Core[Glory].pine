@@ -33,6 +33,11 @@ probeMinPullbackAtr = input.float(0.80, "Probe min pullback (x ATR)", step=0.05,
 probeRetestBandAtr = input.float(0.35, "Probe retest band (x ATR)", step=0.05, minval=0.05, maxval=3.0, group="01 Structure")
 probeMinSignalGapBars = input.int(6, "Probe min signal gap bars", minval=1, maxval=60, group="01 Structure")
 probeMinSignalGapAtr = input.float(0.60, "Probe min signal gap (x ATR)", step=0.05, minval=0.10, maxval=5.0, group="01 Structure")
+structureClusterBandAtr = input.float(0.40, "Structure cluster band (x ATR)", step=0.05, minval=0.05, maxval=3.0, group="01 Structure")
+minStructureSeparationAtr = input.float(1.00, "Independent structure separation (x ATR)", step=0.05, minval=0.10, maxval=5.0, group="01 Structure")
+minMiddleSwingAtr = input.float(0.90, "Middle swing for second test (x ATR)", step=0.05, minval=0.10, maxval=5.0, group="01 Structure")
+minSameSideSignalSeparationAtr = input.float(1.20, "Same-side signal separation (x ATR)", step=0.05, minval=0.10, maxval=8.0, group="01 Structure")
+failedBreakCloseBackAtr = input.float(0.10, "Failed break close-back (x ATR)", step=0.05, minval=0.0, maxval=2.0, group="01 Structure")
 planReplaceMinMoveAtr = input.float(0.25, "Plan replace min move (x ATR)", step=0.05, minval=0.05, maxval=5.0, group="01 Structure")
 
 sdLength = input.int(128, "Regression length", minval=20, group="02 SD / DTP")
@@ -232,8 +237,14 @@ var int todayHighBar = na
 var int todayLowBar = na
 var float todayStructHigh = na
 var float todayStructLow = na
+var float todayStructHighZoneLow = na
+var float todayStructHighZoneHigh = na
+var float todayStructLowZoneLow = na
+var float todayStructLowZoneHigh = na
 var int todayStructHighBar = na
 var int todayStructLowBar = na
+var int lastProcessedHighCandidateBar = na
+var int lastProcessedLowCandidateBar = na
 var float prevStructHigh = na
 var float prevStructLow = na
 var float lowSinceStructHigh = na
@@ -244,6 +255,8 @@ var int lastTopProbeSignalBar = na
 var int lastBottomProbeSignalBar = na
 var float lastTopProbeSignalPrice = na
 var float lastBottomProbeSignalPrice = na
+var float lastLongPlanPrice = na
+var float lastShortPlanPrice = na
 
 if confirmed and referenceDayReset
     todayHigh := na
@@ -252,8 +265,14 @@ if confirmed and referenceDayReset
     todayLowBar := na
     todayStructHigh := na
     todayStructLow := na
+    todayStructHighZoneLow := na
+    todayStructHighZoneHigh := na
+    todayStructLowZoneLow := na
+    todayStructLowZoneHigh := na
     todayStructHighBar := na
     todayStructLowBar := na
+    lastProcessedHighCandidateBar := na
+    lastProcessedLowCandidateBar := na
     prevStructHigh := na
     prevStructLow := na
     lowSinceStructHigh := na
@@ -264,6 +283,8 @@ if confirmed and referenceDayReset
     lastBottomProbeSignalBar := na
     lastTopProbeSignalPrice := na
     lastBottomProbeSignalPrice := na
+    lastLongPlanPrice := na
+    lastShortPlanPrice := na
 
 if confirmed and inReferenceSession
     if na(todayHigh) or high > todayHigh
@@ -273,19 +294,41 @@ if confirmed and inReferenceSession
         todayLow := low
         todayLowBar := bar_index
     bool highConfirmed = not na(todayHighBar) and bar_index - todayHighBar >= dayStructConfirmBars and todayHigh - low >= atr * dayStructMinReversalAtr
-    if highConfirmed and (na(todayStructHighBar) or todayHighBar != todayStructHighBar)
-        prevStructHigh := todayStructHigh
-        todayStructHigh := todayHigh
-        todayStructHighBar := todayHighBar
-        lowSinceStructHigh := low
-        topExhaustionUsed := false
+    if highConfirmed and (na(lastProcessedHighCandidateBar) or todayHighBar != lastProcessedHighCandidateBar)
+        float highBand = atr * structureClusterBandAtr
+        bool highHasAnchor = not na(todayStructHigh)
+        bool highFarEnough = not highHasAnchor or math.abs(todayHigh - todayStructHigh) >= atr * minStructureSeparationAtr
+        bool highMiddleSwingOk = not highHasAnchor or not na(lowSinceStructHigh) and todayStructHigh - lowSinceStructHigh >= atr * minMiddleSwingAtr
+        if not highHasAnchor or highFarEnough and highMiddleSwingOk
+            prevStructHigh := todayStructHigh
+            todayStructHigh := todayHigh
+            todayStructHighBar := todayHighBar
+            todayStructHighZoneLow := todayHigh - highBand
+            todayStructHighZoneHigh := todayHigh + highBand
+            lowSinceStructHigh := low
+            topExhaustionUsed := false
+        else
+            todayStructHighZoneLow := na(todayStructHighZoneLow) ? todayHigh - highBand : math.min(todayStructHighZoneLow, todayHigh - highBand)
+            todayStructHighZoneHigh := na(todayStructHighZoneHigh) ? todayHigh + highBand : math.max(todayStructHighZoneHigh, todayHigh + highBand)
+        lastProcessedHighCandidateBar := todayHighBar
     bool lowConfirmed = not na(todayLowBar) and bar_index - todayLowBar >= dayStructConfirmBars and high - todayLow >= atr * dayStructMinReversalAtr
-    if lowConfirmed and (na(todayStructLowBar) or todayLowBar != todayStructLowBar)
-        prevStructLow := todayStructLow
-        todayStructLow := todayLow
-        todayStructLowBar := todayLowBar
-        highSinceStructLow := high
-        bottomExhaustionUsed := false
+    if lowConfirmed and (na(lastProcessedLowCandidateBar) or todayLowBar != lastProcessedLowCandidateBar)
+        float lowBand = atr * structureClusterBandAtr
+        bool lowHasAnchor = not na(todayStructLow)
+        bool lowFarEnough = not lowHasAnchor or math.abs(todayLow - todayStructLow) >= atr * minStructureSeparationAtr
+        bool lowMiddleSwingOk = not lowHasAnchor or not na(highSinceStructLow) and highSinceStructLow - todayStructLow >= atr * minMiddleSwingAtr
+        if not lowHasAnchor or lowFarEnough and lowMiddleSwingOk
+            prevStructLow := todayStructLow
+            todayStructLow := todayLow
+            todayStructLowBar := todayLowBar
+            todayStructLowZoneLow := todayLow - lowBand
+            todayStructLowZoneHigh := todayLow + lowBand
+            highSinceStructLow := high
+            bottomExhaustionUsed := false
+        else
+            todayStructLowZoneLow := na(todayStructLowZoneLow) ? todayLow - lowBand : math.min(todayStructLowZoneLow, todayLow - lowBand)
+            todayStructLowZoneHigh := na(todayStructLowZoneHigh) ? todayLow + lowBand : math.max(todayStructLowZoneHigh, todayLow + lowBand)
+        lastProcessedLowCandidateBar := todayLowBar
     if not na(todayStructHigh)
         lowSinceStructHigh := na(lowSinceStructHigh) ? low : math.min(lowSinceStructHigh, low)
     if not na(todayStructLow)
@@ -472,8 +515,8 @@ bool trendShortPredictAllowed = trendShortPredictContext and smallStopTrialAllow
 bool trendShortConfirmAllowed = trendShortConfirmContext and smallStopTrialAllowed(trendShortConfirmEntry, trendShortConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and trendShortConfirmQty >= 1.0
 
 float topBasis = todayStructHigh
-float topZoneLow = todayStructHigh
-float topZoneHigh = todayStructHigh
+float topZoneLow = na(todayStructHighZoneLow) ? todayStructHigh : todayStructHighZoneLow
+float topZoneHigh = na(todayStructHighZoneHigh) ? todayStructHigh : todayStructHighZoneHigh
 int topCount = not na(todayStructHigh) ? 1 : 0
 topCount := addNearCount(topCount, sdUpper, topBasis, tolerance)
 topCount := addNearCount(topCount, resistanceZoneHigh, topBasis, tolerance)
@@ -503,28 +546,31 @@ topSources := appendNearSource(topSources, dtpAvg, topBasis, tolerance, "dtp_avg
 bool strongTopProbeZone = topCount >= minConfluenceCount and not na(topZoneLow) and not na(topZoneHigh)
 int topAnchorAgeBars = not na(todayStructHighBar) ? bar_index - todayStructHighBar : 0
 float topPullbackAtr = not na(todayStructHigh) and not na(lowSinceStructHigh) ? (todayStructHigh - lowSinceStructHigh) / atr : na
-bool topAnchorReady = topAnchorAgeBars >= probeMinAnchorAgeBars and topPullbackAtr >= probeMinPullbackAtr
-bool topRetestBand = not na(todayStructHigh) and high >= todayStructHigh - atr * probeRetestBandAtr and low <= todayStructHigh + atr * probeRetestBandAtr
-bool topFirstExhaustion = strongTopProbeZone and not topExhaustionUsed and topPullbackAtr >= dayStructMinReversalAtr and close < todayStructHigh
+bool topAnchorReady = topAnchorAgeBars >= probeMinAnchorAgeBars and topPullbackAtr >= math.max(probeMinPullbackAtr, minMiddleSwingAtr)
+bool topRetestBand = not na(topZoneLow) and not na(topZoneHigh) and high >= topZoneLow - atr * probeRetestBandAtr and low <= topZoneHigh + atr * probeRetestBandAtr
+bool topFirstExhaustion = strongTopProbeZone and not topExhaustionUsed and topPullbackAtr >= minMiddleSwingAtr and close < topZoneLow
 bool topRightShoulder = strongTopProbeZone and topAnchorReady and topRetestBand
 string topProbePattern = topRightShoulder ? "retest_2b_top" : topFirstExhaustion ? "extension_exhaustion_top" : "none"
 float topPredictEntry = strongTopProbeZone ? topZoneHigh - atr * predictiveEntryOffsetAtr : na
 float topPredictStop = strongTopProbeZone ? topZoneHigh + invalidationBuffer : na
-bool topSignalGapOk = (na(lastTopProbeSignalBar) or bar_index - lastTopProbeSignalBar >= probeMinSignalGapBars) and (na(lastTopProbeSignalPrice) or math.abs(topPredictEntry - lastTopProbeSignalPrice) >= atr * probeMinSignalGapAtr)
-bool topSweepFailed = confirmed and topRightShoulder and high > todayStructHigh + tickBuffer and close < todayStructHigh
-float topConfirmEntry = topSweepFailed ? math.max(close, todayStructHigh - atr * predictiveEntryOffsetAtr) : na
-float topConfirmStop = topSweepFailed ? high + invalidationBuffer : na
+float topSignalDistanceAtr = not na(lastTopProbeSignalPrice) and atr > 0.0 ? math.abs(topPredictEntry - lastTopProbeSignalPrice) / atr : na
+bool topSignalBarsOk = na(lastTopProbeSignalBar) or bar_index - lastTopProbeSignalBar >= probeMinSignalGapBars
+bool topSignalPriceGapOk = na(topSignalDistanceAtr) or topSignalDistanceAtr >= minSameSideSignalSeparationAtr
+bool topSignalGapOk = topSignalBarsOk and topSignalPriceGapOk
+bool topSweepFailed = confirmed and topRightShoulder and high > topZoneHigh + tickBuffer and close < topZoneHigh - atr * failedBreakCloseBackAtr
+float topConfirmEntry = topSweepFailed ? math.max(close, topZoneLow - atr * predictiveEntryOffsetAtr) : na
+float topConfirmStop = topSweepFailed ? math.max(high, topZoneHigh) + invalidationBuffer : na
 bool topPredictContext = (topFirstExhaustion or topRightShoulder) and topCounterTrendAllowed and topPredictEntry >= close and topPredictEntry - close <= atr * predictionArmDistanceAtr and topSignalGapOk
 bool topConfirmContext = topSweepFailed and topCounterTrendAllowed and topSignalGapOk
 float topPredictQty = calcTrialQty(topPredictEntry, topPredictStop, predictiveMaxRiskDollars)
 float topConfirmQty = calcTrialQty(topConfirmEntry, topConfirmStop, confirmedMaxRiskDollars)
 bool topPredictAllowed = topPredictContext and smallStopTrialAllowed(topPredictEntry, topPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and topPredictQty >= 1.0
 bool topConfirmAllowed = topConfirmContext and smallStopTrialAllowed(topConfirmEntry, topConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and topConfirmQty >= 1.0
-string topProbeFilterReason = na(todayStructHigh) ? "no_today_struct_high" : not strongTopProbeZone ? "no_clear_structure" : not (topFirstExhaustion or topRightShoulder) ? (not topAnchorReady ? "anchor_too_fresh_or_no_pullback" : "not_retest_zone") : not topSignalGapOk ? "too_close" : "passed"
+string topProbeFilterReason = na(todayStructHigh) ? "no_today_struct_high" : not strongTopProbeZone ? "no_clear_structure" : not (topFirstExhaustion or topRightShoulder) ? (not topAnchorReady ? "anchor_too_fresh_or_no_pullback" : "not_retest_zone") : not topSignalBarsOk ? "signal_bars_too_close" : not topSignalPriceGapOk ? "micro_structure_too_close" : "passed"
 
 float bottomBasis = todayStructLow
-float bottomZoneLow = todayStructLow
-float bottomZoneHigh = todayStructLow
+float bottomZoneLow = na(todayStructLowZoneLow) ? todayStructLow : todayStructLowZoneLow
+float bottomZoneHigh = na(todayStructLowZoneHigh) ? todayStructLow : todayStructLowZoneHigh
 int bottomCount = not na(todayStructLow) ? 1 : 0
 bottomCount := addNearCount(bottomCount, sdLower, bottomBasis, tolerance)
 bottomCount := addNearCount(bottomCount, supportZoneLow, bottomBasis, tolerance)
@@ -554,24 +600,27 @@ bottomSources := appendNearSource(bottomSources, dtpAvg, bottomBasis, tolerance,
 bool strongBottomProbeZone = bottomCount >= minConfluenceCount and not na(bottomZoneLow) and not na(bottomZoneHigh)
 int bottomAnchorAgeBars = not na(todayStructLowBar) ? bar_index - todayStructLowBar : 0
 float bottomPullbackAtr = not na(todayStructLow) and not na(highSinceStructLow) ? (highSinceStructLow - todayStructLow) / atr : na
-bool bottomAnchorReady = bottomAnchorAgeBars >= probeMinAnchorAgeBars and bottomPullbackAtr >= probeMinPullbackAtr
-bool bottomRetestBand = not na(todayStructLow) and low <= todayStructLow + atr * probeRetestBandAtr and high >= todayStructLow - atr * probeRetestBandAtr
-bool bottomFirstExhaustion = strongBottomProbeZone and not bottomExhaustionUsed and bottomPullbackAtr >= dayStructMinReversalAtr and close > todayStructLow
+bool bottomAnchorReady = bottomAnchorAgeBars >= probeMinAnchorAgeBars and bottomPullbackAtr >= math.max(probeMinPullbackAtr, minMiddleSwingAtr)
+bool bottomRetestBand = not na(bottomZoneLow) and not na(bottomZoneHigh) and low <= bottomZoneHigh + atr * probeRetestBandAtr and high >= bottomZoneLow - atr * probeRetestBandAtr
+bool bottomFirstExhaustion = strongBottomProbeZone and not bottomExhaustionUsed and bottomPullbackAtr >= minMiddleSwingAtr and close > bottomZoneHigh
 bool bottomRightShoulder = strongBottomProbeZone and bottomAnchorReady and bottomRetestBand
 string bottomProbePattern = bottomRightShoulder ? "retest_2b_bottom" : bottomFirstExhaustion ? "extension_exhaustion_bottom" : "none"
 float bottomPredictEntry = strongBottomProbeZone ? bottomZoneLow + atr * predictiveEntryOffsetAtr : na
 float bottomPredictStop = strongBottomProbeZone ? bottomZoneLow - invalidationBuffer : na
-bool bottomSignalGapOk = (na(lastBottomProbeSignalBar) or bar_index - lastBottomProbeSignalBar >= probeMinSignalGapBars) and (na(lastBottomProbeSignalPrice) or math.abs(bottomPredictEntry - lastBottomProbeSignalPrice) >= atr * probeMinSignalGapAtr)
-bool bottomSweepFailed = confirmed and bottomRightShoulder and low < todayStructLow - tickBuffer and close > todayStructLow
-float bottomConfirmEntry = bottomSweepFailed ? math.min(close, todayStructLow + atr * predictiveEntryOffsetAtr) : na
-float bottomConfirmStop = bottomSweepFailed ? low - invalidationBuffer : na
+float bottomSignalDistanceAtr = not na(lastBottomProbeSignalPrice) and atr > 0.0 ? math.abs(bottomPredictEntry - lastBottomProbeSignalPrice) / atr : na
+bool bottomSignalBarsOk = na(lastBottomProbeSignalBar) or bar_index - lastBottomProbeSignalBar >= probeMinSignalGapBars
+bool bottomSignalPriceGapOk = na(bottomSignalDistanceAtr) or bottomSignalDistanceAtr >= minSameSideSignalSeparationAtr
+bool bottomSignalGapOk = bottomSignalBarsOk and bottomSignalPriceGapOk
+bool bottomSweepFailed = confirmed and bottomRightShoulder and low < bottomZoneLow - tickBuffer and close > bottomZoneLow + atr * failedBreakCloseBackAtr
+float bottomConfirmEntry = bottomSweepFailed ? math.min(close, bottomZoneHigh + atr * predictiveEntryOffsetAtr) : na
+float bottomConfirmStop = bottomSweepFailed ? math.min(low, bottomZoneLow) - invalidationBuffer : na
 bool bottomPredictContext = (bottomFirstExhaustion or bottomRightShoulder) and bottomCounterTrendAllowed and bottomPredictEntry <= close and close - bottomPredictEntry <= atr * predictionArmDistanceAtr and bottomSignalGapOk
 bool bottomConfirmContext = bottomSweepFailed and bottomCounterTrendAllowed and bottomSignalGapOk
 float bottomPredictQty = calcTrialQty(bottomPredictEntry, bottomPredictStop, predictiveMaxRiskDollars)
 float bottomConfirmQty = calcTrialQty(bottomConfirmEntry, bottomConfirmStop, confirmedMaxRiskDollars)
 bool bottomPredictAllowed = bottomPredictContext and smallStopTrialAllowed(bottomPredictEntry, bottomPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and bottomPredictQty >= 1.0
 bool bottomConfirmAllowed = bottomConfirmContext and smallStopTrialAllowed(bottomConfirmEntry, bottomConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and bottomConfirmQty >= 1.0
-string bottomProbeFilterReason = na(todayStructLow) ? "no_today_struct_low" : not strongBottomProbeZone ? "no_clear_structure" : not (bottomFirstExhaustion or bottomRightShoulder) ? (not bottomAnchorReady ? "anchor_too_fresh_or_no_pullback" : "not_retest_zone") : not bottomSignalGapOk ? "too_close" : "passed"
+string bottomProbeFilterReason = na(todayStructLow) ? "no_today_struct_low" : not strongBottomProbeZone ? "no_clear_structure" : not (bottomFirstExhaustion or bottomRightShoulder) ? (not bottomAnchorReady ? "anchor_too_fresh_or_no_pullback" : "not_retest_zone") : not bottomSignalBarsOk ? "signal_bars_too_close" : not bottomSignalPriceGapOk ? "micro_structure_too_close" : "passed"
 
 bool longActionable = trendLongConfirmAllowed or bottomConfirmAllowed or trendLongPredictAllowed or bottomPredictAllowed
 bool shortActionable = trendShortConfirmAllowed or topConfirmAllowed or trendShortPredictAllowed or topPredictAllowed
@@ -615,7 +664,6 @@ string selectedTrendStructPattern = selectedSetup == "trend_support_long" ? "HH_
 string selectedTrendSources = selectedSetup == "trend_support_long" ? trendSupportSources : selectedSetup == "trend_resistance_short" ? trendResistanceSources : "none"
 string selectedMainReason = selectedSetup == "trend_support_long" ? "clear_bull_HH_HL_pullback_to_today_HL" : selectedSetup == "trend_resistance_short" ? "clear_bear_LL_LH_rebound_to_today_LH" : selectedSetup == "probe_2b_top_short" ? "today_struct_high_probe_failed_breakout" : selectedSetup == "probe_2b_bottom_long" ? "today_struct_low_probe_failed_breakout" : "none"
 string selectedSecondaryReason = selectedSetup == "trend_support_long" ? trendSupportSources : selectedSetup == "trend_resistance_short" ? trendResistanceSources : selectedSetup == "probe_2b_top_short" ? topSources : selectedSetup == "probe_2b_bottom_long" ? bottomSources : "none"
-string selectedBlockReason = selectedDirection == 0 ? "no_candidate" : not selectedStructureClear ? "no_clear_structure" : not selectedSmallStopGatePassed ? selectedSmallStopGateReason : not selectedExpectedRPassed ? "expected_r_too_small" : "passed"
 
 // -----------------------------------------------------------------------------
 // Order state shared by payload builders and lifecycle.
@@ -656,11 +704,14 @@ fmtSignedRCore(float value) =>
 exitReasonDisplayNameCore(string reason) =>
     reason == "take_profit" ? "TP" : reason == "runner_stop" ? "Runner" : reason == "stop_loss" ? "SL" : reason == "force_flat_eod" ? "EOD" : reason == "strategy_closed" ? "Closed" : reason
 
+entryOrderComment(int direction, float entryPrice, float qty, float stopPrice, float targetPrice, float runnerPrice) =>
+    (direction == 1 ? "Long" : "Short") + " plan " + fmt(entryPrice) + " qty " + str.tostring(qty, "#") + " SL " + fmt(stopPrice) + " TP " + fmt(targetPrice) + " Runner " + fmt(runnerPrice)
+
 exitOrderComment(string reason, float exitPrice) =>
     float pnlPerShare = activeDirection == 1 ? exitPrice - activeEntry : activeEntry - exitPrice
     float pnlValue = pnlPerShare * activeQty
     float pnlR = activeInitialRisk > 0.0 ? pnlPerShare / activeInitialRisk : na
-    exitReasonDisplayNameCore(reason) + " " + fmtSignedMoneyCore(pnlValue) + " / " + fmtSignedRCore(pnlR)
+    exitReasonDisplayNameCore(reason) + " " + fmtSignedMoneyCore(pnlValue) + " / " + fmtSignedRCore(pnlR) + " exit " + fmt(exitPrice) + " entry " + fmt(activeEntry) + " SL " + fmt(activeStop) + " TP " + fmt(activeTarget)
 
 // -----------------------------------------------------------------------------
 // Payload builders
@@ -880,7 +931,12 @@ if pendingCancelNow
     activeSignalBar := na
     activeExpiresBar := na
 
-bool selectedPlanValid = selectedDirection != 0 and selectedStructureClear and selectedSmallStopGatePassed and selectedExpectedRPassed and selectedQty >= 1.0 and not eodTimeReached and inTradingSession and inEntryWindow
+bool selectedPendingUpgrade = pendingEntry and selectedDirection == activeDirection and activeEntryIntent == "predictive_limit" and selectedEntryIntent == "confirmed_limit" and selectedSetup == activeSetup
+float selectedLastSameSidePlanPrice = selectedDirection == 1 ? lastLongPlanPrice : selectedDirection == -1 ? lastShortPlanPrice : na
+float selectedSameSideSignalDistanceAtr = not na(selectedLastSameSidePlanPrice) and atr > 0.0 ? math.abs(selectedEntry - selectedLastSameSidePlanPrice) / atr : na
+bool selectedSameSideSignalFarEnough = selectedDirection == 0 or selectedPendingUpgrade or na(selectedSameSideSignalDistanceAtr) or selectedSameSideSignalDistanceAtr >= minSameSideSignalSeparationAtr
+bool selectedPlanValid = selectedDirection != 0 and selectedStructureClear and selectedSmallStopGatePassed and selectedExpectedRPassed and selectedSameSideSignalFarEnough and selectedQty >= 1.0 and not eodTimeReached and inTradingSession and inEntryWindow
+string selectedBlockReason = selectedDirection == 0 ? "no_candidate" : not selectedStructureClear ? "no_clear_structure" : not selectedSameSideSignalFarEnough ? "micro_structure_too_close" : not selectedSmallStopGatePassed ? selectedSmallStopGateReason : not selectedExpectedRPassed ? "expected_r_too_small" : "passed"
 bool meaningfulPlanMove = math.abs(nz(activeEntry, selectedEntry) - selectedEntry) >= atr * planReplaceMinMoveAtr or math.abs(nz(activeStop, selectedStop) - selectedStop) >= atr * planReplaceMinMoveAtr or math.abs(nz(activeStructureAnchor, selectedStructureAnchor) - selectedStructureAnchor) >= atr * planReplaceMinMoveAtr
 bool pendingSameDirectionReplace = pendingEntry and selectedPlanValid and selectedDirection == activeDirection and (activeEntryIntent == "predictive_limit" and selectedEntryIntent == "confirmed_limit" or activeSetup != selectedSetup or meaningfulPlanMove)
 bool submitFreshPlan = confirmed and selectedPlanValid and flatByStrategy and not pendingEntry
@@ -926,10 +982,10 @@ if submitNewPlan
     activeMfeR := 0.0
     activeRiskUpdateSeq := 0
     if selectedDirection == 1
-        strategy.entry("TV-L", strategy.long, qty=selectedQty, limit=selectedEntry)
+        strategy.entry("TV-L", strategy.long, qty=selectedQty, limit=selectedEntry, comment=entryOrderComment(selectedDirection, selectedEntry, selectedQty, selectedStop, selectedTarget, selectedRunnerActivation))
         strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment_profit=exitOrderComment("take_profit", activeTarget), comment_loss=exitOrderComment("stop_loss", activeStop))
     if selectedDirection == -1
-        strategy.entry("TV-S", strategy.short, qty=selectedQty, limit=selectedEntry)
+        strategy.entry("TV-S", strategy.short, qty=selectedQty, limit=selectedEntry, comment=entryOrderComment(selectedDirection, selectedEntry, selectedQty, selectedStop, selectedTarget, selectedRunnerActivation))
         strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment_profit=exitOrderComment("take_profit", activeTarget), comment_loss=exitOrderComment("stop_loss", activeStop))
     if enableAlerts
         string reason = selectedEntryIntent == "predictive_limit" ? "predictive_small_stop_trial" : "confirmed_small_stop_trial"
@@ -942,6 +998,10 @@ if submitNewPlan
         lastBottomProbeSignalBar := bar_index
         lastBottomProbeSignalPrice := selectedEntry
         bottomExhaustionUsed := selectedProbePattern == "extension_exhaustion_bottom" ? true : bottomExhaustionUsed
+    if selectedDirection == 1
+        lastLongPlanPrice := selectedEntry
+    if selectedDirection == -1
+        lastShortPlanPrice := selectedEntry
 
 // Active position risk management.
 if confirmed and activePosition and hasOpenStrategyPosition
@@ -986,7 +1046,7 @@ if confirmed and activePosition and hasOpenStrategyPosition
         strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment_profit=exitOrderComment("take_profit", activeTarget), comment_loss=exitOrderComment(activeRunnerActive and activeStop < activeEntry ? "runner_stop" : "stop_loss", activeStop))
 
 if confirmed and activePosition and eodTimeReached and hasOpenStrategyPosition
-    strategy.close(orderIdForDirection(activeDirection), comment="force_flat_eod")
+    strategy.close(orderIdForDirection(activeDirection), comment=exitOrderComment("force_flat_eod", close))
 
 bool positionClosedNow = activePosition and flatByStrategy and not pendingEntry and not na(activeEntryBar) and bar_index > activeEntryBar
 if confirmed and positionClosedNow
