@@ -637,6 +637,15 @@ class TvPrimaryIngestTests(unittest.TestCase):
                 "probe_anchor_price": None,
                 "probe_anchor_age_bars": None,
                 "probe_pullback_atr": None,
+                "probe_retest_gap_bars": None,
+                "visual_left_leg_bps": None,
+                "visual_middle_retrace_ratio": None,
+                "visual_right_retest_ratio": None,
+                "volume_ratio": 0.82,
+                "volume_reason": "low_volume_retest_ok",
+                "close_position": 0.58,
+                "volume_attack_up": False,
+                "volume_attack_down": False,
                 "today_struct_high": 124.20,
                 "today_struct_low": 121.95,
                 "prediction_level": 121.95,
@@ -691,6 +700,15 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertIsNone(saved["extra"].get("probe_anchor_price"))
         self.assertIsNone(saved["extra"].get("probe_anchor_age_bars"))
         self.assertIsNone(saved["extra"].get("probe_pullback_atr"))
+        self.assertIsNone(saved["extra"].get("probe_retest_gap_bars"))
+        self.assertIsNone(saved["extra"].get("visual_left_leg_bps"))
+        self.assertIsNone(saved["extra"].get("visual_middle_retrace_ratio"))
+        self.assertIsNone(saved["extra"].get("visual_right_retest_ratio"))
+        self.assertEqual(saved["extra"]["volume_ratio"], 0.82)
+        self.assertEqual(saved["extra"]["volume_reason"], "low_volume_retest_ok")
+        self.assertEqual(saved["extra"]["close_position"], 0.58)
+        self.assertFalse(saved["extra"]["volume_attack_up"])
+        self.assertFalse(saved["extra"]["volume_attack_down"])
         self.assertEqual(saved["extra"]["today_struct_high"], 124.20)
         self.assertEqual(saved["extra"]["today_struct_low"], 121.95)
         self.assertEqual(saved["extra"]["prediction_level"], 121.95)

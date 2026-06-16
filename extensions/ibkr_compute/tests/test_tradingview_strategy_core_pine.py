@@ -119,6 +119,10 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
             self.assertIn('minVisualMiddleRetraceRatio = input.float(0.35, "Visual middle retrace ratio"', text)
             self.assertIn('minVisualRightRetestRatio = input.float(0.65, "Visual right retest ratio"', text)
             self.assertIn('minVisualLegBps = input.float(12.0, "Visual min leg (bps)"', text)
+            self.assertIn('volumeMaLen = input.int(20, "Volume MA length"', text)
+            self.assertIn('highAttackVolumeMult = input.float(1.35, "High attack volume (x MA)"', text)
+            self.assertIn('lowRetestVolumeMult = input.float(0.95, "Low retest volume (x MA)"', text)
+            self.assertIn('attackClosePosThreshold = input.float(0.65, "Attack close position"', text)
             self.assertIn('minSameSideSignalSeparationAtr = input.float(1.20, "Same-side signal separation (x ATR)"', text)
             self.assertIn('failedBreakCloseBackAtr = input.float(0.10, "Failed break close-back (x ATR)"', text)
             self.assertIn('todayStructHighZoneLow', text)
@@ -129,9 +133,16 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
             self.assertIn('highSinceStructLowBar', text)
             self.assertIn('visualLegBps(float legValue, float basisPrice) =>', text)
             self.assertIn('visualLegRatio(float numerator, float denominator) =>', text)
+            self.assertIn('volumeRatio = not na(volumeMa) and volumeMa > 0.0 ? barVolume / volumeMa : 1.0', text)
+            self.assertIn('volumeAttackUp = volumeExpanded and close > open and closePosition >= attackClosePosThreshold', text)
+            self.assertIn('volumeAttackDown = volumeExpanded and close < open and closePosition <= 1.0 - attackClosePosThreshold', text)
             self.assertIn('"left_leg_too_small"', text)
             self.assertIn('"middle_leg_too_small"', text)
             self.assertIn('"right_retest_too_small"', text)
+            self.assertIn('"volume_attack_up_no_short"', text)
+            self.assertIn('"volume_attack_down_no_long"', text)
+            self.assertIn('"low_volume_retest_ok"', text)
+            self.assertIn('"high_volume_failed_break_ok"', text)
             self.assertIn('"retest_too_slow"', text)
             self.assertIn('"micro_structure_too_close"', text)
 
@@ -148,6 +159,11 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertIn('topRightRetestReady = topMiddleSwingReady and topRightRetestRatio >= minVisualRightRetestRatio', source)
         self.assertIn('topRetestFastEnough = topRightRetestReady and bar_index > lowSinceStructHighBar and bar_index - lowSinceStructHighBar <= maxRetestAfterMiddleSwingBars', source)
         self.assertIn('topAnchorReady = topAnchorAgeBars >= probeMinAnchorAgeBars and topRetestFastEnough', source)
+        self.assertIn('topHighVolumeFailedBreak = topSweepFailed and volumeExpanded', source)
+        self.assertIn('topPredictVolumeOk = not volumeAttackUp', source)
+        self.assertIn('topConfirmVolumeOk = topHighVolumeFailedBreak or not volumeAttackUp', source)
+        self.assertIn('topPredictContext = (topFirstExhaustion or topRightShoulder) and topCounterTrendAllowed and topPredictEntry >= close and topPredictEntry - close <= atr * predictionArmDistanceAtr and topSignalGapOk and topPredictVolumeOk', source)
+        self.assertIn('topConfirmContext = topSweepFailed and topCounterTrendAllowed and topSignalGapOk and topConfirmVolumeOk', source)
         self.assertIn('bottomLeftLegBps = visualLegBps(bottomLeftLeg, todayStructLow)', source)
         self.assertIn('bottomMiddleRetraceRatio = visualLegRatio(bottomMiddleLeg, bottomLeftLeg)', source)
         self.assertIn('bottomRightRetestRatio = visualLegRatio(bottomRightLeg, bottomMiddleLeg)', source)
@@ -155,6 +171,11 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertIn('bottomRightRetestReady = bottomMiddleSwingReady and bottomRightRetestRatio >= minVisualRightRetestRatio', source)
         self.assertIn('bottomRetestFastEnough = bottomRightRetestReady and bar_index > highSinceStructLowBar and bar_index - highSinceStructLowBar <= maxRetestAfterMiddleSwingBars', source)
         self.assertIn('bottomAnchorReady = bottomAnchorAgeBars >= probeMinAnchorAgeBars and bottomRetestFastEnough', source)
+        self.assertIn('bottomHighVolumeFailedBreak = bottomSweepFailed and volumeExpanded', source)
+        self.assertIn('bottomPredictVolumeOk = not volumeAttackDown', source)
+        self.assertIn('bottomConfirmVolumeOk = bottomHighVolumeFailedBreak or not volumeAttackDown', source)
+        self.assertIn('bottomPredictContext = (bottomFirstExhaustion or bottomRightShoulder) and bottomCounterTrendAllowed and bottomPredictEntry <= close and close - bottomPredictEntry <= atr * predictionArmDistanceAtr and bottomSignalGapOk and bottomPredictVolumeOk', source)
+        self.assertIn('bottomConfirmContext = bottomSweepFailed and bottomCounterTrendAllowed and bottomSignalGapOk and bottomConfirmVolumeOk', source)
         self.assertIn('selectedSameSideSignalFarEnough', source)
         self.assertIn('probeMinAnchorAgeBars = input.int(6, "Probe min anchor age bars"', source)
         self.assertIn('probeMinPullbackAtr = input.float(0.80, "Probe min pullback (x ATR)"', source)
@@ -187,6 +208,15 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
             'jsonStr("trend_struct_pattern", selectedTrendStructPattern)',
             'jsonStr("probe_pattern", selectedProbePattern)',
             'jsonStr("probe_filter_reason", selectedProbeFilterReason)',
+            'jsonNum("probe_retest_gap_bars", selectedProbeRetestGapBars)',
+            'jsonNum("visual_left_leg_bps", selectedProbeLeftLegBps)',
+            'jsonNum("visual_middle_retrace_ratio", selectedProbeMiddleRatio)',
+            'jsonNum("visual_right_retest_ratio", selectedProbeRightRatio)',
+            'jsonNum("volume_ratio", selectedVolumeRatio)',
+            'jsonStr("volume_reason", selectedVolumeReason)',
+            'jsonNum("close_position", selectedClosePosition)',
+            'jsonBool("volume_attack_up", volumeAttackUp)',
+            'jsonBool("volume_attack_down", volumeAttackDown)',
             'jsonNum("today_struct_high", todayStructHigh)',
             'jsonNum("today_struct_low", todayStructLow)',
             'jsonBool("small_stop_gate_passed", selectedSmallStopGatePassed)',
@@ -299,6 +329,12 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertIn('selectedProbeLeftLegBps', display)
         self.assertIn('selectedProbeMiddleRatio', display)
         self.assertIn('selectedProbeRightRatio', display)
+        self.assertIn('selectedVolumeReason', display)
+        self.assertIn('selectedVolumeRatio', display)
+        self.assertIn('量能 vol/MA " + fmt(selectedVolumeRatio)', display)
+        self.assertIn('volumeBlockedTop', display)
+        self.assertIn('volumeBlockedBottom', display)
+        self.assertIn('放量攻击未失败，不做预测逆向', display)
         self.assertIn('"\\n三段结构 L" + fmt(selectedProbeLeftLegBps)', display)
         self.assertIn('str.tostring(maxRetestAfterMiddleSwingBars)', display)
         self.assertIn('同向距离 " + fmt(selectedSameSideSignalDistanceAtr)', display)

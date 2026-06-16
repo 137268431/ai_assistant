@@ -40,6 +40,10 @@ maxRetestAfterMiddleSwingBars = input.int(12, "Max bars after middle swing retes
 minVisualMiddleRetraceRatio = input.float(0.35, "Visual middle retrace ratio", step=0.05, minval=0.05, maxval=0.95, group="01 Structure")
 minVisualRightRetestRatio = input.float(0.65, "Visual right retest ratio", step=0.05, minval=0.10, maxval=1.50, group="01 Structure")
 minVisualLegBps = input.float(12.0, "Visual min leg (bps)", step=1.0, minval=1.0, maxval=500.0, group="01 Structure")
+volumeMaLen = input.int(20, "Volume MA length", minval=1, maxval=200, group="01 Structure")
+highAttackVolumeMult = input.float(1.35, "High attack volume (x MA)", step=0.05, minval=0.50, maxval=5.0, group="01 Structure")
+lowRetestVolumeMult = input.float(0.95, "Low retest volume (x MA)", step=0.05, minval=0.10, maxval=2.0, group="01 Structure")
+attackClosePosThreshold = input.float(0.65, "Attack close position", step=0.05, minval=0.50, maxval=0.95, group="01 Structure")
 minSameSideSignalSeparationAtr = input.float(1.20, "Same-side signal separation (x ATR)", step=0.05, minval=0.10, maxval=8.0, group="01 Structure")
 failedBreakCloseBackAtr = input.float(0.10, "Failed break close-back (x ATR)", step=0.05, minval=0.0, maxval=2.0, group="01 Structure")
 planReplaceMinMoveAtr = input.float(0.25, "Plan replace min move (x ATR)", step=0.05, minval=0.05, maxval=5.0, group="01 Structure")
@@ -88,6 +92,15 @@ float atrRaw = ta.atr(atrLength)
 float atr = math.max(nz(atrRaw, syminfo.mintick), syminfo.mintick)
 float tickBuffer = syminfo.mintick * 2.0
 float invalidationBuffer = math.max(tickBuffer, atr * stopBufferAtr)
+float barRange = math.max(high - low, syminfo.mintick)
+float closePosition = (close - low) / barRange
+float volumeMa = ta.sma(volume, volumeMaLen)
+float barVolume = na(volume) ? nz(volumeMa, 0.0) : volume
+float volumeRatio = not na(volumeMa) and volumeMa > 0.0 ? barVolume / volumeMa : 1.0
+bool volumeExpanded = volumeRatio >= highAttackVolumeMult
+bool volumeQuietRetest = volumeRatio <= lowRetestVolumeMult
+bool volumeAttackUp = volumeExpanded and close > open and closePosition >= attackClosePosThreshold
+bool volumeAttackDown = volumeExpanded and close < open and closePosition <= 1.0 - attackClosePosThreshold
 
 fmt(float value) =>
     str.tostring(value, "#.########")
@@ -603,15 +616,19 @@ bool topSignalBarsOk = na(lastTopProbeSignalBar) or bar_index - lastTopProbeSign
 bool topSignalPriceGapOk = na(topSignalDistanceAtr) or topSignalDistanceAtr >= minSameSideSignalSeparationAtr
 bool topSignalGapOk = topSignalBarsOk and topSignalPriceGapOk
 bool topSweepFailed = confirmed and topRightShoulder and high > topZoneHigh + tickBuffer and close < topZoneHigh - atr * failedBreakCloseBackAtr
+bool topHighVolumeFailedBreak = topSweepFailed and volumeExpanded
+bool topPredictVolumeOk = not volumeAttackUp
+bool topConfirmVolumeOk = topHighVolumeFailedBreak or not volumeAttackUp
+string topVolumeReason = topHighVolumeFailedBreak ? "high_volume_failed_break_ok" : volumeAttackUp ? "volume_attack_up_no_short" : volumeQuietRetest ? "low_volume_retest_ok" : "normal_volume_retest_ok"
 float topConfirmEntry = topSweepFailed ? math.max(close, topZoneLow - atr * predictiveEntryOffsetAtr) : na
 float topConfirmStop = topSweepFailed ? math.max(high, topZoneHigh) + invalidationBuffer : na
-bool topPredictContext = (topFirstExhaustion or topRightShoulder) and topCounterTrendAllowed and topPredictEntry >= close and topPredictEntry - close <= atr * predictionArmDistanceAtr and topSignalGapOk
-bool topConfirmContext = topSweepFailed and topCounterTrendAllowed and topSignalGapOk
+bool topPredictContext = (topFirstExhaustion or topRightShoulder) and topCounterTrendAllowed and topPredictEntry >= close and topPredictEntry - close <= atr * predictionArmDistanceAtr and topSignalGapOk and topPredictVolumeOk
+bool topConfirmContext = topSweepFailed and topCounterTrendAllowed and topSignalGapOk and topConfirmVolumeOk
 float topPredictQty = calcTrialQty(topPredictEntry, topPredictStop, predictiveMaxRiskDollars)
 float topConfirmQty = calcTrialQty(topConfirmEntry, topConfirmStop, confirmedMaxRiskDollars)
 bool topPredictAllowed = topPredictContext and smallStopTrialAllowed(topPredictEntry, topPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and topPredictQty >= 1.0
 bool topConfirmAllowed = topConfirmContext and smallStopTrialAllowed(topConfirmEntry, topConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and topConfirmQty >= 1.0
-string topProbeFilterReason = na(todayStructHigh) ? "no_today_struct_high" : not strongTopProbeZone ? "no_clear_structure" : topAnchorAgeBars < probeMinAnchorAgeBars ? "anchor_too_fresh" : not topVisualLeftOk ? "left_leg_too_small" : not topMiddleSwingReady ? "middle_leg_too_small" : not topRightRetestReady ? "right_retest_too_small" : not topRetestFastEnough ? "retest_too_slow" : not topRetestBand ? "not_retest_zone" : not topSignalBarsOk ? "signal_bars_too_close" : not topSignalPriceGapOk ? "micro_structure_too_close" : "passed"
+string topProbeFilterReason = na(todayStructHigh) ? "no_today_struct_high" : not strongTopProbeZone ? "no_clear_structure" : topAnchorAgeBars < probeMinAnchorAgeBars ? "anchor_too_fresh" : not topVisualLeftOk ? "left_leg_too_small" : not topMiddleSwingReady ? "middle_leg_too_small" : not topRightRetestReady ? "right_retest_too_small" : not topRetestFastEnough ? "retest_too_slow" : not topRetestBand ? "not_retest_zone" : not topPredictVolumeOk and not topSweepFailed ? "volume_attack_up_no_short" : not topSignalBarsOk ? "signal_bars_too_close" : not topSignalPriceGapOk ? "micro_structure_too_close" : "passed"
 
 float bottomBasis = todayStructLow
 float bottomZoneLow = na(todayStructLowZoneLow) ? todayStructLow : todayStructLowZoneLow
@@ -667,15 +684,19 @@ bool bottomSignalBarsOk = na(lastBottomProbeSignalBar) or bar_index - lastBottom
 bool bottomSignalPriceGapOk = na(bottomSignalDistanceAtr) or bottomSignalDistanceAtr >= minSameSideSignalSeparationAtr
 bool bottomSignalGapOk = bottomSignalBarsOk and bottomSignalPriceGapOk
 bool bottomSweepFailed = confirmed and bottomRightShoulder and low < bottomZoneLow - tickBuffer and close > bottomZoneLow + atr * failedBreakCloseBackAtr
+bool bottomHighVolumeFailedBreak = bottomSweepFailed and volumeExpanded
+bool bottomPredictVolumeOk = not volumeAttackDown
+bool bottomConfirmVolumeOk = bottomHighVolumeFailedBreak or not volumeAttackDown
+string bottomVolumeReason = bottomHighVolumeFailedBreak ? "high_volume_failed_break_ok" : volumeAttackDown ? "volume_attack_down_no_long" : volumeQuietRetest ? "low_volume_retest_ok" : "normal_volume_retest_ok"
 float bottomConfirmEntry = bottomSweepFailed ? math.min(close, bottomZoneHigh + atr * predictiveEntryOffsetAtr) : na
 float bottomConfirmStop = bottomSweepFailed ? math.min(low, bottomZoneLow) - invalidationBuffer : na
-bool bottomPredictContext = (bottomFirstExhaustion or bottomRightShoulder) and bottomCounterTrendAllowed and bottomPredictEntry <= close and close - bottomPredictEntry <= atr * predictionArmDistanceAtr and bottomSignalGapOk
-bool bottomConfirmContext = bottomSweepFailed and bottomCounterTrendAllowed and bottomSignalGapOk
+bool bottomPredictContext = (bottomFirstExhaustion or bottomRightShoulder) and bottomCounterTrendAllowed and bottomPredictEntry <= close and close - bottomPredictEntry <= atr * predictionArmDistanceAtr and bottomSignalGapOk and bottomPredictVolumeOk
+bool bottomConfirmContext = bottomSweepFailed and bottomCounterTrendAllowed and bottomSignalGapOk and bottomConfirmVolumeOk
 float bottomPredictQty = calcTrialQty(bottomPredictEntry, bottomPredictStop, predictiveMaxRiskDollars)
 float bottomConfirmQty = calcTrialQty(bottomConfirmEntry, bottomConfirmStop, confirmedMaxRiskDollars)
 bool bottomPredictAllowed = bottomPredictContext and smallStopTrialAllowed(bottomPredictEntry, bottomPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and bottomPredictQty >= 1.0
 bool bottomConfirmAllowed = bottomConfirmContext and smallStopTrialAllowed(bottomConfirmEntry, bottomConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and bottomConfirmQty >= 1.0
-string bottomProbeFilterReason = na(todayStructLow) ? "no_today_struct_low" : not strongBottomProbeZone ? "no_clear_structure" : bottomAnchorAgeBars < probeMinAnchorAgeBars ? "anchor_too_fresh" : not bottomVisualLeftOk ? "left_leg_too_small" : not bottomMiddleSwingReady ? "middle_leg_too_small" : not bottomRightRetestReady ? "right_retest_too_small" : not bottomRetestFastEnough ? "retest_too_slow" : not bottomRetestBand ? "not_retest_zone" : not bottomSignalBarsOk ? "signal_bars_too_close" : not bottomSignalPriceGapOk ? "micro_structure_too_close" : "passed"
+string bottomProbeFilterReason = na(todayStructLow) ? "no_today_struct_low" : not strongBottomProbeZone ? "no_clear_structure" : bottomAnchorAgeBars < probeMinAnchorAgeBars ? "anchor_too_fresh" : not bottomVisualLeftOk ? "left_leg_too_small" : not bottomMiddleSwingReady ? "middle_leg_too_small" : not bottomRightRetestReady ? "right_retest_too_small" : not bottomRetestFastEnough ? "retest_too_slow" : not bottomRetestBand ? "not_retest_zone" : not bottomPredictVolumeOk and not bottomSweepFailed ? "volume_attack_down_no_long" : not bottomSignalBarsOk ? "signal_bars_too_close" : not bottomSignalPriceGapOk ? "micro_structure_too_close" : "passed"
 
 bool longActionable = trendLongConfirmAllowed or bottomConfirmAllowed or trendLongPredictAllowed or bottomPredictAllowed
 bool shortActionable = trendShortConfirmAllowed or topConfirmAllowed or trendShortPredictAllowed or topPredictAllowed
@@ -713,6 +734,13 @@ string selectedProbePattern = selectedSetup == "probe_2b_top_short" ? topProbePa
 string selectedProbeFilterReason = selectedSetup == "probe_2b_top_short" ? topProbeFilterReason : selectedSetup == "probe_2b_bottom_long" ? bottomProbeFilterReason : "none"
 float selectedProbeAnchorAgeBars = selectedSetup == "probe_2b_top_short" ? topAnchorAgeBars * 1.0 : selectedSetup == "probe_2b_bottom_long" ? bottomAnchorAgeBars * 1.0 : na
 float selectedProbePullbackAtr = selectedSetup == "probe_2b_top_short" ? topPullbackAtr : selectedSetup == "probe_2b_bottom_long" ? bottomPullbackAtr : na
+float selectedProbeRetestGapBars = selectedSetup == "probe_2b_top_short" and not na(lowSinceStructHighBar) ? (bar_index - lowSinceStructHighBar) * 1.0 : selectedSetup == "probe_2b_bottom_long" and not na(highSinceStructLowBar) ? (bar_index - highSinceStructLowBar) * 1.0 : na
+float selectedProbeLeftLegBps = selectedSetup == "probe_2b_top_short" ? topLeftLegBps : selectedSetup == "probe_2b_bottom_long" ? bottomLeftLegBps : na
+float selectedProbeMiddleRatio = selectedSetup == "probe_2b_top_short" ? topMiddleRetraceRatio : selectedSetup == "probe_2b_bottom_long" ? bottomMiddleRetraceRatio : na
+float selectedProbeRightRatio = selectedSetup == "probe_2b_top_short" ? topRightRetestRatio : selectedSetup == "probe_2b_bottom_long" ? bottomRightRetestRatio : na
+string selectedVolumeReason = selectedSetup == "probe_2b_top_short" ? topVolumeReason : selectedSetup == "probe_2b_bottom_long" ? bottomVolumeReason : "none"
+float selectedVolumeRatio = selectedSetup == "probe_2b_top_short" or selectedSetup == "probe_2b_bottom_long" ? volumeRatio : na
+float selectedClosePosition = selectedSetup == "probe_2b_top_short" or selectedSetup == "probe_2b_bottom_long" ? closePosition : na
 float selectedProbeAnchorPrice = selectedSetup == "probe_2b_top_short" ? todayStructHigh : selectedSetup == "probe_2b_bottom_long" ? todayStructLow : na
 string trendStructDir = strongStructTrendLong ? "bull_HH_HL" : strongStructTrendShort ? "bear_LL_LH" : "none"
 string selectedTrendStructPattern = selectedSetup == "trend_support_long" ? "HH_HL" : selectedSetup == "trend_resistance_short" ? "LL_LH" : "none"
@@ -834,6 +862,15 @@ buildEntryPayload(string eventIdValue, string signalIdValue, string tradeGroupId
      jsonNum("probe_anchor_price", selectedProbeAnchorPrice) + "," +
      jsonNum("probe_anchor_age_bars", selectedProbeAnchorAgeBars) + "," +
      jsonNum("probe_pullback_atr", selectedProbePullbackAtr) + "," +
+     jsonNum("probe_retest_gap_bars", selectedProbeRetestGapBars) + "," +
+     jsonNum("visual_left_leg_bps", selectedProbeLeftLegBps) + "," +
+     jsonNum("visual_middle_retrace_ratio", selectedProbeMiddleRatio) + "," +
+     jsonNum("visual_right_retest_ratio", selectedProbeRightRatio) + "," +
+     jsonNum("volume_ratio", selectedVolumeRatio) + "," +
+     jsonStr("volume_reason", selectedVolumeReason) + "," +
+     jsonNum("close_position", selectedClosePosition) + "," +
+     jsonBool("volume_attack_up", volumeAttackUp) + "," +
+     jsonBool("volume_attack_down", volumeAttackDown) + "," +
      jsonNum("today_struct_high", todayStructHigh) + "," +
      jsonNum("today_struct_low", todayStructLow) + "," +
      jsonBool("small_stop_gate_passed", selectedSmallStopGatePassed) + "," +

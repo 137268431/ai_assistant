@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import requests
 
-from ibkr_compute.api.support.market_data_session import detect_market_data_session_conflict
+from ibkr_compute.api.support.market_data_session import (
+    DEFAULT_ACTIVE_CONFLICT_WINDOW_SEC,
+    DEFAULT_RECOVERY_QUOTE_FRESH_SEC,
+    detect_market_data_session_conflict,
+    record_market_data_session_conflict_state,
+)
 from ibkr_compute.market.pocketbase_sqlite import normalize_exchange_value
 from ibkr_compute.universe.target_execution import (
     signal_status_is_open,
@@ -1025,6 +1032,41 @@ class TradingServiceMarketUniverseTargetsMixin:
             ),
         )
 
+    def _market_data_session_conflict_active_window_sec(self) -> int:
+        service_mod = _service_mod()
+        return max(
+            60,
+            self.config.get_int_for_environment(
+                "ibkr_market_data_session_conflict_active_window_sec",
+                service_mod.DATA_ENVIRONMENT,
+                DEFAULT_ACTIVE_CONFLICT_WINDOW_SEC,
+            ),
+        )
+
+    def _market_data_session_conflict_recovery_quote_fresh_sec(self) -> int:
+        service_mod = _service_mod()
+        return max(
+            30,
+            self.config.get_int_for_environment(
+                "ibkr_market_data_session_conflict_recovery_quote_fresh_sec",
+                service_mod.DATA_ENVIRONMENT,
+                DEFAULT_RECOVERY_QUOTE_FRESH_SEC,
+            ),
+        )
+
+    def _market_data_session_conflict_recovery_resubscribe_enabled(self) -> bool:
+        service_mod = _service_mod()
+        getter = getattr(self.config, "get_bool_for_environment", None)
+        if callable(getter):
+            return bool(
+                getter(
+                    "ibkr_market_data_session_conflict_recovery_resubscribe_enabled",
+                    service_mod.DATA_ENVIRONMENT,
+                    True,
+                )
+            )
+        return True
+
     def _market_data_session_conflict_snapshot(self) -> dict:
         broker_status = {}
         status_getter = getattr(getattr(self, "broker", None), "status", None)
@@ -1033,7 +1075,110 @@ class TradingServiceMarketUniverseTargetsMixin:
                 broker_status = dict(status_getter() or {})
             except Exception:
                 _service_mod().logger.debug("Broker status unavailable for market data conflict check", exc_info=True)
-        return detect_market_data_session_conflict({"gateway": {"broker": broker_status}})
+        return detect_market_data_session_conflict(
+            {"gateway": {"broker": broker_status}},
+            active_window_sec=self._market_data_session_conflict_active_window_sec(),
+        )
+
+    def _market_data_session_conflict_runtime_snapshot(self) -> dict:
+        gateway_status = {}
+        gateway_status_getter = getattr(getattr(self, "gateway_manager", None), "status", None)
+        if callable(gateway_status_getter):
+            try:
+                gateway_status = dict(gateway_status_getter() or {})
+            except Exception:
+                _service_mod().logger.debug("Gateway status unavailable for market data conflict recovery", exc_info=True)
+        if not gateway_status:
+            broker_status = {}
+            broker_status_getter = getattr(getattr(self, "broker", None), "status", None)
+            if callable(broker_status_getter):
+                try:
+                    broker_status = dict(broker_status_getter() or {})
+                except Exception:
+                    broker_status = {}
+            gateway_status = {"running": True, "reachable": True, "broker": broker_status}
+        session_status = {}
+        session_status_getter = getattr(getattr(self, "session_keeper", None), "status", None)
+        if callable(session_status_getter):
+            try:
+                session_status = dict(session_status_getter() or {})
+            except Exception:
+                session_status = {}
+        if not session_status:
+            session_status = {"authenticated": bool(getattr(getattr(self, "session_keeper", None), "is_authenticated", False))}
+        websocket_status = {}
+        websocket_status_getter = getattr(getattr(self, "ws_client", None), "status", None)
+        if callable(websocket_status_getter):
+            try:
+                websocket_status = dict(websocket_status_getter() or {})
+            except Exception:
+                websocket_status = {}
+        realtime_quotes = {}
+        quote_status_getter = getattr(getattr(self, "realtime_quote_book", None), "status", None)
+        if callable(quote_status_getter):
+            try:
+                realtime_quotes = dict(quote_status_getter() or {})
+            except Exception:
+                realtime_quotes = {}
+        return {
+            "gateway": gateway_status,
+            "session": session_status,
+            "websocket": websocket_status,
+            "realtime_quotes": realtime_quotes,
+            "environment": _service_mod().ENVIRONMENT,
+            "data_environment": _service_mod().DATA_ENVIRONMENT,
+        }
+
+    def _repair_market_data_session_conflict_recovery(self, *, reason: str = "poll") -> list[str]:
+        if not self._market_data_session_conflict_recovery_resubscribe_enabled():
+            return []
+        service_mod = _service_mod()
+        state = record_market_data_session_conflict_state(
+            self,
+            self._market_data_session_conflict_runtime_snapshot(),
+            environment=service_mod.DATA_ENVIRONMENT,
+            active_window_sec=self._market_data_session_conflict_active_window_sec(),
+            recovery_quote_fresh_sec=self._market_data_session_conflict_recovery_quote_fresh_sec(),
+        )
+        if bool(state.get("active")) or str(state.get("recovery_action") or "") != "pending_resubscribe":
+            return []
+        resolved_at = str(state.get("resolved_at") or "")
+        if not resolved_at or str(state.get("resubscribe_resolved_at") or "") == resolved_at:
+            return []
+        resubscribed = self._force_resubscribe_active_market_data(
+            reason=f"market_data_session_conflict_resolved:{reason or 'poll'}"
+        )
+        now_iso = self._now_iso() if hasattr(self, "_now_iso") else datetime.now(timezone.utc).isoformat()
+        updated_state = {
+            **state,
+            "recovery_action": "resubscribed",
+            "resubscribed_count": len(resubscribed),
+            "resubscribed_at": now_iso,
+            "resubscribe_resolved_at": resolved_at,
+        }
+        setattr(self, "_market_data_session_conflict_state", dict(updated_state))
+        setattr(self, "_market_data_session_conflict_state_loaded", True)
+        try:
+            pb = getattr(self, "pb", None) or getattr(self, "pb_client", None)
+            upsert = getattr(pb, "upsert_state", None)
+            if callable(upsert):
+                try:
+                    upsert(
+                        "market_data_session_conflict",
+                        service_mod.DATA_ENVIRONMENT,
+                        updated_state,
+                        date="global",
+                    )
+                except TypeError:
+                    upsert("market_data_session_conflict", service_mod.DATA_ENVIRONMENT, updated_state, "global")
+        except Exception:
+            service_mod.logger.debug("Failed to persist market data conflict resubscribe state", exc_info=True)
+        service_mod.logger.warning(
+            "Market data session conflict resolved; forced resubscribe: reason=%s symbols=%s",
+            reason or "poll",
+            ",".join(resubscribed),
+        )
+        return resubscribed
 
     def _log_market_data_session_conflict_cooldown(self, *, reason: str, conflict: dict) -> None:
         now = time.time()
@@ -1381,6 +1526,7 @@ class TradingServiceMarketUniverseTargetsMixin:
                 self._sync_session_transition()
                 self._reset_for_new_market_day(force=False)
                 if self.session_keeper.is_authenticated:
+                    self._repair_market_data_session_conflict_recovery(reason="poll")
                     self._run_daily_scan_if_due(reason="poll")
                     self._refresh_target_subscriptions(reason="poll")
                     self._repair_silent_market_data_subscriptions(reason="poll")

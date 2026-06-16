@@ -50,9 +50,10 @@ class DummyConfig:
 
 
 class DummyQuoteBook:
-    def __init__(self, stale_quotes):
+    def __init__(self, stale_quotes, status=None):
         self.stale_quotes = list(stale_quotes)
         self.calls = []
+        self._status = dict(status or {})
 
     def get_stale_quotes(self, symbols=None, max_age_s=600):
         symbol_set = {str(symbol or "").strip().upper() for symbol in (symbols or [])}
@@ -62,6 +63,9 @@ class DummyQuoteBook:
             for item in self.stale_quotes
             if not symbol_set or str(item.get("symbol") or "").strip().upper() in symbol_set
         ]
+
+    def status(self):
+        return dict(self._status)
 
 
 class DummyWsClient:
@@ -86,8 +90,36 @@ class DummyBroker:
         return dict(self._status)
 
 
+class DummyStatePB:
+    def __init__(self):
+        self.states = {}
+        self.upserts = []
+        self.records = []
+
+    def get_state(self, state_key, environment, date="global"):
+        data = self.states.get((state_key, environment, date))
+        return {"data": dict(data)} if isinstance(data, dict) else None
+
+    def upsert_state(self, state_key, environment, data, date="global"):
+        payload = dict(data or {})
+        self.states[(state_key, environment, date)] = payload
+        self.upserts.append((state_key, environment, payload, date))
+        return {"data": payload}
+
+    def create_record(self, collection, payload):
+        self.records.append((collection, dict(payload or {})))
+        return {"id": f"{collection}-1", **dict(payload or {})}
+
+
 class DummyResubscribeUniverse(TradingServiceMarketUniverseMixin):
-    def __init__(self, stale_quotes=None, broker_status=None, ws_status=None, market_session_kind="regular"):
+    def __init__(
+        self,
+        stale_quotes=None,
+        broker_status=None,
+        ws_status=None,
+        quote_status=None,
+        market_session_kind="regular",
+    ):
         self.config = DummyConfig(
             {
                 "ibkr_realtime_quote_stale_resubscribe_sec": 600,
@@ -95,14 +127,21 @@ class DummyResubscribeUniverse(TradingServiceMarketUniverseMixin):
                 "ibkr_ws_silent_resubscribe_sec": 120,
                 "ibkr_ws_silent_resubscribe_late_session_sec": 600,
                 "ibkr_market_data_session_conflict_cooldown_sec": 900,
+                "ibkr_market_data_session_conflict_active_window_sec": 180,
+                "ibkr_market_data_session_conflict_recovery_quote_fresh_sec": 120,
+                "ibkr_market_data_session_conflict_recovery_resubscribe_enabled": True,
                 "ibkr_ws_resubscribe_batch_size": 8,
                 "ibkr_ws_resubscribe_gap_ms": 0,
             }
         )
-        self.realtime_quote_book = DummyQuoteBook(stale_quotes or [])
+        self.realtime_quote_book = DummyQuoteBook(stale_quotes or [], status=quote_status)
         self.ws_client = DummyWsClient(status=ws_status)
         self.broker = DummyBroker(status=broker_status) if broker_status is not None else None
-        self.session_keeper = types.SimpleNamespace(is_authenticated=True)
+        self.session_keeper = types.SimpleNamespace(
+            is_authenticated=True,
+            status=lambda: {"authenticated": True},
+        )
+        self.pb = DummyStatePB()
         self._quote_resubscribe_at = {}
         self._last_market_data_conflict_log_at = 0.0
         self._subscription_lock = threading.Lock()
@@ -117,6 +156,9 @@ class DummyResubscribeUniverse(TradingServiceMarketUniverseMixin):
 
     def _runtime_market_session_snapshot(self, _service_mod, refresh_ibkr_calendar=True):
         return {"kind": self._market_session_kind}
+
+    def _now_iso(self):
+        return "2026-06-16T09:33:00+00:00"
 
     def _normalize_symbol_list(self, values):
         normalized = []
@@ -777,6 +819,75 @@ class UniverseRealtimeQuoteResubscribeTest(unittest.TestCase):
 
         self.assertEqual(["SPY", "AAPL"], repaired)
         self.assertEqual([756733, 265598], universe.ws_client.resubscribed)
+
+    def test_market_data_conflict_recovery_force_resubscribes_once(self):
+        universe = DummyResubscribeUniverse(
+            broker_status={
+                "connected": True,
+                "ready": True,
+                "last_error_code": 10197,
+                "last_error": "No market data during competing live session",
+                "last_error_at": "2020-01-01T00:01:00+00:00",
+            },
+            ws_status={"connected": True, "ready": True, "subscribed_count": 2},
+            quote_status={
+                "total_quotes": 1,
+                "stale_quotes": 0,
+                "quotes": {"SPY": {"symbol": "SPY", "quote_age_s": 5.0}},
+            },
+        )
+        universe.pb.states[("market_data_session_conflict", "live", "global")] = {
+            "active": True,
+            "code": "market_data_session_conflict",
+            "first_seen_at": "2020-01-01T00:00:00+00:00",
+            "last_seen_at": "2020-01-01T00:01:00+00:00",
+            "last_error_at": "2020-01-01T00:01:00+00:00",
+            "count": 1,
+        }
+
+        repaired = universe._repair_market_data_session_conflict_recovery(reason="test")
+        repaired_again = universe._repair_market_data_session_conflict_recovery(reason="test")
+
+        self.assertEqual(["SPY", "AAPL"], repaired)
+        self.assertEqual([], repaired_again)
+        self.assertEqual([756733, 265598], universe.ws_client.resubscribed)
+        state = universe.pb.states[("market_data_session_conflict", "live", "global")]
+        self.assertFalse(state["active"])
+        self.assertEqual("resubscribed", state["recovery_action"])
+        self.assertEqual(2, state["resubscribed_count"])
+
+    def test_market_data_conflict_recovery_waits_for_fresh_quotes(self):
+        universe = DummyResubscribeUniverse(
+            broker_status={
+                "connected": True,
+                "ready": True,
+                "last_error_code": 10197,
+                "last_error": "No market data during competing live session",
+                "last_error_at": "2020-01-01T00:01:00+00:00",
+            },
+            ws_status={"connected": True, "ready": True, "subscribed_count": 2},
+            quote_status={
+                "total_quotes": 1,
+                "stale_quotes": 1,
+                "quotes": {"SPY": {"symbol": "SPY", "quote_age_s": 300.0}},
+            },
+        )
+        universe.pb.states[("market_data_session_conflict", "live", "global")] = {
+            "active": True,
+            "code": "market_data_session_conflict",
+            "first_seen_at": "2020-01-01T00:00:00+00:00",
+            "last_seen_at": "2020-01-01T00:01:00+00:00",
+            "last_error_at": "2020-01-01T00:01:00+00:00",
+            "count": 1,
+        }
+
+        repaired = universe._repair_market_data_session_conflict_recovery(reason="test")
+
+        self.assertEqual([], repaired)
+        self.assertEqual([], universe.ws_client.resubscribed)
+        state = universe.pb.states[("market_data_session_conflict", "live", "global")]
+        self.assertTrue(state["active"])
+        self.assertIn("realtime_quotes_stale", state["recovery_evidence"]["blockers"])
 
     def test_silent_websocket_resubscribes_active_market_data_when_no_conflict(self):
         universe = DummyResubscribeUniverse(

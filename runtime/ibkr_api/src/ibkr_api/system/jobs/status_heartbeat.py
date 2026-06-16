@@ -18,9 +18,16 @@ DEFAULT_OPEN_REPORT_WINDOW_MINUTES = 10
 DEFAULT_STATUS_REMINDER_ACTIVE_WINDOW_LIMIT = 50
 ALERT_FLAG_SEVERITIES = {"warning", "error"}
 CONNECTION_ISSUE_CODES = {"gateway_offline", "session_unauthenticated", "websocket_not_ready"}
+MARKET_DATA_SESSION_CONFLICT_CODE = "market_data_session_conflict"
 DEGRADED_SERVICE_STATUSES = {"degraded", "warning"}
 OFFLINE_SERVICE_STATUSES = {"offline", "error"}
-PARTIAL_RECOVERY_ISSUE_BASES = CONNECTION_ISSUE_CODES | {"services_offline", "services_degraded", "runtime", "summary"}
+PARTIAL_RECOVERY_ISSUE_BASES = CONNECTION_ISSUE_CODES | {
+    MARKET_DATA_SESSION_CONFLICT_CODE,
+    "services_offline",
+    "services_degraded",
+    "runtime",
+    "summary",
+}
 TRUTHY_TEXT = {"1", "true", "yes", "on"}
 FALSE_TEXT = {"0", "false", "no", "off", "disabled", "disable"}
 BAR_PIPELINE_DISABLED_STATUSES = {"disabled", "disabled_tv_primary", "legacy_bar_pipeline_disabled"}
@@ -719,6 +726,37 @@ def _partial_recovery_detail(
     detail["已恢复诊断码"] = ", ".join(recovered_codes) or "n/a"
     detail["仍存在诊断码"] = ", ".join(remaining_codes) or "无"
     detail["建议"] = "已恢复项无需重复处理；继续关注仍存在的诊断码。"
+    if MARKET_DATA_SESSION_CONFLICT_CODE in {_issue_base_code(item) for item in recovered_codes}:
+        detail.update(_market_data_conflict_recovery_fields(snapshot, timestamp_us=timestamp_us))
+    return detail
+
+
+def _market_data_conflict_recovery_fields(snapshot: dict[str, Any], *, timestamp_us: str) -> dict[str, Any]:
+    runtime = _as_dict(snapshot.get("runtime"))
+    state = _as_dict(runtime.get("market_data_session_conflict"))
+    recovery_evidence = _as_dict(state.get("recovery_evidence"))
+    return {
+        "行情冲突": "已恢复",
+        "冲突首次": _to_text(state.get("first_seen_at")) or "unknown",
+        "最近10197": _to_text(state.get("last_error_at")) or "unknown",
+        "恢复时间": _to_text(state.get("resolved_at")) or timestamp_us,
+        "恢复动作": _to_text(state.get("recovery_action")) or "cleared",
+        "重订阅数量": str(_to_int(state.get("resubscribed_count"), 0)),
+        "恢复依据": (
+            f"session={bool(recovery_evidence.get('session_authenticated'))}, "
+            f"ws={bool(recovery_evidence.get('websocket_ready'))}, "
+            f"fresh_quotes={_to_int(recovery_evidence.get('fresh_quotes'), 0)}"
+        ),
+    }
+
+
+def _market_data_conflict_recovery_detail(snapshot: dict[str, Any], *, timestamp_us: str) -> dict[str, Any]:
+    detail = _heartbeat_detail(snapshot, timestamp_us=timestamp_us)
+    detail["结论"] = "IBKR live 行情会话冲突已恢复。"
+    detail["影响"] = "服务器 live 行情已恢复检测，系统已按需重订阅当前行情。"
+    detail["原因"] = "最近 10197 已超过活动窗口，Gateway/Session/WebSocket/报价恢复证据通过。"
+    detail["建议"] = "后续手机端尽量只用于 2FA，避免停留在实时行情页。"
+    detail.update(_market_data_conflict_recovery_fields(snapshot, timestamp_us=timestamp_us))
     return detail
 
 
@@ -1091,6 +1129,8 @@ def build_system_heartbeat_response(
             )
     else:
         had_issue = bool(last_issue_hash)
+        recovered_codes = _recovered_issue_codes(previous_issue_codes, current_issue_codes)
+        recovered_bases = {_issue_base_code(item) for item in recovered_codes}
         next_state.update(
             {
                 "last_issue_hash": "",
@@ -1103,11 +1143,20 @@ def build_system_heartbeat_response(
                 event_type="alert",
                 level="info",
                 source="ibkr-api",
-                title="IBKR 系统状态已恢复",
-                detail=_heartbeat_detail(snapshot, timestamp_us=times["us"]),
+                title=(
+                    "IBKR 行情会话冲突已恢复"
+                    if MARKET_DATA_SESSION_CONFLICT_CODE in recovered_bases
+                    else "IBKR 系统状态已恢复"
+                ),
+                detail=(
+                    _market_data_conflict_recovery_detail(snapshot, timestamp_us=times["us"])
+                    if MARKET_DATA_SESSION_CONFLICT_CODE in recovered_bases
+                    else _heartbeat_detail(snapshot, timestamp_us=times["us"])
+                ),
                 environment=broker_mode,
             )
             next_state["last_recovery_at"] = times["us"]
+            next_state["last_recovery_codes"] = recovered_codes
         elif _to_text(times.get("us"))[14:16] == "00" and _to_text(state.get("last_ok_hour")) != current_hour:
             if emit_nominal_ok:
                 issue_event = emit_system_event(

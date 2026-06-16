@@ -17,6 +17,8 @@ MARKET_DATA_SESSION_CONFLICT_PHRASES = (
     "competing live session",
 )
 DEFAULT_TRACE_CONFLICT_WINDOW_SEC = 30 * 60
+DEFAULT_ACTIVE_CONFLICT_WINDOW_SEC = 3 * 60
+DEFAULT_RECOVERY_QUOTE_FRESH_SEC = 120
 
 
 def is_market_data_session_conflict_text(value: Any) -> bool:
@@ -86,6 +88,13 @@ def _recent_enough(event_ms: int, *, now_ms: int, trace_window_sec: int) -> bool
         return True
     age_s = max(0.0, (now_ms - event_ms) / 1000.0)
     return age_s <= max(1, int(trace_window_sec or DEFAULT_TRACE_CONFLICT_WINDOW_SEC))
+
+
+def _active_enough(event_ms: int, *, now_ms: int, active_window_sec: int) -> bool:
+    if event_ms <= 0:
+        return True
+    age_s = max(0.0, (now_ms - event_ms) / 1000.0)
+    return age_s <= max(1, int(active_window_sec or DEFAULT_ACTIVE_CONFLICT_WINDOW_SEC))
 
 
 def _trace_finished_ms(trace: dict[str, Any]) -> int:
@@ -180,6 +189,7 @@ def detect_market_data_session_conflict(
     *,
     now_ms: int | None = None,
     trace_window_sec: int = DEFAULT_TRACE_CONFLICT_WINDOW_SEC,
+    active_window_sec: int = DEFAULT_ACTIVE_CONFLICT_WINDOW_SEC,
 ) -> dict[str, Any]:
     status = _safe_dict(runtime_status)
     now = int(now_ms if now_ms is not None else time.time() * 1000)
@@ -246,16 +256,89 @@ def detect_market_data_session_conflict(
         trace_window_sec=trace_window_sec,
     )
 
-    first = evidence[0] if evidence else {}
+    active_evidence = [
+        item
+        for item in evidence
+        if _active_enough(
+            _safe_int(item.get("event_at_ms") or item.get("finished_at_ms")),
+            now_ms=now,
+            active_window_sec=active_window_sec,
+        )
+    ]
+    first = active_evidence[0] if active_evidence else (evidence[0] if evidence else {})
     return {
-        "active": bool(evidence),
+        "active": bool(active_evidence),
         "code": MARKET_DATA_SESSION_CONFLICT_CODE if evidence else "",
         "message": str(first.get("message") or ""),
         "source": str(first.get("source") or ""),
         "event_at": str(first.get("event_at") or ""),
         "event_at_ms": _safe_int(first.get("event_at_ms") or first.get("finished_at_ms")),
         "trace_window_sec": int(trace_window_sec or DEFAULT_TRACE_CONFLICT_WINDOW_SEC),
+        "active_window_sec": int(active_window_sec or DEFAULT_ACTIVE_CONFLICT_WINDOW_SEC),
         "evidence": evidence,
+        "active_evidence": active_evidence,
+    }
+
+
+def _fresh_quote_count(realtime_quotes: dict[str, Any], *, quote_fresh_sec: int) -> int:
+    quotes = realtime_quotes.get("quotes") if isinstance(realtime_quotes.get("quotes"), dict) else {}
+    count = 0
+    for quote in quotes.values():
+        if not isinstance(quote, dict):
+            continue
+        age = quote.get("quote_age_s")
+        if age is not None and _safe_float(age, quote_fresh_sec + 1) <= max(1, int(quote_fresh_sec or 0)):
+            count += 1
+    return count
+
+
+def _recovery_evidence(
+    runtime_status: dict[str, Any],
+    *,
+    quote_fresh_sec: int = DEFAULT_RECOVERY_QUOTE_FRESH_SEC,
+) -> dict[str, Any]:
+    gateway = _safe_dict(runtime_status.get("gateway"))
+    broker = _safe_dict(gateway.get("broker"))
+    session = _safe_dict(runtime_status.get("session"))
+    websocket = _safe_dict(runtime_status.get("websocket"))
+    realtime_quotes = _safe_dict(runtime_status.get("realtime_quotes"))
+
+    gateway_ready = bool(gateway.get("running") or gateway.get("reachable"))
+    broker_ready = bool(broker.get("ready") or broker.get("connected") or not broker)
+    session_authenticated = bool(session.get("authenticated"))
+    websocket_ready = bool(websocket.get("connected") or websocket.get("ready"))
+    subscribed_count = _safe_int(websocket.get("subscribed_count"), 0)
+    total_quotes = _safe_int(realtime_quotes.get("total_quotes"), 0)
+    stale_quotes = _safe_int(realtime_quotes.get("stale_quotes"), 0)
+    fresh_quotes = _fresh_quote_count(realtime_quotes, quote_fresh_sec=quote_fresh_sec)
+
+    blockers: list[str] = []
+    if not gateway_ready:
+        blockers.append("gateway_not_ready")
+    if not broker_ready:
+        blockers.append("broker_not_ready")
+    if not session_authenticated:
+        blockers.append("session_not_authenticated")
+    if not websocket_ready:
+        blockers.append("websocket_not_ready")
+    if subscribed_count > 0:
+        if total_quotes <= 0:
+            blockers.append("realtime_quotes_missing")
+        elif fresh_quotes <= 0 and stale_quotes >= total_quotes:
+            blockers.append("realtime_quotes_stale")
+
+    return {
+        "ok": not blockers,
+        "gateway_ready": gateway_ready,
+        "broker_ready": broker_ready,
+        "session_authenticated": session_authenticated,
+        "websocket_ready": websocket_ready,
+        "subscribed_count": subscribed_count,
+        "total_quotes": total_quotes,
+        "stale_quotes": stale_quotes,
+        "fresh_quotes": fresh_quotes,
+        "quote_fresh_sec": int(quote_fresh_sec or DEFAULT_RECOVERY_QUOTE_FRESH_SEC),
+        "blockers": blockers,
     }
 
 
@@ -391,6 +474,8 @@ def record_market_data_session_conflict_state(
     now_ms: int | None = None,
     persist_interval_sec: int = MARKET_DATA_SESSION_CONFLICT_PERSIST_INTERVAL_SEC,
     reminder_interval_sec: int = MARKET_DATA_SESSION_CONFLICT_REMINDER_INTERVAL_SEC,
+    active_window_sec: int = DEFAULT_ACTIVE_CONFLICT_WINDOW_SEC,
+    recovery_quote_fresh_sec: int = DEFAULT_RECOVERY_QUOTE_FRESH_SEC,
 ) -> dict[str, Any]:
     status = _safe_dict(runtime_status)
     runtime_environment = (
@@ -400,7 +485,11 @@ def record_market_data_session_conflict_state(
     now = int(now_ms if now_ms is not None else time.time() * 1000)
     now_iso = _iso_from_ms(now)
     previous = _load_conflict_state(owner, runtime_environment)
-    conflict = detect_market_data_session_conflict(status, now_ms=now)
+    conflict = detect_market_data_session_conflict(
+        status,
+        now_ms=now,
+        active_window_sec=active_window_sec,
+    )
     previous_active = bool(previous.get("active"))
     previous_signature = str(previous.get("last_signature") or "")
     last_persist_ms = _parse_timestamp_ms(previous.get("last_persisted_at"))
@@ -428,8 +517,15 @@ def record_market_data_session_conflict_state(
             "message": str(conflict.get("message") or ""),
             "source": str(conflict.get("source") or ""),
             "evidence": _compact_evidence(conflict),
+            "active_evidence": _compact_evidence({"evidence": conflict.get("active_evidence") or []}),
             "last_signature": signature,
             "trace_window_sec": _safe_int(conflict.get("trace_window_sec"), DEFAULT_TRACE_CONFLICT_WINDOW_SEC),
+            "active_window_sec": _safe_int(conflict.get("active_window_sec"), DEFAULT_ACTIVE_CONFLICT_WINDOW_SEC),
+            "recovery_evidence": {},
+            "recovery_action": "",
+            "resubscribed_count": 0,
+            "resubscribed_at": "",
+            "resubscribe_resolved_at": "",
             "recommended_action": (
                 "Exit other TWS, IB Gateway, IBKR Desktop, Client Portal, mobile, or third-party market-data clients; "
                 "wait 1-3 minutes; restart Gateway only if the conflict remains after the external session is released."
@@ -477,6 +573,30 @@ def record_market_data_session_conflict_state(
         return dict(state)
 
     if previous_active:
+        recovery_evidence = _recovery_evidence(status, quote_fresh_sec=recovery_quote_fresh_sec)
+        if not bool(recovery_evidence.get("ok")):
+            state = {
+                **previous,
+                "active": True,
+                "environment": runtime_environment,
+                "recovery_pending": True,
+                "recovery_evidence": recovery_evidence,
+                "active_window_sec": int(active_window_sec or DEFAULT_ACTIVE_CONFLICT_WINDOW_SEC),
+                "recommended_action": (
+                    "No fresh 10197 is detected, but runtime evidence is not healthy enough yet; "
+                    "wait for Gateway, Session, WebSocket, and fresh quotes to recover."
+                ),
+            }
+            if last_persist_ms <= 0 or (now - last_persist_ms) >= max(1, int(persist_interval_sec or 0)) * 1000:
+                state["last_persisted_at"] = now_iso
+                _persist_conflict_state(owner, runtime_environment, state)
+            try:
+                setattr(owner, "_market_data_session_conflict_state", dict(state))
+                setattr(owner, "_market_data_session_conflict_state_loaded", True)
+            except Exception:
+                pass
+            return dict(state)
+
         state = {
             **previous,
             "active": False,
@@ -484,6 +604,13 @@ def record_market_data_session_conflict_state(
             "last_seen_at": str(previous.get("last_seen_at") or ""),
             "resolved_at": now_iso,
             "last_persisted_at": now_iso,
+            "recovery_pending": False,
+            "recovery_evidence": recovery_evidence,
+            "recovery_action": "pending_resubscribe",
+            "resubscribed_count": _safe_int(previous.get("resubscribed_count"), 0),
+            "resubscribed_at": str(previous.get("resubscribed_at") or ""),
+            "resubscribe_resolved_at": str(previous.get("resubscribe_resolved_at") or ""),
+            "active_window_sec": int(active_window_sec or DEFAULT_ACTIVE_CONFLICT_WINDOW_SEC),
             "recommended_action": "Conflict is no longer detected; verify live market-data messages are fresh.",
         }
         _persist_conflict_state(owner, runtime_environment, state)
@@ -499,6 +626,7 @@ def record_market_data_session_conflict_state(
                 "last_seen_at": state.get("last_seen_at", ""),
                 "resolved_at": state.get("resolved_at", ""),
                 "count": state.get("count", 0),
+                "recovery_evidence": recovery_evidence,
             },
         )
         try:
@@ -521,6 +649,8 @@ def record_market_data_session_conflict_state(
 
 
 __all__ = [
+    "DEFAULT_ACTIVE_CONFLICT_WINDOW_SEC",
+    "DEFAULT_RECOVERY_QUOTE_FRESH_SEC",
     "DEFAULT_TRACE_CONFLICT_WINDOW_SEC",
     "MARKET_DATA_SESSION_CONFLICT_CODE",
     "MARKET_DATA_SESSION_CONFLICT_IB_ERROR_CODE",

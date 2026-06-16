@@ -11,6 +11,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from ibkr_compute.api.support.market_data_session import (
     MARKET_DATA_SESSION_CONFLICT_STATE_KEY,
+    detect_market_data_session_conflict,
     record_market_data_session_conflict_state,
 )
 
@@ -55,6 +56,13 @@ def _runtime_status(error_at_ms: int | None) -> dict:
         "environment": "paper",
         "data_environment": "live",
         "gateway": {"running": True, "reachable": True, "broker": broker},
+        "session": {"authenticated": True},
+        "websocket": {"connected": True, "ready": True, "subscribed_count": 1},
+        "realtime_quotes": {
+            "total_quotes": 1,
+            "stale_quotes": 0,
+            "quotes": {"SPY": {"symbol": "SPY", "quote_age_s": 5.0}},
+        },
     }
 
 
@@ -147,6 +155,52 @@ class MarketDataSessionConflictStateTest(unittest.TestCase):
         self.assertTrue(state["resolved_at"])
         self.assertEqual(2, len(pb.records))
         self.assertEqual("IBKR market data session conflict resolved", pb.records[-1][1]["title"])
+        self.assertEqual("pending_resubscribe", state["recovery_action"])
+        self.assertTrue(state["recovery_evidence"]["ok"])
+
+    def test_old_10197_evidence_leaves_trace_but_not_active(self):
+        now_ms = 1_781_535_600_000
+
+        conflict = detect_market_data_session_conflict(
+            _runtime_status(now_ms - 4 * 60 * 1000),
+            now_ms=now_ms,
+            active_window_sec=180,
+        )
+
+        self.assertFalse(conflict["active"])
+        self.assertEqual(1, len(conflict["evidence"]))
+        self.assertEqual([], conflict["active_evidence"])
+
+    def test_old_10197_waits_for_fresh_quote_before_resolving(self):
+        pb = _FakePB()
+        service = _FakeService(pb)
+        now_ms = 1_781_535_600_000
+
+        record_market_data_session_conflict_state(
+            service,
+            _runtime_status(now_ms - 5_000),
+            environment="live",
+            now_ms=now_ms,
+        )
+        stale_status = _runtime_status(now_ms - 4 * 60 * 1000)
+        stale_status["realtime_quotes"] = {
+            "total_quotes": 1,
+            "stale_quotes": 1,
+            "quotes": {"SPY": {"symbol": "SPY", "quote_age_s": 300.0}},
+        }
+        state = record_market_data_session_conflict_state(
+            service,
+            stale_status,
+            environment="live",
+            now_ms=now_ms + 4 * 60 * 1000,
+            active_window_sec=180,
+            recovery_quote_fresh_sec=120,
+        )
+
+        self.assertTrue(state["active"])
+        self.assertTrue(state["recovery_pending"])
+        self.assertIn("realtime_quotes_stale", state["recovery_evidence"]["blockers"])
+        self.assertEqual(1, len(pb.records))
 
 
 if __name__ == "__main__":

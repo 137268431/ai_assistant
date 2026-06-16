@@ -742,6 +742,154 @@ class ControlPlaneSplitStackSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(events[1]["title"], "IBKR 系统心跳异常")
         self.assertEqual(states[("system_notify_heartbeat", "paper")]["last_partial_recovery_at"], "2026-05-18 09:40:33")
 
+    def test_system_heartbeat_emits_market_data_conflict_recovery_card(self):
+        states = {
+            ("system_notify_heartbeat", "paper"): {
+                "last_issue_hash": "previous-conflict",
+                "last_issue_ms": 1779100000000,
+                "last_issue_codes": ["market_data_session_conflict"],
+            }
+        }
+        events = []
+
+        def get_state_payload(state_key, environment):
+            return {"data": states.get((state_key, environment), {})}
+
+        def upsert_state(state_key, environment, data, date):
+            states[(state_key, environment)] = dict(data)
+            return data
+
+        def emit_system_event(**kwargs):
+            events.append(kwargs)
+            return {"ok": True, "notified": True, "title": kwargs.get("title")}
+
+        payload, status_code = build_system_heartbeat_response(
+            payload={"environment": "paper"},
+            normalize_environment=lambda value, default="live": str(value or default),
+            time_strings=lambda: {"us": "2026-06-16 05:33:00", "cn": "2026-06-16 17:33:00", "date": "2026-06-16"},
+            build_system_summary_payload=lambda environment, lite_mode=False: {
+                "status": "running",
+                "ibkr_compute": {"status": "running"},
+                "ibkr_runtime": {"status": "running"},
+                "today": {"ibkr_bars": 8207, "ibkr_signals": 0, "orders": 0},
+            },
+            build_system_monitor_payload=lambda environment: {
+                "status": "ok",
+                "runtime": {
+                    "status": "running",
+                    "session": {"authenticated": True},
+                    "websocket": {"connected": True, "ready": True},
+                    "gateway": {"running": True, "reachable": True},
+                    "market_data_session_conflict": {
+                        "active": False,
+                        "first_seen_at": "2026-06-16T09:00:00+00:00",
+                        "last_error_at": "2026-06-16T09:01:45+00:00",
+                        "resolved_at": "2026-06-16T09:32:08+00:00",
+                        "recovery_action": "resubscribed",
+                        "resubscribed_count": 2,
+                        "recovery_evidence": {
+                            "session_authenticated": True,
+                            "websocket_ready": True,
+                            "fresh_quotes": 1,
+                        },
+                    },
+                },
+                "compute": {"status": "running"},
+                "scheduler": {"status": "running", "latest_ingested_bar_time_ms": 1, "dispatch_lag_min": 0.0},
+                "service_monitor": {"status_counts": {"running": 8}},
+                "flags": [],
+            },
+            emit_system_event=emit_system_event,
+            get_state_payload=get_state_payload,
+            upsert_state=upsert_state,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertFalse(payload["unhealthy"])
+        self.assertEqual(events[0]["title"], "IBKR 行情会话冲突已恢复")
+        self.assertEqual(events[0]["level"], "info")
+        self.assertEqual(events[0]["detail"]["行情冲突"], "已恢复")
+        self.assertEqual(events[0]["detail"]["恢复动作"], "resubscribed")
+        self.assertEqual(events[0]["detail"]["重订阅数量"], "2")
+        self.assertEqual(states[("system_notify_heartbeat", "paper")]["last_recovery_codes"], ["market_data_session_conflict"])
+
+    def test_system_heartbeat_partial_recovery_includes_market_data_conflict_fields(self):
+        states = {
+            ("system_notify_heartbeat", "paper"): {
+                "last_issue_hash": "previous-conflict-and-targets",
+                "last_issue_ms": 1779100000000,
+                "last_issue_codes": ["market_data_session_conflict", "services_offline:1"],
+            }
+        }
+        events = []
+
+        def get_state_payload(state_key, environment):
+            return {"data": states.get((state_key, environment), {})}
+
+        def upsert_state(state_key, environment, data, date):
+            states[(state_key, environment)] = dict(data)
+            return data
+
+        def emit_system_event(**kwargs):
+            events.append(kwargs)
+            return {"ok": True, "notified": True, "title": kwargs.get("title")}
+
+        payload, status_code = build_system_heartbeat_response(
+            payload={"environment": "paper"},
+            normalize_environment=lambda value, default="live": str(value or default),
+            time_strings=lambda: {"us": "2026-06-16 05:34:00", "cn": "2026-06-16 17:34:00", "date": "2026-06-16"},
+            build_system_summary_payload=lambda environment, lite_mode=False: {
+                "status": "running",
+                "ibkr_compute": {"status": "running"},
+                "ibkr_runtime": {"status": "running"},
+                "today": {"ibkr_bars": 8207, "ibkr_signals": 0, "orders": 0},
+            },
+            build_system_monitor_payload=lambda environment: {
+                "status": "warning",
+                "runtime": {
+                    "status": "running",
+                    "session": {"authenticated": True},
+                    "websocket": {"connected": True, "ready": True},
+                    "gateway": {"running": True, "reachable": True},
+                    "market_data_session_conflict": {
+                        "active": False,
+                        "first_seen_at": "2026-06-16T09:00:00+00:00",
+                        "last_error_at": "2026-06-16T09:01:45+00:00",
+                        "resolved_at": "2026-06-16T09:32:08+00:00",
+                        "recovery_action": "resubscribed",
+                        "resubscribed_count": 2,
+                        "recovery_evidence": {
+                            "session_authenticated": True,
+                            "websocket_ready": True,
+                            "fresh_quotes": 1,
+                        },
+                    },
+                },
+                "compute": {"status": "running"},
+                "scheduler": {"status": "running", "latest_ingested_bar_time_ms": 0, "dispatch_lag_min": 0.0},
+                "service_monitor": {"status_counts": {"running": 8}},
+                "flags": [
+                    {
+                        "code": "no_active_targets",
+                        "severity": "warning",
+                        "title": "No active trade targets",
+                        "detail": "watchlist 中存在交易标的，但当前 active target 数为 0",
+                    }
+                ],
+            },
+            emit_system_event=emit_system_event,
+            get_state_payload=get_state_payload,
+            upsert_state=upsert_state,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["unhealthy"])
+        self.assertTrue(payload["partial_recovery"])
+        self.assertEqual(events[0]["title"], "IBKR 系统部分恢复")
+        self.assertIn("market_data_session_conflict", events[0]["detail"]["已恢复诊断码"])
+        self.assertEqual(events[0]["detail"]["行情冲突"], "已恢复")
+        self.assertEqual(events[0]["detail"]["恢复动作"], "resubscribed")
+
     def test_system_status_reminder_omits_backtest_service_semantics(self):
         events = []
 

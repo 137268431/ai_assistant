@@ -555,12 +555,31 @@ class TradingServiceRuntimeStatusMixin:
             self,
             {
                 "gateway": gateway_status,
+                "session": session_status,
+                "websocket": websocket_status,
+                "realtime_quotes": realtime_quotes,
                 "data_backfill": data_backfill_status,
                 "canonical_5m": official_5m,
                 "environment": service_mod.ENVIRONMENT,
                 "data_environment": service_mod.DATA_ENVIRONMENT,
             },
             environment=service_mod.DATA_ENVIRONMENT,
+            active_window_sec=max(
+                60,
+                self.config.get_int_for_environment(
+                    "ibkr_market_data_session_conflict_active_window_sec",
+                    service_mod.DATA_ENVIRONMENT,
+                    180,
+                ),
+            ),
+            recovery_quote_fresh_sec=max(
+                30,
+                self.config.get_int_for_environment(
+                    "ibkr_market_data_session_conflict_recovery_quote_fresh_sec",
+                    service_mod.DATA_ENVIRONMENT,
+                    120,
+                ),
+            ),
         )
         runtime_config_switches = self._runtime_config_switch_status(service_mod)
         broker_status = gateway_status.get("broker") if isinstance(gateway_status.get("broker"), dict) else {}

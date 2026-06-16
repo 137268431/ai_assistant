@@ -589,11 +589,18 @@ def _build_monitor_flags(runtime_status: dict, api_utilization: dict, host_snaps
     last_trace_throttle_count = int(api_utilization.get("last_trace_throttle_count", 0) or 0)
     last_trace_error = str(api_utilization.get("last_trace_error") or "").strip()
     session_conflict = detect_market_data_session_conflict(runtime_status)
+    persisted_conflict = runtime_status.get("market_data_session_conflict")
+    if not isinstance(persisted_conflict, dict):
+        persisted_conflict = {}
     data_backfill_present = isinstance(runtime_status.get("data_backfill"), dict) and bool(runtime_status.get("data_backfill"))
     fallback_session_conflict = is_market_data_session_conflict_text(last_trace_error) and not data_backfill_present
-    session_conflict_active = bool(session_conflict.get("active")) or fallback_session_conflict
+    session_conflict_active = (
+        bool(session_conflict.get("active"))
+        or bool(persisted_conflict.get("active"))
+        or fallback_session_conflict
+    )
     if session_conflict_active:
-        conflict_detail = str(session_conflict.get("message") or last_trace_error or "").strip()
+        conflict_detail = str(session_conflict.get("message") or persisted_conflict.get("message") or last_trace_error or "").strip()
         status_detail = _format_conflict_status_detail(runtime_status)
         status_suffix = f" {status_detail}。" if status_detail else ""
         impact = _market_data_conflict_order_impact(runtime_status)
