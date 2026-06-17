@@ -414,7 +414,12 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
                 "1003": {"ok": False, "error": "order_filled_during_cancel", "order": {"orderId": "1003", "status": "Filled"}},
             },
         )
-        lifecycle = _FakeOrderLifecycle([[{"ticker": "AAPL", "position": 0}]])
+        lifecycle = _FakeOrderLifecycle(
+            [
+                [{"ticker": "AAPL", "position": 10}],
+                [{"ticker": "AAPL", "position": 0}],
+            ]
+        )
         placer = _FakeOrderPlacer()
 
         ReverseSignalHandler(
@@ -433,9 +438,175 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
         self.assertTrue(extra["cancel_terminal_during_cancel"])
         self.assertTrue(extra["terminal_conflict_safe"])
         self.assertEqual("confirmed", extra["cancel_old_order"])
-        self.assertEqual("skipped_flat", extra["close_old_position"])
+        self.assertEqual("confirmed", extra["close_old_position"])
         self.assertEqual("confirmed", extra["wait_flat"])
         self.assertFalse(extra["blocked"])
+        self.assertEqual("tv_exit_confirmed_no_reentry", pb.acks[0]["reason"])
+
+    def test_tv_close_keeps_active_protection_when_single_flat_snapshot_has_no_exit_fill(self):
+        reverse = {
+            "id": "rev-flat-uncertain",
+            "symbol": "AAPL",
+            "conid": 123,
+            "source": "tradingview",
+            "action_type": "close",
+            "status": "pending",
+            "environment": "live",
+            "priority": 10,
+            "bar_time_ms": 1,
+            "extra": {
+                "trade_group_id": "grp-flat-uncertain",
+                "origin_signal_id": "sig-flat-uncertain",
+            },
+        }
+        orders = [
+            {
+                "id": "entry",
+                "broker_order_id": "1001",
+                "order_id": "1001",
+                "trade_group_id": "grp-flat-uncertain",
+                "role": "entry",
+                "status": "Filled",
+                "environment": "live",
+            },
+            {
+                "id": "tp",
+                "broker_order_id": "1002",
+                "order_id": "1002",
+                "trade_group_id": "grp-flat-uncertain",
+                "role": "take_profit",
+                "status": "Submitted",
+                "environment": "live",
+            },
+            {
+                "id": "sl",
+                "broker_order_id": "1003",
+                "order_id": "1003",
+                "trade_group_id": "grp-flat-uncertain",
+                "role": "stop_loss",
+                "status": "Submitted",
+                "environment": "live",
+            },
+        ]
+        signals = [
+            {
+                "id": "sig-flat-uncertain-row",
+                "signal_id": "sig-flat-uncertain",
+                "environment": "live",
+                "symbol": "AAPL",
+                "direction": "long",
+                "status": "protected_active",
+                "extra": {"execution_by_mode": {"live": {"status": "protected_active"}}},
+            }
+        ]
+        pb = _FakePB(reverse_rows=[reverse], order_rows=orders, signal_rows=signals)
+        modifier = _FakeOrderModifier(pb)
+        lifecycle = _FakeOrderLifecycle([[{"ticker": "AAPL", "position": 0}]])
+        placer = _FakeOrderPlacer()
+
+        ReverseSignalHandler(
+            pb,
+            order_placer=placer,
+            order_modifier=modifier,
+            order_lifecycle=lifecycle,
+            environment="live",
+        ).check_and_process()
+
+        updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        extra = updated["extra"]
+        self.assertEqual("pending", updated["status"])
+        self.assertIn("flat_uncertain_active_protection_kept", updated["reason"])
+        self.assertEqual("pending_retry", extra["result_status"])
+        self.assertEqual("skipped_flat_uncertain", extra["close_old_position"])
+        self.assertEqual("unconfirmed", extra["wait_flat"])
+        self.assertTrue(extra["flat_uncertain"])
+        self.assertTrue(extra["protection_cancel_blocked"])
+        self.assertEqual(["1002", "1003"], extra["flat_zero_protection_guard"]["active_protection_order_ids"])
+        self.assertEqual([], modifier.cancelled)
+        self.assertEqual([], placer.calls)
+        self.assertEqual(1, len(pb.events))
+        self.assertEqual("TV 平仓延迟：flat 快照不可信，已保留保护单", pb.events[0]["title"])
+        self.assertEqual("pending", pb.acks[0]["status"])
+
+    def test_tv_close_allows_residual_protection_cancel_when_exit_fill_is_seen(self):
+        reverse = {
+            "id": "rev-flat-exit-fill",
+            "symbol": "AAPL",
+            "conid": 123,
+            "source": "tradingview",
+            "action_type": "close",
+            "status": "pending",
+            "environment": "live",
+            "priority": 10,
+            "bar_time_ms": 1,
+            "extra": {
+                "trade_group_id": "grp-flat-exit-fill",
+                "origin_signal_id": "sig-flat-exit-fill",
+            },
+        }
+        orders = [
+            {
+                "id": "entry",
+                "broker_order_id": "1001",
+                "order_id": "1001",
+                "trade_group_id": "grp-flat-exit-fill",
+                "role": "entry",
+                "status": "Filled",
+                "environment": "live",
+            },
+            {
+                "id": "tp",
+                "broker_order_id": "1002",
+                "order_id": "1002",
+                "trade_group_id": "grp-flat-exit-fill",
+                "role": "take_profit",
+                "status": "Submitted",
+                "environment": "live",
+            },
+            {
+                "id": "sl",
+                "broker_order_id": "1003",
+                "order_id": "1003",
+                "trade_group_id": "grp-flat-exit-fill",
+                "role": "stop_loss",
+                "status": "Filled",
+                "environment": "live",
+            },
+        ]
+        signals = [
+            {
+                "id": "sig-flat-exit-fill-row",
+                "signal_id": "sig-flat-exit-fill",
+                "environment": "live",
+                "symbol": "AAPL",
+                "direction": "long",
+                "status": "protected_active",
+                "extra": {"execution_by_mode": {"live": {"status": "protected_active"}}},
+            }
+        ]
+        pb = _FakePB(reverse_rows=[reverse], order_rows=orders, signal_rows=signals)
+        modifier = _FakeOrderModifier(pb)
+        lifecycle = _FakeOrderLifecycle([[{"ticker": "AAPL", "position": 0}]])
+        placer = _FakeOrderPlacer()
+
+        ReverseSignalHandler(
+            pb,
+            order_placer=placer,
+            order_modifier=modifier,
+            order_lifecycle=lifecycle,
+            environment="live",
+        ).check_and_process()
+
+        updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        extra = updated["extra"]
+        self.assertEqual("confirmed", updated["status"])
+        self.assertEqual(["1002"], modifier.cancelled)
+        self.assertEqual([], placer.calls)
+        self.assertEqual("confirmed", extra["cancel_old_order"])
+        self.assertEqual("skipped_flat", extra["close_old_position"])
+        self.assertEqual(["1002"], extra["flat_zero_protection_guard"]["active_protection_order_ids"])
+        self.assertEqual(["1003"], extra["flat_zero_protection_guard"]["exit_fill_order_ids"])
+        self.assertEqual([], pb.events)
         self.assertEqual("tv_exit_confirmed_no_reentry", pb.acks[0]["reason"])
 
     def test_tv_close_terminal_cancel_conflict_stays_pending_when_order_still_open(self):

@@ -75,6 +75,9 @@ TRACEABLE_CANCEL_ORDER_STATUSES = REAL_ACTIVE_ORDER_STATUSES | {
     "PENDING_SUBMIT",
 }
 TERMINAL_DURING_CANCEL_ERRORS = {"order_filled_during_cancel", "order_filled_during_cancel_all"}
+PROTECTION_ORDER_ROLES = {"take_profit", "stop_loss"}
+EXIT_ORDER_ROLES = PROTECTION_ORDER_ROLES | {"close", "exit", "market_close", "close_position"}
+EXIT_FILLED_ORDER_STATUSES = {"EXECUTED", "FILLED"}
 REVERSE_CONFIRM_ATTEMPTS = max(1, int(os.environ.get("IBKR_REVERSE_CONFIRM_ATTEMPTS", "3") or "3"))
 REVERSE_CONFIRM_POLL_SECONDS = max(0.0, float(os.environ.get("IBKR_REVERSE_CONFIRM_POLL_SECONDS", "0.25") or 0.25))
 ADJUST_PRICE_FIELDS_BY_SIDE = {
@@ -98,6 +101,8 @@ class ReverseSignalHandler:
         self.config = config or getattr(order_lifecycle, "config", None) or getattr(signal_processor, "config", None)
         self._processed_ids = set()
         self._position_snapshot_alerted = set()
+        self._flat_uncertain_alerted = set()
+        self._unprotected_close_alerted = set()
 
     def check_and_process(self):
         started = time.perf_counter()
@@ -1282,6 +1287,90 @@ class ReverseSignalHandler:
         )
         return preflight
 
+    @classmethod
+    def _order_role_key(cls, order: Dict[str, Any]) -> str:
+        child_role = cls._child_order_role(order)
+        if child_role:
+            return child_role
+        extra = cls._as_dict((order or {}).get("extra"))
+        for key in ("role", "order_role", "leg_role", "order_type", "orderType", "type"):
+            raw = (order or {}).get(key) or extra.get(key)
+            text = str(raw or "").strip().lower().replace("-", "_").replace(" ", "_")
+            if text in {"entry", "close", "exit", "market_close", "close_position"}:
+                return text
+        for ref in cls._order_ref_values(order or {}):
+            lowered = ref.lower()
+            if lowered.startswith(("close_", "exit_", "market_close_", "close_position_")):
+                return "close"
+        return ""
+
+    def _active_protection_orders(self, orders: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return [
+            dict(order)
+            for order in orders or []
+            if self._child_order_role(order) in PROTECTION_ORDER_ROLES and self._is_active_order(order)
+        ]
+
+    def _exit_fill_orders(self, orders: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return [
+            dict(order)
+            for order in orders or []
+            if self._order_role_key(order) in EXIT_ORDER_ROLES
+            and self._order_status_key(order) in EXIT_FILLED_ORDER_STATUSES
+        ]
+
+    def _related_orders_for_signal(self, signal: dict) -> tuple[str, list[str], list[dict]]:
+        runtime_environment = self._risk_update_broker_mode(signal)
+        trade_group_id = self._related_trade_group_id(signal)
+        order_ids = self._related_order_ids_from_signal(signal)
+        orders = self._fetch_related_orders(
+            trade_group_id=trade_group_id,
+            order_ids=order_ids,
+            environment=runtime_environment,
+        ) if (trade_group_id or order_ids) else []
+        return trade_group_id, order_ids, orders
+
+    def _guard_flat_zero_before_cancel(
+        self,
+        signal: dict,
+        detail: Dict[str, Any],
+        symbol: str,
+    ) -> Optional[Dict[str, Any]]:
+        trade_group_id, order_ids, related_orders = self._related_orders_for_signal(signal)
+        active_protection = self._active_protection_orders(related_orders)
+        exit_fills = self._exit_fill_orders(related_orders)
+        guard_detail = {
+            "trade_group_id": trade_group_id,
+            "order_ids": self._unique_nonempty(order_ids + [self._order_id(order) for order in related_orders]),
+            "pb_orders_checked": len(related_orders),
+            "active_protection_order_ids": [self._order_id(order) for order in active_protection],
+            "exit_fill_order_ids": [self._order_id(order) for order in exit_fills],
+            "safe_to_cancel_protection": not active_protection or bool(exit_fills),
+            "source": "pb_orders_and_broker_positions",
+        }
+        detail["flat_zero_protection_guard"] = guard_detail
+        if not active_protection or exit_fills:
+            return None
+
+        detail["flat_uncertain"] = True
+        detail["protection_cancel_blocked"] = True
+        detail["close_old_position"] = "skipped_flat_uncertain"
+        detail["wait_flat"] = "unconfirmed"
+        detail["flat_confirmation"] = {
+            "confirmed": False,
+            "source": "single_broker_positions_snapshot",
+            "position_qty": 0.0,
+            "reason": "active_protection_without_exit_fill_evidence",
+        }
+        self._notify_flat_uncertain_active_protection(signal, symbol, guard_detail)
+        return self._mark_retryable_blocked(
+            detail,
+            "flat_uncertain_active_protection_kept",
+            position_qty=0.0,
+            active_protection_order_ids=guard_detail["active_protection_order_ids"],
+            trade_group_id=trade_group_id,
+        )
+
     def _handle_close(self, signal: dict, detail: Dict[str, Any]) -> Dict[str, Any]:
         tv_exit_preflight = self._tv_exit_non_executable_preflight(signal)
         if tv_exit_preflight:
@@ -1330,6 +1419,9 @@ class ReverseSignalHandler:
         qty = self._position_quantity(symbol, positions)
         detail["position_qty_before_close"] = qty
         if qty == 0:
+            guarded = self._guard_flat_zero_before_cancel(signal, detail, symbol)
+            if guarded is not None:
+                return guarded
             cancel_result = self._cancel_old_order_if_present(signal, detail)
             if cancel_result is not None and not cancel_result.get("ok"):
                 return cancel_result
@@ -1424,12 +1516,26 @@ class ReverseSignalHandler:
                 runtime_detail = detail.setdefault("reverse_runtime_detail", {})
                 runtime_detail["safe_blocked_no_quote"] = True
                 runtime_detail["close_quote_unavailable"] = True
+                self._mark_unprotected_close_alert(
+                    signal,
+                    symbol,
+                    detail,
+                    "close_limit_price_unavailable_after_protection_cancel",
+                    result,
+                )
                 return self._mark_blocked(
                     detail,
                     "close_limit_price_unavailable",
                     error=close_error,
                     safe_blocked_no_quote=True,
                 )
+            self._mark_unprotected_close_alert(
+                signal,
+                symbol,
+                detail,
+                "close_order_failed_after_protection_cancel",
+                result,
+            )
             return self._mark_blocked(
                 detail,
                 "close_order_failed",
@@ -1441,6 +1547,13 @@ class ReverseSignalHandler:
         detail["wait_flat"] = "confirmed" if flat_confirmed else "unconfirmed"
         detail["flat_confirmation"] = flat_detail
         if not flat_confirmed:
+            self._mark_unprotected_close_alert(
+                signal,
+                symbol,
+                detail,
+                "flat_not_confirmed_after_protection_cancel",
+                flat_detail,
+            )
             return self._mark_retryable_blocked(
                 detail,
                 "flat_not_confirmed",
@@ -4615,6 +4728,43 @@ class ReverseSignalHandler:
         payload["position_count"] = len(positions) if isinstance(positions, list) else 0
         return payload
 
+    def _notify_flat_uncertain_active_protection(
+        self,
+        signal: dict,
+        symbol: str,
+        guard_detail: Dict[str, Any],
+    ) -> None:
+        rid = str((signal or {}).get("id") or "").strip()
+        trade_group_id = str((guard_detail or {}).get("trade_group_id") or self._related_trade_group_id(signal) or "").strip()
+        alert_key = f"{self.environment}:{rid or trade_group_id or symbol}:flat_uncertain_active_protection"
+        if alert_key in self._flat_uncertain_alerted:
+            return
+        notifier = getattr(self.pb_client, "notify_system_event", None)
+        if not callable(notifier):
+            return
+        self._flat_uncertain_alerted.add(alert_key)
+        try:
+            notifier(
+                "TV 平仓延迟：flat 快照不可信，已保留保护单",
+                {
+                    "状态结论": "收到 TV close 且本次持仓快照显示 flat，但交易组仍有有效 TP/SL，且未看到退出成交证据；系统保留保护单并等待重试。",
+                    "标的": str(symbol or "-").upper(),
+                    "ActionID": rid or "-",
+                    "Broker模式": self.environment,
+                    "交易组": trade_group_id or "-",
+                    "活跃保护单": ",".join((guard_detail or {}).get("active_protection_order_ids") or []) or "-",
+                    "退出成交证据": ",".join((guard_detail or {}).get("exit_fill_order_ids") or []) or "-",
+                    "处理建议": "无需立即撤保护单；请核对 IBKR 持仓和 open orders。若仍有持仓，等待下一轮 close 重试或人工平仓。",
+                },
+                event_type="alert",
+                level="warning",
+                source="ibkr_compute",
+                environment=self.environment,
+                message_id=f"ibkr_reverse_close_flat_uncertain:{self.environment}:{rid or trade_group_id or symbol}",
+            )
+        except Exception as exc:
+            logger.debug("Reverse close flat-uncertain notification failed: %s", exc)
+
     def _notify_position_snapshot_unavailable(self, signal: dict, symbol: str, result: Dict[str, Any]) -> None:
         rid = str((signal or {}).get("id") or "").strip()
         alert_key = f"{self.environment}:{rid or symbol}:position_snapshot_unavailable"
@@ -4646,6 +4796,51 @@ class ReverseSignalHandler:
             )
         except Exception as exc:
             logger.debug("Reverse close position snapshot notification failed: %s", exc)
+
+    def _mark_unprotected_close_alert(
+        self,
+        signal: dict,
+        symbol: str,
+        detail: Dict[str, Any],
+        reason: str,
+        result: Dict[str, Any],
+    ) -> None:
+        detail["unprotected_close_failed"] = True
+        detail["protection_cancelled_before_close_failure"] = True
+        runtime_detail = detail.setdefault("reverse_runtime_detail", {})
+        runtime_detail["unprotected_close_failed"] = True
+        runtime_detail["unprotected_close_reason"] = str(reason or "")
+
+        rid = str((signal or {}).get("id") or "").strip()
+        trade_group_id = str(detail.get("trade_group_id") or self._related_trade_group_id(signal) or "").strip()
+        alert_key = f"{self.environment}:{rid or trade_group_id or symbol}:{reason}"
+        if alert_key in self._unprotected_close_alerted:
+            return
+        notifier = getattr(self.pb_client, "notify_system_event", None)
+        if not callable(notifier):
+            return
+        self._unprotected_close_alerted.add(alert_key)
+        try:
+            notifier(
+                "TV 平仓异常：保护单已撤但平仓未确认",
+                {
+                    "状态结论": "TV close 已撤旧保护单，但平仓提交失败或 flat 未确认；系统保持 pending 并等待重试。",
+                    "标的": str(symbol or "-").upper(),
+                    "ActionID": rid or "-",
+                    "Broker模式": self.environment,
+                    "交易组": trade_group_id or "-",
+                    "原因": str(reason or "close_unconfirmed_after_protection_cancel"),
+                    "券商结果": str((result or {}).get("error") or (result or {}).get("reason") or ""),
+                    "处理建议": "立即核对 IBKR 持仓、open orders 和 close order；若仍有持仓且无有效 close/保护单，请人工平仓或补保护。",
+                },
+                event_type="alert",
+                level="error",
+                source="ibkr_compute",
+                environment=self.environment,
+                message_id=f"ibkr_reverse_close_unprotected:{self.environment}:{rid or trade_group_id or symbol}:{reason}",
+            )
+        except Exception as exc:
+            logger.debug("Reverse close unprotected notification failed: %s", exc)
 
     def _get_positions(self) -> List[Dict[str, Any]]:
         result = self._get_positions_result()

@@ -16,11 +16,15 @@ MARKET_DATA_SESSION_CONFLICT_CODE = "market_data_session_conflict"
 DEFAULT_MONITOR_ALERT_ERROR_COOLDOWN_MIN = 15
 DEFAULT_MONITOR_ALERT_WARNING_COOLDOWN_MIN = 60
 DEFAULT_ACCOUNT_SNAPSHOT_WARNING_CONSECUTIVE_COUNT = 2
+DEFAULT_MONITOR_SOURCE_WARNING_CONSECUTIVE_COUNT = 3
 MONITOR_ALERT_COOLDOWN_MS = DEFAULT_MONITOR_ALERT_ERROR_COOLDOWN_MIN * 60 * 1000
 ACCOUNT_SNAPSHOT_WARNING_CODES = {
     "account_snapshot_degraded",
     "account_snapshot_timeout",
     "account_pnl_unavailable",
+}
+MONITOR_SOURCE_WARNING_CODES = {
+    "monitor_builder_compute_monitor",
 }
 LEGACY_TARGET_FLAG_CODES = {"no_active_targets", "no_execution_eligible_targets"}
 IB_CLIENT_SERVICE_LABELS = (
@@ -258,10 +262,23 @@ def _is_account_snapshot_warning(item: dict[str, Any]) -> bool:
     )
 
 
+def _is_monitor_source_warning(item: dict[str, Any]) -> bool:
+    return (
+        _to_text(item.get("severity")).lower() == "warning"
+        and _to_text(item.get("code")) in MONITOR_SOURCE_WARNING_CODES
+    )
+
+
 def _account_snapshot_warning_streak(state: dict[str, Any], flags: list[dict[str, Any]]) -> int:
     if not any(_is_account_snapshot_warning(item) for item in flags):
         return 0
     return _to_int(state.get("account_snapshot_warning_streak"), 0) + 1
+
+
+def _monitor_source_warning_streak(state: dict[str, Any], flags: list[dict[str, Any]]) -> int:
+    if not any(_is_monitor_source_warning(item) for item in flags):
+        return 0
+    return _to_int(state.get("monitor_source_warning_streak"), 0) + 1
 
 
 def _filter_alert_flags(
@@ -269,15 +286,24 @@ def _filter_alert_flags(
     *,
     account_snapshot_warning_streak: int,
     account_snapshot_warning_consecutive_count: int,
+    monitor_source_warning_streak: int,
+    monitor_source_warning_consecutive_count: int,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    if any(_is_error_flag(item) for item in flags) or account_snapshot_warning_consecutive_count <= 1:
+    if any(_is_error_flag(item) for item in flags):
         return list(flags), []
     alert_flags: list[dict[str, Any]] = []
     suppressed_flags: list[dict[str, Any]] = []
     for item in flags:
         if (
-            _is_account_snapshot_warning(item)
+            account_snapshot_warning_consecutive_count > 1
+            and _is_account_snapshot_warning(item)
             and account_snapshot_warning_streak < account_snapshot_warning_consecutive_count
+        ):
+            suppressed_flags.append(item)
+        elif (
+            monitor_source_warning_consecutive_count > 1
+            and _is_monitor_source_warning(item)
+            and monitor_source_warning_streak < monitor_source_warning_consecutive_count
         ):
             suppressed_flags.append(item)
         else:
@@ -535,11 +561,20 @@ def build_system_monitor_alert_guard_response(
         environment,
         minimum=1,
     )
+    monitor_source_warning_consecutive_count = _config_int(
+        config_value,
+        "system_monitor_source_warning_consecutive_count",
+        DEFAULT_MONITOR_SOURCE_WARNING_CONSECUTIVE_COUNT,
+        environment,
+        minimum=1,
+    )
     account_snapshot_warning_streak = _account_snapshot_warning_streak(state, flags)
+    monitor_source_warning_streak = _monitor_source_warning_streak(state, flags)
     next_state = {
         **state,
         "last_monitor_check_at": times["us"],
         "account_snapshot_warning_streak": account_snapshot_warning_streak,
+        "monitor_source_warning_streak": monitor_source_warning_streak,
     }
 
     if not flags:
@@ -555,6 +590,7 @@ def build_system_monitor_alert_guard_response(
                 "last_monitor_alert_codes": [],
                 "last_monitor_alert_level": "",
                 "account_snapshot_warning_streak": 0,
+                "monitor_source_warning_streak": 0,
             }
         )
         if had_alert:
@@ -603,6 +639,8 @@ def build_system_monitor_alert_guard_response(
         flags,
         account_snapshot_warning_streak=account_snapshot_warning_streak,
         account_snapshot_warning_consecutive_count=account_snapshot_warning_consecutive_count,
+        monitor_source_warning_streak=monitor_source_warning_streak,
+        monitor_source_warning_consecutive_count=monitor_source_warning_consecutive_count,
     )
     if not alert_flags:
         upsert_state(MONITOR_ALERT_STATE_KEY, environment, next_state, times["date"])
@@ -615,6 +653,7 @@ def build_system_monitor_alert_guard_response(
             "alert_flag_codes": [],
             "suppressed_flag_codes": _flag_codes(suppressed_flags + legacy_suppressed_flags),
             "account_snapshot_warning_streak": account_snapshot_warning_streak,
+            "monitor_source_warning_streak": monitor_source_warning_streak,
             "state": next_state,
             "source": "ibkr-api",
         }, 200
@@ -669,6 +708,7 @@ def build_system_monitor_alert_guard_response(
         "alert_flag_codes": _flag_codes(alert_flags),
         "suppressed_flag_codes": _flag_codes(suppressed_flags + legacy_suppressed_flags),
         "account_snapshot_warning_streak": account_snapshot_warning_streak,
+        "monitor_source_warning_streak": monitor_source_warning_streak,
         "admission_preview": admission_preview,
         "event": event,
         "state": next_state,

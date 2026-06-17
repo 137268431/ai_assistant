@@ -1984,6 +1984,92 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(1, len(events))
         self.assertEqual("IBKR Monitor 告警（1项）", events[0]["title"])
 
+    def test_system_monitor_alert_suppresses_first_monitor_source_warning(self):
+        flags = [
+            {
+                "code": "account_snapshot_degraded",
+                "severity": "warning",
+                "title": "Account snapshot unavailable",
+                "detail": "read timeout",
+            },
+            {
+                "code": "monitor_builder_compute_monitor",
+                "severity": "warning",
+                "title": "Monitor aggregation degraded (compute_monitor)",
+                "detail": "read timeout",
+            },
+        ]
+
+        payload, status_code, states, events = self._run_monitor_alert_guard(flags=flags)
+
+        self.assertEqual(status_code, 200)
+        self.assertFalse(payload["triggered"])
+        self.assertEqual([], events)
+        self.assertEqual(
+            ["account_snapshot_degraded", "monitor_builder_compute_monitor"],
+            payload["flag_codes"],
+        )
+        self.assertEqual([], payload["alert_flag_codes"])
+        self.assertEqual(
+            ["account_snapshot_degraded", "monitor_builder_compute_monitor"],
+            payload["suppressed_flag_codes"],
+        )
+        self.assertEqual(1, payload["account_snapshot_warning_streak"])
+        self.assertEqual(1, payload["monitor_source_warning_streak"])
+        state = states[("system_monitor_alert", "live")]
+        self.assertEqual(1, state["monitor_source_warning_streak"])
+        self.assertFalse(state.get("last_monitor_alert_hash"))
+
+    def test_system_monitor_alert_emits_on_third_monitor_source_warning(self):
+        flag = {
+            "code": "monitor_builder_compute_monitor",
+            "severity": "warning",
+            "title": "Monitor aggregation degraded (compute_monitor)",
+            "detail": "read timeout",
+        }
+        states = {}
+        events = []
+
+        self._run_monitor_alert_guard(states=states, events=events, flags=[flag])
+        second_payload, _, _, events = self._run_monitor_alert_guard(states=states, events=events, flags=[flag])
+        payload, status_code, _, events = self._run_monitor_alert_guard(states=states, events=events, flags=[flag])
+
+        self.assertFalse(second_payload["triggered"])
+        self.assertEqual(["monitor_builder_compute_monitor"], second_payload["suppressed_flag_codes"])
+        self.assertEqual(2, second_payload["monitor_source_warning_streak"])
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["triggered"])
+        self.assertEqual(["monitor_builder_compute_monitor"], payload["alert_flag_codes"])
+        self.assertEqual([], payload["suppressed_flag_codes"])
+        self.assertEqual(3, payload["monitor_source_warning_streak"])
+        self.assertEqual(1, len(events))
+        self.assertEqual("IBKR Monitor 告警（1项）", events[0]["title"])
+
+    def test_system_monitor_alert_suppressed_monitor_source_warning_does_not_recover(self):
+        flag = {
+            "code": "monitor_builder_compute_monitor",
+            "severity": "warning",
+            "title": "Monitor aggregation degraded (compute_monitor)",
+            "detail": "read timeout",
+        }
+        states = {}
+        events = []
+
+        self._run_monitor_alert_guard(states=states, events=events, flags=[flag])
+        payload, status_code, _, events = self._run_monitor_alert_guard(
+            states=states,
+            events=events,
+            flags=[],
+            status="ok",
+            now_us="2026-04-23 12:10:00",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertFalse(payload["triggered"])
+        self.assertFalse(payload["recovered"])
+        self.assertEqual([], events)
+        self.assertEqual(0, states[("system_monitor_alert", "live")]["monitor_source_warning_streak"])
+
     def test_system_monitor_alert_warning_uses_longer_cooldown(self):
         flag = {
             "code": "account_snapshot_degraded",
