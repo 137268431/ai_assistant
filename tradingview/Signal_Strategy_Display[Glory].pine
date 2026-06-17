@@ -150,6 +150,7 @@ bool volumeExpanded = volumeRatio >= highAttackVolumeMult
 bool volumeQuietRetest = volumeRatio <= lowRetestVolumeMult
 bool volumeAttackUp = volumeExpanded and close > open and closePosition >= attackClosePosThreshold
 bool volumeAttackDown = volumeExpanded and close < open and closePosition <= 1.0 - attackClosePosThreshold
+string volumeJudge = volumeAttackUp ? "放量上攻" : volumeAttackDown ? "放量下砸" : volumeQuietRetest ? "缩量/量能衰减" : volumeExpanded ? "放量但收盘不强" : "正常量"
 
 fmt(float value) =>
     str.tostring(value, "#.##")
@@ -264,6 +265,9 @@ dirName(int direction) =>
 
 intentName(string intent) =>
     intent == "predictive_limit" ? "未确认观察" : intent == "confirmed_limit" ? "确认挂单" : "等待确认"
+
+reasonCn(string reason) =>
+    reason == "passed" ? "通过" : reason == "no_candidate" ? "无候选" : reason == "no_clear_structure" ? "结构不清晰" : reason == "day_range_not_formed" ? "日内高低未形成" : reason == "day_range_too_small" ? "日内振幅不够" : reason == "anchor_too_fresh" ? "结构太新" : reason == "left_leg_too_small" ? "左侧涨跌幅不够" : reason == "middle_leg_too_small" or reason == "middle_pullback_not_enough" ? "中段回落/反弹不够" : reason == "right_retest_too_small" ? "二次回测不够" : reason == "retest_too_slow" ? "二次回测太慢" : reason == "not_retest_zone" or reason == "retest_not_near_prior_high" ? "未回到结构区" : reason == "attack_volume_cooling" ? "放量攻击冷却中" : reason == "volume_attack_up_no_short" ? "放量上攻，暂不逆向做空" : reason == "volume_attack_down_no_long" ? "放量下砸，暂不逆向做多" : reason == "volume_not_exhausted" ? "量能未衰竭" : reason == "momentum_not_decayed" ? "动能未衰减" : reason == "momentum_decay_not_continuous" ? "动能衰减不连续" : reason == "no_weak_close_confirm" ? "缺少弱收确认" : reason == "no_strong_close_confirm" ? "缺少强收确认" : reason == "micro_structure_too_close" ? "同向信号太近" : reason == "any_plan_too_close" ? "距离上一计划太近" : reason == "expected_r_too_small" ? "盈亏比不够" : reason == "outside_entry_session" ? "不在入场时间" : reason
 
 flowColor(string state, int direction) =>
     state == "blocked" ? color.new(color.gray, flowLabelTransparency) : state == "predictive" ? color.new(color.orange, flowLabelTransparency) : state == "confirmed" ? color.new(color.teal, flowLabelTransparency) : state == "exit" ? color.new(color.purple, flowLabelTransparency) : direction == 1 ? color.new(color.green, flowLabelTransparency) : color.new(color.red, flowLabelTransparency)
@@ -436,6 +440,8 @@ var float todayStructHighZoneLow = na
 var float todayStructHighZoneHigh = na
 var float todayStructLowZoneLow = na
 var float todayStructLowZoneHigh = na
+var float breakoutHighZoneHigh = na
+var float breakoutLowZoneLow = na
 var int todayStructHighBar = na
 var int todayStructLowBar = na
 var float lowBeforeStructHigh = na
@@ -485,11 +491,23 @@ var int topDecayStreak = 0
 var int bottomDecayStreak = 0
 var bool upperBreakAcceptedRegime = false
 var bool lowerBreakAcceptedRegime = false
+var int topDecisionSeq = 0
+var int bottomDecisionSeq = 0
+var int activeTopDecisionSeq = 0
+var int activeBottomDecisionSeq = 0
 
 bool upperStructureBreakAccepted = false
 bool lowerStructureBreakAccepted = false
 bool upperStructureBreakExtended = false
 bool lowerStructureBreakExtended = false
+bool structureHighRaised = false
+bool structureLowRaised = false
+bool structureHighIndependent = false
+bool structureLowIndependent = false
+float structureHighOld = na
+float structureLowOld = na
+bool intradayHighUpdated = false
+bool intradayLowUpdated = false
 
 if confirmed and referenceDayReset
     todayHigh := na
@@ -504,6 +522,8 @@ if confirmed and referenceDayReset
     todayStructHighZoneHigh := na
     todayStructLowZoneLow := na
     todayStructLowZoneHigh := na
+    breakoutHighZoneHigh := na
+    breakoutLowZoneLow := na
     todayStructHighBar := na
     todayStructLowBar := na
     lowBeforeStructHigh := na
@@ -553,6 +573,10 @@ if confirmed and referenceDayReset
     bottomDecayStreak := 0
     upperBreakAcceptedRegime := false
     lowerBreakAcceptedRegime := false
+    topDecisionSeq := 0
+    bottomDecisionSeq := 0
+    activeTopDecisionSeq := 0
+    activeBottomDecisionSeq := 0
 
 if confirmed and volumeAttackUp
     lastVolumeAttackUpBar := bar_index
@@ -564,26 +588,103 @@ if confirmed and volumeAttackDown
 if confirmed and inReferenceSession
     float prevSessionHigh = todayHigh
     float prevSessionLow = todayLow
-    if na(todayHigh) or high > todayHigh
+    bool newSessionHigh = na(todayHigh) or high > todayHigh
+    bool newSessionLow = na(todayLow) or low < todayLow
+    if newSessionHigh
         todayHigh := high
         todayHighBar := bar_index
         lowBeforeTodayHigh := na(prevSessionLow) ? low : prevSessionLow
-    if na(todayLow) or low < todayLow
+        intradayHighUpdated := not na(prevSessionHigh)
+    if newSessionLow
         todayLow := low
         todayLowBar := bar_index
         highBeforeTodayLow := na(prevSessionHigh) ? high : prevSessionHigh
+        intradayLowUpdated := not na(prevSessionLow)
+    bool sameClusterHighLift = newSessionHigh and not upperBreakAcceptedRegime and not na(todayStructHigh) and confirmed and todayHigh > todayStructHigh + tickBuffer
+    if sameClusterHighLift
+        float highBand = atr * structureClusterBandAtr
+        float oldStructHigh = todayStructHigh
+        bool highFarEnough = math.abs(todayHigh - oldStructHigh) >= atr * minStructureSeparationAtr
+        bool highMiddleSwingOk = not na(lowSinceStructHigh) and oldStructHigh - lowSinceStructHigh >= atr * minMiddleSwingAtr
+        bool highIndependent = highFarEnough and highMiddleSwingOk
+        breakoutHighZoneHigh := na(breakoutHighZoneHigh) ? todayStructHighZoneHigh : breakoutHighZoneHigh
+        if highIndependent
+            prevStructHigh := oldStructHigh
+            breakoutHighZoneHigh := todayHigh + highBand
+            topBreakAcceptStreak := 0
+            upperBreakAcceptedRegime := false
+            lastTopSweepBar := na
+            lastTopSweepPrice := na
+            lastTopSweepVolumeAttack := false
+            lastWeakNewHighBar := na
+            lastWeakNewHighLow := na
+            lastWeakNewHighHigh := na
+            lastTopVolumeClimaxBar := na
+            lastTopVolumeClimaxHigh := na
+            lastTopVolumeClimaxLow := na
+            lastTopVolumeClimaxBase := na
+            lastTopVolumeClimaxVolumeRatio := na
+        todayStructHigh := todayHigh
+        todayStructHighBar := todayHighBar
+        todayStructHighZoneLow := todayHigh - highBand
+        todayStructHighZoneHigh := todayHigh + highBand
+        lowBeforeStructHigh := highIndependent or na(lowBeforeStructHigh) ? (na(lowBeforeTodayHigh) ? low : lowBeforeTodayHigh) : lowBeforeStructHigh
+        lowSinceStructHigh := low
+        lowSinceStructHighBar := bar_index
+        topExhaustionUsed := false
+        topDecayStreak := 0
+        structureHighOld := oldStructHigh
+        structureHighRaised := true
+        structureHighIndependent := highIndependent
+        lastProcessedHighCandidateBar := todayHighBar
+    bool sameClusterLowLift = newSessionLow and not lowerBreakAcceptedRegime and not na(todayStructLow) and confirmed and todayLow < todayStructLow - tickBuffer
+    if sameClusterLowLift
+        float lowBand = atr * structureClusterBandAtr
+        float oldStructLow = todayStructLow
+        bool lowFarEnough = math.abs(todayLow - oldStructLow) >= atr * minStructureSeparationAtr
+        bool lowMiddleSwingOk = not na(highSinceStructLow) and highSinceStructLow - oldStructLow >= atr * minMiddleSwingAtr
+        bool lowIndependent = lowFarEnough and lowMiddleSwingOk
+        breakoutLowZoneLow := na(breakoutLowZoneLow) ? todayStructLowZoneLow : breakoutLowZoneLow
+        if lowIndependent
+            prevStructLow := oldStructLow
+            breakoutLowZoneLow := todayLow - lowBand
+            bottomBreakAcceptStreak := 0
+            lowerBreakAcceptedRegime := false
+            lastBottomSweepBar := na
+            lastBottomSweepPrice := na
+            lastBottomSweepVolumeAttack := false
+            lastWeakNewLowBar := na
+            lastWeakNewLowHigh := na
+            lastWeakNewLowLow := na
+        todayStructLow := todayLow
+        todayStructLowBar := todayLowBar
+        todayStructLowZoneLow := todayLow - lowBand
+        todayStructLowZoneHigh := todayLow + lowBand
+        highBeforeStructLow := lowIndependent or na(highBeforeStructLow) ? (na(highBeforeTodayLow) ? high : highBeforeTodayLow) : highBeforeStructLow
+        highSinceStructLow := high
+        highSinceStructLowBar := bar_index
+        bottomExhaustionUsed := false
+        bottomDecayStreak := 0
+        structureLowOld := oldStructLow
+        structureLowRaised := true
+        structureLowIndependent := lowIndependent
+        lastProcessedLowCandidateBar := todayLowBar
     bool highConfirmed = not na(todayHighBar) and bar_index - todayHighBar >= dayStructConfirmBars and todayHigh - low >= atr * dayStructMinReversalAtr
     if highConfirmed and (na(lastProcessedHighCandidateBar) or todayHighBar != lastProcessedHighCandidateBar)
         float highBand = atr * structureClusterBandAtr
         bool highHasAnchor = not na(todayStructHigh)
         bool highFarEnough = not highHasAnchor or math.abs(todayHigh - todayStructHigh) >= atr * minStructureSeparationAtr
         bool highMiddleSwingOk = not highHasAnchor or not na(lowSinceStructHigh) and todayStructHigh - lowSinceStructHigh >= atr * minMiddleSwingAtr
-        if not highHasAnchor or highFarEnough and highMiddleSwingOk
+        bool highMovesAnchor = not highHasAnchor or confirmed and todayHigh > todayStructHigh + tickBuffer
+        bool highIndependent = not highHasAnchor or highFarEnough and highMiddleSwingOk
+        if highMovesAnchor and highIndependent
+            structureHighOld := todayStructHigh
             prevStructHigh := todayStructHigh
             todayStructHigh := todayHigh
             todayStructHighBar := todayHighBar
             todayStructHighZoneLow := todayHigh - highBand
             todayStructHighZoneHigh := todayHigh + highBand
+            breakoutHighZoneHigh := todayStructHighZoneHigh
             lowBeforeStructHigh := na(lowBeforeTodayHigh) ? low : lowBeforeTodayHigh
             lowSinceStructHigh := low
             lowSinceStructHighBar := bar_index
@@ -602,9 +703,22 @@ if confirmed and inReferenceSession
             lastTopVolumeClimaxLow := na
             lastTopVolumeClimaxBase := na
             lastTopVolumeClimaxVolumeRatio := na
-        else
-            todayStructHighZoneLow := na(todayStructHighZoneLow) ? todayHigh - highBand : math.min(todayStructHighZoneLow, todayHigh - highBand)
-            todayStructHighZoneHigh := na(todayStructHighZoneHigh) ? todayHigh + highBand : math.max(todayStructHighZoneHigh, todayHigh + highBand)
+            structureHighRaised := true
+            structureHighIndependent := true
+        else if highMovesAnchor
+            structureHighOld := todayStructHigh
+            breakoutHighZoneHigh := na(breakoutHighZoneHigh) ? todayStructHighZoneHigh : breakoutHighZoneHigh
+            todayStructHigh := todayHigh
+            todayStructHighBar := todayHighBar
+            todayStructHighZoneLow := todayHigh - highBand
+            todayStructHighZoneHigh := todayHigh + highBand
+            lowBeforeStructHigh := na(lowBeforeStructHigh) ? (na(lowBeforeTodayHigh) ? low : lowBeforeTodayHigh) : lowBeforeStructHigh
+            lowSinceStructHigh := low
+            lowSinceStructHighBar := bar_index
+            topExhaustionUsed := false
+            topDecayStreak := 0
+            structureHighRaised := true
+            structureHighIndependent := false
         lastProcessedHighCandidateBar := todayHighBar
     bool lowConfirmed = not na(todayLowBar) and bar_index - todayLowBar >= dayStructConfirmBars and high - todayLow >= atr * dayStructMinReversalAtr
     if lowConfirmed and (na(lastProcessedLowCandidateBar) or todayLowBar != lastProcessedLowCandidateBar)
@@ -612,12 +726,16 @@ if confirmed and inReferenceSession
         bool lowHasAnchor = not na(todayStructLow)
         bool lowFarEnough = not lowHasAnchor or math.abs(todayLow - todayStructLow) >= atr * minStructureSeparationAtr
         bool lowMiddleSwingOk = not lowHasAnchor or not na(highSinceStructLow) and highSinceStructLow - todayStructLow >= atr * minMiddleSwingAtr
-        if not lowHasAnchor or lowFarEnough and lowMiddleSwingOk
+        bool lowMovesAnchor = not lowHasAnchor or confirmed and todayLow < todayStructLow - tickBuffer
+        bool lowIndependent = not lowHasAnchor or lowFarEnough and lowMiddleSwingOk
+        if lowMovesAnchor and lowIndependent
+            structureLowOld := todayStructLow
             prevStructLow := todayStructLow
             todayStructLow := todayLow
             todayStructLowBar := todayLowBar
             todayStructLowZoneLow := todayLow - lowBand
             todayStructLowZoneHigh := todayLow + lowBand
+            breakoutLowZoneLow := todayStructLowZoneLow
             highBeforeStructLow := na(highBeforeTodayLow) ? high : highBeforeTodayLow
             highSinceStructLow := high
             highSinceStructLowBar := bar_index
@@ -631,11 +749,24 @@ if confirmed and inReferenceSession
             lastWeakNewLowBar := na
             lastWeakNewLowHigh := na
             lastWeakNewLowLow := na
-        else
-            todayStructLowZoneLow := na(todayStructLowZoneLow) ? todayLow - lowBand : math.min(todayStructLowZoneLow, todayLow - lowBand)
-            todayStructLowZoneHigh := na(todayStructLowZoneHigh) ? todayLow + lowBand : math.max(todayStructLowZoneHigh, todayLow + lowBand)
+            structureLowRaised := true
+            structureLowIndependent := true
+        else if lowMovesAnchor
+            structureLowOld := todayStructLow
+            breakoutLowZoneLow := na(breakoutLowZoneLow) ? todayStructLowZoneLow : breakoutLowZoneLow
+            todayStructLow := todayLow
+            todayStructLowBar := todayLowBar
+            todayStructLowZoneLow := todayLow - lowBand
+            todayStructLowZoneHigh := todayLow + lowBand
+            highBeforeStructLow := na(highBeforeStructLow) ? (na(highBeforeTodayLow) ? high : highBeforeTodayLow) : highBeforeStructLow
+            highSinceStructLow := high
+            highSinceStructLowBar := bar_index
+            bottomExhaustionUsed := false
+            bottomDecayStreak := 0
+            structureLowRaised := true
+            structureLowIndependent := false
         lastProcessedLowCandidateBar := todayLowBar
-    bool upperBreakAccepting = not na(todayStructHighZoneHigh) and not na(todayStructLow) and close > todayStructHighZoneHigh + atr * structureBreakAcceptCloseAtr
+    bool upperBreakAccepting = not na(breakoutHighZoneHigh) and not na(todayStructLow) and close > breakoutHighZoneHigh + atr * structureBreakAcceptCloseAtr
     topBreakAcceptStreak := upperBreakAccepting ? topBreakAcceptStreak + 1 : 0
     if topBreakAcceptStreak >= structureBreakAcceptBars and not na(todayHigh)
         float highBand = atr * structureClusterBandAtr
@@ -644,6 +775,7 @@ if confirmed and inReferenceSession
         todayStructHighBar := todayHighBar
         todayStructHighZoneLow := todayHigh - highBand
         todayStructHighZoneHigh := todayHigh + highBand
+        breakoutHighZoneHigh := todayStructHighZoneHigh
         lowBeforeStructHigh := na(lowSinceStructHigh) ? (na(lowBeforeTodayHigh) ? low : lowBeforeTodayHigh) : lowSinceStructHigh
         lowSinceStructHigh := low
         lowSinceStructHighBar := bar_index
@@ -666,7 +798,7 @@ if confirmed and inReferenceSession
         lastTopVolumeClimaxBase := na
         lastTopVolumeClimaxVolumeRatio := na
         upperStructureBreakAccepted := true
-    bool lowerBreakAccepting = not na(todayStructLowZoneLow) and not na(todayStructHigh) and close < todayStructLowZoneLow - atr * structureBreakAcceptCloseAtr
+    bool lowerBreakAccepting = not na(breakoutLowZoneLow) and not na(todayStructHigh) and close < breakoutLowZoneLow - atr * structureBreakAcceptCloseAtr
     bottomBreakAcceptStreak := lowerBreakAccepting ? bottomBreakAcceptStreak + 1 : 0
     if bottomBreakAcceptStreak >= structureBreakAcceptBars and not na(todayLow)
         float lowBand = atr * structureClusterBandAtr
@@ -675,6 +807,7 @@ if confirmed and inReferenceSession
         todayStructLowBar := todayLowBar
         todayStructLowZoneLow := todayLow - lowBand
         todayStructLowZoneHigh := todayLow + lowBand
+        breakoutLowZoneLow := todayStructLowZoneLow
         highBeforeStructLow := na(highSinceStructLow) ? (na(highBeforeTodayLow) ? high : highBeforeTodayLow) : highSinceStructLow
         highSinceStructLow := high
         highSinceStructLowBar := bar_index
@@ -699,6 +832,7 @@ if confirmed and inReferenceSession
         todayStructHighBar := todayHighBar
         todayStructHighZoneLow := todayHigh - highBand
         todayStructHighZoneHigh := todayHigh + highBand
+        breakoutHighZoneHigh := todayStructHighZoneHigh
         lowSinceStructHigh := low
         lowSinceStructHighBar := bar_index
         topExhaustionUsed := false
@@ -723,6 +857,7 @@ if confirmed and inReferenceSession
         todayStructLowBar := todayLowBar
         todayStructLowZoneLow := todayLow - lowBand
         todayStructLowZoneHigh := todayLow + lowBand
+        breakoutLowZoneLow := todayStructLowZoneLow
         highSinceStructLow := high
         highSinceStructLowBar := bar_index
         bottomExhaustionUsed := false
@@ -1284,7 +1419,14 @@ var label currentTargetLabel = na
 
 newPlanNow = confirmed and showSignalEventFlow and selectedPlanValid and not shadowPending and not shadowOpen
 if newPlanNow
+    if selectedTopProbe and activeTopDecisionSeq == 0
+        topDecisionSeq += 1
+        activeTopDecisionSeq := topDecisionSeq
+    if selectedBottomProbe and activeBottomDecisionSeq == 0
+        bottomDecisionSeq += 1
+        activeBottomDecisionSeq := bottomDecisionSeq
     flowId += 1
+    string decisionRef = selectedTopProbe ? "T" + str.tostring(activeTopDecisionSeq) : selectedBottomProbe ? "B" + str.tostring(activeBottomDecisionSeq) : "--"
     shadowPending := true
     shadowOpen := false
     shadowDirection := selectedDirection
@@ -1317,7 +1459,7 @@ if newPlanNow
         lastShortPlanPrice := selectedEntry
     lastAnyPlanBar := bar_index
     lastAnyPlanPrice := selectedEntry
-    string detail = "F" + str.tostring(flowId) + " ②" + intentName(selectedEntryIntent) + " " + dirName(selectedDirection) + "\n" + setupDisplayName(selectedSetup) + "\n主因: " + selectedMainReason + "\n次因: " + (selectedSecondaryReason == "" ? "none" : selectedSecondaryReason) + "\n结构锚点 " + fmt(selectedStructureAnchor) + " / expected " + fmt(selectedExpectedR) + "R\n结构区 " + fmt(selectedZoneLow) + " - " + fmt(selectedZoneHigh) + "\n三段结构 L" + fmt(selectedProbeLeftLegBps) + "bps / M" + fmt(selectedProbeMiddleRatio) + " / R" + fmt(selectedProbeRightRatio) + " / 回测 " + fmt(selectedProbeRetestGapBars) + "/" + str.tostring(maxRetestAfterMiddleSwingBars) + " bars\n量能 vol/MA " + fmt(selectedVolumeRatio) + " / closePos " + fmt(selectedClosePosition) + " / " + selectedVolumeReason + "\n位置角色 " + selectedLevelRole + " / trend " + trendRegime + "\n日内高低 " + (dayRangeFormed ? "formed" : "waiting") + " / " + fmt(dayRangeAtr) + "ATR\n衰竭 " + selectedExhaustionSide + " / " + selectedExhaustionReason + " / MDecay " + fmt(selectedMomentumDecayRatio) + " / 连续 " + fmt(selectedMomentumDecayStreak) + "/" + fmt(selectedMomentumDecayConfirmBars) + "\n放量冷却 " + str.tostring(selectedAttackVolumeCooling) + " / " + fmt(selectedAttackVolumeCooldownBars) + " bars\n同向距离 " + fmt(selectedSameSideSignalDistanceAtr) + "ATR / min " + fmt(minSameSideSignalSeparationAtr) + "\nplan " + fmt(selectedEntry) + " / qty " + qtyText(selectedQty) + "\n红SL " + fmt(selectedStop) + " " + moneyText(pnlDollars(selectedEntry, selectedStop, selectedDirection, selectedQty)) + "\n蓝Runner " + fmt(selectedRunnerActivation) + " " + moneyText(pnlDollars(selectedEntry, selectedRunnerActivation, selectedDirection, selectedQty)) + "\n绿SafetyTP " + fmt(selectedTarget) + " " + moneyText(pnlDollars(selectedEntry, selectedTarget, selectedDirection, selectedQty)) + "\n小止损: " + selectedSmallStopGateReason + " / " + fmt(selectedStopDistanceAtr) + "ATR / " + fmt(selectedStopDistanceBps) + "bps\nprobe: " + selectedProbePattern + " / filter " + selectedProbeFilterReason + "\n风险模式: " + selectedTrialRiskMode + " $" + fmt(selectedRiskBudget) + " / TTL " + str.tostring(entryOrderTtlBars)
+    string detail = "F" + str.tostring(flowId) + " ②" + intentName(selectedEntryIntent) + " " + dirName(selectedDirection) + "\n关联流: " + decisionRef + " -> F" + str.tostring(flowId) + "\n" + setupDisplayName(selectedSetup) + "\n主因: " + selectedMainReason + "\n次因: " + (selectedSecondaryReason == "" ? "none" : selectedSecondaryReason) + "\n结构锚点 " + fmt(selectedStructureAnchor) + " / expected " + fmt(selectedExpectedR) + "R\n结构区 " + fmt(selectedZoneLow) + " - " + fmt(selectedZoneHigh) + "\n三段结构 L" + fmt(selectedProbeLeftLegBps) + "bps / M" + fmt(selectedProbeMiddleRatio) + " / R" + fmt(selectedProbeRightRatio) + " / 回测 " + fmt(selectedProbeRetestGapBars) + "/" + str.tostring(maxRetestAfterMiddleSwingBars) + " bars\n量能 vol/MA " + fmt(selectedVolumeRatio) + " / closePos " + fmt(selectedClosePosition) + " / " + selectedVolumeReason + "\n成交量判断: " + volumeJudge + "\n位置角色 " + selectedLevelRole + " / trend " + trendRegime + "\n日内高低 " + (dayRangeFormed ? "formed" : "waiting") + " / " + fmt(dayRangeAtr) + "ATR\n衰竭 " + selectedExhaustionSide + " / " + selectedExhaustionReason + " / MDecay " + fmt(selectedMomentumDecayRatio) + " / 连续 " + fmt(selectedMomentumDecayStreak) + "/" + fmt(selectedMomentumDecayConfirmBars) + "\n放量冷却 " + str.tostring(selectedAttackVolumeCooling) + " / " + fmt(selectedAttackVolumeCooldownBars) + " bars\n同向距离 " + fmt(selectedSameSideSignalDistanceAtr) + "ATR / min " + fmt(minSameSideSignalSeparationAtr) + "\nplan " + fmt(selectedEntry) + " / qty " + qtyText(selectedQty) + "\n红SL " + fmt(selectedStop) + " " + moneyText(pnlDollars(selectedEntry, selectedStop, selectedDirection, selectedQty)) + "\n蓝Runner " + fmt(selectedRunnerActivation) + " " + moneyText(pnlDollars(selectedEntry, selectedRunnerActivation, selectedDirection, selectedQty)) + "\n绿SafetyTP " + fmt(selectedTarget) + " " + moneyText(pnlDollars(selectedEntry, selectedTarget, selectedDirection, selectedQty)) + "\n小止损: " + selectedSmallStopGateReason + " / " + fmt(selectedStopDistanceAtr) + "ATR / " + fmt(selectedStopDistanceBps) + "bps\nprobe: " + selectedProbePattern + " / filter " + selectedProbeFilterReason + "\n风险模式: " + selectedTrialRiskMode + " $" + fmt(selectedRiskBudget) + " / TTL " + str.tostring(entryOrderTtlBars)
     string compact = "F" + str.tostring(flowId) + " ②" + intentName(selectedEntryIntent) + " " + dirName(selectedDirection) + "\n" + setupDisplayName(selectedSetup) + "\nplan " + fmt(selectedEntry) + " / SL " + moneyText(pnlDollars(selectedEntry, selectedStop, selectedDirection, selectedQty)) + " / TP " + moneyText(pnlDollars(selectedEntry, selectedTarget, selectedDirection, selectedQty))
     if flowLabelsVisible
         label.new(bar_index, selectedDirection == 1 ? low - atr * 1.5 : high + atr * 1.5, flowLabelText(compact, detail), style=flowStyle(selectedDirection), color=flowColor(selectedEntryIntent == "predictive_limit" ? "predictive" : "confirmed", selectedDirection), textcolor=labelTextColor(selectedEntryIntent == "predictive_limit" ? "predictive" : "confirmed", selectedDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(detail))
@@ -1455,27 +1597,59 @@ if structureBreakExtendedEvent
     if flowLabelsVisible
         label.new(bar_index, extendedDirection == 1 ? low - atr * 1.2 : high + atr * 1.2, flowLabelText(extendedCompact, extendedDetail), style=flowStyle(extendedDirection), color=flowColor("blocked", extendedDirection), textcolor=labelTextColor("blocked", extendedDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(extendedDetail))
 
+bool liveHighStateEvent = confirmed and showSignalEventFlow and not upperStructureBreakAccepted and not upperStructureBreakExtended and structureHighRaised
+bool liveLowStateEvent = confirmed and showSignalEventFlow and not lowerStructureBreakAccepted and not lowerStructureBreakExtended and structureLowRaised
+bool candidateHighWaitEvent = confirmed and showSignalEventFlow and displayDebugMode and intradayHighUpdated and not structureHighRaised and not na(todayStructHigh) and todayHigh > todayStructHigh + tickBuffer
+bool candidateLowWaitEvent = confirmed and showSignalEventFlow and displayDebugMode and intradayLowUpdated and not structureLowRaised and not na(todayStructLow) and todayLow < todayStructLow - tickBuffer
+if liveHighStateEvent or liveLowStateEvent or candidateHighWaitEvent or candidateLowWaitEvent
+    bool highSideEvent = liveHighStateEvent or candidateHighWaitEvent
+    int liveDirection = highSideEvent ? -1 : 1
+    bool raisedEvent = liveHighStateEvent or liveLowStateEvent
+    bool independentEvent = highSideEvent ? structureHighIndependent : structureLowIndependent
+    string stateTitle = raisedEvent ? (highSideEvent ? "结构高抬高" : "结构低下移") : (highSideEvent ? "候选结构高" : "候选结构低")
+    string clusterText = raisedEvent ? (independentEvent ? (highSideEvent ? "结构高刷新：独立新结构" : "结构低刷新：独立新结构") : (highSideEvent ? "同一结构簇新高" : "同一结构簇新低")) : (highSideEvent ? "等待回落确认" : "等待反弹确认")
+    string liveDetail = stateTitle + "\n" + clusterText + "\n旧高低 " + fmt(highSideEvent ? structureHighOld : structureLowOld) + " -> 新高低 " + fmt(highSideEvent ? todayStructHigh : todayStructLow) + "\n盘中极值 " + fmt(highSideEvent ? todayHigh : todayLow) + "\n独立结构: " + str.tostring(independentEvent) + "\n冻结突破基准 " + fmt(highSideEvent ? breakoutHighZoneHigh : breakoutLowZoneLow) + "\n说明: 同一结构簇也会更新可交易锚点，SL/前高前低跟随最新极值"
+    string liveCompact = raisedEvent ? stateTitle + "\n" + clusterText : (highSideEvent ? "候选结构高\n等待回落确认" : "候选结构低\n等待反弹确认")
+    if flowLabelsVisible
+        label.new(bar_index, liveDirection == 1 ? low - atr * 1.05 : high + atr * 1.05, flowLabelText(liveCompact, liveDetail), style=flowStyle(liveDirection), color=flowColor("blocked", liveDirection), textcolor=labelTextColor("blocked", liveDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(liveDetail))
+
 bool blockedCandidate = confirmed and showSignalEventFlow and selectedDirection != 0 and (selectedBlockReason != "passed" or not inEntryWindow)
 if blockedCandidate
+    if selectedTopProbe and activeTopDecisionSeq == 0
+        topDecisionSeq += 1
+        activeTopDecisionSeq := topDecisionSeq
+    if selectedBottomProbe and activeBottomDecisionSeq == 0
+        bottomDecisionSeq += 1
+        activeBottomDecisionSeq := bottomDecisionSeq
+    string blockKey = selectedTopProbe ? "T" + str.tostring(activeTopDecisionSeq) : selectedBottomProbe ? "B" + str.tostring(activeBottomDecisionSeq) : ""
+    string blockPrefix = blockKey == "" ? "" : blockKey + " ④"
     string displayBlockReason = not inEntryWindow ? "outside_entry_session" : selectedBlockReason
-    string detail = "过滤 " + dirName(selectedDirection) + "\n主因: " + selectedMainReason + "\n次因: " + (selectedSecondaryReason == "" ? "none" : selectedSecondaryReason) + "\n原因: " + displayBlockReason + "\n结构 " + fmt(selectedStructureAnchor) + " / expected " + fmt(selectedExpectedR) + "R\n同向距离 " + fmt(selectedSameSideSignalDistanceAtr) + "ATR / min " + fmt(minSameSideSignalSeparationAtr) + "\n结构区 " + fmt(selectedZoneLow) + " - " + fmt(selectedZoneHigh) + "\n三段结构 L" + fmt(selectedProbeLeftLegBps) + "bps / M" + fmt(selectedProbeMiddleRatio) + " / R" + fmt(selectedProbeRightRatio) + " / 回测 " + fmt(selectedProbeRetestGapBars) + "/" + str.tostring(maxRetestAfterMiddleSwingBars) + " bars\n量能 vol/MA " + fmt(selectedVolumeRatio) + " / closePos " + fmt(selectedClosePosition) + " / " + selectedVolumeReason + "\n位置角色 " + selectedLevelRole + " / trend " + trendRegime + "\n日内高低 " + (dayRangeFormed ? "formed" : "waiting") + " / " + fmt(dayRangeAtr) + "ATR\n衰竭 " + selectedExhaustionSide + " / " + selectedExhaustionReason + " / MDecay " + fmt(selectedMomentumDecayRatio) + " / 连续 " + fmt(selectedMomentumDecayStreak) + "/" + fmt(selectedMomentumDecayConfirmBars) + "\n放量冷却 " + str.tostring(selectedAttackVolumeCooling) + " / " + fmt(selectedAttackVolumeCooldownBars) + " bars\n距离 " + fmt(selectedStopDistanceAtr) + "ATR / " + fmt(selectedStopDistanceBps) + "bps"
-    string compact = "过滤 " + dirName(selectedDirection) + "\n" + displayBlockReason
+    string detail = blockPrefix + "确认但过滤 " + dirName(selectedDirection) + "\n主因: " + selectedMainReason + "\n次因: " + (selectedSecondaryReason == "" ? "none" : selectedSecondaryReason) + "\n原因: " + reasonCn(displayBlockReason) + " / " + displayBlockReason + "\n结构 " + fmt(selectedStructureAnchor) + " / expected " + fmt(selectedExpectedR) + "R\n同向距离 " + fmt(selectedSameSideSignalDistanceAtr) + "ATR / min " + fmt(minSameSideSignalSeparationAtr) + "\n结构区 " + fmt(selectedZoneLow) + " - " + fmt(selectedZoneHigh) + "\n三段结构 L" + fmt(selectedProbeLeftLegBps) + "bps / M" + fmt(selectedProbeMiddleRatio) + " / R" + fmt(selectedProbeRightRatio) + " / 回测 " + fmt(selectedProbeRetestGapBars) + "/" + str.tostring(maxRetestAfterMiddleSwingBars) + " bars\n量能 vol/MA " + fmt(selectedVolumeRatio) + " / closePos " + fmt(selectedClosePosition) + " / " + selectedVolumeReason + "\n成交量判断: " + volumeJudge + "\n位置角色 " + selectedLevelRole + " / trend " + trendRegime + "\n日内高低 " + (dayRangeFormed ? "formed" : "waiting") + " / " + fmt(dayRangeAtr) + "ATR\n衰竭 " + selectedExhaustionSide + " / " + selectedExhaustionReason + " / MDecay " + fmt(selectedMomentumDecayRatio) + " / 连续 " + fmt(selectedMomentumDecayStreak) + "/" + fmt(selectedMomentumDecayConfirmBars) + "\n放量冷却 " + str.tostring(selectedAttackVolumeCooling) + " / " + fmt(selectedAttackVolumeCooldownBars) + " bars\n距离 " + fmt(selectedStopDistanceAtr) + "ATR / " + fmt(selectedStopDistanceBps) + "bps"
+    string compact = blockPrefix + "确认但过滤 " + dirName(selectedDirection) + "\n" + reasonCn(displayBlockReason)
     if flowLabelsVisible
         label.new(bar_index, selectedDirection == 1 ? low - atr * 1.2 : high + atr * 1.2, flowLabelText(compact, detail), style=flowStyle(selectedDirection), color=flowColor("blocked", selectedDirection), textcolor=labelTextColor("blocked", selectedDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(detail))
 
 bool volumeClimaxTopWatchEvent = confirmed and showSignalEventFlow and selectedDirection == 0 and topVolumeClimaxAttackEvent
 if volumeClimaxTopWatchEvent
-    string climaxWatchDetail = "冲顶观察 空\n放量新高\n等红K收回前高\n不挂单\nbase " + fmt(lastTopVolumeClimaxBase) + "\nattack H/L " + fmt(lastTopVolumeClimaxHigh) + " / " + fmt(lastTopVolumeClimaxLow) + "\nvol/MA " + fmt(lastTopVolumeClimaxVolumeRatio) + "\n确认窗口 " + str.tostring(failedBreakConfirmBars) + " bars"
-    string climaxWatchCompact = "冲顶观察 空\n等红K收回前高"
+    topDecisionSeq += 1
+    activeTopDecisionSeq := topDecisionSeq
+    string topKey = "T" + str.tostring(activeTopDecisionSeq)
+    string climaxWatchDetail = topKey + " ①冲顶观察 空\n放量新高\n②冷却中 " + fmt(barsSinceAttackUp) + "/" + str.tostring(attackVolumeCooldownBars) + "\n等红K收回前高\n不挂单\n成交量判断: " + volumeJudge + "\nbase " + fmt(lastTopVolumeClimaxBase) + "\nattack H/L " + fmt(lastTopVolumeClimaxHigh) + " / " + fmt(lastTopVolumeClimaxLow) + "\nvol/MA " + fmt(lastTopVolumeClimaxVolumeRatio) + "\n确认窗口 " + str.tostring(failedBreakConfirmBars) + " bars"
+    string climaxWatchCompact = topKey + " ①冲顶观察 空\n②冷却中"
     if flowLabelsVisible
         label.new(bar_index, high + atr * 1.25, flowLabelText(climaxWatchCompact, climaxWatchDetail), style=flowStyle(-1), color=flowColor("blocked", -1), textcolor=labelTextColor("blocked", -1), size=flowLabelSize(), tooltip=flowLabelTooltip(climaxWatchDetail))
 
 bool volumeClimaxTopConfirmEvent = confirmed and showSignalEventFlow and topVolumeClimaxFailedBreakConfirmed
 if volumeClimaxTopConfirmEvent
+    if activeTopDecisionSeq == 0
+        topDecisionSeq += 1
+        activeTopDecisionSeq := topDecisionSeq
+    string topKey = "T" + str.tostring(activeTopDecisionSeq)
     string climaxFailKind = topVolumeClimaxCloseBack ? "红K收回前高" : "红K跌破攻击K低点"
-    string climaxFilterReason = topConfirmAllowed ? "可挂单" : not topSignalGapOk ? "过滤原因: 同向距离太近" : not smallStopTrialAllowed(topConfirmEntry, topConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) ? "过滤原因: " + smallStopGateReason(topConfirmEntry, topConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) : topConfirmQty < 1.0 ? "过滤原因: qty_too_small" : "过滤原因: 主流程过滤"
-    string climaxConfirmDetail = "冲顶失败确认 空\n" + climaxFailKind + "\n" + climaxFilterReason + "\nSL 前高+buffer " + fmt(topConfirmStop) + "\nbase " + fmt(lastTopVolumeClimaxBase) + "\nattack H/L " + fmt(lastTopVolumeClimaxHigh) + " / " + fmt(lastTopVolumeClimaxLow) + "\n等待 " + fmt(barsSinceTopVolumeClimax) + "/" + str.tostring(failedBreakConfirmBars) + " bars\nvol/MA " + fmt(volumeRatio) + " / closePos " + fmt(closePosition) + "\ndistance " + fmt(topVolumeClimaxDistanceAtr) + "ATR"
-    string climaxConfirmCompact = "冲顶失败确认 空\n" + (topConfirmAllowed ? "可挂单" : "待过滤")
+    string rawClimaxFilterReason = topConfirmAllowed ? "passed" : not topSignalGapOk ? "micro_structure_too_close" : not smallStopTrialAllowed(topConfirmEntry, topConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) ? smallStopGateReason(topConfirmEntry, topConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) : topConfirmQty < 1.0 ? "qty_too_small" : "main_flow_filter"
+    string climaxFilterReason = topConfirmAllowed ? "可挂单" : "确认但过滤\n过滤原因: " + reasonCn(rawClimaxFilterReason) + " / " + rawClimaxFilterReason
+    string climaxConfirmDetail = topKey + " ③冷却解除\n④冲顶失败确认 空\n" + climaxFailKind + "\n" + climaxFilterReason + "\nSL 前高+buffer " + fmt(topConfirmStop) + "\nbase " + fmt(lastTopVolumeClimaxBase) + "\nattack H/L " + fmt(lastTopVolumeClimaxHigh) + " / " + fmt(lastTopVolumeClimaxLow) + "\n等待 " + fmt(barsSinceTopVolumeClimax) + "/" + str.tostring(failedBreakConfirmBars) + " bars\n成交量判断: " + volumeJudge + "\nvol/MA " + fmt(volumeRatio) + " / closePos " + fmt(closePosition) + "\ndistance " + fmt(topVolumeClimaxDistanceAtr) + "ATR"
+    string climaxConfirmCompact = topKey + " ④冲顶失败确认 空\n" + (topConfirmAllowed ? "可挂单" : "确认但过滤")
     if flowLabelsVisible
         label.new(bar_index, high + atr * 1.35, flowLabelText(climaxConfirmCompact, climaxConfirmDetail), style=flowStyle(-1), color=flowColor("confirmed", -1), textcolor=labelTextColor("confirmed", -1), size=flowLabelSize(), tooltip=flowLabelTooltip(climaxConfirmDetail))
 
@@ -1483,10 +1657,17 @@ bool volumeBlockedTop = confirmed and showSignalEventFlow and selectedDirection 
 bool volumeBlockedBottom = confirmed and showSignalEventFlow and selectedDirection == 0 and strongBottomProbeZone and (bottomFirstExhaustion or bottomRightShoulder) and attackDownCooling and not bottomSweepFailed
 if volumeBlockedTop or volumeBlockedBottom
     int blockedDirection = volumeBlockedTop ? -1 : 1
+    if volumeBlockedTop and activeTopDecisionSeq == 0
+        topDecisionSeq += 1
+        activeTopDecisionSeq := topDecisionSeq
+    if volumeBlockedBottom and activeBottomDecisionSeq == 0
+        bottomDecisionSeq += 1
+        activeBottomDecisionSeq := bottomDecisionSeq
+    string blockedKey = blockedDirection == -1 ? "T" + str.tostring(activeTopDecisionSeq) : "B" + str.tostring(activeBottomDecisionSeq)
     string blockedVolumeReason = volumeBlockedTop ? (volumeAttackUp ? "volume_attack_up_no_short" : "attack_volume_cooling") : (volumeAttackDown ? "volume_attack_down_no_long" : "attack_volume_cooling")
     bool breakoutWatch = volumeBlockedTop ? recentTopSweepWindow : recentBottomSweepWindow
-    string blockedDetail = (breakoutWatch ? "突破观察 " : "过滤 ") + dirName(blockedDirection) + "\n原因: " + blockedVolumeReason + (breakoutWatch ? "\n等" + str.tostring(failedBreakConfirmBars) + "根内收回，不挂单" : "\n放量攻击后仍在冷却，不做预测逆向") + "\ncooling " + fmt(volumeBlockedTop ? barsSinceAttackUp : barsSinceAttackDown) + "/" + str.tostring(attackVolumeCooldownBars) + " bars\nvol/MA " + fmt(volumeRatio) + " / closePos " + fmt(closePosition) + "\n结构区 " + fmt(volumeBlockedTop ? topZoneLow : bottomZoneLow) + " - " + fmt(volumeBlockedTop ? topZoneHigh : bottomZoneHigh)
-    string blockedCompact = breakoutWatch ? "突破观察 " + dirName(blockedDirection) + "\n等" + str.tostring(failedBreakConfirmBars) + "根内收回" : "过滤 " + dirName(blockedDirection) + "\n" + blockedVolumeReason
+    string blockedDetail = blockedKey + " ②冷却中 " + dirName(blockedDirection) + "\n原因: " + reasonCn(blockedVolumeReason) + " / " + blockedVolumeReason + (breakoutWatch ? "\n突破观察，等" + str.tostring(failedBreakConfirmBars) + "根内收回，不挂单" : "\n放量攻击后仍在冷却，不做预测逆向") + "\n成交量判断: " + volumeJudge + "\ncooling " + fmt(volumeBlockedTop ? barsSinceAttackUp : barsSinceAttackDown) + "/" + str.tostring(attackVolumeCooldownBars) + " bars\nvol/MA " + fmt(volumeRatio) + " / closePos " + fmt(closePosition) + "\n结构区 " + fmt(volumeBlockedTop ? topZoneLow : bottomZoneLow) + " - " + fmt(volumeBlockedTop ? topZoneHigh : bottomZoneHigh)
+    string blockedCompact = blockedKey + " ②冷却中 " + dirName(blockedDirection) + "\n" + reasonCn(blockedVolumeReason)
     if flowLabelsVisible
         label.new(bar_index, blockedDirection == 1 ? low - atr * 1.2 : high + atr * 1.2, flowLabelText(blockedCompact, blockedDetail), style=flowStyle(blockedDirection), color=flowColor("blocked", blockedDirection), textcolor=labelTextColor("blocked", blockedDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(blockedDetail))
 
@@ -1494,16 +1675,30 @@ bool weakNewTopWatchEvent = confirmed and showSignalEventFlow and selectedDirect
 bool weakNewBottomWatchEvent = confirmed and showSignalEventFlow and selectedDirection == 0 and bottomWeakNewLowWatch and not bottomWeakNewLowConfirmed and not bottomAccumulationRiseConfirmed
 if weakNewTopWatchEvent or weakNewBottomWatchEvent
     int weakWatchDirection = weakNewTopWatchEvent ? -1 : 1
-    string weakWatchDetail = (weakNewTopWatchEvent ? "弱新高观察 空\n新高缩量\n等待弱收确认" : "弱新低观察 多\n新低缩量\n等待强收确认") + "\n不挂单\nbase " + fmt(weakNewTopWatchEvent ? topWeakBase : bottomWeakBase) + "\next " + fmt(weakNewTopWatchEvent ? topWeakExtensionAtr : bottomWeakExtensionAtr) + "ATR\nvol/MA " + fmt(volumeRatio)
-    string weakWatchCompact = weakNewTopWatchEvent ? "弱新高观察 空\n等待弱收确认" : "弱新低观察 多\n等待强收确认"
+    if weakNewTopWatchEvent
+        topDecisionSeq += 1
+        activeTopDecisionSeq := topDecisionSeq
+    if weakNewBottomWatchEvent
+        bottomDecisionSeq += 1
+        activeBottomDecisionSeq := bottomDecisionSeq
+    string weakKey = weakWatchDirection == -1 ? "T" + str.tostring(activeTopDecisionSeq) : "B" + str.tostring(activeBottomDecisionSeq)
+    string weakWatchDetail = weakKey + " ①" + (weakNewTopWatchEvent ? "弱新高观察 空\n新高缩量\n等待弱收确认" : "弱新低观察 多\n新低缩量\n等待强收确认") + "\n不挂单\n成交量判断: " + volumeJudge + "\nbase " + fmt(weakNewTopWatchEvent ? topWeakBase : bottomWeakBase) + "\next " + fmt(weakNewTopWatchEvent ? topWeakExtensionAtr : bottomWeakExtensionAtr) + "ATR\nvol/MA " + fmt(volumeRatio)
+    string weakWatchCompact = weakNewTopWatchEvent ? weakKey + " ①弱新高观察 空\n等待弱收确认" : weakKey + " ①弱新低观察 多\n等待强收确认"
     if flowLabelsVisible
         label.new(bar_index, weakWatchDirection == 1 ? low - atr * 1.2 : high + atr * 1.2, flowLabelText(weakWatchCompact, weakWatchDetail), style=flowStyle(weakWatchDirection), color=flowColor("blocked", weakWatchDirection), textcolor=labelTextColor("blocked", weakWatchDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(weakWatchDetail))
 
 bool distributionConfirmEvent = confirmed and showSignalEventFlow and (topDistributionDropConfirmed or bottomAccumulationRiseConfirmed)
 if distributionConfirmEvent
     int distributionDirection = topDistributionDropConfirmed ? -1 : 1
-    string distributionDetail = (topDistributionDropConfirmed ? "分歧转空确认\n新高后放量下跌" : "分歧转多确认\n新低后放量上涨") + "\nvolume " + fmt(volumeRatio) + "x / closePos " + fmt(closePosition) + "\nbase " + fmt(topDistributionDropConfirmed ? topWeakBase : bottomWeakBase) + "\ndistance " + fmt(topDistributionDropConfirmed ? topDistributionDistanceAtr : bottomAccumulationDistanceAtr) + "ATR"
-    string distributionCompact = topDistributionDropConfirmed ? "分歧转空确认\n新高后放量下跌" : "分歧转多确认\n新低后放量上涨"
+    if topDistributionDropConfirmed and activeTopDecisionSeq == 0
+        topDecisionSeq += 1
+        activeTopDecisionSeq := topDecisionSeq
+    if bottomAccumulationRiseConfirmed and activeBottomDecisionSeq == 0
+        bottomDecisionSeq += 1
+        activeBottomDecisionSeq := bottomDecisionSeq
+    string distributionKey = distributionDirection == -1 ? "T" + str.tostring(activeTopDecisionSeq) : "B" + str.tostring(activeBottomDecisionSeq)
+    string distributionDetail = distributionKey + " ④" + (topDistributionDropConfirmed ? "分歧转空确认\n新高后放量下跌" : "分歧转多确认\n新低后放量上涨") + "\n成交量判断: " + volumeJudge + "\nvolume " + fmt(volumeRatio) + "x / closePos " + fmt(closePosition) + "\nbase " + fmt(topDistributionDropConfirmed ? topWeakBase : bottomWeakBase) + "\ndistance " + fmt(topDistributionDropConfirmed ? topDistributionDistanceAtr : bottomAccumulationDistanceAtr) + "ATR"
+    string distributionCompact = topDistributionDropConfirmed ? distributionKey + " ④分歧转空确认\n新高后放量下跌" : distributionKey + " ④分歧转多确认\n新低后放量上涨"
     if flowLabelsVisible
         label.new(bar_index, distributionDirection == 1 ? low - atr * 1.35 : high + atr * 1.35, flowLabelText(distributionCompact, distributionDetail), style=flowStyle(distributionDirection), color=flowColor("confirmed", distributionDirection), textcolor=labelTextColor("confirmed", distributionDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(distributionDetail))
 
@@ -1511,9 +1706,16 @@ bool exhaustionWatchTop = confirmed and showSignalEventFlow and selectedDirectio
 bool exhaustionWatchBottom = confirmed and showSignalEventFlow and selectedDirection == 0 and dayRangeClear and bottomRightShoulder and bottomRetestBand and lowerNoVolumeExpansion and bottomMomentumDecayed and not lowerExhaustionConfirmedLong
 if exhaustionWatchTop or exhaustionWatchBottom
     int watchDirection = exhaustionWatchTop ? -1 : 1
+    if exhaustionWatchTop and activeTopDecisionSeq == 0
+        topDecisionSeq += 1
+        activeTopDecisionSeq := topDecisionSeq
+    if exhaustionWatchBottom and activeBottomDecisionSeq == 0
+        bottomDecisionSeq += 1
+        activeBottomDecisionSeq := bottomDecisionSeq
+    string watchKey = watchDirection == -1 ? "T" + str.tostring(activeTopDecisionSeq) : "B" + str.tostring(activeBottomDecisionSeq)
     string watchReason = exhaustionWatchTop ? topExhaustionReason : bottomExhaustionReason
-    string watchDetail = (exhaustionWatchTop ? "前高二测：多单止盈区，等待确认做空" : "前低二测：空单止盈区，等待确认做多") + "\n原因: " + watchReason + "\nvol/MA " + fmt(volumeRatio) + " / MDecay " + fmt(exhaustionWatchTop ? topMomentumDecayRatio : bottomMomentumDecayRatio) + "\n连续衰减 " + fmt(exhaustionWatchTop ? topDecayStreak * 1.0 : bottomDecayStreak * 1.0) + "/" + str.tostring(exhaustionDecayConfirmBars) + "\n日内高低 " + fmt(dayRangeAtr) + "ATR"
-    string watchCompact = (exhaustionWatchTop ? "前高二测" : "前低二测") + "\n等确认"
+    string watchDetail = watchKey + " ①观察 " + dirName(watchDirection) + "\n" + (exhaustionWatchTop ? "前高二测：多单止盈区，等待确认做空" : "前低二测：空单止盈区，等待确认做多") + "\n原因: " + reasonCn(watchReason) + " / " + watchReason + "\n成交量判断: " + volumeJudge + "\nvol/MA " + fmt(volumeRatio) + " / MDecay " + fmt(exhaustionWatchTop ? topMomentumDecayRatio : bottomMomentumDecayRatio) + "\n连续衰减 " + fmt(exhaustionWatchTop ? topDecayStreak * 1.0 : bottomDecayStreak * 1.0) + "/" + str.tostring(exhaustionDecayConfirmBars) + "\n日内高低 " + fmt(dayRangeAtr) + "ATR"
+    string watchCompact = watchKey + " ①" + (exhaustionWatchTop ? "前高二测" : "前低二测") + "\n等确认"
     if flowLabelsVisible
         label.new(bar_index, watchDirection == 1 ? low - atr * 1.2 : high + atr * 1.2, flowLabelText(watchCompact, watchDetail), style=flowStyle(watchDirection), color=flowColor("blocked", watchDirection), textcolor=labelTextColor("blocked", watchDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(watchDetail))
 
@@ -1521,9 +1723,16 @@ bool unconfirmedTopWatch = confirmed and showSignalEventFlow and selectedDirecti
 bool unconfirmedBottomWatch = confirmed and showSignalEventFlow and selectedDirection == 0 and strongBottomProbeZone and (bottomFirstExhaustion or bottomRightShoulder) and not bottomConfirmAllowed and not volumeBlockedBottom and not exhaustionWatchBottom
 if unconfirmedTopWatch or unconfirmedBottomWatch
     int waitDirection = unconfirmedTopWatch ? -1 : 1
+    if unconfirmedTopWatch and activeTopDecisionSeq == 0
+        topDecisionSeq += 1
+        activeTopDecisionSeq := topDecisionSeq
+    if unconfirmedBottomWatch and activeBottomDecisionSeq == 0
+        bottomDecisionSeq += 1
+        activeBottomDecisionSeq := bottomDecisionSeq
+    string waitKey = waitDirection == -1 ? "T" + str.tostring(activeTopDecisionSeq) : "B" + str.tostring(activeBottomDecisionSeq)
     string waitReason = unconfirmedTopWatch ? topProbeFilterReason : bottomProbeFilterReason
-    string waitDetail = "观察 " + dirName(waitDirection) + "\n未确认，不挂单\n原因: " + waitReason + "\n只有 confirmed_limit 才会画 plan 并联动 Core/IBKR\n结构区 " + fmt(unconfirmedTopWatch ? topZoneLow : bottomZoneLow) + " - " + fmt(unconfirmedTopWatch ? topZoneHigh : bottomZoneHigh)
-    string waitCompact = "观察 " + dirName(waitDirection) + "\n未确认，不挂单"
+    string waitDetail = waitKey + " ①观察 " + dirName(waitDirection) + "\n未确认，不挂单\n原因: " + reasonCn(waitReason) + " / " + waitReason + "\n只有 confirmed_limit 才会画 plan 并联动 Core/IBKR\n成交量判断: " + volumeJudge + "\n结构区 " + fmt(unconfirmedTopWatch ? topZoneLow : bottomZoneLow) + " - " + fmt(unconfirmedTopWatch ? topZoneHigh : bottomZoneHigh)
+    string waitCompact = waitKey + " ①观察 " + dirName(waitDirection) + "\n未确认，不挂单"
     if flowLabelsVisible
         label.new(bar_index, waitDirection == 1 ? low - atr * 1.2 : high + atr * 1.2, flowLabelText(waitCompact, waitDetail), style=flowStyle(waitDirection), color=flowColor("blocked", waitDirection), textcolor=labelTextColor("blocked", waitDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(waitDetail))
 

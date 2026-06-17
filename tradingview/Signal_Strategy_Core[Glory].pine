@@ -292,6 +292,8 @@ var float todayStructHighZoneLow = na
 var float todayStructHighZoneHigh = na
 var float todayStructLowZoneLow = na
 var float todayStructLowZoneHigh = na
+var float breakoutHighZoneHigh = na
+var float breakoutLowZoneLow = na
 var int todayStructHighBar = na
 var int todayStructLowBar = na
 var float lowBeforeStructHigh = na
@@ -358,6 +360,8 @@ if confirmed and referenceDayReset
     todayStructHighZoneHigh := na
     todayStructLowZoneLow := na
     todayStructLowZoneHigh := na
+    breakoutHighZoneHigh := na
+    breakoutLowZoneLow := na
     todayStructHighBar := na
     todayStructLowBar := na
     lowBeforeStructHigh := na
@@ -418,26 +422,94 @@ if confirmed and volumeAttackDown
 if confirmed and inReferenceSession
     float prevSessionHigh = todayHigh
     float prevSessionLow = todayLow
-    if na(todayHigh) or high > todayHigh
+    bool newSessionHigh = na(todayHigh) or high > todayHigh
+    bool newSessionLow = na(todayLow) or low < todayLow
+    if newSessionHigh
         todayHigh := high
         todayHighBar := bar_index
         lowBeforeTodayHigh := na(prevSessionLow) ? low : prevSessionLow
-    if na(todayLow) or low < todayLow
+    if newSessionLow
         todayLow := low
         todayLowBar := bar_index
         highBeforeTodayLow := na(prevSessionHigh) ? high : prevSessionHigh
+    bool sameClusterHighLift = newSessionHigh and not upperBreakAcceptedRegime and not na(todayStructHigh) and confirmed and todayHigh > todayStructHigh + tickBuffer
+    if sameClusterHighLift
+        float highBand = atr * structureClusterBandAtr
+        float oldStructHigh = todayStructHigh
+        bool highFarEnough = math.abs(todayHigh - oldStructHigh) >= atr * minStructureSeparationAtr
+        bool highMiddleSwingOk = not na(lowSinceStructHigh) and oldStructHigh - lowSinceStructHigh >= atr * minMiddleSwingAtr
+        bool highIndependent = highFarEnough and highMiddleSwingOk
+        breakoutHighZoneHigh := na(breakoutHighZoneHigh) ? todayStructHighZoneHigh : breakoutHighZoneHigh
+        if highIndependent
+            prevStructHigh := oldStructHigh
+            breakoutHighZoneHigh := todayHigh + highBand
+            topBreakAcceptStreak := 0
+            upperBreakAcceptedRegime := false
+            lastTopSweepBar := na
+            lastTopSweepPrice := na
+            lastTopSweepVolumeAttack := false
+            lastWeakNewHighBar := na
+            lastWeakNewHighLow := na
+            lastWeakNewHighHigh := na
+            lastTopVolumeClimaxBar := na
+            lastTopVolumeClimaxHigh := na
+            lastTopVolumeClimaxLow := na
+            lastTopVolumeClimaxBase := na
+            lastTopVolumeClimaxVolumeRatio := na
+        todayStructHigh := todayHigh
+        todayStructHighBar := todayHighBar
+        todayStructHighZoneLow := todayHigh - highBand
+        todayStructHighZoneHigh := todayHigh + highBand
+        lowBeforeStructHigh := highIndependent or na(lowBeforeStructHigh) ? (na(lowBeforeTodayHigh) ? low : lowBeforeTodayHigh) : lowBeforeStructHigh
+        lowSinceStructHigh := low
+        lowSinceStructHighBar := bar_index
+        topExhaustionUsed := false
+        topDecayStreak := 0
+        lastProcessedHighCandidateBar := todayHighBar
+    bool sameClusterLowLift = newSessionLow and not lowerBreakAcceptedRegime and not na(todayStructLow) and confirmed and todayLow < todayStructLow - tickBuffer
+    if sameClusterLowLift
+        float lowBand = atr * structureClusterBandAtr
+        float oldStructLow = todayStructLow
+        bool lowFarEnough = math.abs(todayLow - oldStructLow) >= atr * minStructureSeparationAtr
+        bool lowMiddleSwingOk = not na(highSinceStructLow) and highSinceStructLow - oldStructLow >= atr * minMiddleSwingAtr
+        bool lowIndependent = lowFarEnough and lowMiddleSwingOk
+        breakoutLowZoneLow := na(breakoutLowZoneLow) ? todayStructLowZoneLow : breakoutLowZoneLow
+        if lowIndependent
+            prevStructLow := oldStructLow
+            breakoutLowZoneLow := todayLow - lowBand
+            bottomBreakAcceptStreak := 0
+            lowerBreakAcceptedRegime := false
+            lastBottomSweepBar := na
+            lastBottomSweepPrice := na
+            lastBottomSweepVolumeAttack := false
+            lastWeakNewLowBar := na
+            lastWeakNewLowHigh := na
+            lastWeakNewLowLow := na
+        todayStructLow := todayLow
+        todayStructLowBar := todayLowBar
+        todayStructLowZoneLow := todayLow - lowBand
+        todayStructLowZoneHigh := todayLow + lowBand
+        highBeforeStructLow := lowIndependent or na(highBeforeStructLow) ? (na(highBeforeTodayLow) ? high : highBeforeTodayLow) : highBeforeStructLow
+        highSinceStructLow := high
+        highSinceStructLowBar := bar_index
+        bottomExhaustionUsed := false
+        bottomDecayStreak := 0
+        lastProcessedLowCandidateBar := todayLowBar
     bool highConfirmed = not na(todayHighBar) and bar_index - todayHighBar >= dayStructConfirmBars and todayHigh - low >= atr * dayStructMinReversalAtr
     if highConfirmed and (na(lastProcessedHighCandidateBar) or todayHighBar != lastProcessedHighCandidateBar)
         float highBand = atr * structureClusterBandAtr
         bool highHasAnchor = not na(todayStructHigh)
         bool highFarEnough = not highHasAnchor or math.abs(todayHigh - todayStructHigh) >= atr * minStructureSeparationAtr
         bool highMiddleSwingOk = not highHasAnchor or not na(lowSinceStructHigh) and todayStructHigh - lowSinceStructHigh >= atr * minMiddleSwingAtr
-        if not highHasAnchor or highFarEnough and highMiddleSwingOk
+        bool highMovesAnchor = not highHasAnchor or confirmed and todayHigh > todayStructHigh + tickBuffer
+        bool highIndependent = not highHasAnchor or highFarEnough and highMiddleSwingOk
+        if highMovesAnchor and highIndependent
             prevStructHigh := todayStructHigh
             todayStructHigh := todayHigh
             todayStructHighBar := todayHighBar
             todayStructHighZoneLow := todayHigh - highBand
             todayStructHighZoneHigh := todayHigh + highBand
+            breakoutHighZoneHigh := todayStructHighZoneHigh
             lowBeforeStructHigh := na(lowBeforeTodayHigh) ? low : lowBeforeTodayHigh
             lowSinceStructHigh := low
             lowSinceStructHighBar := bar_index
@@ -456,9 +528,17 @@ if confirmed and inReferenceSession
             lastTopVolumeClimaxLow := na
             lastTopVolumeClimaxBase := na
             lastTopVolumeClimaxVolumeRatio := na
-        else
-            todayStructHighZoneLow := na(todayStructHighZoneLow) ? todayHigh - highBand : math.min(todayStructHighZoneLow, todayHigh - highBand)
-            todayStructHighZoneHigh := na(todayStructHighZoneHigh) ? todayHigh + highBand : math.max(todayStructHighZoneHigh, todayHigh + highBand)
+        else if highMovesAnchor
+            breakoutHighZoneHigh := na(breakoutHighZoneHigh) ? todayStructHighZoneHigh : breakoutHighZoneHigh
+            todayStructHigh := todayHigh
+            todayStructHighBar := todayHighBar
+            todayStructHighZoneLow := todayHigh - highBand
+            todayStructHighZoneHigh := todayHigh + highBand
+            lowBeforeStructHigh := na(lowBeforeStructHigh) ? (na(lowBeforeTodayHigh) ? low : lowBeforeTodayHigh) : lowBeforeStructHigh
+            lowSinceStructHigh := low
+            lowSinceStructHighBar := bar_index
+            topExhaustionUsed := false
+            topDecayStreak := 0
         lastProcessedHighCandidateBar := todayHighBar
     bool lowConfirmed = not na(todayLowBar) and bar_index - todayLowBar >= dayStructConfirmBars and high - todayLow >= atr * dayStructMinReversalAtr
     if lowConfirmed and (na(lastProcessedLowCandidateBar) or todayLowBar != lastProcessedLowCandidateBar)
@@ -466,12 +546,15 @@ if confirmed and inReferenceSession
         bool lowHasAnchor = not na(todayStructLow)
         bool lowFarEnough = not lowHasAnchor or math.abs(todayLow - todayStructLow) >= atr * minStructureSeparationAtr
         bool lowMiddleSwingOk = not lowHasAnchor or not na(highSinceStructLow) and highSinceStructLow - todayStructLow >= atr * minMiddleSwingAtr
-        if not lowHasAnchor or lowFarEnough and lowMiddleSwingOk
+        bool lowMovesAnchor = not lowHasAnchor or confirmed and todayLow < todayStructLow - tickBuffer
+        bool lowIndependent = not lowHasAnchor or lowFarEnough and lowMiddleSwingOk
+        if lowMovesAnchor and lowIndependent
             prevStructLow := todayStructLow
             todayStructLow := todayLow
             todayStructLowBar := todayLowBar
             todayStructLowZoneLow := todayLow - lowBand
             todayStructLowZoneHigh := todayLow + lowBand
+            breakoutLowZoneLow := todayStructLowZoneLow
             highBeforeStructLow := na(highBeforeTodayLow) ? high : highBeforeTodayLow
             highSinceStructLow := high
             highSinceStructLowBar := bar_index
@@ -485,11 +568,19 @@ if confirmed and inReferenceSession
             lastWeakNewLowBar := na
             lastWeakNewLowHigh := na
             lastWeakNewLowLow := na
-        else
-            todayStructLowZoneLow := na(todayStructLowZoneLow) ? todayLow - lowBand : math.min(todayStructLowZoneLow, todayLow - lowBand)
-            todayStructLowZoneHigh := na(todayStructLowZoneHigh) ? todayLow + lowBand : math.max(todayStructLowZoneHigh, todayLow + lowBand)
+        else if lowMovesAnchor
+            breakoutLowZoneLow := na(breakoutLowZoneLow) ? todayStructLowZoneLow : breakoutLowZoneLow
+            todayStructLow := todayLow
+            todayStructLowBar := todayLowBar
+            todayStructLowZoneLow := todayLow - lowBand
+            todayStructLowZoneHigh := todayLow + lowBand
+            highBeforeStructLow := na(highBeforeStructLow) ? (na(highBeforeTodayLow) ? high : highBeforeTodayLow) : highBeforeStructLow
+            highSinceStructLow := high
+            highSinceStructLowBar := bar_index
+            bottomExhaustionUsed := false
+            bottomDecayStreak := 0
         lastProcessedLowCandidateBar := todayLowBar
-    bool upperBreakAccepting = not na(todayStructHighZoneHigh) and not na(todayStructLow) and close > todayStructHighZoneHigh + atr * structureBreakAcceptCloseAtr
+    bool upperBreakAccepting = not na(breakoutHighZoneHigh) and not na(todayStructLow) and close > breakoutHighZoneHigh + atr * structureBreakAcceptCloseAtr
     topBreakAcceptStreak := upperBreakAccepting ? topBreakAcceptStreak + 1 : 0
     if topBreakAcceptStreak >= structureBreakAcceptBars and not na(todayHigh)
         float highBand = atr * structureClusterBandAtr
@@ -498,6 +589,7 @@ if confirmed and inReferenceSession
         todayStructHighBar := todayHighBar
         todayStructHighZoneLow := todayHigh - highBand
         todayStructHighZoneHigh := todayHigh + highBand
+        breakoutHighZoneHigh := todayStructHighZoneHigh
         lowBeforeStructHigh := na(lowSinceStructHigh) ? (na(lowBeforeTodayHigh) ? low : lowBeforeTodayHigh) : lowSinceStructHigh
         lowSinceStructHigh := low
         lowSinceStructHighBar := bar_index
@@ -520,7 +612,7 @@ if confirmed and inReferenceSession
         lastTopVolumeClimaxBase := na
         lastTopVolumeClimaxVolumeRatio := na
         upperStructureBreakAccepted := true
-    bool lowerBreakAccepting = not na(todayStructLowZoneLow) and not na(todayStructHigh) and close < todayStructLowZoneLow - atr * structureBreakAcceptCloseAtr
+    bool lowerBreakAccepting = not na(breakoutLowZoneLow) and not na(todayStructHigh) and close < breakoutLowZoneLow - atr * structureBreakAcceptCloseAtr
     bottomBreakAcceptStreak := lowerBreakAccepting ? bottomBreakAcceptStreak + 1 : 0
     if bottomBreakAcceptStreak >= structureBreakAcceptBars and not na(todayLow)
         float lowBand = atr * structureClusterBandAtr
@@ -529,6 +621,7 @@ if confirmed and inReferenceSession
         todayStructLowBar := todayLowBar
         todayStructLowZoneLow := todayLow - lowBand
         todayStructLowZoneHigh := todayLow + lowBand
+        breakoutLowZoneLow := todayStructLowZoneLow
         highBeforeStructLow := na(highSinceStructLow) ? (na(highBeforeTodayLow) ? high : highBeforeTodayLow) : highSinceStructLow
         highSinceStructLow := high
         highSinceStructLowBar := bar_index
@@ -553,6 +646,7 @@ if confirmed and inReferenceSession
         todayStructHighBar := todayHighBar
         todayStructHighZoneLow := todayHigh - highBand
         todayStructHighZoneHigh := todayHigh + highBand
+        breakoutHighZoneHigh := todayStructHighZoneHigh
         lowSinceStructHigh := low
         lowSinceStructHighBar := bar_index
         topExhaustionUsed := false
@@ -576,6 +670,7 @@ if confirmed and inReferenceSession
         todayStructLowBar := todayLowBar
         todayStructLowZoneLow := todayLow - lowBand
         todayStructLowZoneHigh := todayLow + lowBand
+        breakoutLowZoneLow := todayStructLowZoneLow
         highSinceStructLow := high
         highSinceStructLowBar := bar_index
         bottomExhaustionUsed := false
