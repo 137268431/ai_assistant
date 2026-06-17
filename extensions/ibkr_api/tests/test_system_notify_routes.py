@@ -24,12 +24,22 @@ if "flask" not in sys.modules:
     class _FakeFlask:
         def __init__(self, name):
             self.name = name
+            self.logger = SimpleNamespace(debug=lambda *args, **kwargs: None)
 
         def route(self, _path, methods=None):
             def decorator(func):
                 return func
 
             return decorator
+
+        def before_request(self, func):
+            return func
+
+        def after_request(self, func):
+            return func
+
+        def teardown_request(self, func):
+            return func
 
     flask_stub.Flask = _FakeFlask
     flask_stub.Response = object
@@ -44,10 +54,51 @@ if "flask" not in sys.modules:
     sys.modules["flask"] = flask_stub
 
 from ibkr_api import api_app as api_app_mod
-from ibkr_api.system.events import system_event_chat_id
+from ibkr_api.system.events import build_system_event_card, system_event_chat_id
+
+
+def _build_system_event_card(title, detail=None, *, level="info"):
+    return build_system_event_card(
+        level,
+        "ibkr_api",
+        title,
+        detail or {},
+        "live",
+        normalize_environment=lambda value, default="live": str(value or default),
+        add_environment_to_detail=lambda value, environment: dict(value or {}, environment=environment),
+        time_strings=lambda: {"us": "2026-06-17 05:45:28", "cn": "2026-06-17 17:45:28"},
+        system_page_url=lambda environment: "",
+        label_title_with_environment=lambda title, environment: f"[{environment.upper()}] {title}",
+    )
 
 
 class SystemNotifyRoutesTest(unittest.TestCase):
+    def test_recovery_event_card_uses_green_header(self):
+        card = _build_system_event_card(
+            "IBKR 行情会话冲突已恢复",
+            {"已恢复诊断码": "market_data_session_conflict", "恢复时间": "2026-06-17 05:41:21"},
+        )
+
+        self.assertEqual("green", card["header"]["template"])
+
+    def test_partial_recovery_event_card_uses_green_header(self):
+        card = _build_system_event_card(
+            "IBKR 系统部分恢复",
+            {"已恢复诊断码": "services_offline:1", "仍存在诊断码": "no_active_targets"},
+        )
+
+        self.assertEqual("green", card["header"]["template"])
+
+    def test_regular_info_event_card_stays_blue(self):
+        card = _build_system_event_card("Compute startup completed", {"reason": "ok"})
+
+        self.assertEqual("blue", card["header"]["template"])
+
+    def test_unrecovered_info_event_card_does_not_match_recovery_color(self):
+        card = _build_system_event_card("IBKR Runtime 未恢复", {"诊断码": "runtime_unavailable"})
+
+        self.assertEqual("blue", card["header"]["template"])
+
     def test_backtest_event_uses_backtest_chat_id(self):
         values = {
             "backtest_chat_id": "oc_backtest",
@@ -115,7 +166,7 @@ class SystemNotifyRoutesTest(unittest.TestCase):
                 "level": "info",
                 "source": "ibkr_compute",
                 "environment": "paper",
-                "title": "[PAPER] IBKR 健康上报",
+                "title": "[Broker PAPER] IBKR 健康上报",
                 "detail": {
                     "environment": "paper",
                     "et_time": "2026-04-23 09:30:00",

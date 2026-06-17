@@ -19,6 +19,7 @@ SYSTEM_EVENT_LEVEL_META = {
     "warning": {"emoji": "⚠️", "template": "orange"},
     "error": {"emoji": "🚨", "template": "red"},
 }
+SYSTEM_EVENT_RECOVERY_TEMPLATE = "green"
 SYSTEM_EVENT_HIDDEN_DETAIL_KEYS = {
     "今日bars",
     "indicator",
@@ -75,6 +76,23 @@ def system_event_level_meta(level: str) -> dict[str, str]:
     return SYSTEM_EVENT_LEVEL_META.get(str(level or "info").strip().lower(), SYSTEM_EVENT_LEVEL_META["info"])
 
 
+def likely_recovery_system_event(level: str, title: Any, detail_fields: Any) -> bool:
+    if str(level or "info").strip().lower() != "info":
+        return False
+    title_text = str(title or "").strip()
+    if title_text.endswith("已恢复") or "部分恢复" in title_text:
+        return True
+    if not isinstance(detail_fields, dict):
+        return False
+    return any(str(key).startswith("已恢复") for key in detail_fields)
+
+
+def system_event_header_template(level: str, title: Any, detail_fields: Any) -> str:
+    if likely_recovery_system_event(level, title, detail_fields):
+        return SYSTEM_EVENT_RECOVERY_TEMPLATE
+    return system_event_level_meta(level)["template"]
+
+
 
 def build_system_event_card(
     level: str,
@@ -116,7 +134,7 @@ def build_system_event_card(
         "config": {"wide_screen_mode": True},
         "header": {
             "title": {"tag": "plain_text", "content": f"{level_meta['emoji']} {label_title_with_environment(title, runtime_environment)}"},
-            "template": level_meta["template"],
+            "template": system_event_header_template(level, title, detail_fields),
         },
         "elements": [{"tag": "markdown", "content": "\n".join(lines)}],
     }
