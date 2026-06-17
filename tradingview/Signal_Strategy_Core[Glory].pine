@@ -191,6 +191,21 @@ calcTrialQty(float entryPrice, float stopPrice, float maxRiskDollars) =>
 calcTargetAtR(float entryPrice, float stopPrice, int direction, float rMultiple) =>
     entryPrice + riskPerShare(entryPrice, stopPrice) * rMultiple * direction
 
+structureSafetyTarget(float entryPrice, float rTarget, int direction, float structureLevel, float bufferValue) =>
+    float bufferedTarget = direction == 1 and not na(structureLevel) ? structureLevel - bufferValue : direction == -1 and not na(structureLevel) ? structureLevel + bufferValue : na
+    bool hasStructureTarget = not na(bufferedTarget) and not na(entryPrice)
+    bool beyondEntry = hasStructureTarget and (direction == 1 ? bufferedTarget > entryPrice : direction == -1 ? bufferedTarget < entryPrice : false)
+    bool fartherThanR = hasStructureTarget and (na(rTarget) or (direction == 1 ? bufferedTarget > rTarget : direction == -1 ? bufferedTarget < rTarget : false))
+    beyondEntry and fartherThanR ? bufferedTarget : rTarget
+
+floatingStructureStop(int direction, float currentStop, float pivotLowValue, float pivotHighValue, float currentClose, float bufferValue) =>
+    float candidate = direction == 1 and not na(pivotLowValue) and pivotLowValue < currentClose ? pivotLowValue - bufferValue : direction == -1 and not na(pivotHighValue) and pivotHighValue > currentClose ? pivotHighValue + bufferValue : na
+    bool improves = not na(candidate) and not na(currentStop) and (direction == 1 ? candidate > currentStop : direction == -1 ? candidate < currentStop : false)
+    improves ? candidate : na
+
+looserStop(float rawStop, float structureStop, int direction) =>
+    na(structureStop) ? rawStop : direction == 1 ? math.min(rawStop, structureStop) : math.max(rawStop, structureStop)
+
 levelNear(float level, float basis, float tolerance) =>
     not na(level) and not na(basis) and math.abs(level - basis) <= tolerance
 
@@ -1384,7 +1399,11 @@ float selectedMaxStopAtr = selectedDirection != 0 ? confirmedMaxStopAtr : na
 float selectedMaxStopBps = selectedDirection != 0 ? confirmedMaxStopBps : na
 float selectedActivationR = selectedDirection != 0 ? confirmedRunnerActivationR : na
 float selectedRunnerActivation = selectedDirection != 0 ? calcTargetAtR(selectedEntry, selectedStop, selectedDirection, selectedActivationR) : na
-float selectedTarget = selectedDirection != 0 ? calcTargetAtR(selectedEntry, selectedStop, selectedDirection, runnerSafetyR) : na
+float selectedTargetByR = selectedDirection != 0 ? calcTargetAtR(selectedEntry, selectedStop, selectedDirection, runnerSafetyR) : na
+float topProbeTargetBase = na(lowSinceStructHigh[1]) ? lowSinceStructHigh : lowSinceStructHigh[1]
+float bottomProbeTargetBase = na(highSinceStructLow[1]) ? highSinceStructLow : highSinceStructLow[1]
+float selectedStructureTargetBase = selectedLong ? (selectedTrendSupport ? todayStructHigh : bottomProbeTargetBase) : selectedShort ? (selectedTrendResistance ? todayStructLow : topProbeTargetBase) : na
+float selectedTarget = selectedDirection != 0 ? structureSafetyTarget(selectedEntry, selectedTargetByR, selectedDirection, selectedStructureTargetBase, invalidationBuffer) : na
 float selectedStopDistanceAtr = stopDistanceAtr(selectedEntry, selectedStop, atr)
 float selectedStopDistanceBps = stopDistanceBps(selectedEntry, selectedStop)
 float selectedExpectedR = selectedDirection != 0 and riskPerShare(selectedEntry, selectedStop) > 0.0 ? math.abs(selectedTarget - selectedEntry) / riskPerShare(selectedEntry, selectedStop) : na
@@ -1826,17 +1845,22 @@ if confirmed and activePosition and hasOpenStrategyPosition
         activeRunnerActive := true
         riskReason := "runner_activation"
     if activeRunnerActive
-        float trailStop = activeDirection == 1 ? activeRunnerExtreme - atr * runnerTrailAtrMult : activeRunnerExtreme + atr * runnerTrailAtrMult
+        float rawTrailStop = activeDirection == 1 ? activeRunnerExtreme - atr * runnerTrailAtrMult : activeRunnerExtreme + atr * runnerTrailAtrMult
+        float structureTrailStop = floatingStructureStop(activeDirection, activeStop, lastPivotLow, lastPivotHigh, close, invalidationBuffer)
+        float trailStop = looserStop(rawTrailStop, structureTrailStop, activeDirection)
         float improvedStop = activeDirection == 1 ? math.max(activeStop, trailStop) : math.min(activeStop, trailStop)
         if priceChanged(activeStop, improvedStop)
             activeStop := improvedStop
             riskReason := riskReason == "" ? "runner_trail_stop" : riskReason
     if not activeRunnerActive and barsInTrade >= noFollowThroughBars and activeMfeR < noFollowThroughMinMfeR
-        float compressedStop = activeEntry - activeInitialRisk * noFollowThroughCompressedStopR * activeDirection
-        float improvedStop = activeDirection == 1 ? math.max(activeStop, compressedStop) : math.min(activeStop, compressedStop)
-        if priceChanged(activeStop, improvedStop)
-            activeStop := improvedStop
-            riskReason := "no_follow_through_compress_stop"
+        float structureCompressStop = floatingStructureStop(activeDirection, activeStop, lastPivotLow, lastPivotHigh, close, invalidationBuffer)
+        if not na(structureCompressStop)
+            float rawCompressedStop = activeEntry - activeInitialRisk * noFollowThroughCompressedStopR * activeDirection
+            float compressedStop = looserStop(rawCompressedStop, structureCompressStop, activeDirection)
+            float improvedStop = activeDirection == 1 ? math.max(activeStop, compressedStop) : math.min(activeStop, compressedStop)
+            if priceChanged(activeStop, improvedStop)
+                activeStop := improvedStop
+                riskReason := "no_follow_through_compress_stop"
     bool exhaustionProtectNow = activeMfeR >= exhaustionProtectMinMfeR and (activeDirection == 1 ? upperExhaustionZone : lowerExhaustionZone)
     bool exhaustionExitNow = activeMfeR >= exhaustionProtectMinMfeR and (activeDirection == 1 ? upperExhaustionConfirmedShort : lowerExhaustionConfirmedLong)
     if exhaustionExitNow
