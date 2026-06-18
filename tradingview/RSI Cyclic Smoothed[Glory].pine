@@ -1,0 +1,260 @@
+//@version=6
+indicator(title="RSI Cyclic Smoothed[Glory]", shorttitle="cRSI[Glory]", overlay=false, max_lines_count=500, max_labels_count=500)
+
+// ──────────────────────────────────────
+// 参数
+// ──────────────────────────────────────
+domcycle    = input.int(20, title="主周期长度", minval=10, group="① cRSI", tooltip="主导周期长度\n5分钟图建议20~40\n日线建议10~20")
+vibration   = input.int(6, title="平滑振动", minval=1, group="① cRSI", tooltip="EMA平滑参数\n5分钟图建议4~8(快速响应)\n日线建议10~15(平滑)")
+leveling    = input.float(10.0, title="动态带百分位", minval=1, maxval=49, step=1, group="① cRSI", tooltip="动态上下带的百分位\n10=上下各排除10%极值")
+
+// ──────────────────────────────────────
+// 背离参数
+// ──────────────────────────────────────
+divLookback = input.int(4, title="Pivot回看", minval=1, maxval=20, group="② 背离", tooltip="Pivot高低点的回看K线数\n越小越快但噪音越多\n5分钟图建议5\n日线建议5")
+divMaxBars  = input.int(30, title="背离最大间距", minval=10, maxval=200, group="② 背离", tooltip="两个Pivot之间的最大K线间距\n5分钟图建议30(≈2.5小时)\n日线建议60")
+showDiv     = input.bool(true, title="显示常规背离线", group="② 背离", tooltip="常规背离: 价格与cRSI方向相反\n趋势反转信号")
+showHidden  = input.bool(true, title="显示隐藏背离线", group="② 背离", tooltip="隐藏背离: 趋势延续中的回调确认\n价格回调未创新低/高但cRSI创了新低/高")
+showDivLabel = input.bool(true, title="显示背离标签", group="② 背离", tooltip="在背离点显示标签")
+showWideDiv    = input.bool(true, title="显示灵敏常规背离", group="③ 灵敏背离", tooltip="价格Pivot主导的常规背离\n不要求cRSI形成Pivot, 更灵敏")
+showWideHidden = input.bool(true, title="显示灵敏隐藏背离", group="③ 灵敏背离", tooltip="价格Pivot主导的隐藏背离\n不要求cRSI形成Pivot, 更灵敏")
+showWideLabel  = input.bool(true, title="显示灵敏背离标签", group="③ 灵敏背离", tooltip="在灵敏背离点显示标签")
+enableDebugLog = input.bool(false, title="调试日志", group="④ 调试", tooltip="输出pivot和背离检测的详细日志\n调试完成后关闭")
+
+// ──────────────────────────────────────
+// cRSI 核心算法
+// ──────────────────────────────────────
+cyclelen     = domcycle / 2
+cyclicmemory = domcycle * 2
+
+torque     = 2.0 / (vibration + 1)
+phasingLag = (vibration - 1) / 2.0
+
+up   = ta.rma(math.max(ta.change(close), 0), cyclelen)
+down = ta.rma(-math.min(ta.change(close), 0), cyclelen)
+rsi  = down == 0 ? 100 : up == 0 ? 0 : 100 - 100 / (1 + up / down)
+
+var float crsi = 0.0
+crsi := torque * (2 * rsi - rsi[math.round(phasingLag)]) + (1 - torque) * nz(crsi[1])
+
+// ──────────────────────────────────────
+// 动态上下带
+// ──────────────────────────────────────
+float lmax = -999999.0
+float lmin = 999999.0
+for i = 0 to cyclicmemory - 1
+    if nz(crsi[i], -999999.0) > lmax
+        lmax := nz(crsi[i])
+    if nz(crsi[i], 999999.0) < lmin
+        lmin := nz(crsi[i])
+
+mstep = (lmax - lmin) / 100
+aperc = leveling / 100
+
+float db = 0.0
+for steps = 0 to 100
+    testvalue = lmin + mstep * steps
+    int below = 0
+    for m = 0 to cyclicmemory - 1
+        if crsi[m] < testvalue
+            below += 1
+    ratio = below / cyclicmemory
+    if ratio >= aperc
+        db := testvalue
+        break
+
+float ub = 0.0
+for steps = 0 to 100
+    testvalue = lmax - mstep * steps
+    int above = 0
+    for m = 0 to cyclicmemory - 1
+        if crsi[m] >= testvalue
+            above += 1
+    ratio = above / cyclicmemory
+    if ratio >= aperc
+        ub := testvalue
+        break
+
+// ──────────────────────────────────────
+// 绘图 - cRSI主体
+// ──────────────────────────────────────
+h30 = hline(30, color=color.silver, linestyle=hline.style_dashed)
+h70 = hline(70, color=color.silver, linestyle=hline.style_dashed)
+fill(h30, h70, color=color.new(color.silver, 90))
+
+lowband  = plot(db, "LowBand", color.aqua)
+highband = plot(ub, "HighBand", color.aqua)
+fill(lowband, highband, color=color.new(color.gray, 90))
+
+plot(crsi, "cRSI", color.fuchsia, linewidth=1)
+
+// ──────────────────────────────────────
+// Pivot检测 (用于背离)
+// ──────────────────────────────────────
+// 价格Pivot
+phPrice = ta.pivothigh(high, divLookback, divLookback)
+plPrice = ta.pivotlow(low, divLookback, divLookback)
+if enableDebugLog
+    log.info("[cRSI·TICK] bar_index={0}, crsi={1}, rsi={2}, phPrice={3}, plPrice={4}, high={5}, high5={6}", str.tostring(bar_index), str.tostring(crsi, "#.##"), str.tostring(rsi, "#.##"), str.tostring(phPrice, "#.##"), str.tostring(plPrice, "#.##"), str.tostring(high, "#.##"), str.tostring(high[divLookback], "#.##"))
+
+// 原始: cRSI也要形成pivot (精确, 用于图表显示)
+phRsi = ta.pivothigh(crsi, divLookback, divLookback)
+plRsi = ta.pivotlow(crsi, divLookback, divLookback)
+
+// 灵敏版: 以价格pivot为主, 取附近cRSI极值 (用于Hub开仓信号)
+int pivotWindow = divLookback
+int pivotOffset = divLookback
+float phRsiWide = not na(phPrice) ? ta.highest(crsi, pivotWindow * 2 + 1)[pivotOffset] : na
+float plRsiWide = not na(plPrice) ? ta.lowest(crsi, pivotWindow * 2 + 1)[pivotOffset] : na
+
+// ──────────────────────────────────────
+// 背离检测
+// ──────────────────────────────────────
+var float prevPhPrice = na
+var float prevPhRsi   = na
+var int   prevPhBar   = na
+
+var float prevPlPrice = na
+var float prevPlRsi   = na
+var int   prevPlBar   = na
+
+// 灵敏版独立追踪
+var float prevPhPriceW = na
+var float prevPhRsiW   = na
+var int   prevPhBarW   = na
+
+var float prevPlPriceW = na
+var float prevPlRsiW   = na
+var int   prevPlBarW   = na
+
+// 原始背离信号 (图表显示)
+var bool bearDivSignal = false
+var bool bullDivSignal = false
+var bool hidBearDivSignal = false
+var bool hidBullDivSignal = false
+bearDivSignal := barstate.isconfirmed ? false : bearDivSignal
+bullDivSignal := barstate.isconfirmed ? false : bullDivSignal
+hidBearDivSignal := barstate.isconfirmed ? false : hidBearDivSignal
+hidBullDivSignal := barstate.isconfirmed ? false : hidBullDivSignal
+
+// 灵敏版背离信号 (Hub开仓)
+var bool wideBearDiv = false
+var bool wideBullDiv = false
+var bool wideHidBear = false
+var bool wideHidBull = false
+wideBearDiv := barstate.isconfirmed ? false : wideBearDiv
+wideBullDiv := barstate.isconfirmed ? false : wideBullDiv
+wideHidBear := barstate.isconfirmed ? false : wideHidBear
+wideHidBull := barstate.isconfirmed ? false : wideHidBull
+
+// === 原始背离: pivot-to-pivot (图表显示) ===
+if barstate.isconfirmed and not na(phPrice) and not na(phRsi)
+    int currBar = bar_index - pivotOffset
+    if not na(prevPhPrice) and not na(prevPhBar)
+        int barDist = currBar - prevPhBar
+        if barDist > 0 and barDist <= divMaxBars
+            if phPrice > prevPhPrice and phRsi < prevPhRsi
+                bearDivSignal := true
+                if showDiv
+                    line.new(prevPhBar, prevPhRsi, currBar, phRsi, color=color.red, width=2, style=line.style_solid)
+                if showDiv and showDivLabel
+                    label.new(currBar, phRsi, "Bear\nDiv", style=label.style_label_down, color=color.new(color.red, 20), textcolor=color.white, size=size.tiny)
+            if phPrice < prevPhPrice and phRsi > prevPhRsi
+                hidBearDivSignal := true
+                if showHidden
+                    line.new(prevPhBar, prevPhRsi, currBar, phRsi, color=color.new(color.orange, 30), width=1, style=line.style_dashed)
+                if showHidden and showDivLabel
+                    label.new(currBar, phRsi, "Hid\nBear", style=label.style_label_down, color=color.new(color.orange, 30), textcolor=color.white, size=size.tiny)
+    prevPhPrice := phPrice
+    prevPhRsi   := phRsi
+    prevPhBar   := bar_index - pivotOffset
+
+if barstate.isconfirmed and not na(plPrice) and not na(plRsi)
+    int currBar = bar_index - pivotOffset
+    if not na(prevPlPrice) and not na(prevPlBar)
+        int barDist = currBar - prevPlBar
+        if barDist > 0 and barDist <= divMaxBars
+            if plPrice < prevPlPrice and plRsi > prevPlRsi
+                bullDivSignal := true
+                if showDiv
+                    line.new(prevPlBar, prevPlRsi, currBar, plRsi, color=color.green, width=2, style=line.style_solid)
+                if showDiv and showDivLabel
+                    label.new(currBar, plRsi, "Bull\nDiv", style=label.style_label_up, color=color.new(color.green, 20), textcolor=color.white, size=size.tiny)
+            if plPrice > prevPlPrice and plRsi < prevPlRsi
+                hidBullDivSignal := true
+                if showHidden
+                    line.new(prevPlBar, prevPlRsi, currBar, plRsi, color=color.new(color.teal, 30), width=1, style=line.style_dashed)
+                if showHidden and showDivLabel
+                    label.new(currBar, plRsi, "Hid\nBull", style=label.style_label_up, color=color.new(color.teal, 30), textcolor=color.white, size=size.tiny)
+    prevPlPrice := plPrice
+    prevPlRsi   := plRsi
+    prevPlBar   := bar_index - pivotOffset
+
+// === 灵敏版背离: 价格pivot主导 (Hub开仓信号) ===
+if barstate.isconfirmed and not na(phPrice)
+    int currBar = bar_index - pivotOffset
+    float currRsi = not na(phRsiWide) ? phRsiWide : crsi[pivotOffset]
+    if enableDebugLog
+        log.info("[cRSI·WIDE·PH] bar={0}, phPrice={1}, currRsi={2}, prevPhPrice={3}, prevPhRsi={4}, prevBar={5}, barDist={6}", str.tostring(currBar), str.tostring(phPrice, "#.##"), str.tostring(currRsi, "#.##"), str.tostring(prevPhPriceW, "#.##"), str.tostring(prevPhRsiW, "#.##"), str.tostring(prevPhBarW), str.tostring(not na(prevPhBarW) ? currBar - prevPhBarW : -1))
+    if not na(prevPhPriceW) and not na(prevPhBarW)
+        int barDist = currBar - prevPhBarW
+        if barDist > 0 and barDist <= divMaxBars
+            if phPrice > prevPhPriceW and currRsi < prevPhRsiW
+                wideBearDiv := true
+                if enableDebugLog
+                    log.warning("[cRSI·WIDE] W·Bear triggered: price {0}>{1}, rsi {2}<{3}", str.tostring(phPrice, "#.##"), str.tostring(prevPhPriceW, "#.##"), str.tostring(currRsi, "#.##"), str.tostring(prevPhRsiW, "#.##"))
+                if showWideDiv
+                    line.new(prevPhBarW, prevPhRsiW, currBar, currRsi, color=color.new(color.red, 50), width=1, style=line.style_dotted)
+                if showWideDiv and showWideLabel
+                    label.new(currBar, currRsi, "W·Bear", style=label.style_label_down, color=color.new(color.red, 50), textcolor=color.white, size=size.tiny)
+            if phPrice < prevPhPriceW and currRsi > prevPhRsiW
+                wideHidBear := true
+                if showWideHidden
+                    line.new(prevPhBarW, prevPhRsiW, currBar, currRsi, color=color.new(color.orange, 50), width=1, style=line.style_dotted)
+                if showWideHidden and showWideLabel
+                    label.new(currBar, currRsi, "W·HBear", style=label.style_label_down, color=color.new(color.orange, 50), textcolor=color.white, size=size.tiny)
+    prevPhPriceW := phPrice
+    prevPhRsiW   := currRsi
+    prevPhBarW   := currBar
+
+if barstate.isconfirmed and not na(plPrice)
+    int currBar = bar_index - pivotOffset
+    float currRsi = not na(plRsiWide) ? plRsiWide : crsi[pivotOffset]
+    if enableDebugLog
+        log.info("[cRSI·WIDE·PL] bar={0}, plPrice={1}, currRsi={2}, prevPlPrice={3}, prevPlRsi={4}, prevBar={5}, barDist={6}", str.tostring(currBar), str.tostring(plPrice, "#.##"), str.tostring(currRsi, "#.##"), str.tostring(prevPlPriceW, "#.##"), str.tostring(prevPlRsiW, "#.##"), str.tostring(prevPlBarW), str.tostring(not na(prevPlBarW) ? currBar - prevPlBarW : -1))
+    if not na(prevPlPriceW) and not na(prevPlBarW)
+        int barDist = currBar - prevPlBarW
+        if barDist > 0 and barDist <= divMaxBars
+            if plPrice < prevPlPriceW and currRsi > prevPlRsiW
+                wideBullDiv := true
+                if enableDebugLog
+                    log.warning("[cRSI·WIDE] W·Bull triggered: price {0}<{1}, rsi {2}>{3}", str.tostring(plPrice, "#.##"), str.tostring(prevPlPriceW, "#.##"), str.tostring(currRsi, "#.##"), str.tostring(prevPlRsiW, "#.##"))
+                if showWideDiv
+                    line.new(prevPlBarW, prevPlRsiW, currBar, currRsi, color=color.new(color.green, 50), width=1, style=line.style_dotted)
+                if showWideDiv and showWideLabel
+                    label.new(currBar, currRsi, "W·Bull", style=label.style_label_up, color=color.new(color.green, 50), textcolor=color.white, size=size.tiny)
+            if plPrice > prevPlPriceW and currRsi < prevPlRsiW
+                wideHidBull := true
+                if showWideHidden
+                    line.new(prevPlBarW, prevPlRsiW, currBar, currRsi, color=color.new(color.teal, 50), width=1, style=line.style_dotted)
+                if showWideHidden and showWideLabel
+                    label.new(currBar, currRsi, "W·HBull", style=label.style_label_up, color=color.new(color.teal, 50), textcolor=color.white, size=size.tiny)
+    prevPlPriceW := plPrice
+    prevPlRsiW   := currRsi
+    prevPlBarW   := currBar
+
+// ──────────────────────────────────────
+// 条件输出（供 Signal Bridge 引用）
+// ──────────────────────────────────────
+// 原始 pivot-to-pivot (精确版)
+plot(bearDivSignal ? 1 : 0, title="cRSI Bear Div", display=display.none)
+plot(bullDivSignal ? 1 : 0, title="cRSI Bull Div", display=display.none)
+plot(hidBearDivSignal ? 1 : 0, title="cRSI Hid Bear", display=display.none)
+plot(hidBullDivSignal ? 1 : 0, title="cRSI Hid Bull", display=display.none)
+// 灵敏版 价格pivot主导
+plot(wideBearDiv ? 1 : 0, title="cRSI W Bear Div", display=display.none)
+plot(wideBullDiv ? 1 : 0, title="cRSI W Bull Div", display=display.none)
+plot(wideHidBear ? 1 : 0, title="cRSI W Hid Bear", display=display.none)
+plot(wideHidBull ? 1 : 0, title="cRSI W Hid Bull", display=display.none)
+plot(crsi > ub ? 1 : 0, title="cRSI Overbought", display=display.none)
+plot(crsi < db ? 1 : 0, title="cRSI Oversold", display=display.none)
