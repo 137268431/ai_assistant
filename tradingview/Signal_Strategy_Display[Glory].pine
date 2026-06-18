@@ -2358,6 +2358,7 @@ var float shadowQty = na
 var int shadowSignalBar = na
 var int shadowExpiresBar = na
 var int shadowEntryBar = na
+var int shadowReleasedBar = na
 var float shadowInitialRisk = na
 var bool shadowRunnerActive = false
 var float shadowRunnerExtreme = na
@@ -2367,6 +2368,8 @@ var line currentEntryLine = na
 var line currentStopLine = na
 var line currentRunnerLine = na
 var line currentTargetLine = na
+bool shadowReleasedThisBar = not na(shadowReleasedBar) and shadowReleasedBar == bar_index
+bool visualSlotBusy = shadowPending or shadowOpen or shadowReleasedThisBar
 
 mainPlanStatusText(bool childAllowed, bool selectedByMain, bool planCreatedNow, string childReason) =>
     string status = planCreatedNow ? "主流程: 已生成plan / 可挂单" : "主流程: 未生成plan"
@@ -2380,12 +2383,16 @@ mainPlanStatusText(bool childAllowed, bool selectedByMain, bool planCreatedNow, 
             cause := "已有持仓占用"
         else if shadowPending
             cause := "已有挂单占用"
+        else if not na(shadowReleasedBar) and shadowReleasedBar == bar_index
+            cause := "刚退出/刚撤销，本K不再开新plan"
         else
             cause := reasonCn(selectedBlockReason) + " / " + selectedBlockReason
         status := status + " / " + cause
     status
 
 planGateDetailText(bool childAllowed, bool selectedByMain, bool planCreatedNow, string childReason) =>
+    bool releasedNow = not na(shadowReleasedBar) and shadowReleasedBar == bar_index
+    bool busyNow = shadowPending or shadowOpen or releasedNow
     string result = mainPlanStatusText(childAllowed, selectedByMain, planCreatedNow, childReason)
     result := result + "\n子条件: " + (childAllowed ? "通过" : "未通过") + " / " + reasonCn(childReason) + " / " + childReason
     result := result + "\n最终选择: " + setupDisplayName(selectedSetup) + " / " + dirName(selectedDirection) + " / selectedByMain " + str.tostring(selectedByMain)
@@ -2395,10 +2402,10 @@ planGateDetailText(bool childAllowed, bool selectedByMain, bool planCreatedNow, 
     result := result + "\n间距gate: " + str.tostring(selectedPlanSpacingOk) + " / 同向 " + fmt(selectedSameSideSignalDistanceAtr) + "/" + fmt(minSameSideSignalSeparationAtr) + "ATR"
     result := result + "\n上一计划: bars " + fmt(selectedAnyPlanGapBars) + "/" + str.tostring(minAnyPlanGapBars) + " / dist " + fmt(selectedAnyPlanDistanceAtr) + "/" + fmt(minAnyPlanDistanceAtr) + "ATR"
     result := result + "\n交易窗口: " + str.tostring(inEntryWindow) + " / 量能冷却 " + str.tostring(selectedAttackVolumeCooling) + " 仅诊断不拦截"
-    result := result + "\n占用: planCreatedNow " + str.tostring(planCreatedNow) + " / pending " + str.tostring(shadowPending) + " / open " + str.tostring(shadowOpen)
+    result := result + "\n占用: planCreatedNow " + str.tostring(planCreatedNow) + " / pending " + str.tostring(shadowPending) + " / open " + str.tostring(shadowOpen) + " / releasedThisBar " + str.tostring(releasedNow) + " / busy " + str.tostring(busyNow)
     result
 
-bool mainPlanWillDraw = confirmed and showSignalEventFlow and selectedPlanValid and not shadowPending and not shadowOpen
+bool mainPlanWillDraw = confirmed and showSignalEventFlow and selectedPlanValid and not visualSlotBusy
 newPlanNow = mainPlanWillDraw
 if newPlanNow
     if selectedTopProbe and activeTopDecisionSeq == 0
@@ -2411,6 +2418,7 @@ if newPlanNow
     string decisionRef = selectedTopProbe ? "T" + str.tostring(activeTopDecisionSeq) : selectedBottomProbe ? "B" + str.tostring(activeBottomDecisionSeq) : "--"
     shadowPending := true
     shadowOpen := false
+    shadowReleasedBar := na
     shadowDirection := selectedDirection
     shadowSetup := selectedSetup
     shadowIntent := selectedEntryIntent
@@ -2459,6 +2467,7 @@ if showHistoricalPlanLines and (shadowPending or shadowOpen) and not na(shadowSi
 bool pendingTouched = confirmed and shadowPending and bar_index > shadowSignalBar and (shadowDirection == 1 ? low <= shadowEntry : high >= shadowEntry)
 bool pendingExpired = confirmed and shadowPending and bar_index > shadowExpiresBar
 bool pendingInvalidated = confirmed and shadowPending and (shadowDirection == 1 ? close < shadowStop : close > shadowStop)
+bool pendingCancelled = not pendingTouched and (pendingExpired or pendingInvalidated)
 if pendingTouched
     shadowPending := false
     shadowOpen := true
@@ -2485,13 +2494,14 @@ if pendingTouched
     string compact = "F" + str.tostring(flowId) + " 触及 " + fmt(shadowEntry)
     if flowLabelsVisible
         drawFlowLabel(shadowDirection, "confirmed", "confirmed", "confirmed", 1.8, compact, detail)
-if pendingExpired or pendingInvalidated
+if pendingCancelled
     string reason = pendingInvalidated ? "结构失效/打穿止损" : "挂单TTL过期"
     string detail = "F" + str.tostring(flowId) + " ④撤销 " + dirName(shadowDirection) + "\n原因: " + reason + "\nplan " + fmt(shadowEntry) + " / SL " + fmt(shadowStop) + "\n信号bar " + str.tostring(shadowSignalBar) + " / expires " + str.tostring(shadowExpiresBar)
     string compact = "F" + str.tostring(flowId) + " 撤销"
     if flowLabelsVisible
         drawFlowLabel(shadowDirection, "blocked", "blocked", "blocked", 1.8, compact, detail)
     shadowPending := false
+    shadowReleasedBar := bar_index
 
 bool pendingNextNoFill = confirmed and showDiagnosticEventFlow and shadowPending and not pendingTouched and not pendingExpired and not pendingInvalidated and not na(shadowSignalBar) and bar_index == shadowSignalBar + 1
 if pendingNextNoFill
@@ -2500,7 +2510,8 @@ if pendingNextNoFill
 bool shadowExitNow = false
 string shadowExitReason = ""
 float shadowExitPrice = na
-if confirmed and shadowOpen
+bool canEvaluateShadowExit = confirmed and shadowOpen and not na(shadowEntryBar) and bar_index > shadowEntryBar
+if canEvaluateShadowExit
     int barsInTrade = na(shadowEntryBar) ? 0 : bar_index - shadowEntryBar
     shadowRunnerExtreme := shadowDirection == 1 ? math.max(nz(shadowRunnerExtreme, high), high) : math.min(nz(shadowRunnerExtreme, low), low)
     float mfeNow = shadowInitialRisk > 0.0 ? (shadowDirection == 1 ? (high - shadowEntry) / shadowInitialRisk : (shadowEntry - low) / shadowInitialRisk) : 0.0
@@ -2557,6 +2568,7 @@ if shadowExitNow
     if flowLabelsVisible
         drawProfitLabel(shadowDirection, "exit", 1.8, compact, detail, flowColor("exit", shadowDirection))
     shadowOpen := false
+    shadowReleasedBar := bar_index
 
 bool structureBreakAcceptedEvent = confirmed and showDiagnosticEventFlow and (upperStructureBreakAccepted or lowerStructureBreakAccepted)
 if structureBreakAcceptedEvent

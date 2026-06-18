@@ -2039,6 +2039,7 @@ int etCloseMinutes = hour(time_close, "America/New_York") * 60 + minute(time_clo
 bool eodTimeReached = enableEodForceClose and etCloseMinutes >= eodCloseHour * 60 + eodCloseMinute
 bool flatByStrategy = strategy.position_size == 0
 bool hasOpenStrategyPosition = strategy.position_size != 0
+bool orderSlotBusy = pendingEntry or activePosition or hasOpenStrategyPosition
 
 // Fill detection before pending cancellation.
 bool positionJustFilled = pendingEntry and hasOpenStrategyPosition
@@ -2157,8 +2158,8 @@ else if not selectedExpectedRPassed
     selectedBlockReason := selectedExpectedRBlockReason
 bool meaningfulPlanMove = math.abs(nz(activeEntry, selectedEntry) - selectedEntry) >= atr * planReplaceMinMoveAtr or math.abs(nz(activeStop, selectedStop) - selectedStop) >= atr * planReplaceMinMoveAtr or math.abs(nz(activeStructureAnchor, selectedStructureAnchor) - selectedStructureAnchor) >= atr * planReplaceMinMoveAtr
 bool pendingSameDirectionReplace = false
-bool submitFreshPlan = confirmed and selectedPlanValid and flatByStrategy and not pendingEntry
-bool submitReplacementPlan = confirmed and selectedPlanValid and flatByStrategy and pendingSameDirectionReplace
+bool submitFreshPlan = confirmed and selectedPlanValid and not orderSlotBusy
+bool submitReplacementPlan = false
 bool submitNewPlan = submitFreshPlan or submitReplacementPlan
 
 if submitReplacementPlan
