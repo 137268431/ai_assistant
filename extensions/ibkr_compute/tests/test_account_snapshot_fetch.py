@@ -385,8 +385,37 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertFalse(needed)
         self.assertTrue(details["startup_warmup_active"])
         self.assertGreater(details["startup_warmup_remaining_s"], 0)
-        self.assertFalse(details["safety_cache_available"])
-        self.assertEqual("bootstrap_full_refresh_without_safety_cache", details["orders_fast_decision_reason"])
+        self.assertTrue(details["positions_refresh_required"])
+        self.assertEqual("positions_stale_full_refresh", details["orders_fast_decision_reason"])
+
+    def test_account_snapshot_refresh_forces_full_when_positions_cache_missing_under_order_pressure(self):
+        service = _RefreshService()
+        service.order_tracker = _FastOrderTracker([
+            {"order_id": "101", "status": "Submitted", "symbol": "AAPL", "order_type": "LMT"},
+        ])
+        app = _FakeApiApp()
+
+        needed, details = _with_fake_api_app(app, lambda: service._account_snapshot_refresh_orders_fast_needed())
+
+        self.assertFalse(needed)
+        self.assertTrue(details["order_pressure_active"])
+        self.assertTrue(details["positions_refresh_required"])
+        self.assertEqual("positions_stale_full_refresh", details["orders_fast_decision_reason"])
+
+    def test_account_snapshot_refresh_still_uses_orders_fast_under_order_pressure_with_fresh_positions(self):
+        app = _FakeApiApp()
+        service = _RefreshService()
+        service.order_tracker = _FastOrderTracker([
+            {"order_id": "101", "status": "Submitted", "symbol": "AAPL", "order_type": "LMT"},
+        ])
+        _with_fake_api_app(app, lambda: _build_ibkr_account_snapshot(service, include_pnl=False))
+
+        needed, details = _with_fake_api_app(app, lambda: service._account_snapshot_refresh_orders_fast_needed())
+
+        self.assertTrue(needed)
+        self.assertTrue(details["order_pressure_active"])
+        self.assertFalse(details["positions_refresh_required"])
+        self.assertEqual("order_pressure", details["orders_fast_decision_reason"])
 
     def test_account_snapshot_refresh_uses_orders_fast_during_startup_warmup_with_safety_cache(self):
         app = _FakeApiApp()
@@ -422,9 +451,9 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertTrue(details["account_data_guard_soft_active"])
         self.assertFalse(details["account_data_guard_hard_active"])
         self.assertEqual(["positions"], details["account_data_pacing_soft_blocked_kinds"])
-        self.assertEqual("soft_pacing_full_refresh_without_safety_cache", details["orders_fast_decision_reason"])
+        self.assertEqual("positions_stale_full_refresh", details["orders_fast_decision_reason"])
 
-    def test_account_snapshot_refresh_falls_back_to_full_when_orders_fast_has_no_summary(self):
+    def test_account_snapshot_refresh_forces_full_when_positions_cache_missing_even_with_safety_cache(self):
         app = _FakeApiApp()
         service = _RefreshService()
         service.order_lifecycle = _BuyingPowerLifecycle()
@@ -447,15 +476,12 @@ class AccountSnapshotFetchTest(unittest.TestCase):
 
         self.assertTrue(payload["ok"])
         self.assertEqual("account_snapshot", payload["source"])
-        self.assertEqual("full_bootstrap_after_orders_fast_unavailable", payload["refresh_profile"])
+        self.assertEqual("full_account_snapshot_refresh", payload["refresh_profile"])
         self.assertEqual("unit_test", payload["refresh_reason"])
         self.assertEqual(1, service.order_lifecycle.snapshot_calls)
-        self.assertEqual(
-            "orders_fast_summary_cache_unavailable",
-            payload["orders_fast_bootstrap_fallback"]["reason"],
-        )
+        self.assertNotIn("orders_fast_bootstrap_fallback", payload)
 
-    def test_account_snapshot_refresh_falls_back_to_full_when_orders_fast_summary_is_stale(self):
+    def test_account_snapshot_refresh_forces_full_when_cached_positions_are_stale(self):
         app = _FakeApiApp()
         app.IBKR_ACCOUNT_SNAPSHOT_STALE_SECONDS = 7200.0
         service = _RefreshService()
@@ -491,12 +517,9 @@ class AccountSnapshotFetchTest(unittest.TestCase):
 
         self.assertTrue(payload["ok"])
         self.assertEqual("account_snapshot", payload["source"])
-        self.assertEqual("full_bootstrap_after_orders_fast_stale_summary", payload["refresh_profile"])
+        self.assertEqual("full_account_snapshot_refresh", payload["refresh_profile"])
         self.assertEqual(initial_snapshot_calls + 1, service.order_lifecycle.snapshot_calls)
-        fallback = payload["orders_fast_bootstrap_fallback"]
-        self.assertEqual("orders_fast_summary_cache_stale", fallback["reason"])
-        self.assertGreater(fallback["summary_cache_age_s"], 1800.0)
-        self.assertEqual(1800.0, fallback["summary_cache_max_age_s"])
+        self.assertNotIn("orders_fast_bootstrap_fallback", payload)
 
     def test_account_snapshot_refresh_idle_probes_stale_buying_power(self):
         app = _FakeApiApp()
@@ -1131,6 +1154,44 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertEqual(0, fast["counts"]["short_positions"])
         self.assertEqual(1, fast["counts"]["flat_positions"])
         self.assertEqual(2, fast["counts"]["position_rows"])
+        self.assertFalse(fast["positions_stale"])
+        self.assertFalse(fast["positions_refresh_required"])
+
+    def test_orders_fast_open_only_marks_cached_position_counts_stale_after_threshold(self):
+        app = _FakeApiApp()
+        app.IBKR_ACCOUNT_SNAPSHOT_STALE_SECONDS = 7200.0
+        lifecycle = _SnapshotLifecycle()
+        service = _SnapshotService(lifecycle)
+        service.order_tracker = _FastOrderTracker([])
+
+        full = _with_fake_api_app(app, lambda: _build_ibkr_account_snapshot(service, include_pnl=False))
+        cache_key = (full["environment"], full["account_id"], False)
+        old_ts = time.time() - 360.0
+        old_iso = datetime.fromtimestamp(old_ts, timezone.utc).isoformat()
+        with app.ibkr_account_snapshot_cache_lock:
+            entry = app.ibkr_account_snapshot_cache[cache_key]
+            entry["stored_at"] = old_ts
+            entry["fresh_until"] = old_ts - 1.0
+            entry["stale_until"] = time.time() + 3600.0
+            entry["payload"]["fetched_at"] = old_iso
+            entry["payload"]["positions_fetched_at"] = old_iso
+
+        fast = _with_fake_api_app(
+            app,
+            lambda: _build_ibkr_account_snapshot(
+                service,
+                include_pnl=False,
+                force_refresh=True,
+                orders_fast=True,
+                orders_fast_open_only=True,
+            ),
+        )
+
+        self.assertTrue(fast["positions_stale"])
+        self.assertTrue(fast["positions_refresh_required"])
+        self.assertGreater(fast["positions_age_s"], 300.0)
+        self.assertEqual(300.0, fast["positions_max_stale_s"])
+        self.assertEqual("positions_snapshot_stale", fast["positions_refresh_block_reason"])
 
     def test_orders_fast_snapshot_reuses_stale_full_summary(self):
         app = _FakeApiApp()

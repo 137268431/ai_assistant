@@ -160,6 +160,7 @@ class _FakeOrderPlacer:
     def __init__(self, close_result=None):
         self.brackets = []
         self.closes = []
+        self.repairs = []
         self.close_result = dict(close_result or {})
 
     def place_bracket_order(self, **kwargs):
@@ -168,6 +169,18 @@ class _FakeOrderPlacer:
             "ok": True,
             "order_ids": ["201", "202", "203"],
             "bracket_group": f"{kwargs.get('symbol')}_reentry",
+        }
+
+    def place_protection_repair_orders(self, **kwargs):
+        self.repairs.append(dict(kwargs))
+        return {
+            "ok": True,
+            "order_ids": ["701", "702"],
+            "tp_coid": f"repair_tp_{kwargs.get('trade_group_id')}",
+            "sl_coid": f"repair_sl_{kwargs.get('trade_group_id')}",
+            "take_profit_price": float(kwargs.get("take_profit_price") or 0.0),
+            "stop_loss_price": float(kwargs.get("stop_loss_price") or 0.0),
+            "quantity": int(kwargs.get("quantity") or 0),
         }
 
     def place_market_close(self, **kwargs):
@@ -878,6 +891,141 @@ class OrderLifecycleRiskLimitTests(unittest.TestCase):
         self.assertEqual("成交后保护单缺失", pb.events[0]["title"])
         self.assertEqual("error", pb.events[0]["level"])
         self.assertIn("止盈/止损", pb.events[0]["detail"]["缺失保护"])
+
+    def test_profitable_unprotected_position_repairs_with_breakeven_stop(self):
+        pb = _FakePB(
+            orders=[
+                {
+                    "id": "entry",
+                    "symbol": "AAPL",
+                    "role": "entry",
+                    "status": "Filled",
+                    "quantity": 10,
+                    "filled_qty": 10,
+                    "fill_price": 100.0,
+                    "broker_order_id": "100",
+                    "trade_group_id": "AAPL_long_safety",
+                    "entry_order_unique_id": "entry_AAPL_long_safety",
+                    "unique_id": "entry_AAPL_long_safety",
+                    "signal_id": "sig-aapl",
+                    "environment": "live",
+                    "tp_price": 104.0,
+                    "sl_price": 98.0,
+                    "extra": {"risk_per_share": 2.0},
+                },
+                {
+                    "id": "tp",
+                    "symbol": "AAPL",
+                    "role": "take_profit",
+                    "status": "Canceled",
+                    "quantity": 10,
+                    "broker_order_id": "101",
+                    "trade_group_id": "AAPL_long_safety",
+                    "entry_order_unique_id": "entry_AAPL_long_safety",
+                    "environment": "live",
+                },
+                {
+                    "id": "sl",
+                    "symbol": "AAPL",
+                    "role": "stop_loss",
+                    "status": "Canceled",
+                    "quantity": 10,
+                    "broker_order_id": "102",
+                    "trade_group_id": "AAPL_long_safety",
+                    "entry_order_unique_id": "entry_AAPL_long_safety",
+                    "environment": "live",
+                },
+            ]
+        )
+        placer = _FakeOrderPlacer()
+        lifecycle = OrderLifecycle(pb_client=pb, order_placer=placer, environment="live", config=_FakeConfig({}))
+
+        issues = lifecycle._detect_missing_protection_after_fill(
+            [{"ticker": "AAPL", "position": 10, "conid": 123, "mktPrice": 103.0}],
+            open_orders=[],
+        )
+
+        self.assertEqual(1, len(issues))
+        self.assertEqual([], placer.closes)
+        self.assertEqual(1, len(placer.repairs))
+        repair = placer.repairs[0]
+        self.assertEqual("AAPL", repair["symbol"])
+        self.assertEqual("long", repair["direction"])
+        self.assertEqual(10, repair["quantity"])
+        self.assertEqual(104.0, repair["take_profit_price"])
+        self.assertGreater(repair["stop_loss_price"], 100.0)
+        self.assertLess(repair["stop_loss_price"], 103.0)
+        self.assertTrue(repair["order_extra"]["safety_action"])
+        self.assertEqual("profitable_unprotected_repair", repair["order_extra"]["safety_reason"])
+        entry_patch = [item for item in pb.upserts if item["id"] == "entry"][-1]
+        self.assertEqual("repair_submitted", entry_patch["extra"]["protection_state"])
+        self.assertEqual("profit_repair_submitted", entry_patch["extra"]["safety_state"])
+
+    def test_loss_unprotected_position_crossed_stop_uses_safety_market_close(self):
+        pb = _FakePB(
+            orders=[
+                {
+                    "id": "entry",
+                    "symbol": "AAPL",
+                    "role": "entry",
+                    "status": "Filled",
+                    "quantity": 10,
+                    "filled_qty": 10,
+                    "fill_price": 100.0,
+                    "broker_order_id": "100",
+                    "trade_group_id": "AAPL_long_loss",
+                    "entry_order_unique_id": "entry_AAPL_long_loss",
+                    "unique_id": "entry_AAPL_long_loss",
+                    "signal_id": "sig-loss",
+                    "environment": "live",
+                    "tp_price": 104.0,
+                    "sl_price": 98.0,
+                    "extra": {"risk_per_share": 2.0},
+                },
+                {
+                    "id": "tp",
+                    "symbol": "AAPL",
+                    "role": "take_profit",
+                    "status": "Canceled",
+                    "quantity": 10,
+                    "broker_order_id": "101",
+                    "trade_group_id": "AAPL_long_loss",
+                    "entry_order_unique_id": "entry_AAPL_long_loss",
+                    "environment": "live",
+                },
+                {
+                    "id": "sl",
+                    "symbol": "AAPL",
+                    "role": "stop_loss",
+                    "status": "Canceled",
+                    "quantity": 10,
+                    "broker_order_id": "102",
+                    "trade_group_id": "AAPL_long_loss",
+                    "entry_order_unique_id": "entry_AAPL_long_loss",
+                    "environment": "live",
+                },
+            ]
+        )
+        placer = _FakeOrderPlacer()
+        lifecycle = OrderLifecycle(pb_client=pb, order_placer=placer, environment="live", config=_FakeConfig({}))
+
+        issues = lifecycle._detect_missing_protection_after_fill(
+            [{"ticker": "AAPL", "position": 10, "conid": 123, "mktPrice": 97.5}],
+            open_orders=[],
+        )
+
+        self.assertEqual(1, len(issues))
+        self.assertEqual([], placer.repairs)
+        self.assertEqual(1, len(placer.closes))
+        close = placer.closes[0]
+        self.assertEqual("MKT", close["order_type"])
+        self.assertTrue(close["allow_market"])
+        self.assertTrue(close["safety_action"])
+        self.assertTrue(close["bypass_normal_symbol_queue"])
+        self.assertEqual("safety_stop_crossed", close["close_reason"])
+        entry_patch = [item for item in pb.upserts if item["id"] == "entry"][-1]
+        self.assertEqual("safety_close_submitted", entry_patch["extra"]["safety_state"])
+        self.assertEqual("safety_close", entry_patch["extra"]["protection_repair_result"]["action"])
 
     def test_missing_protection_ignores_active_or_filled_close_orders(self):
         for close_status in ("Submitted", "Filled"):

@@ -171,7 +171,7 @@ async function collectHomeOverviewIssues(page, mobile = false) {
     if (ordersFoot && (!ordersFootText.includes('当前挂单组') || !ordersFootText.includes('订单腿 Entry') || !ordersFootText.includes('可取消组') || !ordersFootText.includes('可改单组'))) {
       issues.push(`orders_foot_missing_live_open_order_groups:${ordersFootText || 'empty'}`);
     }
-    if (positionsLabel && !/(当前持仓|推断持仓|无实际持仓|持仓未取样|持仓接口不可用)/.test(positionsLabelText)) {
+    if (positionsLabel && !/(当前持仓|推断持仓|无实际持仓|持仓未取样|持仓未确认|持仓接口不可用)/.test(positionsLabelText)) {
       issues.push(`positions_state_label_text:${positionsLabelText || 'empty'}`);
     }
     if (positionsLiveOrders && (!positionsLiveOrdersText.includes('当前挂单组') || !positionsLiveOrdersText.includes('订单腿'))) {

@@ -1418,6 +1418,8 @@ class ReverseSignalHandler:
         positions = list(positions_result.get("positions") or [])
         qty = self._position_quantity(symbol, positions)
         detail["position_qty_before_close"] = qty
+        close_before_cancel = self._close_before_cancel(signal)
+        detail["protection_cancel_deferred"] = bool(close_before_cancel)
         if qty == 0:
             guarded = self._guard_flat_zero_before_cancel(signal, detail, symbol)
             if guarded is not None:
@@ -1434,32 +1436,33 @@ class ReverseSignalHandler:
             }
             return self._start_cooldown_and_ready(signal, symbol, detail, "already_flat_ready_reentry")
 
-        cancel_result = self._cancel_old_order_if_present(signal, detail)
-        if cancel_result is not None and not cancel_result.get("ok"):
-            return cancel_result
-        if detail.get("cancel_terminal_during_cancel"):
-            positions_result = self._get_positions_result()
-            detail["position_snapshot_after_terminal_cancel"] = self._compact_position_snapshot_result(positions_result)
-            if not positions_result.get("ok"):
-                return self._mark_retryable_blocked(
-                    detail,
-                    "position_snapshot_unavailable_after_terminal_cancel",
-                    error=str(positions_result.get("error") or ""),
-                    retry_after_s=positions_result.get("retry_after_s"),
-                    account_data_backoff_reason=positions_result.get("account_data_backoff_reason"),
-                )
-            positions = list(positions_result.get("positions") or [])
-            qty = self._position_quantity(symbol, positions)
-            detail["position_qty_after_terminal_cancel"] = qty
-            if qty == 0:
-                detail["close_old_position"] = "confirmed"
-                detail["wait_flat"] = "confirmed"
-                detail["flat_confirmation"] = {
-                    "confirmed": True,
-                    "position_qty": 0.0,
-                    "source": "broker_positions_after_terminal_cancel",
-                }
-                return self._start_cooldown_and_ready(signal, symbol, detail, "terminal_cancel_flat_ready_reentry")
+        if not close_before_cancel:
+            cancel_result = self._cancel_old_order_if_present(signal, detail)
+            if cancel_result is not None and not cancel_result.get("ok"):
+                return cancel_result
+            if detail.get("cancel_terminal_during_cancel"):
+                positions_result = self._get_positions_result()
+                detail["position_snapshot_after_terminal_cancel"] = self._compact_position_snapshot_result(positions_result)
+                if not positions_result.get("ok"):
+                    return self._mark_retryable_blocked(
+                        detail,
+                        "position_snapshot_unavailable_after_terminal_cancel",
+                        error=str(positions_result.get("error") or ""),
+                        retry_after_s=positions_result.get("retry_after_s"),
+                        account_data_backoff_reason=positions_result.get("account_data_backoff_reason"),
+                    )
+                positions = list(positions_result.get("positions") or [])
+                qty = self._position_quantity(symbol, positions)
+                detail["position_qty_after_terminal_cancel"] = qty
+                if qty == 0:
+                    detail["close_old_position"] = "confirmed"
+                    detail["wait_flat"] = "confirmed"
+                    detail["flat_confirmation"] = {
+                        "confirmed": True,
+                        "position_qty": 0.0,
+                        "source": "broker_positions_after_terminal_cancel",
+                    }
+                    return self._start_cooldown_and_ready(signal, symbol, detail, "terminal_cancel_flat_ready_reentry")
 
         self._append_state(detail, "close_old_position")
         direction = "long" if qty > 0 else "short"
@@ -1489,7 +1492,35 @@ class ReverseSignalHandler:
             source="reverse_signal_close",
             close_reason=close_reason,
             position_snapshot=self._position_snapshot_for_symbol(symbol, positions),
+            safety_action=close_before_cancel,
+            safety_reason="tv_exit_close_before_cancel" if close_before_cancel else "",
+            bypass_normal_symbol_queue=close_before_cancel,
         )
+        if (
+            not result.get("ok")
+            and str((result or {}).get("error") or "").strip() == "close_limit_price_unavailable"
+            and close_before_cancel
+            and self._safety_market_close_enabled()
+        ):
+            detail["safety_market_close_fallback_attempted"] = True
+            result = self.order_placer.place_market_close(
+                conid,
+                symbol,
+                direction,
+                close_qty,
+                trade_group_id=self._related_trade_group_id(signal),
+                entry_order_unique_id=str(self._signal_value(signal, "entry_order_unique_id") or "").strip(),
+                signal_id=origin_signal_id,
+                source="reverse_signal_close",
+                close_reason=close_reason or "tv_exit_close_no_quote_market_fallback",
+                position_snapshot=self._position_snapshot_for_symbol(symbol, positions),
+                order_type="MKT",
+                allow_market=True,
+                safety_action=True,
+                safety_reason="tv_exit_no_quote_market_fallback",
+                bypass_normal_symbol_queue=True,
+            )
+            detail["safety_market_close_fallback_result"] = dict(result or {})
         detail["close_old_position"] = "submitted" if result.get("ok") else "failed"
         detail["close_result"] = dict(result or {})
         if not result.get("ok"):
@@ -1562,6 +1593,14 @@ class ReverseSignalHandler:
             )
 
         detail["close_old_position"] = "confirmed"
+        if close_before_cancel:
+            cancel_result = self._cancel_old_order_if_present(signal, detail)
+            if cancel_result is not None and not cancel_result.get("ok"):
+                return self._mark_retryable_blocked(
+                    detail,
+                    "post_close_protection_cancel_unconfirmed",
+                    cancel_result=cancel_result,
+                )
         return self._start_cooldown_and_ready(signal, symbol, detail, "close_confirmed_ready_reentry")
 
     def _tv_exit_non_executable_preflight(self, signal: dict) -> Dict[str, Any]:
@@ -1854,6 +1893,16 @@ class ReverseSignalHandler:
             return raw_default in {"1", "true", "yes", "on"}
         except Exception:
             return bool(default)
+
+    def _safety_auto_execute_enabled(self) -> bool:
+        key = "ibkr_safety_live_auto_execute" if self.environment == "live" else "ibkr_safety_paper_auto_execute"
+        return self._config_bool("ibkr_safety_lane_enabled", True) and self._config_bool(key, True)
+
+    def _safety_market_close_enabled(self) -> bool:
+        return self._safety_auto_execute_enabled() and self._config_bool("ibkr_safety_close_allow_market", True)
+
+    def _close_before_cancel(self, signal: dict) -> bool:
+        return self._is_tv_exit_signal(signal) and self._safety_auto_execute_enabled()
 
     def _config_has_value(self, key: str) -> bool:
         checker = getattr(self.config, "has_value_for_environment", None)
@@ -4806,7 +4855,8 @@ class ReverseSignalHandler:
         result: Dict[str, Any],
     ) -> None:
         detail["unprotected_close_failed"] = True
-        detail["protection_cancelled_before_close_failure"] = True
+        protection_cancelled = not bool(detail.get("protection_cancel_deferred"))
+        detail["protection_cancelled_before_close_failure"] = protection_cancelled
         runtime_detail = detail.setdefault("reverse_runtime_detail", {})
         runtime_detail["unprotected_close_failed"] = True
         runtime_detail["unprotected_close_reason"] = str(reason or "")
@@ -4822,9 +4872,13 @@ class ReverseSignalHandler:
         self._unprotected_close_alerted.add(alert_key)
         try:
             notifier(
-                "TV 平仓异常：保护单已撤但平仓未确认",
+                "TV 平仓异常：保护单已撤但平仓未确认" if protection_cancelled else "TV 平仓异常：已保留旧保护单",
                 {
-                    "状态结论": "TV close 已撤旧保护单，但平仓提交失败或 flat 未确认；系统保持 pending 并等待重试。",
+                    "状态结论": (
+                        "TV close 已撤旧保护单，但平仓提交失败或 flat 未确认；系统保持 pending 并等待重试。"
+                        if protection_cancelled
+                        else "TV close 未先撤保护单，平仓提交失败或 flat 未确认；旧保护单保持有效并等待重试。"
+                    ),
                     "标的": str(symbol or "-").upper(),
                     "ActionID": rid or "-",
                     "Broker模式": self.environment,

@@ -1175,10 +1175,14 @@ class OrderPlacer:
 
     def place_market_close(self, *args, **kwargs) -> Dict[str, Any]:
         metadata = self._market_close_call_metadata(args, kwargs)
+        safety_action = self._coerce_bool(kwargs.get("safety_action"), False)
+        bypass_symbol_queue = safety_action and self._coerce_bool(kwargs.get("bypass_normal_symbol_queue"), False)
+        if bypass_symbol_queue:
+            return self._place_market_close_queued(args, kwargs, metadata=metadata)
         return self.symbol_scheduler.submit(
             symbol=metadata.get("symbol"),
             operation="place_market_close",
-            priority=10,
+            priority=0 if safety_action else 10,
             metadata=metadata,
             fn=lambda: self._place_market_close_queued(args, kwargs, metadata=metadata),
         )
@@ -1240,9 +1244,15 @@ class OrderPlacer:
             "execution_profile",
             "session_override",
             "exchange",
+            "source",
+            "safety_reason",
         ):
             if kwargs.get(name):
                 payload[name] = kwargs.get(name)
+        if kwargs.get("safety_action") not in (None, ""):
+            payload["safety_action"] = self._coerce_bool(kwargs.get("safety_action"), False)
+        if kwargs.get("bypass_normal_symbol_queue") not in (None, ""):
+            payload["bypass_normal_symbol_queue"] = self._coerce_bool(kwargs.get("bypass_normal_symbol_queue"), False)
         if kwargs.get("limit_price") not in (None, ""):
             payload["limit_price"] = kwargs.get("limit_price")
         if kwargs.get("limit_bps") not in (None, ""):
@@ -1277,10 +1287,14 @@ class OrderPlacer:
         fill_timeout: float = 5.0,
         close_reason: str = "",
         close_reason_human: str = "",
+        safety_action: Any = False,
+        safety_reason: str = "",
+        bypass_normal_symbol_queue: Any = None,
     ) -> Dict[str, Any]:
         acct_id = self.get_active_account_id(use_paper)
         symbol = str(symbol or "").upper()
         direction = str(direction or "").lower()
+        safety_action_enabled = self._coerce_bool(safety_action, False)
         close_order_ref = f"close_{symbol}_{datetime.now(ET).strftime('%Y%m%d_%H%M%S')}"
         linkage = self._resolve_origin_order_linkage(
             signal_id=signal_id,
@@ -1418,19 +1432,21 @@ class OrderPlacer:
                 trade_group_id=resolved_trade_group_id,
                 entry_order_unique_id=resolved_entry_order_unique_id,
                 signal_id=resolved_signal_id,
-                source=source,
-                account=acct_id,
-                order_type=str(result.get("order_type") or order_type or "LMT").upper(),
-                limit_price=float(result.get("limit_price") or limit_price or 0.0),
-                close_execution_plan=close_plan,
-                position_snapshot=position_snapshot,
-                status="Filled" if bool(result.get("filled")) else "Submitted",
-                result=result,
-                submission_unconfirmed=submission_unconfirmed,
-                submission_error=submission_error,
-                close_reason=close_reason,
-                close_reason_human=close_reason_human,
-            )
+            source=source,
+            account=acct_id,
+            order_type=str(result.get("order_type") or order_type or "LMT").upper(),
+            limit_price=float(result.get("limit_price") or limit_price or 0.0),
+            close_execution_plan=close_plan,
+            position_snapshot=position_snapshot,
+            status="Filled" if bool(result.get("filled")) else "Submitted",
+            result=result,
+            submission_unconfirmed=submission_unconfirmed,
+            submission_error=submission_error,
+            close_reason=close_reason,
+            close_reason_human=close_reason_human,
+            safety_action=safety_action_enabled,
+            safety_reason=safety_reason,
+        )
         return result
 
     def _log_close_order_to_pb(self, **kwargs):
@@ -1488,6 +1504,12 @@ class OrderPlacer:
                 extra["close_reason_code"] = close_reason
             if close_reason_human:
                 extra["close_reason_human"] = close_reason_human
+            if bool(kwargs.get("safety_action")):
+                safety_reason = str(kwargs.get("safety_reason") or close_reason or "safety_close").strip()
+                extra["safety_action"] = True
+                extra["safety_state"] = "safety_close_submitted"
+                extra["safety_reason"] = safety_reason
+                extra["safety_account_id"] = str(kwargs.get("account") or "")
             if position_snapshot:
                 extra["position_snapshot"] = position_snapshot
             if position_avg_cost > 0:

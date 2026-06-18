@@ -228,7 +228,8 @@ class _FakeOrderLifecycle:
 
 class _FakeOrderPlacer:
     def __init__(self, result=None):
-        self.result = result or {"ok": True, "order_id": "close-1"}
+        self.results = [copy.deepcopy(item) for item in result] if isinstance(result, list) else []
+        self.result = {"ok": True, "order_id": "close-1"} if isinstance(result, list) else (result or {"ok": True, "order_id": "close-1"})
         self.calls = []
 
     def place_market_close(self, conid, symbol, direction, quantity, **kwargs):
@@ -241,6 +242,8 @@ class _FakeOrderPlacer:
                 **kwargs,
             }
         )
+        if self.results:
+            return copy.deepcopy(self.results.pop(0))
         return dict(self.result)
 
 
@@ -442,6 +445,78 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
         self.assertEqual("confirmed", extra["wait_flat"])
         self.assertFalse(extra["blocked"])
         self.assertEqual("tv_exit_confirmed_no_reentry", pb.acks[0]["reason"])
+
+    def test_tv_exit_no_quote_uses_market_fallback_before_canceling_protection(self):
+        reverse = {
+            "id": "rev-tv-exit-no-quote",
+            "symbol": "AAPL",
+            "conid": 123,
+            "source": "tradingview",
+            "action_type": "close",
+            "status": "pending",
+            "environment": "live",
+            "priority": 10,
+            "bar_time_ms": 1,
+            "extra": {
+                "event_type": "exit",
+                "trade_group_id": "grp-no-quote",
+                "origin_signal_id": "sig-no-quote",
+                "exit_reason": "stop_loss",
+            },
+        }
+        orders = [
+            {"id": "entry", "broker_order_id": "1001", "order_id": "1001", "trade_group_id": "grp-no-quote", "role": "entry", "status": "Filled", "environment": "live"},
+            {"id": "tp", "broker_order_id": "1002", "order_id": "1002", "trade_group_id": "grp-no-quote", "role": "take_profit", "status": "Submitted", "environment": "live"},
+            {"id": "sl", "broker_order_id": "1003", "order_id": "1003", "trade_group_id": "grp-no-quote", "role": "stop_loss", "status": "Submitted", "environment": "live"},
+        ]
+        signals = [
+            {
+                "id": "sig-row-no-quote",
+                "signal_id": "sig-no-quote",
+                "environment": "live",
+                "symbol": "AAPL",
+                "direction": "long",
+                "status": "protected_active",
+                "extra": {"execution_by_mode": {"live": {"status": "protected_active"}}},
+            }
+        ]
+        pb = _FakePB(reverse_rows=[reverse], order_rows=orders, signal_rows=signals)
+        modifier = _FakeOrderModifier(pb, broker=_FakeBroker(open_orders=[]))
+        lifecycle = _FakeOrderLifecycle(
+            [
+                [{"ticker": "AAPL", "position": 10}],
+                [{"ticker": "AAPL", "position": 0}],
+            ]
+        )
+        placer = _FakeOrderPlacer(
+            result=[
+                {"ok": False, "error": "close_limit_price_unavailable"},
+                {"ok": True, "order_id": "close-1", "submitted": True},
+            ]
+        )
+
+        ReverseSignalHandler(
+            pb,
+            order_placer=placer,
+            order_modifier=modifier,
+            order_lifecycle=lifecycle,
+            environment="live",
+        ).check_and_process()
+
+        self.assertEqual(2, len(placer.calls))
+        self.assertEqual("LMT", placer.calls[0].get("order_type", "LMT"))
+        self.assertTrue(placer.calls[0]["safety_action"])
+        self.assertEqual("MKT", placer.calls[1]["order_type"])
+        self.assertTrue(placer.calls[1]["allow_market"])
+        self.assertTrue(placer.calls[1]["bypass_normal_symbol_queue"])
+        self.assertEqual(["1002", "1003"], modifier.cancelled)
+        updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        extra = updated["extra"]
+        self.assertEqual("confirmed", updated["status"])
+        self.assertTrue(extra["protection_cancel_deferred"])
+        self.assertTrue(extra["safety_market_close_fallback_attempted"])
+        self.assertEqual("confirmed", extra["close_old_position"])
+        self.assertEqual("confirmed", extra["wait_flat"])
 
     def test_tv_close_keeps_active_protection_when_single_flat_snapshot_has_no_exit_fill(self):
         reverse = {

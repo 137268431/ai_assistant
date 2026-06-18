@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from ibkr_api.home.common import count_records, escape_filter, load_records, to_float, to_int, to_text
@@ -441,6 +442,69 @@ def _normalize_runtime_account_payload(payload: dict[str, Any]) -> dict[str, Any
     return payload
 
 
+def _runtime_positions_max_stale_s(payload: dict[str, Any]) -> float:
+    configured = to_float((payload or {}).get("positions_max_stale_s"))
+    if configured is not None and configured > 0:
+        return configured
+    try:
+        return max(1.0, float(os.environ.get("IBKR_ACCOUNT_POSITIONS_MAX_STALE_SEC", "300") or 300.0))
+    except Exception:
+        return 300.0
+
+
+def _runtime_timestamp_age_s(value: Any) -> float | None:
+    text = to_text(value)
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return max(0.0, time.time() - parsed.timestamp())
+    except Exception:
+        return None
+
+
+def _runtime_positions_freshness(payload: dict[str, Any], *, positions_omitted: bool = False) -> dict[str, Any]:
+    data = payload if isinstance(payload, dict) else {}
+    max_stale_s = _runtime_positions_max_stale_s(data)
+    age_s = to_float(data.get("positions_age_s"))
+    if age_s is None:
+        age_s = to_float(data.get("positions_cache_age_s"))
+    timestamp_age = _runtime_timestamp_age_s(data.get("positions_fetched_at"))
+    cache_age = to_float(data.get("cache_age_s"))
+    ages = [value for value in (age_s, timestamp_age, cache_age) if value is not None]
+    resolved_age = max(ages) if ages else None
+    stale = bool(data.get("positions_stale") or data.get("positions_refresh_required"))
+    if resolved_age is None and positions_omitted:
+        stale = True
+    if resolved_age is not None and resolved_age > max_stale_s:
+        stale = True
+    diagnostics = data.get("orders_fast_diagnostics") if isinstance(data.get("orders_fast_diagnostics"), dict) else {}
+    source = to_text(data.get("positions_source") or diagnostics.get("positions_source"))
+    if source in {"", "unavailable"} and data.get("positions_detail_available") is not True and not isinstance(data.get("positions"), list):
+        stale = True
+    reason = to_text(data.get("positions_refresh_block_reason"))
+    if stale and not reason:
+        if positions_omitted and resolved_age is None:
+            reason = "positions_omitted_open_orders_only"
+        elif resolved_age is not None:
+            reason = "positions_snapshot_stale"
+        else:
+            reason = "positions_snapshot_unavailable"
+    return {
+        "positions_age_s": round(float(resolved_age), 1) if resolved_age is not None else None,
+        "positions_max_stale_s": round(float(max_stale_s), 1),
+        "positions_stale": bool(stale),
+        "positions_refresh_required": bool(stale),
+        "positions_refresh_state": "stale" if stale else "fresh",
+        "positions_refresh_block_reason": reason,
+        "positions_fetched_at": to_text(data.get("positions_fetched_at") or data.get("fetched_at")),
+    }
+
+
 def _summarize_gateway_positions(payload: dict[str, Any], error: str = "") -> dict[str, Any]:
     summary: dict[str, Any] = {
         "long": 0,
@@ -454,11 +518,13 @@ def _summarize_gateway_positions(payload: dict[str, Any], error: str = "") -> di
     }
     if error:
         summary["error"] = error
+        summary.update(_runtime_positions_freshness(payload))
         return _attach_runtime_account_meta(summary, payload)
 
     positions = payload.get("positions")
     if not isinstance(positions, list):
         summary["error"] = "runtime_account_positions_unavailable"
+        summary.update(_runtime_positions_freshness(payload))
         return _attach_runtime_account_meta(summary, payload)
 
     counts = payload.get("counts") if isinstance(payload.get("counts"), dict) else {}
@@ -486,6 +552,8 @@ def _summarize_gateway_positions(payload: dict[str, Any], error: str = "") -> di
         or positions_source == "omitted_open_orders_only"
         or bool(fast_diagnostics.get("positions_omitted"))
     )
+    freshness = _runtime_positions_freshness(payload, positions_omitted=positions_omitted)
+    positions_stale = bool(freshness["positions_stale"])
 
     count_values_present = any(key in counts for key in ("long_positions", "short_positions", "open_positions", "position_rows", "positions"))
     if positions_omitted:
@@ -512,7 +580,7 @@ def _summarize_gateway_positions(payload: dict[str, Any], error: str = "") -> di
                     "available": True,
                     "detail_available": False,
                     "count_available": True,
-                    "empty_confirmed": effective_open_count == 0,
+                    "empty_confirmed": effective_open_count == 0 and not positions_stale,
                     "flat_count": flat_count,
                     "position_rows": position_rows,
                     "account_id": to_text(payload.get("account_id") or payload.get("account")),
@@ -523,6 +591,7 @@ def _summarize_gateway_positions(payload: dict[str, Any], error: str = "") -> di
                     "inferred_open_positions": inferred_count,
                     "effective_open_positions": effective_open_count,
                     "inferred": bool(inferred_count > 0 and to_int(counts.get("open_positions"), 0) == 0),
+                    **freshness,
                 }
             )
             return _attach_runtime_account_meta(summary, payload)
@@ -531,6 +600,7 @@ def _summarize_gateway_positions(payload: dict[str, Any], error: str = "") -> di
                 "error": "runtime_account_positions_omitted",
                 "positions_source": positions_source or "omitted",
                 "positions_omitted": True,
+                **freshness,
             }
         )
         return _attach_runtime_account_meta(summary, payload)
@@ -561,13 +631,14 @@ def _summarize_gateway_positions(payload: dict[str, Any], error: str = "") -> di
         summary["detail_available"] = True
     summary["available"] = True
     summary["count_available"] = True
-    summary["empty_confirmed"] = summary["total"] == 0
+    summary["empty_confirmed"] = summary["total"] == 0 and not positions_stale
     summary["flat_count"] = flat_count
     summary["position_rows"] = len(positions)
     summary["account_id"] = to_text(payload.get("account_id") or payload.get("account"))
     summary["broker_open_positions"] = to_int(counts.get("open_positions"), summary["total"] if not summary.get("inferred") else 0)
     summary["inferred_open_positions"] = inferred_count
     summary["effective_open_positions"] = max(to_int(counts.get("effective_open_positions"), summary["total"]), summary["total"], inferred_count)
+    summary.update(freshness)
     return _attach_runtime_account_meta(summary, payload)
 
 

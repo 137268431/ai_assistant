@@ -121,6 +121,8 @@ displayPreset = input.string("核心交易流程", "Display preset", options=["�
 showSignalEventFlow = input.bool(true, "Show signal event flow", group="04 Display")
 showHistoricalPlanLines = input.bool(true, "Keep historical plan lines", group="04 Display")
 showStatusTable = input.bool(false, "Show status table", group="04 Display")
+showEntryWindowStatus = input.bool(true, "Show entry window status", group="04 Display")
+showEntryWindowMarkers = input.bool(true, "Show entry window markers", group="04 Display")
 showEma = input.bool(true, "Show EMA fast/slow", group="04 Display")
 showBands = input.bool(true, "Show SD bands", group="04 Display")
 showSdHelperLines = input.bool(false, "Show SD mid line", group="04 Display")
@@ -304,7 +306,56 @@ intentName(string intent) =>
     intent == "predictive_limit" ? "未确认观察" : intent == "confirmed_limit" ? "确认挂单" : "等待确认"
 
 reasonCn(string reason) =>
-    reason == "passed" ? "通过" : reason == "no_candidate" ? "无候选" : reason == "no_clear_structure" ? "结构不清晰" : reason == "day_range_not_formed" ? "日内高低未形成" : reason == "day_range_too_small" ? "日内振幅不够" : reason == "anchor_too_fresh" ? "结构太新" : reason == "left_leg_too_small" ? "左侧涨跌幅不够" : reason == "middle_leg_too_small" or reason == "middle_pullback_not_enough" or reason == "pullback_not_enough" ? "大回落/反弹不足" : reason == "right_retest_too_small" ? "二次回测不够" : reason == "retest_too_slow" ? "二次回测太慢" : reason == "not_retest_zone" or reason == "retest_not_near_prior_high" ? "未回到结构区" : reason == "volume_not_exhausted" ? "量能未衰竭" : reason == "momentum_not_decayed" ? "动能未衰减" : reason == "momentum_decay_not_continuous" ? "动能衰减不连续" : reason == "no_weak_close_confirm" ? "缺少弱收确认" : reason == "no_strong_close_confirm" ? "缺少强收确认" : reason == "entry_too_far_from_anchor" ? "离结构位太远" : reason == "rsi_not_turning" ? "RSI未转弱/转强" : reason == "micro_structure_too_close" ? "同向信号太近" : reason == "any_plan_too_close" ? "距离上一计划太近" : reason == "daily_risk_cap_hit" ? "日内风控触发" : reason == "ema_tp_too_close" ? "EMA止盈空间不够" : reason == "expected_r_too_small" ? "盈亏比不够" : reason == "outside_entry_session" ? "不在入场时间" : reason
+    string result = reason
+    if reason == "passed"
+        result := "通过"
+    else if reason == "no_candidate"
+        result := "无候选"
+    else if reason == "no_clear_structure"
+        result := "结构不清晰"
+    else if reason == "day_range_not_formed"
+        result := "日内高低未形成"
+    else if reason == "day_range_too_small"
+        result := "日内振幅不够"
+    else if reason == "anchor_too_fresh"
+        result := "结构太新"
+    else if reason == "left_leg_too_small"
+        result := "左侧涨跌幅不够"
+    else if reason == "middle_leg_too_small" or reason == "middle_pullback_not_enough" or reason == "pullback_not_enough"
+        result := "大回落/反弹不足"
+    else if reason == "right_retest_too_small"
+        result := "二次回测不够"
+    else if reason == "retest_too_slow"
+        result := "二次回测太慢"
+    else if reason == "not_retest_zone" or reason == "retest_not_near_prior_high"
+        result := "未回到结构区"
+    else if reason == "volume_not_exhausted"
+        result := "量能未衰竭"
+    else if reason == "momentum_not_decayed"
+        result := "动能未衰减"
+    else if reason == "momentum_decay_not_continuous"
+        result := "动能衰减不连续"
+    else if reason == "no_weak_close_confirm"
+        result := "缺少弱收确认"
+    else if reason == "no_strong_close_confirm"
+        result := "缺少强收确认"
+    else if reason == "entry_too_far_from_anchor"
+        result := "离结构位太远"
+    else if reason == "rsi_not_turning"
+        result := "RSI未转弱/转强"
+    else if reason == "micro_structure_too_close"
+        result := "同向信号太近"
+    else if reason == "any_plan_too_close"
+        result := "距离上一计划太近"
+    else if reason == "daily_risk_cap_hit"
+        result := "日内风控触发"
+    else if reason == "ema_tp_too_close"
+        result := "EMA止盈空间不够"
+    else if reason == "expected_r_too_small"
+        result := "盈亏比不够"
+    else if reason == "outside_entry_session"
+        result := "不在入场时间"
+    result
 
 flowColor(string state, int direction) =>
     state == "blocked" ? color.new(color.gray, flowLabelTransparency) : state == "predictive" ? color.new(color.orange, flowLabelTransparency) : state == "confirmed" ? color.new(color.teal, flowLabelTransparency) : state == "exit" ? color.new(color.purple, flowLabelTransparency) : direction == 1 ? color.new(color.green, flowLabelTransparency) : color.new(color.red, flowLabelTransparency)
@@ -372,6 +423,12 @@ tableBgColor(int row) =>
 
 tableTextColor(int row) =>
     color.white
+
+entryWindowBgColor(bool windowEnabled, bool windowOpen) =>
+    not windowEnabled ? color.new(color.silver, 12) : windowOpen ? color.new(color.teal, 0) : color.new(color.black, 18)
+
+entryWindowTextColor(bool windowEnabled, bool windowOpen) =>
+    not windowEnabled ? color.black : windowOpen ? color.black : color.white
 
 flowStyle(int direction) =>
     labelStyleForSide(labelAboveForDirection(direction))
@@ -1440,12 +1497,69 @@ if confirmed
 bool topMomentumDecayReady = topDecayStreak >= exhaustionDecayConfirmBars
 bool upperExhaustionZone = dayRangeClear and topRightShoulder and topRetestBand and upperNoVolumeExpansion and topMomentumDecayReady
 bool upperExhaustionConfirmedShort = confirmed and upperExhaustionZone and upperWeakClose
-string topExhaustionReason = not dayRangeFormed ? "day_range_not_formed" : not dayRangeClear ? "day_range_too_small" : not topMiddleSwingReady ? "middle_pullback_not_enough" : not topRightRetestReady ? "right_retest_too_small" : not topRetestBand ? "retest_not_near_prior_high" : not upperNoVolumeExpansion ? "volume_not_exhausted" : not topMomentumDecayed ? "momentum_not_decayed" : not topMomentumDecayReady ? "momentum_decay_not_continuous" : not upperWeakClose ? "no_weak_close_confirm" : "upper_exhaustion_confirmed"
+string topExhaustionReason = "upper_exhaustion_confirmed"
+if not dayRangeFormed
+    topExhaustionReason := "day_range_not_formed"
+else if not dayRangeClear
+    topExhaustionReason := "day_range_too_small"
+else if not topMiddleSwingReady
+    topExhaustionReason := "middle_pullback_not_enough"
+else if not topRightRetestReady
+    topExhaustionReason := "right_retest_too_small"
+else if not topRetestBand
+    topExhaustionReason := "retest_not_near_prior_high"
+else if not upperNoVolumeExpansion
+    topExhaustionReason := "volume_not_exhausted"
+else if not topMomentumDecayed
+    topExhaustionReason := "momentum_not_decayed"
+else if not topMomentumDecayReady
+    topExhaustionReason := "momentum_decay_not_continuous"
+else if not upperWeakClose
+    topExhaustionReason := "no_weak_close_confirm"
 bool topConfirmedShort = topSweepFailed or upperExhaustionConfirmedShort or topWeakNewHighConfirmed or topDistributionDropConfirmed or topVolumeClimaxFailedBreakConfirmed or topHighVolumeDropConfirmed or topNoDemandBreakConfirmed or topImmediateReversalShort
-topProbePattern := topVolumeClimaxFailedBreakConfirmed ? "volume_climax_failed_break_short" : topHighVolumeDropConfirmed ? "naked_high_volume_reversal_short" : topImmediateReversalShort ? "naked_high_immediate_reversal_short" : topNoDemandBreakConfirmed ? "naked_high_decay_break_short" : topDistributionDropConfirmed ? "distribution_drop_short" : topWeakNewHighConfirmed ? "weak_new_high_short" : topNoDemandWatch ? "naked_high_decay_watch" : topHighVolumeProbeWatch ? "naked_high_volume_watch" : topNakedTouchEvent ? "naked_high_watch" : topWeakNewHighWatch ? "weak_new_high_watch" : topProbePattern
+if topVolumeClimaxFailedBreakConfirmed
+    topProbePattern := "volume_climax_failed_break_short"
+else if topHighVolumeDropConfirmed
+    topProbePattern := "naked_high_volume_reversal_short"
+else if topImmediateReversalShort
+    topProbePattern := "naked_high_immediate_reversal_short"
+else if topNoDemandBreakConfirmed
+    topProbePattern := "naked_high_decay_break_short"
+else if topDistributionDropConfirmed
+    topProbePattern := "distribution_drop_short"
+else if topWeakNewHighConfirmed
+    topProbePattern := "weak_new_high_short"
+else if topNoDemandWatch
+    topProbePattern := "naked_high_decay_watch"
+else if topHighVolumeProbeWatch
+    topProbePattern := "naked_high_volume_watch"
+else if topNakedTouchEvent
+    topProbePattern := "naked_high_watch"
+else if topWeakNewHighWatch
+    topProbePattern := "weak_new_high_watch"
 bool topPredictVolumeOk = true
 bool topConfirmVolumeOk = topSweepFailed or topImmediateReversalShort or topHighVolumeDropConfirmed or topNoDemandBreakConfirmed or topHighVolumeFailedBreak or upperExhaustionConfirmedShort or topWeakNewHighConfirmed or topDistributionDropConfirmed or topVolumeClimaxFailedBreakConfirmed
-string topVolumeReason = topHighVolumeDropConfirmed ? "naked_high_volume_reversal_confirmed" : topImmediateReversalShort ? "naked_high_immediate_reversal_confirmed" : topNoDemandBreakConfirmed ? "naked_high_decay_break_confirmed" : topVolumeClimaxFailedBreakConfirmed ? "volume_climax_failed_break_confirmed" : topDistributionDropConfirmed ? "distribution_drop_confirmed" : topWeakNewHighConfirmed ? "weak_new_high_confirmed" : topRecentSweepFailed ? "recent_failed_break" : topHighVolumeFailedBreak ? "high_volume_failed_break_ok" : upperExhaustionConfirmedShort ? "low_volume_momentum_decay_ok" : volumeQuietRetest ? "low_volume_retest_ok" : "normal_volume_retest_ok"
+string topVolumeReason = "normal_volume_retest_ok"
+if topHighVolumeDropConfirmed
+    topVolumeReason := "naked_high_volume_reversal_confirmed"
+else if topImmediateReversalShort
+    topVolumeReason := "naked_high_immediate_reversal_confirmed"
+else if topNoDemandBreakConfirmed
+    topVolumeReason := "naked_high_decay_break_confirmed"
+else if topVolumeClimaxFailedBreakConfirmed
+    topVolumeReason := "volume_climax_failed_break_confirmed"
+else if topDistributionDropConfirmed
+    topVolumeReason := "distribution_drop_confirmed"
+else if topWeakNewHighConfirmed
+    topVolumeReason := "weak_new_high_confirmed"
+else if topRecentSweepFailed
+    topVolumeReason := "recent_failed_break"
+else if topHighVolumeFailedBreak
+    topVolumeReason := "high_volume_failed_break_ok"
+else if upperExhaustionConfirmedShort
+    topVolumeReason := "low_volume_momentum_decay_ok"
+else if volumeQuietRetest
+    topVolumeReason := "low_volume_retest_ok"
 bool topCloseLimitShort = topVolumeClimaxFailedBreakConfirmed or topHighVolumeDropConfirmed or topNoDemandBreakConfirmed or topImmediateReversalShort
 bool topConfirmGapOk = topSignalGapOk or topFailureRepeatShort
 float topConfirmEntryRaw = topConfirmedShort ? (topCloseLimitShort ? close + syminfo.mintick : math.max(close, topZoneLow - atr * predictiveEntryOffsetAtr)) : na
@@ -1459,7 +1573,29 @@ float topPredictQty = calcTrialQty(topPredictEntry, topPredictStop, predictiveMa
 float topConfirmQty = calcTrialQty(topConfirmEntry, topConfirmStop, confirmedMaxRiskDollars)
 bool topPredictAllowed = topPredictContext and smallStopTrialAllowed(topPredictEntry, topPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and topPredictQty >= 1.0
 bool topConfirmAllowed = topConfirmContext and smallStopTrialAllowed(topConfirmEntry, topConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and topConfirmQty >= 1.0
-string topProbeFilterReason = na(todayStructHigh) ? "no_today_struct_high" : not dayRangeFormed ? "day_range_not_formed" : not dayRangeClear ? "day_range_too_small" : not strongTopProbeZone ? "no_clear_structure" : topAnchorAgeBars < probeMinAnchorAgeBars ? "anchor_too_fresh" : not topVisualLeftOk ? "left_leg_too_small" : not topMiddleSwingReady ? "middle_leg_too_small" : not topPullbackArmed ? "pullback_not_enough" : not topRetestBand ? "not_retest_zone" : dominantTrendLong and not upperExhaustionConfirmedShort and not topFailureRepeatShort ? "blocked_by_dominant_bull_trend" : not topConfirmGapOk ? (not topSignalBarsOk ? "signal_bars_too_close" : "micro_structure_too_close") : "passed"
+string topProbeFilterReason = "passed"
+if na(todayStructHigh)
+    topProbeFilterReason := "no_today_struct_high"
+else if not dayRangeFormed
+    topProbeFilterReason := "day_range_not_formed"
+else if not dayRangeClear
+    topProbeFilterReason := "day_range_too_small"
+else if not strongTopProbeZone
+    topProbeFilterReason := "no_clear_structure"
+else if topAnchorAgeBars < probeMinAnchorAgeBars
+    topProbeFilterReason := "anchor_too_fresh"
+else if not topVisualLeftOk
+    topProbeFilterReason := "left_leg_too_small"
+else if not topMiddleSwingReady
+    topProbeFilterReason := "middle_leg_too_small"
+else if not topPullbackArmed
+    topProbeFilterReason := "pullback_not_enough"
+else if not topRetestBand
+    topProbeFilterReason := "not_retest_zone"
+else if dominantTrendLong and not upperExhaustionConfirmedShort and not topFailureRepeatShort
+    topProbeFilterReason := "blocked_by_dominant_bull_trend"
+else if not topConfirmGapOk
+    topProbeFilterReason := not topSignalBarsOk ? "signal_bars_too_close" : "micro_structure_too_close"
 
 float bottomBasis = todayStructLow
 float bottomZoneLow = na(todayStructLowZoneLow) ? todayStructLow : todayStructLowZoneLow
@@ -1618,12 +1754,61 @@ if confirmed
 bool bottomMomentumDecayReady = bottomDecayStreak >= exhaustionDecayConfirmBars
 bool lowerExhaustionZone = dayRangeClear and bottomRightShoulder and bottomRetestBand and lowerNoVolumeExpansion and bottomMomentumDecayReady
 bool lowerExhaustionConfirmedLong = confirmed and lowerExhaustionZone and lowerStrongClose
-string bottomExhaustionReason = not dayRangeFormed ? "day_range_not_formed" : not dayRangeClear ? "day_range_too_small" : not bottomMiddleSwingReady ? "middle_pullback_not_enough" : not bottomRightRetestReady ? "right_retest_too_small" : not bottomRetestBand ? "retest_not_near_prior_low" : not lowerNoVolumeExpansion ? "volume_not_exhausted" : not bottomMomentumDecayed ? "momentum_not_decayed" : not bottomMomentumDecayReady ? "momentum_decay_not_continuous" : not lowerStrongClose ? "no_strong_close_confirm" : "lower_exhaustion_confirmed"
+string bottomExhaustionReason = "lower_exhaustion_confirmed"
+if not dayRangeFormed
+    bottomExhaustionReason := "day_range_not_formed"
+else if not dayRangeClear
+    bottomExhaustionReason := "day_range_too_small"
+else if not bottomMiddleSwingReady
+    bottomExhaustionReason := "middle_pullback_not_enough"
+else if not bottomRightRetestReady
+    bottomExhaustionReason := "right_retest_too_small"
+else if not bottomRetestBand
+    bottomExhaustionReason := "retest_not_near_prior_low"
+else if not lowerNoVolumeExpansion
+    bottomExhaustionReason := "volume_not_exhausted"
+else if not bottomMomentumDecayed
+    bottomExhaustionReason := "momentum_not_decayed"
+else if not bottomMomentumDecayReady
+    bottomExhaustionReason := "momentum_decay_not_continuous"
+else if not lowerStrongClose
+    bottomExhaustionReason := "no_strong_close_confirm"
 bool bottomConfirmedLong = bottomSweepFailed or lowerExhaustionConfirmedLong or bottomWeakNewLowConfirmed or bottomAccumulationRiseConfirmed or bottomHighVolumeRiseConfirmed or bottomNoSupplyBreakConfirmed
-bottomProbePattern := bottomHighVolumeRiseConfirmed ? "naked_low_volume_reversal_long" : bottomNoSupplyBreakConfirmed ? "naked_low_decay_break_long" : bottomAccumulationRiseConfirmed ? "accumulation_rise_long" : bottomWeakNewLowConfirmed ? "weak_new_low_long" : bottomNoSupplyWatch ? "naked_low_decay_watch" : bottomHighVolumeProbeWatch ? "naked_low_volume_watch" : bottomNakedTouchEvent ? "naked_low_watch" : bottomWeakNewLowWatch ? "weak_new_low_watch" : bottomProbePattern
+if bottomHighVolumeRiseConfirmed
+    bottomProbePattern := "naked_low_volume_reversal_long"
+else if bottomNoSupplyBreakConfirmed
+    bottomProbePattern := "naked_low_decay_break_long"
+else if bottomAccumulationRiseConfirmed
+    bottomProbePattern := "accumulation_rise_long"
+else if bottomWeakNewLowConfirmed
+    bottomProbePattern := "weak_new_low_long"
+else if bottomNoSupplyWatch
+    bottomProbePattern := "naked_low_decay_watch"
+else if bottomHighVolumeProbeWatch
+    bottomProbePattern := "naked_low_volume_watch"
+else if bottomNakedTouchEvent
+    bottomProbePattern := "naked_low_watch"
+else if bottomWeakNewLowWatch
+    bottomProbePattern := "weak_new_low_watch"
 bool bottomPredictVolumeOk = true
 bool bottomConfirmVolumeOk = bottomSweepFailed or bottomHighVolumeRiseConfirmed or bottomNoSupplyBreakConfirmed or bottomHighVolumeFailedBreak or lowerExhaustionConfirmedLong or bottomWeakNewLowConfirmed or bottomAccumulationRiseConfirmed
-string bottomVolumeReason = bottomHighVolumeRiseConfirmed ? "naked_low_volume_reversal_confirmed" : bottomNoSupplyBreakConfirmed ? "naked_low_decay_break_confirmed" : bottomAccumulationRiseConfirmed ? "accumulation_rise_confirmed" : bottomWeakNewLowConfirmed ? "weak_new_low_confirmed" : bottomRecentSweepFailed ? "recent_failed_break" : bottomHighVolumeFailedBreak ? "high_volume_failed_break_ok" : lowerExhaustionConfirmedLong ? "low_volume_momentum_decay_ok" : volumeQuietRetest ? "low_volume_retest_ok" : "normal_volume_retest_ok"
+string bottomVolumeReason = "normal_volume_retest_ok"
+if bottomHighVolumeRiseConfirmed
+    bottomVolumeReason := "naked_low_volume_reversal_confirmed"
+else if bottomNoSupplyBreakConfirmed
+    bottomVolumeReason := "naked_low_decay_break_confirmed"
+else if bottomAccumulationRiseConfirmed
+    bottomVolumeReason := "accumulation_rise_confirmed"
+else if bottomWeakNewLowConfirmed
+    bottomVolumeReason := "weak_new_low_confirmed"
+else if bottomRecentSweepFailed
+    bottomVolumeReason := "recent_failed_break"
+else if bottomHighVolumeFailedBreak
+    bottomVolumeReason := "high_volume_failed_break_ok"
+else if lowerExhaustionConfirmedLong
+    bottomVolumeReason := "low_volume_momentum_decay_ok"
+else if volumeQuietRetest
+    bottomVolumeReason := "low_volume_retest_ok"
 float bottomConfirmEntryRaw = bottomConfirmedLong ? math.min(close, bottomZoneHigh + atr * predictiveEntryOffsetAtr) : na
 float bottomConfirmEntry = bottomConfirmedLong ? scalpLimitEntry(1, close, bottomBasis, bottomConfirmEntryRaw, atr, scalpLimitOffsetAtr) : na
 float bottomFailureWatchStop = math.min(nz(lastBottomFailureWatchLow, low), low) - invalidationBuffer
@@ -1635,7 +1820,31 @@ float bottomPredictQty = calcTrialQty(bottomPredictEntry, bottomPredictStop, pre
 float bottomConfirmQty = calcTrialQty(bottomConfirmEntry, bottomConfirmStop, confirmedMaxRiskDollars)
 bool bottomPredictAllowed = bottomPredictContext and smallStopTrialAllowed(bottomPredictEntry, bottomPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and bottomPredictQty >= 1.0
 bool bottomConfirmAllowed = bottomConfirmContext and smallStopTrialAllowed(bottomConfirmEntry, bottomConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and bottomConfirmQty >= 1.0
-string bottomProbeFilterReason = na(todayStructLow) ? "no_today_struct_low" : not dayRangeFormed ? "day_range_not_formed" : not dayRangeClear ? "day_range_too_small" : not strongBottomProbeZone ? "no_clear_structure" : bottomAnchorAgeBars < probeMinAnchorAgeBars ? "anchor_too_fresh" : not bottomVisualLeftOk ? "left_leg_too_small" : not bottomMiddleSwingReady ? "middle_leg_too_small" : not bottomPullbackArmed ? "pullback_not_enough" : not bottomRetestBand ? "not_retest_zone" : dominantTrendShort and not lowerExhaustionConfirmedLong and not bottomHighVolumeRiseConfirmed and not bottomNoSupplyBreakConfirmed ? "blocked_by_dominant_bear_trend" : not bottomSignalBarsOk ? "signal_bars_too_close" : not bottomSignalPriceGapOk ? "micro_structure_too_close" : "passed"
+string bottomProbeFilterReason = "passed"
+if na(todayStructLow)
+    bottomProbeFilterReason := "no_today_struct_low"
+else if not dayRangeFormed
+    bottomProbeFilterReason := "day_range_not_formed"
+else if not dayRangeClear
+    bottomProbeFilterReason := "day_range_too_small"
+else if not strongBottomProbeZone
+    bottomProbeFilterReason := "no_clear_structure"
+else if bottomAnchorAgeBars < probeMinAnchorAgeBars
+    bottomProbeFilterReason := "anchor_too_fresh"
+else if not bottomVisualLeftOk
+    bottomProbeFilterReason := "left_leg_too_small"
+else if not bottomMiddleSwingReady
+    bottomProbeFilterReason := "middle_leg_too_small"
+else if not bottomPullbackArmed
+    bottomProbeFilterReason := "pullback_not_enough"
+else if not bottomRetestBand
+    bottomProbeFilterReason := "not_retest_zone"
+else if dominantTrendShort and not lowerExhaustionConfirmedLong and not bottomHighVolumeRiseConfirmed and not bottomNoSupplyBreakConfirmed
+    bottomProbeFilterReason := "blocked_by_dominant_bear_trend"
+else if not bottomSignalBarsOk
+    bottomProbeFilterReason := "signal_bars_too_close"
+else if not bottomSignalPriceGapOk
+    bottomProbeFilterReason := "micro_structure_too_close"
 
 bool trendLongConfirmNow = trendLongConfirmAllowed and not upperExhaustionZone
 bool trendLongPredictNow = false
@@ -1714,7 +1923,43 @@ float selectedProbeAnchorPrice = selectedTopProbe ? todayStructHigh : selectedBo
 string trendStructDir = strongStructTrendLong ? "bull_HH_HL" : strongStructTrendShort ? "bear_LL_LH" : dominantTrendLong ? "dominant_bull" : dominantTrendShort ? "dominant_bear" : "none"
 string selectedTrendStructPattern = selectedTrendSupport ? "HH_HL" : selectedTrendResistance ? "LL_LH" : "none"
 string selectedTrendSources = selectedTrendSupport ? trendSupportSources : selectedTrendResistance ? trendResistanceSources : "none"
-string selectedMainReason = selectedTrendSupport ? "clear_bull_pullback_to_support" : selectedTrendResistance ? "clear_bear_rebound_to_resistance" : selectedTopProbe ? (topVolumeClimaxFailedBreakConfirmed ? "new_high_volume_climax_failed" : topHighVolumeDropConfirmed ? "naked_high_volume_reversal" : topImmediateReversalShort ? "naked_high_immediate_reversal" : topNoDemandBreakConfirmed ? "naked_high_decay_break" : topDistributionDropConfirmed ? "new_high_distribution_drop" : topWeakNewHighConfirmed ? "weak_new_high_confirmed" : upperExhaustionConfirmedShort ? "prior_high_second_test_momentum_decay" : "today_struct_high_probe_failed_breakout") : selectedBottomProbe ? (bottomHighVolumeRiseConfirmed ? "naked_low_volume_reversal" : bottomNoSupplyBreakConfirmed ? "naked_low_decay_break" : bottomAccumulationRiseConfirmed ? "new_low_accumulation_rise" : bottomWeakNewLowConfirmed ? "weak_new_low_confirmed" : lowerExhaustionConfirmedLong ? "prior_low_second_test_momentum_decay" : "today_struct_low_probe_failed_breakout") : "none"
+string selectedTopMainReason = "today_struct_high_probe_failed_breakout"
+if topVolumeClimaxFailedBreakConfirmed
+    selectedTopMainReason := "new_high_volume_climax_failed"
+else if topHighVolumeDropConfirmed
+    selectedTopMainReason := "naked_high_volume_reversal"
+else if topImmediateReversalShort
+    selectedTopMainReason := "naked_high_immediate_reversal"
+else if topNoDemandBreakConfirmed
+    selectedTopMainReason := "naked_high_decay_break"
+else if topDistributionDropConfirmed
+    selectedTopMainReason := "new_high_distribution_drop"
+else if topWeakNewHighConfirmed
+    selectedTopMainReason := "weak_new_high_confirmed"
+else if upperExhaustionConfirmedShort
+    selectedTopMainReason := "prior_high_second_test_momentum_decay"
+
+string selectedBottomMainReason = "today_struct_low_probe_failed_breakout"
+if bottomHighVolumeRiseConfirmed
+    selectedBottomMainReason := "naked_low_volume_reversal"
+else if bottomNoSupplyBreakConfirmed
+    selectedBottomMainReason := "naked_low_decay_break"
+else if bottomAccumulationRiseConfirmed
+    selectedBottomMainReason := "new_low_accumulation_rise"
+else if bottomWeakNewLowConfirmed
+    selectedBottomMainReason := "weak_new_low_confirmed"
+else if lowerExhaustionConfirmedLong
+    selectedBottomMainReason := "prior_low_second_test_momentum_decay"
+
+string selectedMainReason = "none"
+if selectedTrendSupport
+    selectedMainReason := "clear_bull_pullback_to_support"
+else if selectedTrendResistance
+    selectedMainReason := "clear_bear_rebound_to_resistance"
+else if selectedTopProbe
+    selectedMainReason := selectedTopMainReason
+else if selectedBottomProbe
+    selectedMainReason := selectedBottomMainReason
 string selectedSecondaryReason = selectedTrendSupport ? trendSupportSources : selectedTrendResistance ? trendResistanceSources : selectedTopProbe ? topSources : selectedBottomProbe ? bottomSources : "none"
 
 bool inEntryWindow = not useIntradayEntryWindow or not na(time(timeframe.period, entrySession))
@@ -1728,8 +1973,29 @@ string selectedScalpCycleState = selectedDirection == 0 ? "none" : (na(selectedA
 string selectedScalpCycleId = selectedDirection == 0 ? "none" : str.replace_all(syminfo.ticker, " ", "_") + "_" + (selectedDirection == 1 ? "long" : "short") + "_" + str.tostring(math.round(nz(selectedStructureAnchor, selectedEntry) / syminfo.mintick))
 bool selectedAnyPlanFarEnough = selectedDirection == 0 or selectedFailureReentry or na(selectedAnyPlanGapBars) or (selectedAnyPlanGapBars >= minAnyPlanGapBars and selectedAnyPlanDistanceAtr >= minAnyPlanDistanceAtr)
 bool selectedDailyRiskOk = selectedDirection == 0 or (dailyTotalTrades < maxDailyTotalTrades and dailyPnlDollars > -maxDailyLossDollars and (selectedDirection == 1 ? dailyLongTrades < maxDailySameSideTrades and dailyLongLosses < maxSameSideLosses : dailyShortTrades < maxDailySameSideTrades and dailyShortLosses < maxSameSideLosses))
-bool selectedPlanValid = selectedDirection != 0 and selectedStructureClear and selectedEntryNearAnchor and selectedRsiPassed and selectedSmallStopGatePassed and selectedExpectedRPassed and selectedSameSideSignalFarEnough and selectedAnyPlanFarEnough and selectedDailyRiskOk and selectedQty >= 1.0 and inEntryWindow
-string selectedBlockReason = selectedDirection == 0 ? "no_candidate" : not selectedStructureClear ? "no_clear_structure" : not selectedEntryNearAnchor ? "entry_too_far_from_anchor" : not selectedRsiPassed ? "rsi_not_turning" : not selectedSameSideSignalFarEnough ? "micro_structure_too_close" : not selectedAnyPlanFarEnough ? "any_plan_too_close" : not selectedDailyRiskOk ? "daily_risk_cap_hit" : not selectedSmallStopGatePassed ? selectedSmallStopGateReason : not selectedExpectedRPassed ? (not selectedEmaTargetInProfit or selectedEmaProfitAtr < minEmaProfitAtr ? "ema_tp_too_close" : "expected_r_too_small") : "passed"
+bool selectedPlanQualityOk = selectedStructureClear and selectedEntryNearAnchor and selectedRsiPassed and selectedSmallStopGatePassed and selectedExpectedRPassed
+bool selectedPlanSpacingOk = selectedSameSideSignalFarEnough and selectedAnyPlanFarEnough
+bool selectedPlanValid = selectedDirection != 0 and selectedPlanQualityOk and selectedPlanSpacingOk and selectedDailyRiskOk and selectedQty >= 1.0 and inEntryWindow
+string selectedExpectedRBlockReason = not selectedEmaTargetInProfit or selectedEmaProfitAtr < minEmaProfitAtr ? "ema_tp_too_close" : "expected_r_too_small"
+string selectedBlockReason = "passed"
+if selectedDirection == 0
+    selectedBlockReason := "no_candidate"
+else if not selectedStructureClear
+    selectedBlockReason := "no_clear_structure"
+else if not selectedEntryNearAnchor
+    selectedBlockReason := "entry_too_far_from_anchor"
+else if not selectedRsiPassed
+    selectedBlockReason := "rsi_not_turning"
+else if not selectedSameSideSignalFarEnough
+    selectedBlockReason := "micro_structure_too_close"
+else if not selectedAnyPlanFarEnough
+    selectedBlockReason := "any_plan_too_close"
+else if not selectedDailyRiskOk
+    selectedBlockReason := "daily_risk_cap_hit"
+else if not selectedSmallStopGatePassed
+    selectedBlockReason := selectedSmallStopGateReason
+else if not selectedExpectedRPassed
+    selectedBlockReason := selectedExpectedRBlockReason
 
 // -----------------------------------------------------------------------------
 // Visual lifecycle shadow.
@@ -1790,7 +2056,30 @@ if newPlanNow
         topExhaustionUsed := selectedProbePattern == "extension_exhaustion_top" ? true : topExhaustionUsed
     if selectedBottomProbe
         bottomExhaustionUsed := selectedProbePattern == "extension_exhaustion_bottom" ? true : bottomExhaustionUsed
-    string detail = "F" + str.tostring(flowId) + " ②" + intentName(selectedEntryIntent) + " " + dirName(selectedDirection) + "\n关联流: " + decisionRef + " -> F" + str.tostring(flowId) + "\n" + setupDisplayName(selectedSetup) + "\n主因: " + selectedMainReason + "\n次因: " + (selectedSecondaryReason == "" ? "none" : selectedSecondaryReason) + "\n结构锚点 " + fmt(selectedStructureAnchor) + " / expected " + fmt(selectedExpectedR) + "R / EMA空间 " + fmt(selectedEmaProfitAtr) + "ATR\nRSI " + fmt(scalpRsi) + " / smooth " + fmt(scalpRsiSmooth) + " / " + selectedRsiState + "\n结构区 " + fmt(selectedZoneLow) + " - " + fmt(selectedZoneHigh) + "\n三段结构 L" + fmt(selectedProbeLeftLegBps) + "bps / M" + fmt(selectedProbeMiddleRatio) + " / R" + fmt(selectedProbeRightRatio) + " / 回测 " + fmt(selectedProbeRetestGapBars) + "/" + str.tostring(maxRetestAfterMiddleSwingBars) + " bars\n大回落已成立 " + str.tostring(selectedProbePullbackArmed) + " / 回落 " + fmt(selectedProbePullbackAtr) + "ATR / min " + fmt(minMiddleSwingAtr) + "\n量能 vol/MA " + fmt(selectedVolumeRatio) + " / closePos " + fmt(selectedClosePosition) + " / " + selectedVolumeReason + "\n成交量判断: " + volumeJudge + "\n位置角色 " + selectedLevelRole + " / trend " + trendRegime + "\n日内高低 " + (dayRangeFormed ? "formed" : "waiting") + " / " + fmt(dayRangeAtr) + "ATR\n衰竭 " + selectedExhaustionSide + " / " + selectedExhaustionReason + " / MDecay " + fmt(selectedMomentumDecayRatio) + " / 连续 " + fmt(selectedMomentumDecayStreak) + "/" + fmt(selectedMomentumDecayConfirmBars) + "\n量能攻击状态 " + str.tostring(selectedAttackVolumeCooling) + " / 不拦截\n同向距离 " + fmt(selectedSameSideSignalDistanceAtr) + "ATR / min " + fmt(minSameSideSignalSeparationAtr) + "\nplan " + fmt(selectedEntry) + " / qty " + qtyText(selectedQty) + "\n红SL " + fmt(selectedStop) + " " + moneyText(pnlDollars(selectedEntry, selectedStop, selectedDirection, selectedQty)) + "\n蓝0.6R " + fmt(selectedRunnerActivation) + " " + moneyText(pnlDollars(selectedEntry, selectedRunnerActivation, selectedDirection, selectedQty)) + "\n绿EMA20 TP " + fmt(selectedTarget) + " " + moneyText(pnlDollars(selectedEntry, selectedTarget, selectedDirection, selectedQty)) + "\n小止损: " + selectedSmallStopGateReason + " / " + fmt(selectedStopDistanceAtr) + "ATR / " + fmt(selectedStopDistanceBps) + "bps\nprobe: " + selectedProbePattern + " / filter " + selectedProbeFilterReason + "\n风险模式: " + selectedTrialRiskMode + " $" + fmt(selectedRiskBudget) + " / TTL " + str.tostring(entryOrderTtlBars)
+    string detail = "F" + str.tostring(flowId) + " ②" + intentName(selectedEntryIntent) + " " + dirName(selectedDirection)
+    detail := detail + "\n关联流: " + decisionRef + " -> F" + str.tostring(flowId)
+    detail := detail + "\n" + setupDisplayName(selectedSetup)
+    detail := detail + "\n主因: " + selectedMainReason
+    detail := detail + "\n次因: " + (selectedSecondaryReason == "" ? "none" : selectedSecondaryReason)
+    detail := detail + "\n结构锚点 " + fmt(selectedStructureAnchor) + " / expected " + fmt(selectedExpectedR) + "R / EMA空间 " + fmt(selectedEmaProfitAtr) + "ATR"
+    detail := detail + "\nRSI " + fmt(scalpRsi) + " / smooth " + fmt(scalpRsiSmooth) + " / " + selectedRsiState
+    detail := detail + "\n结构区 " + fmt(selectedZoneLow) + " - " + fmt(selectedZoneHigh)
+    detail := detail + "\n三段结构 L" + fmt(selectedProbeLeftLegBps) + "bps / M" + fmt(selectedProbeMiddleRatio) + " / R" + fmt(selectedProbeRightRatio) + " / 回测 " + fmt(selectedProbeRetestGapBars) + "/" + str.tostring(maxRetestAfterMiddleSwingBars) + " bars"
+    detail := detail + "\n大回落已成立 " + str.tostring(selectedProbePullbackArmed) + " / 回落 " + fmt(selectedProbePullbackAtr) + "ATR / min " + fmt(minMiddleSwingAtr)
+    detail := detail + "\n量能 vol/MA " + fmt(selectedVolumeRatio) + " / closePos " + fmt(selectedClosePosition) + " / " + selectedVolumeReason
+    detail := detail + "\n成交量判断: " + volumeJudge
+    detail := detail + "\n位置角色 " + selectedLevelRole + " / trend " + trendRegime
+    detail := detail + "\n日内高低 " + (dayRangeFormed ? "formed" : "waiting") + " / " + fmt(dayRangeAtr) + "ATR"
+    detail := detail + "\n衰竭 " + selectedExhaustionSide + " / " + selectedExhaustionReason + " / MDecay " + fmt(selectedMomentumDecayRatio) + " / 连续 " + fmt(selectedMomentumDecayStreak) + "/" + fmt(selectedMomentumDecayConfirmBars)
+    detail := detail + "\n量能攻击状态 " + str.tostring(selectedAttackVolumeCooling) + " / 不拦截"
+    detail := detail + "\n同向距离 " + fmt(selectedSameSideSignalDistanceAtr) + "ATR / min " + fmt(minSameSideSignalSeparationAtr)
+    detail := detail + "\nplan " + fmt(selectedEntry) + " / qty " + qtyText(selectedQty)
+    detail := detail + "\n红SL " + fmt(selectedStop) + " " + moneyText(pnlDollars(selectedEntry, selectedStop, selectedDirection, selectedQty))
+    detail := detail + "\n蓝0.6R " + fmt(selectedRunnerActivation) + " " + moneyText(pnlDollars(selectedEntry, selectedRunnerActivation, selectedDirection, selectedQty))
+    detail := detail + "\n绿EMA20 TP " + fmt(selectedTarget) + " " + moneyText(pnlDollars(selectedEntry, selectedTarget, selectedDirection, selectedQty))
+    detail := detail + "\n小止损: " + selectedSmallStopGateReason + " / " + fmt(selectedStopDistanceAtr) + "ATR / " + fmt(selectedStopDistanceBps) + "bps"
+    detail := detail + "\nprobe: " + selectedProbePattern + " / filter " + selectedProbeFilterReason
+    detail := detail + "\n风险模式: " + selectedTrialRiskMode + " $" + fmt(selectedRiskBudget) + " / TTL " + str.tostring(entryOrderTtlBars)
     string compact = "F" + str.tostring(flowId) + " " + dirName(selectedDirection) + " plan " + fmt(selectedEntry)
     if flowLabelsVisible
         label.new(bar_index, flowY(selectedDirection, 1.5), flowLabelText(compact, detail), style=flowStyle(selectedDirection), color=flowColor(selectedEntryIntent == "predictive_limit" ? "predictive" : "confirmed", selectedDirection), textcolor=labelTextColor(selectedEntryIntent == "predictive_limit" ? "predictive" : "confirmed", selectedDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(detail))
@@ -1913,7 +2202,10 @@ if shadowExitNow
 bool structureBreakAcceptedEvent = confirmed and showDiagnosticEventFlow and (upperStructureBreakAccepted or lowerStructureBreakAccepted)
 if structureBreakAcceptedEvent
     int acceptedDirection = upperStructureBreakAccepted ? -1 : 1
-    string acceptedDetail = (upperStructureBreakAccepted ? "站稳前高：更新今日结构高" : "跌破站稳：更新今日结构低") + "\n旧结构不再当作反向入场位\n确认 " + str.tostring(structureBreakAcceptBars) + " bars / close阈值 " + fmt(structureBreakAcceptCloseAtr) + "ATR\n后续等待重新回落，再二次测试并连续动能衰减"
+    string acceptedDetail = upperStructureBreakAccepted ? "站稳前高：更新今日结构高" : "跌破站稳：更新今日结构低"
+    acceptedDetail := acceptedDetail + "\n旧结构不再当作反向入场位"
+    acceptedDetail := acceptedDetail + "\n确认 " + str.tostring(structureBreakAcceptBars) + " bars / close阈值 " + fmt(structureBreakAcceptCloseAtr) + "ATR"
+    acceptedDetail := acceptedDetail + "\n后续等待重新回落，再二次测试并连续动能衰减"
     string acceptedCompact = (upperStructureBreakAccepted ? "前高站稳" : "前低跌破") + "\n结构已更新"
     if eventMarkersVisible
         eventMarker(acceptedDirection, "structure", " ", acceptedDetail, 0.28)
@@ -1923,7 +2215,9 @@ if structureBreakAcceptedEvent
 bool structureBreakExtendedEvent = confirmed and showDiagnosticEventFlow and (upperStructureBreakExtended or lowerStructureBreakExtended)
 if structureBreakExtendedEvent
     int extendedDirection = upperStructureBreakExtended ? -1 : 1
-    string extendedDetail = (upperStructureBreakExtended ? "前高延伸：结构高跟随最新日内高点" : "前低延伸：结构低跟随最新日内低点") + "\n这是趋势延续后的锚点刷新，不是反向挂单\n后续仍要等回落/反弹形成中段，再二次测试并动能衰减"
+    string extendedDetail = upperStructureBreakExtended ? "前高延伸：结构高跟随最新日内高点" : "前低延伸：结构低跟随最新日内低点"
+    extendedDetail := extendedDetail + "\n这是趋势延续后的锚点刷新，不是反向挂单"
+    extendedDetail := extendedDetail + "\n后续仍要等回落/反弹形成中段，再二次测试并动能衰减"
     string extendedCompact = upperStructureBreakExtended ? "前高延伸\n结构跟随新高" : "前低延伸\n结构跟随新低"
     if eventMarkersVisible
         eventMarker(extendedDirection, "structure", " ", extendedDetail, 0.28)
@@ -1939,9 +2233,29 @@ if liveHighStateEvent or liveLowStateEvent or candidateHighWaitEvent or candidat
     int liveDirection = highSideEvent ? -1 : 1
     bool raisedEvent = liveHighStateEvent or liveLowStateEvent
     bool independentEvent = highSideEvent ? structureHighIndependent : structureLowIndependent
-    string stateTitle = raisedEvent ? (highSideEvent ? "结构高抬高" : "结构低下移") : (highSideEvent ? "候选结构高" : "候选结构低")
-    string clusterText = raisedEvent ? (independentEvent ? (highSideEvent ? "结构高刷新：独立新结构" : "结构低刷新：独立新结构") : (highSideEvent ? "同一结构簇新高" : "同一结构簇新低")) : (highSideEvent ? "等待回落确认" : "等待反弹确认")
-    string liveDetail = stateTitle + "\n" + clusterText + "\n旧高低 " + fmt(highSideEvent ? structureHighOld : structureLowOld) + " -> 新高低 " + fmt(highSideEvent ? todayStructHigh : todayStructLow) + "\n盘中极值 " + fmt(highSideEvent ? todayHigh : todayLow) + "\n独立结构: " + str.tostring(independentEvent) + "\n冻结突破基准 " + fmt(highSideEvent ? breakoutHighZoneHigh : breakoutLowZoneLow) + "\n说明: 同一结构簇也会更新可交易锚点，SL/前高前低跟随最新极值"
+    float oldStructureValue = highSideEvent ? structureHighOld : structureLowOld
+    float currentStructureValue = highSideEvent ? todayStructHigh : todayStructLow
+    float currentExtremeValue = highSideEvent ? todayHigh : todayLow
+    int sourceBar = highSideEvent ? (raisedEvent ? todayStructHighBar : todayHighBar) : (raisedEvent ? todayStructLowBar : todayLowBar)
+    bool firstStructure = raisedEvent and na(oldStructureValue)
+    bool sourceIsCurrentBar = not na(sourceBar) and sourceBar == bar_index
+    float sourceAgeBars = not na(sourceBar) ? (bar_index - sourceBar) * 1.0 : na
+    string stateTitle = raisedEvent ? (firstStructure ? (highSideEvent ? "结构高首次确认" : "结构低首次确认") : sourceIsCurrentBar ? (highSideEvent ? "结构高抬高" : "结构低下移") : (highSideEvent ? "前高确认为结构高" : "前低确认为结构低")) : (highSideEvent ? "候选结构高" : "候选结构低")
+    string clusterText = raisedEvent ? (firstStructure ? "reference session 首次结构" : independentEvent ? (highSideEvent ? "结构高刷新：独立新结构" : "结构低刷新：独立新结构") : (highSideEvent ? "同一结构簇新高" : "同一结构簇新低")) : (highSideEvent ? "等待回落确认" : "等待反弹确认")
+    string triggerReason = raisedEvent ? (sourceIsCurrentBar ? "当前K刷新结构" : (highSideEvent ? "前高回落确认" : "前低反弹确认")) : (highSideEvent ? "当前K候选新高，等待回落确认" : "当前K候选新低，等待反弹确认")
+    string oldStructureText = na(oldStructureValue) ? "无" : fmt(oldStructureValue)
+    string transitionText = raisedEvent ? "旧结构 " + oldStructureText + " -> 新结构 " + fmt(currentStructureValue) : "现结构 " + fmt(currentStructureValue) + " / 候选极值 " + fmt(currentExtremeValue)
+    string liveDetail = stateTitle
+    liveDetail := liveDetail + "\n" + clusterText
+    liveDetail := liveDetail + "\n" + transitionText
+    liveDetail := liveDetail + "\n盘中极值 " + fmt(currentExtremeValue)
+    liveDetail := liveDetail + "\n触发原因: " + triggerReason
+    liveDetail := liveDetail + "\n结构来源: " + fmt(sourceAgeBars) + " bars 前"
+    liveDetail := liveDetail + "\n当前K是否" + (highSideEvent ? "新高" : "新低") + ": " + str.tostring(sourceIsCurrentBar)
+    liveDetail := liveDetail + "\n独立结构: " + str.tostring(independentEvent)
+    liveDetail := liveDetail + "\n冻结突破基准 " + fmt(highSideEvent ? breakoutHighZoneHigh : breakoutLowZoneLow)
+    liveDetail := liveDetail + "\n说明: 这是结构锚点更新，不是开仓信号"
+    liveDetail := liveDetail + "\n补充: 同一结构簇也会更新可交易锚点，SL/前高前低跟随最新极值"
     string liveCompact = raisedEvent ? stateTitle + "\n" + clusterText : (highSideEvent ? "候选结构高\n等待回落确认" : "候选结构低\n等待反弹确认")
     if eventMarkersVisible
         eventMarker(liveDirection, "structure", " ", liveDetail, 0.24)
@@ -1959,7 +2273,24 @@ if blockedCandidate
     string blockKey = selectedTopProbe ? "T" + str.tostring(activeTopDecisionSeq) : selectedBottomProbe ? "B" + str.tostring(activeBottomDecisionSeq) : ""
     string blockPrefix = blockKey == "" ? "" : blockKey + " ④"
     string displayBlockReason = not inEntryWindow ? "outside_entry_session" : selectedBlockReason
-    string detail = blockPrefix + "确认但过滤 " + dirName(selectedDirection) + "\n主因: " + selectedMainReason + "\n次因: " + (selectedSecondaryReason == "" ? "none" : selectedSecondaryReason) + "\n原因: " + reasonCn(displayBlockReason) + " / " + displayBlockReason + "\n结构 " + fmt(selectedStructureAnchor) + " / expected " + fmt(selectedExpectedR) + "R / EMA空间 " + fmt(selectedEmaProfitAtr) + "ATR\nRSI " + fmt(scalpRsi) + " / smooth " + fmt(scalpRsiSmooth) + " / " + selectedRsiState + "\n距结构 entry/close " + fmt(selectedEntryAnchorDistanceAtr) + "/" + fmt(selectedCurrentAnchorDistanceAtr) + "ATR\n同向距离 " + fmt(selectedSameSideSignalDistanceAtr) + "ATR / min " + fmt(minSameSideSignalSeparationAtr) + "\n结构区 " + fmt(selectedZoneLow) + " - " + fmt(selectedZoneHigh) + "\n三段结构 L" + fmt(selectedProbeLeftLegBps) + "bps / M" + fmt(selectedProbeMiddleRatio) + " / R" + fmt(selectedProbeRightRatio) + " / 回测 " + fmt(selectedProbeRetestGapBars) + "/" + str.tostring(maxRetestAfterMiddleSwingBars) + " bars\n大回落已成立 " + str.tostring(selectedProbePullbackArmed) + " / 回落 " + fmt(selectedProbePullbackAtr) + "ATR / min " + fmt(minMiddleSwingAtr) + "\n量能 vol/MA " + fmt(selectedVolumeRatio) + " / closePos " + fmt(selectedClosePosition) + " / " + selectedVolumeReason + "\n成交量判断: " + volumeJudge + "\n位置角色 " + selectedLevelRole + " / trend " + trendRegime + "\n日内高低 " + (dayRangeFormed ? "formed" : "waiting") + " / " + fmt(dayRangeAtr) + "ATR\n衰竭 " + selectedExhaustionSide + " / " + selectedExhaustionReason + " / MDecay " + fmt(selectedMomentumDecayRatio) + " / 连续 " + fmt(selectedMomentumDecayStreak) + "/" + fmt(selectedMomentumDecayConfirmBars) + "\n量能攻击状态 " + str.tostring(selectedAttackVolumeCooling) + " / 不拦截\n距离 " + fmt(selectedStopDistanceAtr) + "ATR / " + fmt(selectedStopDistanceBps) + "bps"
+    string detail = blockPrefix + "确认但过滤 " + dirName(selectedDirection)
+    detail := detail + "\n主因: " + selectedMainReason
+    detail := detail + "\n次因: " + (selectedSecondaryReason == "" ? "none" : selectedSecondaryReason)
+    detail := detail + "\n原因: " + reasonCn(displayBlockReason) + " / " + displayBlockReason
+    detail := detail + "\n结构 " + fmt(selectedStructureAnchor) + " / expected " + fmt(selectedExpectedR) + "R / EMA空间 " + fmt(selectedEmaProfitAtr) + "ATR"
+    detail := detail + "\nRSI " + fmt(scalpRsi) + " / smooth " + fmt(scalpRsiSmooth) + " / " + selectedRsiState
+    detail := detail + "\n距结构 entry/close " + fmt(selectedEntryAnchorDistanceAtr) + "/" + fmt(selectedCurrentAnchorDistanceAtr) + "ATR"
+    detail := detail + "\n同向距离 " + fmt(selectedSameSideSignalDistanceAtr) + "ATR / min " + fmt(minSameSideSignalSeparationAtr)
+    detail := detail + "\n结构区 " + fmt(selectedZoneLow) + " - " + fmt(selectedZoneHigh)
+    detail := detail + "\n三段结构 L" + fmt(selectedProbeLeftLegBps) + "bps / M" + fmt(selectedProbeMiddleRatio) + " / R" + fmt(selectedProbeRightRatio) + " / 回测 " + fmt(selectedProbeRetestGapBars) + "/" + str.tostring(maxRetestAfterMiddleSwingBars) + " bars"
+    detail := detail + "\n大回落已成立 " + str.tostring(selectedProbePullbackArmed) + " / 回落 " + fmt(selectedProbePullbackAtr) + "ATR / min " + fmt(minMiddleSwingAtr)
+    detail := detail + "\n量能 vol/MA " + fmt(selectedVolumeRatio) + " / closePos " + fmt(selectedClosePosition) + " / " + selectedVolumeReason
+    detail := detail + "\n成交量判断: " + volumeJudge
+    detail := detail + "\n位置角色 " + selectedLevelRole + " / trend " + trendRegime
+    detail := detail + "\n日内高低 " + (dayRangeFormed ? "formed" : "waiting") + " / " + fmt(dayRangeAtr) + "ATR"
+    detail := detail + "\n衰竭 " + selectedExhaustionSide + " / " + selectedExhaustionReason + " / MDecay " + fmt(selectedMomentumDecayRatio) + " / 连续 " + fmt(selectedMomentumDecayStreak) + "/" + fmt(selectedMomentumDecayConfirmBars)
+    detail := detail + "\n量能攻击状态 " + str.tostring(selectedAttackVolumeCooling) + " / 不拦截"
+    detail := detail + "\n距离 " + fmt(selectedStopDistanceAtr) + "ATR / " + fmt(selectedStopDistanceBps) + "bps"
     string compact = blockPrefix + "确认但过滤 " + dirName(selectedDirection) + "\n" + reasonCn(displayBlockReason)
     if eventMarkersVisible
         eventMarker(selectedDirection, "blocked", " ", detail, 0.34)
@@ -1976,7 +2307,12 @@ if pullbackArmedFlowEvent
         bottomDecisionSeq += 1
         activeBottomDecisionSeq := bottomDecisionSeq
     string armedKey = armedDirection == -1 ? "T" + str.tostring(activeTopDecisionSeq) : "B" + str.tostring(activeBottomDecisionSeq)
-    string armedDetail = armedKey + (armedDirection == -1 ? " ①冲高后大回落已成立 空\n" : " ①下探后大反弹已成立 多\n") + "不挂单，等待接近/触达/突破结构位\n主因: pullback_armed\n次因: 回落/反弹达到最小幅度，后续裸K失败才确认\n回落 " + fmt(armedDirection == -1 ? topPullbackAtr : bottomPullbackAtr) + "ATR / min " + fmt(minMiddleSwingAtr) + "\n比例 " + fmt(armedDirection == -1 ? topMiddleRetraceRatio : bottomMiddleRetraceRatio) + " / min " + fmt(minVisualMiddleRetraceRatio)
+    string armedDetail = armedKey + (armedDirection == -1 ? " ①冲高后大回落已成立 空" : " ①下探后大反弹已成立 多")
+    armedDetail := armedDetail + "\n不挂单，等待接近/触达/突破结构位"
+    armedDetail := armedDetail + "\n主因: pullback_armed"
+    armedDetail := armedDetail + "\n次因: 回落/反弹达到最小幅度，后续裸K失败才确认"
+    armedDetail := armedDetail + "\n回落 " + fmt(armedDirection == -1 ? topPullbackAtr : bottomPullbackAtr) + "ATR / min " + fmt(minMiddleSwingAtr)
+    armedDetail := armedDetail + "\n比例 " + fmt(armedDirection == -1 ? topMiddleRetraceRatio : bottomMiddleRetraceRatio) + " / min " + fmt(minVisualMiddleRetraceRatio)
     string armedCompact = armedKey + (armedDirection == -1 ? " ①大回落成立 空" : " ①大反弹成立 多") + "\n等回结构位"
     if eventMarkersVisible
         eventMarker(armedDirection, "observe", " ", armedDetail, 0.24)
@@ -1988,7 +2324,15 @@ if volumeClimaxTopWatchEvent
     topDecisionSeq += 1
     activeTopDecisionSeq := topDecisionSeq
     string topKey = "T" + str.tostring(activeTopDecisionSeq)
-    string climaxWatchDetail = topKey + " ①裸K放量上攻观察 空\n不挂单，等放量失败或衰弱破位\n主因: naked_high_volume_watch\n次因: 高位放量K是攻击锚点，不再用冷却期拦截\n成交量判断: " + volumeJudge + "\nbase " + fmt(lastTopVolumeClimaxBase) + "\nattack H/L " + fmt(lastTopVolumeClimaxHigh) + " / " + fmt(lastTopVolumeClimaxLow) + "\nvol/MA " + fmt(lastTopVolumeClimaxVolumeRatio) + "\n确认窗口 " + str.tostring(failedBreakConfirmBars) + " bars"
+    string climaxWatchDetail = topKey + " ①裸K放量上攻观察 空"
+    climaxWatchDetail := climaxWatchDetail + "\n不挂单，等放量失败或衰弱破位"
+    climaxWatchDetail := climaxWatchDetail + "\n主因: naked_high_volume_watch"
+    climaxWatchDetail := climaxWatchDetail + "\n次因: 高位放量K是攻击锚点，不再用冷却期拦截"
+    climaxWatchDetail := climaxWatchDetail + "\n成交量判断: " + volumeJudge
+    climaxWatchDetail := climaxWatchDetail + "\nbase " + fmt(lastTopVolumeClimaxBase)
+    climaxWatchDetail := climaxWatchDetail + "\nattack H/L " + fmt(lastTopVolumeClimaxHigh) + " / " + fmt(lastTopVolumeClimaxLow)
+    climaxWatchDetail := climaxWatchDetail + "\nvol/MA " + fmt(lastTopVolumeClimaxVolumeRatio)
+    climaxWatchDetail := climaxWatchDetail + "\n确认窗口 " + str.tostring(failedBreakConfirmBars) + " bars"
     string climaxWatchCompact = topKey + " ①裸K放量上攻观察 空\n等失败确认"
     if eventMarkersVisible
         eventMarker(-1, "watch", " ", climaxWatchDetail, 0.28)
@@ -2003,9 +2347,26 @@ if volumeClimaxTopConfirmEvent
         activeTopDecisionSeq := topDecisionSeq
     string topKey = "T" + str.tostring(activeTopDecisionSeq)
     string climaxFailKind = topVolumeClimaxCloseBack ? "红K收回前高" : "红K跌破攻击K低点"
-    string rawClimaxFilterReason = topConfirmAllowed ? "passed" : not topSignalGapOk ? "micro_structure_too_close" : not smallStopTrialAllowed(topConfirmEntry, topConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) ? smallStopGateReason(topConfirmEntry, topConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) : topConfirmQty < 1.0 ? "qty_too_small" : "main_flow_filter"
+    string rawClimaxFilterReason = "main_flow_filter"
+    if topConfirmAllowed
+        rawClimaxFilterReason := "passed"
+    else if not topSignalGapOk
+        rawClimaxFilterReason := "micro_structure_too_close"
+    else if not smallStopTrialAllowed(topConfirmEntry, topConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps)
+        rawClimaxFilterReason := smallStopGateReason(topConfirmEntry, topConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps)
+    else if topConfirmQty < 1.0
+        rawClimaxFilterReason := "qty_too_small"
     string climaxFilterReason = topConfirmAllowed ? "可挂单" : "确认但过滤\n过滤原因: " + reasonCn(rawClimaxFilterReason) + " / " + rawClimaxFilterReason
-    string climaxConfirmDetail = topKey + " ③放量失败确认 空\n候选确认 空\n" + climaxFailKind + "\n" + climaxFilterReason + "\nSL 前高+buffer " + fmt(topConfirmStop) + "\nbase " + fmt(lastTopVolumeClimaxBase) + "\nattack H/L " + fmt(lastTopVolumeClimaxHigh) + " / " + fmt(lastTopVolumeClimaxLow) + "\n等待 " + fmt(barsSinceTopVolumeClimax) + "/" + str.tostring(failedBreakConfirmBars) + " bars\n成交量判断: " + volumeJudge + "\nvol/MA " + fmt(volumeRatio) + " / closePos " + fmt(closePosition) + "\ndistance " + fmt(topVolumeClimaxDistanceAtr) + "ATR"
+    string climaxConfirmDetail = topKey + " ③放量失败确认 空\n候选确认 空"
+    climaxConfirmDetail := climaxConfirmDetail + "\n" + climaxFailKind
+    climaxConfirmDetail := climaxConfirmDetail + "\n" + climaxFilterReason
+    climaxConfirmDetail := climaxConfirmDetail + "\nSL 前高+buffer " + fmt(topConfirmStop)
+    climaxConfirmDetail := climaxConfirmDetail + "\nbase " + fmt(lastTopVolumeClimaxBase)
+    climaxConfirmDetail := climaxConfirmDetail + "\nattack H/L " + fmt(lastTopVolumeClimaxHigh) + " / " + fmt(lastTopVolumeClimaxLow)
+    climaxConfirmDetail := climaxConfirmDetail + "\n等待 " + fmt(barsSinceTopVolumeClimax) + "/" + str.tostring(failedBreakConfirmBars) + " bars"
+    climaxConfirmDetail := climaxConfirmDetail + "\n成交量判断: " + volumeJudge
+    climaxConfirmDetail := climaxConfirmDetail + "\nvol/MA " + fmt(volumeRatio) + " / closePos " + fmt(closePosition)
+    climaxConfirmDetail := climaxConfirmDetail + "\ndistance " + fmt(topVolumeClimaxDistanceAtr) + "ATR"
     string climaxConfirmCompact = topKey + " 候选确认 空\n" + (topConfirmAllowed ? "可挂单" : "确认但过滤")
     if eventMarkersVisible
         eventMarker(-1, topConfirmAllowed ? "candidate" : "blocked", " ", climaxConfirmDetail, 0.34)
@@ -2022,7 +2383,15 @@ if nakedTouchEvent
         bottomDecisionSeq += 1
         activeBottomDecisionSeq := bottomDecisionSeq
     string touchKey = touchDirection == -1 ? "T" + str.tostring(activeTopDecisionSeq) : "B" + str.tostring(activeBottomDecisionSeq)
-    string touchDetail = touchKey + (touchDirection == -1 ? " ①新高/前高观察 空\n" : " ①新低/前低观察 多\n") + "不挂单，等待放量失败或连续衰弱破簇\n主因: " + (touchDirection == -1 ? "naked_high_watch" : "naked_low_watch") + "\n次因: 触达结构位即进入裸K观察，不要求先放量\n成交量判断: " + volumeJudge + "\n大回落已成立: " + str.tostring(touchDirection == -1 ? topPullbackArmed : bottomPullbackArmed) + " / 回落 " + fmt(touchDirection == -1 ? topPullbackAtr : bottomPullbackAtr) + "ATR\nbase " + fmt(touchDirection == -1 ? lastTopFailureWatchBase : lastBottomFailureWatchBase) + "\nwatch H/L " + fmt(touchDirection == -1 ? lastTopFailureWatchHigh : lastBottomFailureWatchHigh) + " / " + fmt(touchDirection == -1 ? lastTopFailureWatchLow : lastBottomFailureWatchLow) + "\nvol/MA " + fmt(volumeRatio) + " / closePos " + fmt(closePosition)
+    string touchDetail = touchKey + (touchDirection == -1 ? " ①新高/前高观察 空" : " ①新低/前低观察 多")
+    touchDetail := touchDetail + "\n不挂单，等待放量失败或连续衰弱破簇"
+    touchDetail := touchDetail + "\n主因: " + (touchDirection == -1 ? "naked_high_watch" : "naked_low_watch")
+    touchDetail := touchDetail + "\n次因: 触达结构位即进入裸K观察，不要求先放量"
+    touchDetail := touchDetail + "\n成交量判断: " + volumeJudge
+    touchDetail := touchDetail + "\n大回落已成立: " + str.tostring(touchDirection == -1 ? topPullbackArmed : bottomPullbackArmed) + " / 回落 " + fmt(touchDirection == -1 ? topPullbackAtr : bottomPullbackAtr) + "ATR"
+    touchDetail := touchDetail + "\nbase " + fmt(touchDirection == -1 ? lastTopFailureWatchBase : lastBottomFailureWatchBase)
+    touchDetail := touchDetail + "\nwatch H/L " + fmt(touchDirection == -1 ? lastTopFailureWatchHigh : lastBottomFailureWatchHigh) + " / " + fmt(touchDirection == -1 ? lastTopFailureWatchLow : lastBottomFailureWatchLow)
+    touchDetail := touchDetail + "\nvol/MA " + fmt(volumeRatio) + " / closePos " + fmt(closePosition)
     string touchCompact = touchKey + (touchDirection == -1 ? " ①新高/前高观察 空" : " ①新低/前低观察 多") + "\n等确认"
     if eventMarkersVisible
         eventMarker(touchDirection, "observe", " ", touchDetail, 0.24)
@@ -2039,7 +2408,14 @@ if nakedVolumeProbeEvent
         bottomDecisionSeq += 1
         activeBottomDecisionSeq := bottomDecisionSeq
     string attackKey = attackDirection == -1 ? "T" + str.tostring(activeTopDecisionSeq) : "B" + str.tostring(activeBottomDecisionSeq)
-    string attackDetail = attackKey + (attackDirection == -1 ? " ②放量失败观察 空\n" : " ②放量失败观察 多\n") + "不挂单，等反向K收回实体中位或破观察位\n主因: " + (attackDirection == -1 ? "naked_high_volume_watch" : "naked_low_volume_watch") + "\n次因: 放量K只作为攻击锚点，不触发冷却拦截\n成交量判断: " + volumeJudge + "\nattack H/L " + fmt(attackDirection == -1 ? lastTopFailureWatchHigh : lastBottomFailureWatchHigh) + " / " + fmt(attackDirection == -1 ? lastTopFailureWatchLow : lastBottomFailureWatchLow) + "\nbodyMid " + fmt(attackDirection == -1 ? lastTopFailureWatchBodyMid : lastBottomFailureWatchBodyMid) + "\nvol/MA " + fmt(volumeRatio) + " / closePos " + fmt(closePosition)
+    string attackDetail = attackKey + (attackDirection == -1 ? " ②放量失败观察 空" : " ②放量失败观察 多")
+    attackDetail := attackDetail + "\n不挂单，等反向K收回实体中位或破观察位"
+    attackDetail := attackDetail + "\n主因: " + (attackDirection == -1 ? "naked_high_volume_watch" : "naked_low_volume_watch")
+    attackDetail := attackDetail + "\n次因: 放量K只作为攻击锚点，不触发冷却拦截"
+    attackDetail := attackDetail + "\n成交量判断: " + volumeJudge
+    attackDetail := attackDetail + "\nattack H/L " + fmt(attackDirection == -1 ? lastTopFailureWatchHigh : lastBottomFailureWatchHigh) + " / " + fmt(attackDirection == -1 ? lastTopFailureWatchLow : lastBottomFailureWatchLow)
+    attackDetail := attackDetail + "\nbodyMid " + fmt(attackDirection == -1 ? lastTopFailureWatchBodyMid : lastBottomFailureWatchBodyMid)
+    attackDetail := attackDetail + "\nvol/MA " + fmt(volumeRatio) + " / closePos " + fmt(closePosition)
     string attackCompact = attackKey + (attackDirection == -1 ? " ②放量失败观察 空" : " ②放量失败观察 多") + "\n等反向确认"
     if eventMarkersVisible
         eventMarker(attackDirection, "watch", " ", attackDetail, 0.28)
@@ -2059,7 +2435,16 @@ if nakedQuietWatchEvent
     string quietStep = quietDirection == -1 ? (topNoDemandStreak <= 1 ? "②连续衰弱观察 空" : "②高位衰弱/打压观察 空") : (bottomNoSupplyStreak <= 1 ? "②连续衰弱观察 多" : "②低位衰弱/打压观察 多")
     string quietMain = quietDirection == -1 ? "naked_high_decay_watch" : "naked_low_decay_watch"
     string quietSecondary = quietDirection == -1 ? "等待红K跌破观察簇低点" : "等待绿K突破观察簇高点"
-    string quietDetail = quietKey + " " + quietStep + "\n不挂单，等破位确认\n主因: " + quietMain + "\n次因: " + quietSecondary + "\n成交量判断: " + volumeJudge + "\n大回落已成立: " + str.tostring(quietDirection == -1 ? topPullbackArmed : bottomPullbackArmed) + " / 回落 " + fmt(quietDirection == -1 ? topPullbackAtr : bottomPullbackAtr) + "ATR\nbase " + fmt(quietDirection == -1 ? lastTopFailureWatchBase : lastBottomFailureWatchBase) + "\nwatch H/L " + fmt(quietDirection == -1 ? lastTopNoDemandHigh : lastBottomNoSupplyHigh) + " / " + fmt(quietDirection == -1 ? lastTopNoDemandLow : lastBottomNoSupplyLow) + "\n连续 " + str.tostring(quietDirection == -1 ? topNoDemandStreak : bottomNoSupplyStreak) + "\nvol/MA " + fmt(volumeRatio) + " / closePos " + fmt(closePosition)
+    string quietDetail = quietKey + " " + quietStep
+    quietDetail := quietDetail + "\n不挂单，等破位确认"
+    quietDetail := quietDetail + "\n主因: " + quietMain
+    quietDetail := quietDetail + "\n次因: " + quietSecondary
+    quietDetail := quietDetail + "\n成交量判断: " + volumeJudge
+    quietDetail := quietDetail + "\n大回落已成立: " + str.tostring(quietDirection == -1 ? topPullbackArmed : bottomPullbackArmed) + " / 回落 " + fmt(quietDirection == -1 ? topPullbackAtr : bottomPullbackAtr) + "ATR"
+    quietDetail := quietDetail + "\nbase " + fmt(quietDirection == -1 ? lastTopFailureWatchBase : lastBottomFailureWatchBase)
+    quietDetail := quietDetail + "\nwatch H/L " + fmt(quietDirection == -1 ? lastTopNoDemandHigh : lastBottomNoSupplyHigh) + " / " + fmt(quietDirection == -1 ? lastTopNoDemandLow : lastBottomNoSupplyLow)
+    quietDetail := quietDetail + "\n连续 " + str.tostring(quietDirection == -1 ? topNoDemandStreak : bottomNoSupplyStreak)
+    quietDetail := quietDetail + "\nvol/MA " + fmt(volumeRatio) + " / closePos " + fmt(closePosition)
     string quietCompact = quietKey + " " + quietStep + "\n等破位确认"
     if eventMarkersVisible
         eventMarker(quietDirection, "watch", " ", quietDetail, 0.30)
@@ -2077,7 +2462,12 @@ if weakNewTopWatchEvent or weakNewBottomWatchEvent
         bottomDecisionSeq += 1
         activeBottomDecisionSeq := bottomDecisionSeq
     string weakKey = weakWatchDirection == -1 ? "T" + str.tostring(activeTopDecisionSeq) : "B" + str.tostring(activeBottomDecisionSeq)
-    string weakWatchDetail = weakKey + " ①" + (weakNewTopWatchEvent ? "弱新高观察 空\n新高缩量\n等待弱收确认" : "弱新低观察 多\n新低缩量\n等待强收确认") + "\n不挂单\n成交量判断: " + volumeJudge + "\nbase " + fmt(weakNewTopWatchEvent ? topWeakBase : bottomWeakBase) + "\next " + fmt(weakNewTopWatchEvent ? topWeakExtensionAtr : bottomWeakExtensionAtr) + "ATR\nvol/MA " + fmt(volumeRatio)
+    string weakWatchDetail = weakKey + " ①" + (weakNewTopWatchEvent ? "弱新高观察 空\n新高缩量\n等待弱收确认" : "弱新低观察 多\n新低缩量\n等待强收确认")
+    weakWatchDetail := weakWatchDetail + "\n不挂单"
+    weakWatchDetail := weakWatchDetail + "\n成交量判断: " + volumeJudge
+    weakWatchDetail := weakWatchDetail + "\nbase " + fmt(weakNewTopWatchEvent ? topWeakBase : bottomWeakBase)
+    weakWatchDetail := weakWatchDetail + "\next " + fmt(weakNewTopWatchEvent ? topWeakExtensionAtr : bottomWeakExtensionAtr) + "ATR"
+    weakWatchDetail := weakWatchDetail + "\nvol/MA " + fmt(volumeRatio)
     string weakWatchCompact = weakNewTopWatchEvent ? weakKey + " ①弱新高观察 空\n等待弱收确认" : weakKey + " ①弱新低观察 多\n等待强收确认"
     if eventMarkersVisible
         eventMarker(weakWatchDirection, "observe", " ", weakWatchDetail, 0.26)
@@ -2098,17 +2488,49 @@ if distributionConfirmEvent
         activeBottomDecisionSeq := bottomDecisionSeq
     string distributionKey = distributionDirection == -1 ? "T" + str.tostring(activeTopDecisionSeq) : "B" + str.tostring(activeBottomDecisionSeq)
     bool distributionAllowed = distributionDirection == -1 ? topConfirmAllowed : bottomConfirmAllowed
-    string rawDistributionFilterReason = distributionAllowed ? "passed" : distributionDirection == -1 ? (not topSignalGapOk ? "micro_structure_too_close" : not smallStopTrialAllowed(topConfirmEntry, topConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) ? smallStopGateReason(topConfirmEntry, topConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) : topConfirmQty < 1.0 ? "qty_too_small" : "main_flow_filter") : (not bottomSignalGapOk ? "micro_structure_too_close" : not smallStopTrialAllowed(bottomConfirmEntry, bottomConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) ? smallStopGateReason(bottomConfirmEntry, bottomConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) : bottomConfirmQty < 1.0 ? "qty_too_small" : "main_flow_filter")
+    bool distributionGapOk = distributionDirection == -1 ? topSignalGapOk : bottomSignalGapOk
+    float distributionEntry = distributionDirection == -1 ? topConfirmEntry : bottomConfirmEntry
+    float distributionStop = distributionDirection == -1 ? topConfirmStop : bottomConfirmStop
+    float distributionQty = distributionDirection == -1 ? topConfirmQty : bottomConfirmQty
+    bool distributionSmallStopOk = smallStopTrialAllowed(distributionEntry, distributionStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps)
+    string rawDistributionFilterReason = "main_flow_filter"
+    if distributionAllowed
+        rawDistributionFilterReason := "passed"
+    else if not distributionGapOk
+        rawDistributionFilterReason := "micro_structure_too_close"
+    else if not distributionSmallStopOk
+        rawDistributionFilterReason := smallStopGateReason(distributionEntry, distributionStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps)
+    else if distributionQty < 1.0
+        rawDistributionFilterReason := "qty_too_small"
     string distributionFilterReason = distributionAllowed ? "可挂单" : "确认但过滤\n过滤原因: " + reasonCn(rawDistributionFilterReason) + " / " + rawDistributionFilterReason
     bool distributionQuietBreak = distributionDirection == -1 ? topNoDemandBreakConfirmed : bottomNoSupplyBreakConfirmed
-    string distributionKind = distributionDirection == -1 ? (topImmediateReversalShort ? "冲高大回落/高位失败 / 回抽限价挂空" : topNoDemandBreakConfirmed ? "连续衰弱/打压 / 红K跌破观察簇低点" : topHighVolumeDropConfirmed ? "高位放量失败 / " + (topHighVolumeDropBreakLow ? "红K跌破攻击K低点" : "红K收回攻击K实体中位") : "弱新高后分歧放量下跌") : (bottomNoSupplyBreakConfirmed ? "连续衰弱/打压 / 绿K突破观察簇高点" : bottomHighVolumeRiseConfirmed ? "低位放量失败 / " + (bottomHighVolumeRiseBreakHigh ? "绿K突破攻击K高点" : "绿K收回攻击K实体中位") : "弱新低后分歧放量上涨")
+    string distributionKind = "弱新低后分歧放量上涨"
+    if distributionDirection == -1
+        distributionKind := topImmediateReversalShort ? "冲高大回落/高位失败 / 回抽限价挂空" : topNoDemandBreakConfirmed ? "连续衰弱/打压 / 红K跌破观察簇低点" : topHighVolumeDropConfirmed ? "高位放量失败 / " + (topHighVolumeDropBreakLow ? "红K跌破攻击K低点" : "红K收回攻击K实体中位") : "弱新高后分歧放量下跌"
+    else if bottomNoSupplyBreakConfirmed
+        distributionKind := "连续衰弱/打压 / 绿K突破观察簇高点"
+    else if bottomHighVolumeRiseConfirmed
+        distributionKind := "低位放量失败 / " + (bottomHighVolumeRiseBreakHigh ? "绿K突破攻击K高点" : "绿K收回攻击K实体中位")
     float distributionBase = distributionDirection == -1 ? (topNoDemandBreakConfirmed or topHighVolumeDropConfirmed or topImmediateReversalShort ? lastTopFailureWatchBase : topWeakBase) : (bottomNoSupplyBreakConfirmed or bottomHighVolumeRiseConfirmed ? lastBottomFailureWatchBase : bottomWeakBase)
     float distributionWatchHigh = distributionDirection == -1 ? (topNoDemandBreakConfirmed ? lastTopNoDemandHigh : lastTopFailureWatchHigh) : (bottomNoSupplyBreakConfirmed ? lastBottomNoSupplyHigh : lastBottomFailureWatchHigh)
     float distributionWatchLow = distributionDirection == -1 ? (topNoDemandBreakConfirmed ? lastTopNoDemandLow : lastTopFailureWatchLow) : (bottomNoSupplyBreakConfirmed ? lastBottomNoSupplyLow : lastBottomFailureWatchLow)
     float distributionWaitBars = distributionDirection == -1 ? (topNoDemandBreakConfirmed ? barsSinceTopNoDemand : barsSinceTopFailureWatch) : (bottomNoSupplyBreakConfirmed ? barsSinceBottomNoSupply : barsSinceBottomFailureWatch)
     float distributionDistance = distributionDirection == -1 ? (topNoDemandBreakConfirmed ? topNoDemandDistanceAtr : topHighVolumeDropConfirmed or topImmediateReversalShort ? topHighVolumeDropDistanceAtr : topDistributionDistanceAtr) : (bottomNoSupplyBreakConfirmed ? bottomNoSupplyDistanceAtr : bottomHighVolumeRiseConfirmed ? bottomHighVolumeRiseDistanceAtr : bottomAccumulationDistanceAtr)
     string distributionStep = distributionDirection == -1 ? (distributionQuietBreak ? " ③跌破观察簇确认 空\n候选确认 空\n" : " ③放量失败确认 空\n候选确认 空\n") : (distributionQuietBreak ? " ③突破观察簇确认 多\n候选确认 多\n" : " ③放量失败确认 多\n候选确认 多\n")
-    string distributionDetail = distributionKey + distributionStep + (distributionQuietBreak ? "裸K连续衰弱确认\n" : "裸K放量失败确认\n") + "主因: " + (distributionDirection == -1 ? (topNoDemandBreakConfirmed ? "naked_high_decay_break" : selectedMainReason) : (bottomNoSupplyBreakConfirmed ? "naked_low_decay_break" : selectedMainReason)) + "\n次因: " + distributionKind + "\n" + distributionFilterReason + "\n回抽限价 entry " + fmt(distributionDirection == -1 ? topConfirmEntry : bottomConfirmEntry) + "\nSL " + (distributionDirection == -1 ? "前高+buffer " + fmt(topConfirmStop) : "前低-buffer " + fmt(bottomConfirmStop)) + "\nbase " + fmt(distributionBase) + "\nwatch H/L " + fmt(distributionWatchHigh) + " / " + fmt(distributionWatchLow) + "\n观察已持续 " + fmt(distributionWaitBars) + " bars / " + str.tostring(failedBreakConfirmBars) + " 仅诊断\n成交量判断: " + volumeJudge + "\nvol/MA " + fmt(volumeRatio) + " / closePos " + fmt(closePosition) + "\ndistance " + fmt(distributionDistance) + "ATR"
+    string distributionMain = distributionDirection == -1 ? (topNoDemandBreakConfirmed ? "naked_high_decay_break" : selectedMainReason) : (bottomNoSupplyBreakConfirmed ? "naked_low_decay_break" : selectedMainReason)
+    string distributionSlText = distributionDirection == -1 ? "前高+buffer " + fmt(topConfirmStop) : "前低-buffer " + fmt(bottomConfirmStop)
+    string distributionDetail = distributionKey + distributionStep + (distributionQuietBreak ? "裸K连续衰弱确认" : "裸K放量失败确认")
+    distributionDetail := distributionDetail + "\n主因: " + distributionMain
+    distributionDetail := distributionDetail + "\n次因: " + distributionKind
+    distributionDetail := distributionDetail + "\n" + distributionFilterReason
+    distributionDetail := distributionDetail + "\n回抽限价 entry " + fmt(distributionEntry)
+    distributionDetail := distributionDetail + "\nSL " + distributionSlText
+    distributionDetail := distributionDetail + "\nbase " + fmt(distributionBase)
+    distributionDetail := distributionDetail + "\nwatch H/L " + fmt(distributionWatchHigh) + " / " + fmt(distributionWatchLow)
+    distributionDetail := distributionDetail + "\n观察已持续 " + fmt(distributionWaitBars) + " bars / " + str.tostring(failedBreakConfirmBars) + " 仅诊断"
+    distributionDetail := distributionDetail + "\n成交量判断: " + volumeJudge
+    distributionDetail := distributionDetail + "\nvol/MA " + fmt(volumeRatio) + " / closePos " + fmt(closePosition)
+    distributionDetail := distributionDetail + "\ndistance " + fmt(distributionDistance) + "ATR"
     string distributionCompact = distributionDirection == -1 ? distributionKey + (distributionQuietBreak ? " 候选确认 空\n跌破观察簇" : " 候选确认 空\n放量失败") : distributionKey + (distributionQuietBreak ? " 候选确认 多\n突破观察簇" : " 候选确认 多\n放量失败")
     if eventMarkersVisible
         eventMarker(distributionDirection, distributionAllowed ? "candidate" : "blocked", " ", distributionDetail, 0.34)
@@ -2127,7 +2549,13 @@ if exhaustionWatchTop or exhaustionWatchBottom
         activeBottomDecisionSeq := bottomDecisionSeq
     string watchKey = watchDirection == -1 ? "T" + str.tostring(activeTopDecisionSeq) : "B" + str.tostring(activeBottomDecisionSeq)
     string watchReason = exhaustionWatchTop ? topExhaustionReason : bottomExhaustionReason
-    string watchDetail = watchKey + " ①观察 " + dirName(watchDirection) + "\n" + (exhaustionWatchTop ? "前高二测：多单止盈区，等待确认做空" : "前低二测：空单止盈区，等待确认做多") + "\n原因: " + reasonCn(watchReason) + " / " + watchReason + "\n成交量判断: " + volumeJudge + "\nvol/MA " + fmt(volumeRatio) + " / MDecay " + fmt(exhaustionWatchTop ? topMomentumDecayRatio : bottomMomentumDecayRatio) + "\n连续衰减 " + fmt(exhaustionWatchTop ? topDecayStreak * 1.0 : bottomDecayStreak * 1.0) + "/" + str.tostring(exhaustionDecayConfirmBars) + "\n日内高低 " + fmt(dayRangeAtr) + "ATR"
+    string watchDetail = watchKey + " ①观察 " + dirName(watchDirection)
+    watchDetail := watchDetail + "\n" + (exhaustionWatchTop ? "前高二测：多单止盈区，等待确认做空" : "前低二测：空单止盈区，等待确认做多")
+    watchDetail := watchDetail + "\n原因: " + reasonCn(watchReason) + " / " + watchReason
+    watchDetail := watchDetail + "\n成交量判断: " + volumeJudge
+    watchDetail := watchDetail + "\nvol/MA " + fmt(volumeRatio) + " / MDecay " + fmt(exhaustionWatchTop ? topMomentumDecayRatio : bottomMomentumDecayRatio)
+    watchDetail := watchDetail + "\n连续衰减 " + fmt(exhaustionWatchTop ? topDecayStreak * 1.0 : bottomDecayStreak * 1.0) + "/" + str.tostring(exhaustionDecayConfirmBars)
+    watchDetail := watchDetail + "\n日内高低 " + fmt(dayRangeAtr) + "ATR"
     string watchCompact = watchKey + " ①" + (exhaustionWatchTop ? "前高二测" : "前低二测") + "\n等确认"
     if eventMarkersVisible
         eventMarker(watchDirection, "observe", " ", watchDetail, 0.26)
@@ -2146,7 +2574,13 @@ if unconfirmedTopWatch or unconfirmedBottomWatch
         activeBottomDecisionSeq := bottomDecisionSeq
     string waitKey = waitDirection == -1 ? "T" + str.tostring(activeTopDecisionSeq) : "B" + str.tostring(activeBottomDecisionSeq)
     string waitReason = unconfirmedTopWatch ? topProbeFilterReason : bottomProbeFilterReason
-    string waitDetail = waitKey + " ①观察 " + dirName(waitDirection) + "\n未确认，不挂单\n原因: " + reasonCn(waitReason) + " / " + waitReason + "\n只有 confirmed_limit 才会画 plan 并联动 Core/IBKR\n大回落已成立: " + str.tostring(waitDirection == -1 ? topPullbackArmed : bottomPullbackArmed) + " / 回落 " + fmt(waitDirection == -1 ? topPullbackAtr : bottomPullbackAtr) + "ATR\n成交量判断: " + volumeJudge + "\n结构区 " + fmt(unconfirmedTopWatch ? topZoneLow : bottomZoneLow) + " - " + fmt(unconfirmedTopWatch ? topZoneHigh : bottomZoneHigh)
+    string waitDetail = waitKey + " ①观察 " + dirName(waitDirection)
+    waitDetail := waitDetail + "\n未确认，不挂单"
+    waitDetail := waitDetail + "\n原因: " + reasonCn(waitReason) + " / " + waitReason
+    waitDetail := waitDetail + "\n只有 confirmed_limit 才会画 plan 并联动 Core/IBKR"
+    waitDetail := waitDetail + "\n大回落已成立: " + str.tostring(waitDirection == -1 ? topPullbackArmed : bottomPullbackArmed) + " / 回落 " + fmt(waitDirection == -1 ? topPullbackAtr : bottomPullbackAtr) + "ATR"
+    waitDetail := waitDetail + "\n成交量判断: " + volumeJudge
+    waitDetail := waitDetail + "\n结构区 " + fmt(unconfirmedTopWatch ? topZoneLow : bottomZoneLow) + " - " + fmt(unconfirmedTopWatch ? topZoneHigh : bottomZoneHigh)
     string waitCompact = waitKey + " ①观察 " + dirName(waitDirection) + "\n未确认，不挂单"
     if eventMarkersVisible
         eventMarker(waitDirection, "observe", " ", waitDetail, 0.24)
@@ -2180,6 +2614,23 @@ plotshape(showComponentMarkers and bearDivNow, "Bear divergence", location=locat
 plotshape(newPlanNow and selectedDirection == 1, title="Predictive/confirmed long", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 35), size=size.tiny, text="")
 plotshape(newPlanNow and selectedDirection == -1, title="Predictive/confirmed short", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 35), size=size.tiny, text="")
 
+bool entryWindowStartEvent = showEntryWindowMarkers and useIntradayEntryWindow and inEntryWindow and not inEntryWindow[1]
+bool entryWindowEndEvent = showEntryWindowMarkers and useIntradayEntryWindow and not inEntryWindow and inEntryWindow[1]
+if entryWindowStartEvent or entryWindowEndEvent
+    bool entryWindowOpening = entryWindowStartEvent
+    color entryWindowLineColor = entryWindowOpening ? color.new(color.teal, 10) : color.new(color.gray, 35)
+    string entryWindowBoundaryText = entryWindowOpening ? "OPEN" : "CLOSED"
+    string entryWindowBoundaryDetail = (entryWindowOpening ? "交易窗口 OPEN\n可挂单 " : "交易窗口 CLOSED\n仅观察 ") + entrySession
+    line.new(bar_index, low - atr * 2.0, bar_index, high + atr * 2.0, xloc=xloc.bar_index, extend=extend.both, color=entryWindowLineColor, style=line.style_dashed, width=1)
+    eventMarker(entryWindowOpening ? 1 : -1, "structure", entryWindowBoundaryText, entryWindowBoundaryDetail, 0.78)
+
+var table entryWindowTable = table.new(position.bottom_right, 1, 2)
+if showEntryWindowStatus and barstate.islast
+    string entryWindowTitle = not useIntradayEntryWindow ? "交易窗口 FILTER OFF" : inEntryWindow ? "交易窗口 OPEN" : "交易窗口 CLOSED"
+    string entryWindowDetail = not useIntradayEntryWindow ? "窗口过滤关闭 / 仅按策略条件" : (inEntryWindow ? "可挂单 " : "仅观察 ") + entrySession
+    table.cell(entryWindowTable, 0, 0, entryWindowTitle, text_color=entryWindowTextColor(useIntradayEntryWindow, inEntryWindow), bgcolor=entryWindowBgColor(useIntradayEntryWindow, inEntryWindow))
+    table.cell(entryWindowTable, 0, 1, entryWindowDetail, text_color=entryWindowTextColor(useIntradayEntryWindow, inEntryWindow), bgcolor=entryWindowBgColor(useIntradayEntryWindow, inEntryWindow))
+
 var table statusTable = table.new(position.top_right, 2, 9)
 if showStatusTable and barstate.islast
     bool statusUsesShadowPlan = shadowPending or shadowOpen
@@ -2206,4 +2657,4 @@ if showStatusTable and barstate.islast
     table.cell(statusTable, 0, 7, "金额", text_color=tableTextColor(7), bgcolor=tableBgColor(7))
     table.cell(statusTable, 1, 7, planMoneyText(statusEntryPlan, statusStopPlan, statusRunnerPlan, statusTargetPlan, statusDirectionPlan, statusQtyPlan), text_color=tableTextColor(7), bgcolor=tableBgColor(7))
     table.cell(statusTable, 0, 8, "模型", text_color=tableTextColor(8), bgcolor=tableBgColor(8))
-    table.cell(statusTable, 1, 8, ENTRY_WINDOW_MODEL + " / 09:10-15:30", text_color=tableTextColor(8), bgcolor=tableBgColor(8))
+    table.cell(statusTable, 1, 8, ENTRY_WINDOW_MODEL + " / " + (useIntradayEntryWindow ? entrySession : "窗口过滤关闭"), text_color=tableTextColor(8), bgcolor=tableBgColor(8))

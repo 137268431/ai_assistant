@@ -557,6 +557,36 @@ class ComputePrometheusMetricsTest(unittest.TestCase):
         self.assertEqual(42.0, metrics["ACCOUNT_SNAPSHOT_AGE"].values[labels])
         self.assertEqual(228419.95, metrics["ACCOUNT_BUYING_POWER_REMAINING"].values[labels])
 
+    def test_account_snapshot_metrics_treat_stale_positions_as_stale(self):
+        module = _observability_or_skip(self, requiring=("set_account_snapshot_metrics",))
+
+        environment = "metric_positions_stale_test"
+        payload = {
+            "ok": True,
+            "environment": environment,
+            "summary_available": True,
+            "positions_stale": True,
+            "positions_age_s": 360.0,
+            "summary": {"net_liquidation": 100000.0, "buying_power": 50000.0},
+            "buying_power_guard": {"available": True, "state": "ok", "remaining": 50000.0},
+            "account_snapshot_health": {"state": "ok", "summary_available": True},
+        }
+        metrics = _fake_account_snapshot_metrics()
+        with (
+            mock.patch.object(module, "_client_available", return_value=True),
+            mock.patch.multiple(module, **metrics),
+            mock.patch.dict(
+                os.environ,
+                {"IBKR_SERVICE_PROFILE": "runtime", "IBKR_SERVICE_NAME": "", "IBKR_BROKER_MODE": ""},
+                clear=False,
+            ),
+        ):
+            module.set_account_snapshot_metrics(payload, source="account_snapshot")
+
+        labels = ("ibkr-runtime", environment, "account_snapshot")
+        self.assertEqual(1.0, metrics["ACCOUNT_SNAPSHOT_STALE"].values[labels])
+        self.assertEqual(360.0, metrics["ACCOUNT_SNAPSHOT_AGE"].values[labels])
+
     def test_account_snapshot_metrics_clear_values_when_effectively_unavailable(self):
         module = _observability_or_skip(self, requiring=("set_account_snapshot_metrics",))
 

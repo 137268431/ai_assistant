@@ -21,6 +21,7 @@ MONITOR_ALERT_COOLDOWN_MS = DEFAULT_MONITOR_ALERT_ERROR_COOLDOWN_MIN * 60 * 1000
 ACCOUNT_SNAPSHOT_WARNING_CODES = {
     "account_snapshot_degraded",
     "account_snapshot_timeout",
+    "account_positions_stale",
     "account_pnl_unavailable",
 }
 MONITOR_SOURCE_WARNING_CODES = {

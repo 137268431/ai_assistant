@@ -1285,6 +1285,27 @@ def _account_snapshot_flags(probe: dict[str, Any]) -> list[dict[str, Any]]:
                 "detail": " | ".join(blocking_errors[:3]),
             }
         )
+    if bool(snapshot.get("positions_stale") or snapshot.get("positions_refresh_required")):
+        try:
+            positions_age_s = float(snapshot.get("positions_age_s") or 0.0)
+        except Exception:
+            positions_age_s = 0.0
+        try:
+            positions_max_stale_s = float(snapshot.get("positions_max_stale_s") or 300.0)
+        except Exception:
+            positions_max_stale_s = 300.0
+        reason = str(snapshot.get("positions_refresh_block_reason") or "positions_snapshot_stale").strip()
+        flags.append(
+            {
+                "severity": "error" if positions_age_s >= max(900.0, positions_max_stale_s * 3.0) else "warning",
+                "code": "account_positions_stale",
+                "title": "Account positions snapshot stale",
+                "detail": (
+                    f"positions age={positions_age_s:.0f}s max={positions_max_stale_s:.0f}s"
+                    + (f" reason={reason}" if reason else "")
+                ),
+            }
+        )
     pnl_error = str(errors.get("pnl") or "").strip()
     if pnl_error:
         flags.append(

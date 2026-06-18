@@ -58,6 +58,17 @@ def _buying_power_guard_max_stale_seconds() -> float:
     return _env_float("IBKR_BUYING_POWER_GUARD_MAX_STALE_SEC", 300.0, minimum=0.0)
 
 
+def _positions_max_stale_seconds(service: Any = None, environment: str = "") -> float:
+    default = _env_float("IBKR_ACCOUNT_POSITIONS_MAX_STALE_SEC", 300.0, minimum=1.0)
+    getter = getattr(getattr(service, "config", None), "get_float_for_environment", None)
+    if callable(getter):
+        try:
+            return max(1.0, float(getter("ibkr_account_positions_max_stale_sec", environment, default)))
+        except Exception:
+            pass
+    return default
+
+
 def _filter_orders_for_account(account_id: str, rows: list[dict]) -> list[dict]:
     normalized_account = str(account_id or "").strip()
     if not normalized_account:
@@ -333,6 +344,122 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
     return float(number)
 
 
+def _optional_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number:
+        return None
+    return float(number)
+
+
+def _timestamp_age_seconds(value: Any) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return max(0.0, time.time() - parsed.timestamp())
+    except Exception:
+        return None
+
+
+def _positions_age_seconds(payload: dict) -> float | None:
+    ages: list[float] = []
+    for key in ("positions_age_s", "positions_cache_age_s"):
+        age = _optional_float((payload or {}).get(key))
+        if age is not None:
+            ages.append(max(0.0, age))
+    age = _timestamp_age_seconds((payload or {}).get("positions_fetched_at"))
+    if age is not None:
+        ages.append(age)
+    cache_age = _optional_float((payload or {}).get("cache_age_s"))
+    if cache_age is not None:
+        ages.append(max(0.0, cache_age))
+    return max(ages) if ages else None
+
+
+def _positions_refresh_block_reason(payload: dict, *, positions_omitted: bool, age_s: float | None) -> str:
+    errors = (payload or {}).get("errors") if isinstance((payload or {}).get("errors"), dict) else {}
+    for value in (
+        (payload or {}).get("positions_refresh_block_reason"),
+        errors.get("positions"),
+        (payload or {}).get("refresh_error"),
+        (payload or {}).get("last_refresh_error"),
+    ):
+        text = str(value or "").strip()
+        if text:
+            return text
+    source = str((payload or {}).get("positions_source") or "").strip()
+    if source in {"", "unavailable"}:
+        return "positions_snapshot_unavailable"
+    if positions_omitted and age_s is None:
+        return "positions_omitted_open_orders_only"
+    if age_s is not None:
+        return "positions_snapshot_stale"
+    return "positions_snapshot_unconfirmed"
+
+
+def _attach_positions_freshness(
+    payload: dict,
+    *,
+    service: Any = None,
+    context: dict | None = None,
+) -> dict:
+    result = dict(payload or {})
+    runtime_environment = str(
+        result.get("environment")
+        or ((context or {}).get("runtime_environment") if isinstance(context, dict) else "")
+        or ""
+    )
+    max_stale_s = _positions_max_stale_seconds(service, runtime_environment)
+    source = str(result.get("positions_source") or "").strip()
+    diagnostics = result.get("orders_fast_diagnostics") if isinstance(result.get("orders_fast_diagnostics"), dict) else {}
+    positions_omitted = bool(
+        result.get("positions_omitted")
+        or diagnostics.get("positions_omitted")
+        or source == "omitted_open_orders_only"
+    )
+    age_s = _positions_age_seconds(result)
+    counts = result.get("counts") if isinstance(result.get("counts"), dict) else {}
+    has_position_counts = any(
+        key in counts
+        for key in ("open_positions", "long_positions", "short_positions", "position_rows", "positions")
+    )
+    detail_available = result.get("positions_detail_available") is True
+    count_available = result.get("positions_count_available") is True or (has_position_counts and source not in {"", "unavailable"})
+    positions_list_available = isinstance(result.get("positions"), list)
+    missing_age = age_s is None and not detail_available and not positions_list_available
+    stale = bool(result.get("positions_stale") or result.get("positions_refresh_required"))
+    stale = bool(stale or missing_age or (age_s is not None and age_s > max_stale_s))
+    if source in {"", "unavailable"} and not detail_available and not count_available and not positions_list_available:
+        stale = True
+    if positions_omitted and age_s is None:
+        stale = True
+    effective_open = int(_safe_float(counts.get("effective_open_positions", counts.get("open_positions", 0)), 0.0))
+    result["positions_max_stale_s"] = round(float(max_stale_s), 1)
+    result["positions_age_s"] = round(float(age_s), 1) if age_s is not None else None
+    result["positions_stale"] = bool(stale)
+    result["positions_refresh_required"] = bool(stale)
+    result["positions_refresh_state"] = "stale" if stale else "fresh"
+    result["positions_omitted"] = bool(positions_omitted)
+    result["positions_empty_confirmed"] = bool(count_available and effective_open == 0 and not stale)
+    if stale:
+        result["positions_refresh_block_reason"] = _positions_refresh_block_reason(
+            result,
+            positions_omitted=positions_omitted,
+            age_s=age_s,
+        )
+    else:
+        result.pop("positions_refresh_block_reason", None)
+    return result
+
+
 def _account_data_circuit_status(service_status: dict) -> dict:
     status = service_status if isinstance(service_status, dict) else {}
     circuit = status.get("account_data_circuit") if isinstance(status.get("account_data_circuit"), dict) else {}
@@ -470,7 +597,7 @@ def _reservation_overlay_base_summary(summary: dict) -> dict:
 
 
 def _apply_reservation_overlay_to_account_payload(service, payload: dict) -> dict:
-    result = dict(payload or {})
+    result = _attach_positions_freshness(payload or {}, service=service)
     summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
     if not _summary_snapshot_available(summary):
         result["summary"] = _mask_unavailable_summary_values(summary)
@@ -1194,7 +1321,7 @@ def _stale_snapshot_after_error(payload: dict, error: str) -> dict:
     result["refresh_error"] = str(error or "").strip() or "account_snapshot_refresh_failed"
     errors = result.get("errors") if isinstance(result.get("errors"), dict) else {}
     result["errors"] = {**errors, "refresh": result["refresh_error"]}
-    return _decorate_account_snapshot_health(result, reason=result["refresh_error"])
+    return _decorate_account_snapshot_health(_attach_positions_freshness(result), reason=result["refresh_error"])
 
 
 def _blocked_account_snapshot_payload(
@@ -1280,7 +1407,7 @@ def _account_snapshot_force_refresh_guard_payload(service, context: dict, cache_
 def _account_snapshot_error_payload(context: dict, error: str) -> dict:
     message = str(error or "").strip() or "account_snapshot_unavailable"
     service_status = context["service_status"] if isinstance(context.get("service_status"), dict) else {}
-    return _decorate_account_snapshot_health({
+    return _decorate_account_snapshot_health(_attach_positions_freshness({
         "ok": False,
         "environment": context["runtime_environment"],
         "account_id": context["account_id"],
@@ -1306,7 +1433,7 @@ def _account_snapshot_error_payload(context: dict, error: str) -> dict:
         "stale": False,
         "refresh_error": message,
         "account_data_pacing": _account_data_pacing_status(service_status),
-    }, reason=message)
+    }, context=context), reason=message)
 
 
 def _build_fresh_ibkr_account_snapshot_payload(service, context: dict) -> dict:
@@ -1417,7 +1544,7 @@ def _build_fresh_ibkr_account_snapshot_payload(service, context: dict) -> dict:
         "source": "account_snapshot",
         "account_data_pacing": _account_data_pacing_status(context["service_status"]),
     }
-    return _decorate_account_snapshot_health(payload)
+    return _decorate_account_snapshot_health(_attach_positions_freshness(payload, service=service, context=context))
 
 
 def _load_cached_full_snapshot_for_orders_fast(api_app, context: dict) -> dict:

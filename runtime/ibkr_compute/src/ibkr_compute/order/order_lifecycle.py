@@ -460,6 +460,28 @@ class OrderLifecycle:
     def _missing_protection_stale_price_policy(self) -> str:
         return self._get_config_value("ibkr_missing_protection_repair_stale_price_policy", "skip_and_alert").strip().lower()
 
+    def _safety_lane_enabled(self) -> bool:
+        return self._get_config_bool("ibkr_safety_lane_enabled", True)
+
+    def _safety_auto_execute_enabled(self) -> bool:
+        key = "ibkr_safety_live_auto_execute" if self.environment == "live" else "ibkr_safety_paper_auto_execute"
+        return self._get_config_bool(key, True)
+
+    def _safety_close_allow_market(self) -> bool:
+        return self._get_config_bool("ibkr_safety_close_allow_market", True)
+
+    def _unprotected_loss_r_threshold(self) -> float:
+        return max(0.0, self._get_config_float("ibkr_unprotected_loss_r_threshold", 1.0))
+
+    def _profit_repair_use_breakeven_stop(self) -> bool:
+        return self._get_config_bool("ibkr_profit_repair_use_breakeven_stop", True)
+
+    def _profit_repair_fee_buffer_bps(self) -> float:
+        return max(0.0, self._get_config_float("ibkr_profit_repair_fee_buffer_bps", 5.0))
+
+    def _safety_repair_cooldown_sec(self) -> float:
+        return max(0.0, self._get_config_float("ibkr_safety_repair_cooldown_sec", 10.0))
+
     @staticmethod
     def _ensure_dict(value: Any) -> dict:
         if isinstance(value, dict):
@@ -1983,7 +2005,8 @@ class OrderLifecycle:
         if not key:
             return False
         last_attempt = float(self._protection_repair_attempted.get(key, 0.0) or 0.0)
-        return last_attempt > 0 and time.time() - last_attempt < self._missing_protection_repair_cooldown_sec()
+        cooldown = self._safety_repair_cooldown_sec() if self._safety_lane_enabled() else self._missing_protection_repair_cooldown_sec()
+        return last_attempt > 0 and time.time() - last_attempt < cooldown
 
     def _protection_repair_prices(self, entry: dict) -> tuple[float, float]:
         extra = self._order_extra(entry)
@@ -2034,6 +2057,209 @@ class OrderLifecycle:
             return False, "invalid_direction"
         return True, ""
 
+    def _entry_price_for_safety(self, entry: dict) -> float:
+        extra = self._order_extra(entry)
+        for value in (
+            entry.get("fill_price"),
+            entry.get("executed_price"),
+            entry.get("entry"),
+            entry.get("limit_price"),
+            extra.get("execution_price"),
+            extra.get("last_fill_price"),
+            extra.get("entry_price_for_pnl"),
+            extra.get("position_avg_cost"),
+            extra.get("original_entry"),
+            extra.get("reference_entry"),
+        ):
+            price = self._coerce_float(value, 0.0)
+            if price > 0:
+                return float(price)
+        return 0.0
+
+    def _current_price_for_safety(self, broker_position: dict) -> float:
+        for key in (
+            "mktPrice",
+            "market_price",
+            "marketPrice",
+            "last_price",
+            "lastPrice",
+            "price",
+            "close",
+        ):
+            price = self._coerce_float((broker_position or {}).get(key), 0.0)
+            if price > 0:
+                return float(price)
+        return 0.0
+
+    def _risk_per_share_for_safety(self, entry: dict, entry_price: float, stop_loss_price: float) -> float:
+        extra = self._order_extra(entry)
+        risk = self._coerce_float(extra.get("risk_per_share"), 0.0)
+        if risk > 0:
+            return float(risk)
+        if entry_price > 0 and stop_loss_price > 0:
+            return abs(float(entry_price) - float(stop_loss_price))
+        return 0.0
+
+    def _safety_pnl_assessment(self, entry: dict, broker_position: dict, direction: str, stop_loss_price: float) -> dict:
+        qty = abs(int(round(self._broker_position_quantity(broker_position))))
+        entry_price = self._entry_price_for_safety(entry)
+        current_price = self._current_price_for_safety(broker_position)
+        risk_per_share = self._risk_per_share_for_safety(entry, entry_price, stop_loss_price)
+        direction = str(direction or "").strip().lower()
+        signed_move = 0.0
+        gross_pnl = 0.0
+        net_pnl = 0.0
+        loss_r = 0.0
+        if entry_price > 0 and current_price > 0 and qty > 0:
+            signed_move = current_price - entry_price if direction == "long" else entry_price - current_price
+            gross_pnl = signed_move * qty
+            fee_buffer = entry_price * self._profit_repair_fee_buffer_bps() / 10000.0 * qty
+            net_pnl = gross_pnl - fee_buffer
+            if risk_per_share > 0:
+                loss_r = max(0.0, -signed_move / risk_per_share)
+        stop_crossed = False
+        if current_price > 0 and stop_loss_price > 0:
+            if direction == "long":
+                stop_crossed = current_price <= stop_loss_price + 0.005
+            elif direction == "short":
+                stop_crossed = current_price >= stop_loss_price - 0.005
+        return {
+            "entry_price": float(entry_price or 0.0),
+            "current_price": float(current_price or 0.0),
+            "quantity": qty,
+            "gross_unrealized_pnl": round(gross_pnl, 4),
+            "net_unrealized_pnl": round(net_pnl, 4),
+            "risk_per_share": float(risk_per_share or 0.0),
+            "loss_r": round(loss_r, 4),
+            "profitable": net_pnl > 0,
+            "stop_crossed": bool(stop_crossed),
+        }
+
+    def _profit_repair_stop_price(
+        self,
+        *,
+        direction: str,
+        entry_price: float,
+        current_price: float,
+        stop_loss_price: float,
+    ) -> float:
+        if not self._profit_repair_use_breakeven_stop() or entry_price <= 0 or current_price <= 0:
+            return float(stop_loss_price or 0.0)
+        buffer = entry_price * self._profit_repair_fee_buffer_bps() / 10000.0
+        if direction == "short":
+            breakeven = entry_price - buffer
+            candidate = min(float(stop_loss_price or breakeven), breakeven) if stop_loss_price > 0 else breakeven
+            return round(max(candidate, current_price + 0.01), 2)
+        breakeven = entry_price + buffer
+        candidate = max(float(stop_loss_price or breakeven), breakeven)
+        return round(min(candidate, current_price - 0.01), 2)
+
+    def _repair_prices_for_safety(
+        self,
+        *,
+        entry: dict,
+        direction: str,
+        current_price: float,
+        profitable: bool,
+    ) -> tuple[float, float]:
+        take_profit_price, stop_loss_price = self._protection_repair_prices(entry)
+        entry_price = self._entry_price_for_safety(entry)
+        if profitable:
+            stop_loss_price = self._profit_repair_stop_price(
+                direction=direction,
+                entry_price=entry_price,
+                current_price=current_price,
+                stop_loss_price=stop_loss_price,
+            )
+        reward = abs(float(take_profit_price or 0.0) - entry_price) if entry_price > 0 and take_profit_price > 0 else 0.0
+        if reward <= 0:
+            reward = max(self._risk_per_share_for_safety(entry, entry_price, stop_loss_price) * 1.5, 0.01)
+        if current_price > 0:
+            if direction == "short" and take_profit_price >= current_price:
+                take_profit_price = max(0.01, current_price - reward)
+            elif direction == "long" and take_profit_price <= current_price:
+                take_profit_price = current_price + reward
+        return round(float(take_profit_price or 0.0), 2), round(float(stop_loss_price or 0.0), 2)
+
+    def _notify_safety_event(self, title: str, detail: dict, *, level: str = "error", message_id: str = "") -> None:
+        notifier = getattr(self.pb_client, "notify_system_event", None)
+        if not callable(notifier):
+            return
+        try:
+            notifier(
+                title,
+                detail,
+                event_type="alert",
+                level=level,
+                source="ibkr_compute",
+                environment=self.environment,
+                message_id=message_id,
+            )
+        except Exception as exc:
+            logger.debug("Safety event notification failed: %s", exc)
+
+    def _submit_safety_close_for_missing_protection(
+        self,
+        issue: dict,
+        broker_position: dict,
+        assessment: dict,
+        reason: str,
+    ) -> dict:
+        if not self.order_placer or not hasattr(self.order_placer, "place_market_close"):
+            return {"ok": False, "action": "skip", "reason": "order_placer_unavailable"}
+        if not self._safety_close_allow_market():
+            return {"ok": False, "action": "skip", "reason": "safety_market_close_disabled"}
+        qty = int(assessment.get("quantity") or abs(int(round(self._broker_position_quantity(broker_position)))))
+        conid = self._broker_position_conid(broker_position)
+        direction = "long" if self._broker_position_quantity(broker_position) > 0 else "short"
+        symbol = self._broker_position_symbol(broker_position)
+        entry = dict(issue.get("entry") or {})
+        if qty <= 0 or conid <= 0 or not symbol:
+            return {"ok": False, "action": "skip", "reason": "missing_quantity_or_conid"}
+        result = self._place_harvest_market_close(
+            conid=conid,
+            symbol=symbol,
+            direction=direction,
+            quantity=qty,
+            trade_group_id=str(issue.get("group_key") or self._order_group_key(entry) or ""),
+            entry_order_unique_id=str(entry.get("entry_order_unique_id") or entry.get("unique_id") or ""),
+            signal_id=str(entry.get("signal_id") or ""),
+            source="safety_unprotected_position",
+            order_type="MKT",
+            allow_market=True,
+            position_snapshot=broker_position,
+            close_reason=reason,
+            close_reason_human="安全平仓：无保护且亏损触发",
+        )
+        result = dict(result or {})
+        result.update(
+            {
+                "action": "safety_close",
+                "safety_action": True,
+                "safety_reason": reason,
+                "safety_assessment": dict(assessment or {}),
+            }
+        )
+        self._notify_safety_event(
+            "安全平仓已提交",
+            {
+                "状态结论": "持仓无有效保护单，且价格已穿原止损或亏损达到阈值；系统已提交安全平仓。",
+                "Broker模式": self.environment,
+                "标的": symbol,
+                "交易组": str(issue.get("group_key") or "-"),
+                "数量": qty,
+                "原因": reason,
+                "当前价": assessment.get("current_price"),
+                "入场价": assessment.get("entry_price"),
+                "净浮盈亏": assessment.get("net_unrealized_pnl"),
+                "亏损R": assessment.get("loss_r"),
+                "Broker结果": result,
+            },
+            level="error",
+            message_id=f"ibkr_safety_close:{self.environment}:{issue.get('group_key') or symbol}:{reason}",
+        )
+        return result
+
     def _mark_protection_repair_result(self, issue: dict, broker_position: dict, result: dict) -> None:
         if not self.pb_client:
             return
@@ -2044,9 +2270,24 @@ class OrderLifecycle:
             **self._order_extra(entry),
             "protection_repair_checked_at_ms": int(time.time() * 1000),
             "protection_repair_result": dict(result or {}),
+            "safety_state": str(result.get("safety_state") or result.get("action") or ""),
+            "safety_reason": str(result.get("reason") or result.get("safety_reason") or ""),
+            "safety_repair_result": dict(result or {}),
         }
         reason = str(result.get("reason") or result.get("error") or "")
-        if result.get("ok"):
+        if str(result.get("action") or "") == "safety_close":
+            extra.update(
+                {
+                    "protection_state": "safety_close_submitted",
+                    "protection_incomplete": True,
+                    "protection_complete": False,
+                    "safety_state": "safety_close_submitted",
+                    "safety_action": True,
+                    "safety_close_result": dict(result or {}),
+                    "safety_assessment": dict(result.get("safety_assessment") or {}),
+                }
+            )
+        elif result.get("ok"):
             extra.update(
                 {
                     "protection_state": "repair_submitted",
@@ -2078,38 +2319,68 @@ class OrderLifecycle:
             logger.debug("Protection repair PB patch failed for %s: %s", entry.get("unique_id"), exc)
 
     def _maybe_auto_repair_missing_protection(self, issue: dict, broker_position: dict) -> dict:
+        if not self._safety_lane_enabled():
+            return {"ok": False, "action": "skip", "reason": "safety_lane_disabled"}
+        if not self._safety_auto_execute_enabled():
+            return {"ok": False, "action": "skip", "reason": "safety_auto_execute_disabled"}
         if not self._missing_protection_auto_repair_enabled():
             return {"ok": False, "action": "skip", "reason": "auto_repair_disabled"}
-        if not self.order_placer or not hasattr(self.order_placer, "place_protection_repair_orders"):
-            return {"ok": False, "action": "skip", "reason": "order_placer_unavailable"}
         missing_roles = set(str(role or "").strip() for role in (issue.get("missing_roles") or []))
-        if missing_roles != {"take_profit", "stop_loss"}:
-            return {"ok": False, "action": "skip", "reason": "partial_protection_missing"}
         entry = dict(issue.get("entry") or {})
         key = self._protection_repair_key(issue, entry)
         if self._protection_repair_recently_attempted(key):
             return {"ok": False, "action": "skip", "reason": "repair_cooldown_active"}
         extra = self._order_extra(entry)
-        if extra.get("protection_repair_submitted") or extra.get("protection_state") == "repair_submitted":
+        if (
+            extra.get("protection_repair_submitted")
+            or extra.get("protection_state") == "repair_submitted"
+            or extra.get("safety_state") == "safety_close_submitted"
+        ):
             return {"ok": False, "action": "skip", "reason": "repair_already_submitted"}
 
         quantity = int(round(abs(self._broker_position_quantity(broker_position))))
         conid = self._broker_position_conid(broker_position)
-        current_price = self._coerce_float(
-            broker_position.get("mktPrice")
-            or broker_position.get("market_price")
-            or broker_position.get("last_price"),
-            0.0,
-        )
         direction = "long" if self._broker_position_quantity(broker_position) > 0 else "short"
         take_profit_price, stop_loss_price = self._protection_repair_prices(entry)
+        assessment = self._safety_pnl_assessment(entry, broker_position, direction, stop_loss_price)
         if quantity <= 0 or conid <= 0:
             return {"ok": False, "action": "skip", "reason": "missing_quantity_or_conid"}
+
+        should_close = bool(
+            "stop_loss" in missing_roles
+            and assessment.get("current_price", 0) > 0
+            and (
+                assessment.get("stop_crossed")
+                or (
+                    self._unprotected_loss_r_threshold() > 0
+                    and float(assessment.get("loss_r") or 0.0) >= self._unprotected_loss_r_threshold()
+                )
+            )
+        )
+        if should_close:
+            reason = "safety_stop_crossed" if assessment.get("stop_crossed") else "safety_loss_r_threshold"
+            self._protection_repair_attempted[key] = time.time()
+            result = self._submit_safety_close_for_missing_protection(issue, broker_position, assessment, reason)
+            self._mark_protection_repair_result(issue, broker_position, result if isinstance(result, dict) else {})
+            return result if isinstance(result, dict) else {"ok": False, "reason": "safety_close_result_unavailable"}
+
+        if missing_roles != {"take_profit", "stop_loss"}:
+            return {"ok": False, "action": "skip", "reason": "partial_protection_missing", "safety_assessment": assessment}
+        if not self.order_placer or not hasattr(self.order_placer, "place_protection_repair_orders"):
+            return {"ok": False, "action": "skip", "reason": "order_placer_unavailable"}
+
+        current_price = float(assessment.get("current_price") or 0.0)
         if current_price <= 0:
             return {"ok": False, "action": "skip", "reason": "missing_current_price"}
+        take_profit_price, stop_loss_price = self._repair_prices_for_safety(
+            entry=entry,
+            direction=direction,
+            current_price=current_price,
+            profitable=bool(assessment.get("profitable")),
+        )
         prices_valid, invalid_reason = self._protection_repair_prices_valid(
             direction=direction,
-            current_price=float(current_price or 0.0),
+            current_price=current_price,
             take_profit_price=take_profit_price,
             stop_loss_price=stop_loss_price,
         )
@@ -2122,6 +2393,7 @@ class OrderLifecycle:
                 "current_price": float(current_price),
                 "take_profit_price": take_profit_price,
                 "stop_loss_price": stop_loss_price,
+                "safety_assessment": assessment,
             }
             self._mark_protection_repair_result(issue, broker_position, result)
             return result
@@ -2140,11 +2412,40 @@ class OrderLifecycle:
             entry_order_unique_id=str(entry.get("entry_order_unique_id") or entry.get("unique_id") or ""),
             order_extra={
                 "missing_protection_auto_repair": True,
+                "safety_action": True,
+                "safety_state": "profit_repair_submitted" if assessment.get("profitable") else "protection_repair_submitted",
+                "safety_reason": "profitable_unprotected_repair" if assessment.get("profitable") else "unprotected_repair",
+                "safety_net_unrealized_pnl": assessment.get("net_unrealized_pnl"),
+                "safety_loss_r": assessment.get("loss_r"),
                 "source_entry_order_id": self._order_broker_id(entry),
             },
         )
-        self._mark_protection_repair_result(issue, broker_position, result if isinstance(result, dict) else {})
-        return result if isinstance(result, dict) else {"ok": False, "reason": "repair_result_unavailable"}
+        result_payload = result if isinstance(result, dict) else {"ok": False, "reason": "repair_result_unavailable"}
+        if isinstance(result_payload, dict):
+            result_payload.setdefault("safety_assessment", assessment)
+            result_payload.setdefault("safety_reason", "profitable_unprotected_repair" if assessment.get("profitable") else "unprotected_repair")
+            result_payload.setdefault("safety_state", "profit_repair_submitted" if assessment.get("profitable") else "protection_repair_submitted")
+        self._mark_protection_repair_result(issue, broker_position, result_payload)
+        if result_payload.get("ok"):
+            self._notify_safety_event(
+                "盈利持仓安全单已补挂" if assessment.get("profitable") else "保护单已补挂",
+                {
+                    "状态结论": "持仓无完整保护单，系统已补挂安全 TP/SL。",
+                    "Broker模式": self.environment,
+                    "标的": self._broker_position_symbol(broker_position),
+                    "交易组": str(issue.get("group_key") or "-"),
+                    "当前价": assessment.get("current_price"),
+                    "入场价": assessment.get("entry_price"),
+                    "净浮盈亏": assessment.get("net_unrealized_pnl"),
+                    "亏损R": assessment.get("loss_r"),
+                    "止盈": take_profit_price,
+                    "止损": stop_loss_price,
+                    "Broker结果": result_payload,
+                },
+                level="warning",
+                message_id=f"ibkr_safety_repair:{self.environment}:{issue.get('group_key') or self._broker_position_symbol(broker_position)}",
+            )
+        return result_payload
 
     def _detect_missing_protection_after_fill(
         self,
@@ -3360,6 +3661,9 @@ class OrderLifecycle:
                 fill_timeout=fill_timeout,
                 close_reason=close_reason or source,
                 close_reason_human=close_reason_human,
+                safety_action=str(source or "").startswith("safety_"),
+                safety_reason=close_reason or source,
+                bypass_normal_symbol_queue=str(source or "").startswith("safety_"),
             )
         return self.broker.place_market_close(
             conid=conid,

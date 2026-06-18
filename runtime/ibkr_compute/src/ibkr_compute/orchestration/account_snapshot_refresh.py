@@ -425,6 +425,7 @@ class TradingServiceAccountSnapshotRefreshMixin:
             }
         )
         details["order_pressure_active"] = bool(order_pressure_active)
+        details.update(self._account_snapshot_positions_cache_state())
         hard_guard_active = bool(details.get("account_data_guard_hard_active"))
         soft_guard_active = bool(details.get("account_data_guard_soft_active"))
         startup_warmup_active = bool(details.get("startup_warmup_active"))
@@ -434,6 +435,9 @@ class TradingServiceAccountSnapshotRefreshMixin:
         if hard_guard_active:
             details["orders_fast_decision_reason"] = "account_data_hard_guard"
             needed = True
+        elif bool(details.get("positions_refresh_required")):
+            details["orders_fast_decision_reason"] = "positions_stale_full_refresh"
+            needed = False
         elif order_pressure_active:
             details["orders_fast_decision_reason"] = "order_pressure"
             needed = True
@@ -480,6 +484,89 @@ class TradingServiceAccountSnapshotRefreshMixin:
             except Exception:
                 pass
         return max(1.0, default)
+
+    def _account_snapshot_positions_max_stale_sec(self) -> float:
+        default = _env_float("IBKR_ACCOUNT_POSITIONS_MAX_STALE_SEC", 300.0)
+        getter = getattr(getattr(self, "config", None), "get_float_for_environment", None)
+        if callable(getter):
+            try:
+                service_mod = _service_mod()
+                return max(1.0, float(getter("ibkr_account_positions_max_stale_sec", service_mod.ENVIRONMENT, default)))
+            except Exception:
+                pass
+        return max(1.0, default)
+
+    def _account_snapshot_positions_cache_state(self) -> dict:
+        state = {
+            "positions_snapshot_age_s": None,
+            "positions_snapshot_max_stale_s": round(self._account_snapshot_positions_max_stale_sec(), 1),
+            "positions_snapshot_source": "",
+            "positions_snapshot_fetched_at": "",
+            "positions_snapshot_stale": True,
+            "positions_refresh_required": True,
+            "positions_refresh_block_reason": "",
+        }
+        try:
+            from ibkr_compute.api.account.snapshot_builder.context import (
+                build_snapshot_context,
+                load_cached_snapshot,
+            )
+
+            context = build_snapshot_context(self, include_pnl=False, fast_status=True)
+            runtime_environment = str(context.get("runtime_environment") or "").strip()
+            account_id = str(context.get("account_id") or "").strip()
+            candidate_keys = [
+                context.get("cache_key"),
+                (runtime_environment, account_id, False),
+                (runtime_environment, account_id, True),
+            ]
+            seen: set[tuple] = set()
+            cached = {}
+            for cache_key in candidate_keys:
+                if not cache_key or cache_key in seen:
+                    continue
+                seen.add(cache_key)
+                payload = load_cached_snapshot(context["api_app"], cache_key, allow_stale=True)
+                if isinstance(payload, dict) and payload:
+                    cached = payload
+                    break
+            if not cached:
+                state["positions_refresh_block_reason"] = "positions_snapshot_cache_missing"
+                return state
+            ages = []
+            for key in ("positions_age_s", "positions_cache_age_s", "cache_age_s"):
+                value = _payload_age_s({key: cached.get(key)}, key)
+                if value is not None:
+                    ages.append(value)
+            timestamp_age = _payload_age_s(
+                {"fetched_at": cached.get("positions_fetched_at") or cached.get("fetched_at")},
+                "positions_age_s",
+            )
+            if timestamp_age is not None:
+                ages.append(timestamp_age)
+            age_s = max(ages) if ages else None
+            max_stale_s = float(state["positions_snapshot_max_stale_s"])
+            stale = bool(cached.get("positions_stale") or cached.get("positions_refresh_required"))
+            if age_s is None or age_s > max_stale_s:
+                stale = True
+            source = str(cached.get("positions_source") or "").strip()
+            if source in {"", "unavailable"} and cached.get("positions_detail_available") is not True:
+                stale = True
+            state.update(
+                {
+                    "positions_snapshot_age_s": round(float(age_s), 1) if age_s is not None else None,
+                    "positions_snapshot_source": source,
+                    "positions_snapshot_fetched_at": str(cached.get("positions_fetched_at") or cached.get("fetched_at") or ""),
+                    "positions_snapshot_stale": bool(stale),
+                    "positions_refresh_required": bool(stale),
+                    "positions_refresh_block_reason": str(cached.get("positions_refresh_block_reason") or ""),
+                }
+            )
+            if stale and not state["positions_refresh_block_reason"]:
+                state["positions_refresh_block_reason"] = "positions_snapshot_stale"
+        except Exception as exc:
+            state["positions_refresh_block_reason"] = f"positions_snapshot_state_error:{exc}"
+        return state
 
     def _account_snapshot_refresh_next_at(self, delay_s: float) -> str:
         return (datetime.now(timezone.utc) + timedelta(seconds=max(1.0, float(delay_s or 0.0)))).isoformat()

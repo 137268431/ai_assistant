@@ -1179,11 +1179,25 @@
             const positionsDetailAvailable = positions.detail_available === true;
             const positionsCountAvailable = positions.count_available === true || positions.available === true;
             const positionsOmitted = positions.positions_omitted === true || String(positions.positions_source || '').trim() === 'omitted_open_orders_only';
+            const positionsSnapshotStale = positions.positions_stale === true || positions.positions_refresh_required === true;
+            const positionsEmptyConfirmed = positions.empty_confirmed === true || (
+                positionsAvailable && positionsCountAvailable && positionTotal === 0 && !positionsSnapshotStale
+            );
             const snapshotSuffix = (snapshot = {}) => {
                 if (!snapshot || snapshot.stale !== true) return '';
                 const age = Number(snapshot.cache_age_s || 0);
                 const ageText = Number.isFinite(age) && age > 0 ? ` · ${formatNumber(age, 0)}s 前` : '';
                 return ` · 最近快照${ageText}，可能滞后`;
+            };
+            const positionsFreshnessSuffix = () => {
+                if (!positionsSnapshotStale) return snapshotSuffix(positions);
+                const age = Number(positions.positions_age_s ?? positions.cache_age_s ?? 0);
+                const maxAge = Number(positions.positions_max_stale_s ?? 0);
+                const ageText = Number.isFinite(age) && age > 0 ? ` · age=${formatNumber(age, 0)}s` : '';
+                const maxText = Number.isFinite(maxAge) && maxAge > 0 ? ` / max=${formatNumber(maxAge, 0)}s` : '';
+                const reason = String(positions.positions_refresh_block_reason || positions.degraded_reason || positions.error || '').trim();
+                const reasonText = reason ? ` · ${reason}` : '';
+                return ` · 快照过期${ageText}${maxText}${reasonText}`;
             };
             const setText = (id, value) => {
                 const el = document.getElementById(id);
@@ -1239,8 +1253,8 @@
             setText(
                 'positionsStateLabel',
                 positionsAvailable && positionsCountAvailable
-                    ? (positionTotal > 0 ? (positionsInferred ? '推断持仓' : '当前持仓') : '无实际持仓')
-                    : (positionsOmitted ? '持仓未取样' : '持仓接口不可用')
+                    ? (positionTotal > 0 ? (positionsInferred ? '推断持仓' : '当前持仓') : (positionsEmptyConfirmed ? '无实际持仓' : '持仓未确认'))
+                    : (positionsOmitted || positionsSnapshotStale ? '持仓未确认' : '持仓接口不可用')
             );
             setText(
                 'positionsLiveOrdersSummary',
@@ -1251,11 +1265,11 @@
             setText(
                 'positionsFoot',
                 positionsAvailable && positionsCountAvailable
-                    ? `${positionsInferred ? 'Gateway positions 为空 · 按订单保护单推断' : positionsDetailAvailable ? 'Gateway 真实持仓快照' : 'Gateway 持仓计数快照'}${positionTotal > 0 ? ` · broker=${formatNumber(brokerOpenPositions, 0)} inferred=${formatNumber(inferredOpenPositions, 0)}` : ' · 已确认无实际持仓'}${snapshotSuffix(positions)}`
+                    ? `${positionsInferred ? 'Gateway positions 为空 · 按订单保护单推断' : positionsDetailAvailable ? 'Gateway 真实持仓快照' : 'Gateway 持仓计数快照'}${positionTotal > 0 ? ` · broker=${formatNumber(brokerOpenPositions, 0)} inferred=${formatNumber(inferredOpenPositions, 0)}` : (positionsEmptyConfirmed ? ' · 已确认无实际持仓' : ' · 持仓未确认')}${positionsFreshnessSuffix()}`
                     : `Gateway 持仓未确认${positions.error ? ` · ${positions.error}` : ''}`
             );
             document.getElementById('positionsLink').title = positionsAvailable
-                ? `${positionsCountAvailable ? (positionTotal > 0 ? (positionsInferred ? 'Gateway positions 为空，按订单推断有持仓' : 'Gateway 持仓计数显示有仓位') : 'Gateway 已确认无实际持仓') : 'Gateway 持仓未确认'}；当前挂单组 ${liveOrdersAvailable ? formatNumber(liveOrderGroupCount, 0) : '不可用'}；订单腿 ${liveOrdersAvailable ? formatNumber(liveOrderLegCount, 0) : '不可用'}`
+                ? `${positionsCountAvailable ? (positionTotal > 0 ? (positionsInferred ? 'Gateway positions 为空，按订单推断有持仓' : 'Gateway 持仓计数显示有仓位') : (positionsEmptyConfirmed ? 'Gateway 已确认无实际持仓' : 'Gateway 持仓未确认')) : 'Gateway 持仓未确认'}；当前挂单组 ${liveOrdersAvailable ? formatNumber(liveOrderGroupCount, 0) : '不可用'}；订单腿 ${liveOrdersAvailable ? formatNumber(liveOrderLegCount, 0) : '不可用'}`
                 : `Gateway 持仓暂不可用${positions.error ? `: ${positions.error}` : ''}`;
 
             const pnlEl = document.getElementById('todayPnL');
@@ -1307,7 +1321,7 @@
             setCardTone('signalsLink', Number(signals.total || 0) > 0 ? 'long' : 'neutral');
             setCardTone('reverseSignalsLink', pendingActions > 0 ? 'short' : 'neutral');
             setCardTone('ordersLink', Number(orders.total || 0) > 0 ? 'long' : (liveOrderGroupCount > 0 ? 'candidate' : 'neutral'));
-            setCardTone('positionsLink', positionsAvailable && positionTotal > 0 ? 'long' : (liveOrderGroupCount > 0 ? 'candidate' : 'neutral'));
+            setCardTone('positionsLink', positionsAvailable && positionTotal > 0 ? 'long' : (positionsSnapshotStale || liveOrderGroupCount > 0 ? 'candidate' : 'neutral'));
             setCardTone('pnlCardLink', pnl > 0 ? 'long' : (pnl < 0 ? 'short' : 'neutral'));
             if (latestTodayTargetsPayload) {
                 const targetMarketDate = latestTodayTargetsPayload.market_date || marketDate;

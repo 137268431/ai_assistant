@@ -1537,7 +1537,14 @@ def set_account_snapshot_metrics(payload: dict[str, Any] | None = None, *, sourc
     guard_state = str(guard.get("state") or "").strip().lower()
     health_state = str(health.get("state") or health.get("health") or "ok").strip().lower()
     cache_state = str(payload.get("cache_state") or health.get("cache_state") or "").strip().lower()
-    stale = bool(_metric_bool_or_none(payload.get("stale"))) or cache_state in {"stale", "stale_after_error", "stale_after_account_data_circuit"}
+    positions_stale = bool(_metric_bool_or_none(payload.get("positions_stale"))) or bool(
+        _metric_bool_or_none(payload.get("positions_refresh_required"))
+    )
+    stale = (
+        bool(_metric_bool_or_none(payload.get("stale")))
+        or positions_stale
+        or cache_state in {"stale", "stale_after_error", "stale_after_account_data_circuit"}
+    )
     errors = payload.get("errors") if isinstance(payload.get("errors"), dict) else {}
     refresh_error = str(payload.get("refresh_error") or errors.get("refresh") or "").strip()
     payload_ok = _metric_bool_or_none(payload.get("ok"))
@@ -1560,6 +1567,9 @@ def set_account_snapshot_metrics(payload: dict[str, Any] | None = None, *, sourc
         and not refresh_error
     )
     age_seconds = _snapshot_age_seconds(payload, health)
+    positions_age = _optional_float(payload.get("positions_age_s"))
+    if positions_age is not None:
+        age_seconds = max(age_seconds or 0.0, positions_age)
     if ACCOUNT_SNAPSHOT_AVAILABLE is not None:
         ACCOUNT_SNAPSHOT_AVAILABLE.labels(service, env, src).set(1.0 if available else 0.0)
     if ACCOUNT_SNAPSHOT_REFRESH_OK is not None:
