@@ -406,6 +406,10 @@ var float lastTopFailureWatchBase = na
 var float lastTopFailureWatchBodyMid = na
 var float lastTopFailureWatchClose = na
 var bool lastTopFailureWatchVolumeProbe = false
+var int topProbeCycleId = 0
+var bool topProbeCycleActive = false
+var bool topProbeCycleConsumed = false
+var int topProbeCycleTouchBar = na
 var bool topPullbackArmed = false
 var int topPullbackArmedBar = na
 var int topNoDemandStreak = 0
@@ -422,6 +426,10 @@ var float lastBottomFailureWatchBase = na
 var float lastBottomFailureWatchBodyMid = na
 var float lastBottomFailureWatchClose = na
 var bool lastBottomFailureWatchVolumeProbe = false
+var int bottomProbeCycleId = 0
+var bool bottomProbeCycleActive = false
+var bool bottomProbeCycleConsumed = false
+var int bottomProbeCycleTouchBar = na
 var bool bottomPullbackArmed = false
 var int bottomPullbackArmedBar = na
 var int bottomNoSupplyStreak = 0
@@ -503,6 +511,9 @@ if confirmed and referenceDayReset
     lastTopFailureWatchBar := na
     lastTopFailureWatchClose := na
     lastTopFailureWatchVolumeProbe := false
+    topProbeCycleActive := false
+    topProbeCycleConsumed := false
+    topProbeCycleTouchBar := na
     topPullbackArmed := false
     topPullbackArmedBar := na
     topNoDemandStreak := 0
@@ -515,6 +526,9 @@ if confirmed and referenceDayReset
     lastBottomFailureWatchBar := na
     lastBottomFailureWatchClose := na
     lastBottomFailureWatchVolumeProbe := false
+    bottomProbeCycleActive := false
+    bottomProbeCycleConsumed := false
+    bottomProbeCycleTouchBar := na
     bottomPullbackArmed := false
     bottomPullbackArmedBar := na
     bottomNoSupplyStreak := 0
@@ -685,6 +699,9 @@ if confirmed and inReferenceSession
             lastTopFailureWatchBar := na
             lastTopFailureWatchClose := na
             lastTopFailureWatchVolumeProbe := false
+            topProbeCycleActive := false
+            topProbeCycleConsumed := false
+            topProbeCycleTouchBar := na
             topPullbackArmed := false
             topPullbackArmedBar := na
             topNoDemandStreak := 0
@@ -734,6 +751,9 @@ if confirmed and inReferenceSession
             lastBottomFailureWatchBar := na
             lastBottomFailureWatchClose := na
             lastBottomFailureWatchVolumeProbe := false
+            bottomProbeCycleActive := false
+            bottomProbeCycleConsumed := false
+            bottomProbeCycleTouchBar := na
             bottomPullbackArmed := false
             bottomPullbackArmedBar := na
             bottomNoSupplyStreak := 0
@@ -787,6 +807,9 @@ if confirmed and inReferenceSession
         lastTopFailureWatchBar := na
         lastTopFailureWatchClose := na
         lastTopFailureWatchVolumeProbe := false
+        topProbeCycleActive := false
+        topProbeCycleConsumed := false
+        topProbeCycleTouchBar := na
         topPullbackArmed := false
         topPullbackArmedBar := na
         topNoDemandStreak := 0
@@ -823,6 +846,9 @@ if confirmed and inReferenceSession
         lastBottomFailureWatchBar := na
         lastBottomFailureWatchClose := na
         lastBottomFailureWatchVolumeProbe := false
+        bottomProbeCycleActive := false
+        bottomProbeCycleConsumed := false
+        bottomProbeCycleTouchBar := na
         bottomPullbackArmed := false
         bottomPullbackArmedBar := na
         bottomNoSupplyStreak := 0
@@ -1083,6 +1109,16 @@ float topZoneLow = na(todayStructHighZoneLow) ? todayStructHigh : todayStructHig
 float topZoneHigh = na(todayStructHighZoneHigh) ? todayStructHigh : todayStructHighZoneHigh
 float topStructuralRetestLevel = upperBreakAcceptedRegime and not na(prevStructHigh) ? prevStructHigh : topBasis
 bool topStrictRetestTouch = not na(topStructuralRetestLevel) and high >= topStructuralRetestLevel - strictRetestTolerance
+if confirmed and topProbeCycleActive and topProbeCycleConsumed and not topStrictRetestTouch
+    topProbeCycleActive := false
+    topProbeCycleTouchBar := na
+    lastTopFailureWatchBar := na
+    lastTopFailureWatchClose := na
+    lastTopFailureWatchVolumeProbe := false
+    topNoDemandStreak := 0
+    lastTopNoDemandBar := na
+    lastTopNoDemandHigh := na
+    lastTopNoDemandLow := na
 int topCount = not na(todayStructHigh) ? 1 : 0
 topCount := addNearCount(topCount, sdUpper, topBasis, tolerance)
 topCount := addNearCount(topCount, resistanceZoneHigh, topBasis, tolerance)
@@ -1297,6 +1333,12 @@ else if not topMomentumDecayReady
 else if not upperWeakClose
     topExhaustionReason := "no_weak_close_confirm"
 bool topConfirmedShort = topSweepFailed or upperExhaustionConfirmedShort or topWeakNewHighConfirmed or topDistributionDropConfirmed or topVolumeClimaxFailedBreakConfirmed or topHighVolumeDropConfirmed or topNoDemandBreakConfirmed or topImmediateReversalShort
+bool topProbeCycleTouchNow = topImmediatePullbackShort or topSweptStructure or topNakedTouchEvent or topVolumeClimaxAttackEvent or topWeakNewHighEvent or topHighVolumeProbeWatch or topNoDemandWatch or upperExhaustionZone
+if topProbeCycleTouchNow and not topProbeCycleActive
+    topProbeCycleId += 1
+    topProbeCycleActive := true
+    topProbeCycleConsumed := false
+    topProbeCycleTouchBar := bar_index
 if topVolumeClimaxFailedBreakConfirmed
     topProbePattern := "volume_climax_failed_break_short"
 else if topHighVolumeDropConfirmed
@@ -1390,6 +1432,16 @@ float bottomZoneLow = na(todayStructLowZoneLow) ? todayStructLow : todayStructLo
 float bottomZoneHigh = na(todayStructLowZoneHigh) ? todayStructLow : todayStructLowZoneHigh
 float bottomStructuralRetestLevel = lowerBreakAcceptedRegime and not na(prevStructLow) ? prevStructLow : bottomBasis
 bool bottomStrictRetestTouch = not na(bottomStructuralRetestLevel) and low <= bottomStructuralRetestLevel + strictRetestTolerance
+if confirmed and bottomProbeCycleActive and bottomProbeCycleConsumed and not bottomStrictRetestTouch
+    bottomProbeCycleActive := false
+    bottomProbeCycleTouchBar := na
+    lastBottomFailureWatchBar := na
+    lastBottomFailureWatchClose := na
+    lastBottomFailureWatchVolumeProbe := false
+    bottomNoSupplyStreak := 0
+    lastBottomNoSupplyBar := na
+    lastBottomNoSupplyHigh := na
+    lastBottomNoSupplyLow := na
 int bottomCount = not na(todayStructLow) ? 1 : 0
 bottomCount := addNearCount(bottomCount, sdLower, bottomBasis, tolerance)
 bottomCount := addNearCount(bottomCount, supportZoneLow, bottomBasis, tolerance)
@@ -1575,6 +1627,12 @@ else if not bottomMomentumDecayReady
 else if not lowerStrongClose
     bottomExhaustionReason := "no_strong_close_confirm"
 bool bottomConfirmedLong = bottomSweepFailed or lowerExhaustionConfirmedLong or bottomWeakNewLowConfirmed or bottomAccumulationRiseConfirmed or bottomHighVolumeRiseConfirmed or bottomNoSupplyBreakConfirmed
+bool bottomProbeCycleTouchNow = bottomSweptStructure or bottomNakedTouchEvent or bottomWeakNewLowEvent or bottomHighVolumeProbeWatch or bottomNoSupplyWatch or lowerExhaustionZone
+if bottomProbeCycleTouchNow and not bottomProbeCycleActive
+    bottomProbeCycleId += 1
+    bottomProbeCycleActive := true
+    bottomProbeCycleConsumed := false
+    bottomProbeCycleTouchBar := bar_index
 if bottomHighVolumeRiseConfirmed
     bottomProbePattern := "naked_low_volume_reversal_long"
 else if bottomNoSupplyBreakImmediate
@@ -1699,7 +1757,13 @@ float selectedStructureAnchor = selectedTrendSupport ? trendSupportBasis : selec
 float selectedEntryAnchorDistanceAtr = selectedDirection != 0 and not na(selectedStructureAnchor) and atr > 0.0 ? math.abs(selectedEntry - selectedStructureAnchor) / atr : na
 bool selectedProbeStrictTouchOk = selectedTopProbe ? topStrictRetestTouch : selectedBottomProbe ? bottomStrictRetestTouch : false
 bool selectedFailureRetestLimit = selectedTopProbe and topCloseLimitShort or selectedBottomProbe and bottomCloseLimitLong
-bool selectedEntryNearAnchorOnly = selectedDirection == 0 or selectedProbeStrictTouchOk or selectedFailureRetestLimit or (not na(selectedEntryAnchorDistanceAtr) and selectedEntryAnchorDistanceAtr <= scalpMaxEntryAwayAtr)
+bool selectedProbeSetup = selectedTopProbe or selectedBottomProbe
+bool selectedProbeCycleActive = selectedTopProbe ? topProbeCycleActive : selectedBottomProbe ? bottomProbeCycleActive : true
+bool selectedProbeCycleConsumed = selectedTopProbe ? topProbeCycleConsumed : selectedBottomProbe ? bottomProbeCycleConsumed : false
+int selectedProbeCycleId = selectedTopProbe ? topProbeCycleId : selectedBottomProbe ? bottomProbeCycleId : na
+int selectedProbeCycleTouchBar = selectedTopProbe ? topProbeCycleTouchBar : selectedBottomProbe ? bottomProbeCycleTouchBar : na
+bool selectedProbeCyclePassed = not selectedProbeSetup or (selectedProbeCycleActive and not selectedProbeCycleConsumed)
+bool selectedEntryNearAnchorOnly = selectedDirection == 0 or selectedProbeStrictTouchOk or (not na(selectedEntryAnchorDistanceAtr) and selectedEntryAnchorDistanceAtr <= scalpMaxEntryAwayAtr)
 bool selectedRsiPassed = selectedDirection == 1 ? scalpRsiLongOk : selectedDirection == -1 ? scalpRsiShortOk : false
 string selectedRsiState = selectedDirection == 1 ? (scalpFastBullDiv ? "fast_bull_divergence" : scalpRsiLongOk ? "low_turning_up" : "long_rsi_not_turning") : selectedDirection == -1 ? (scalpFastBearDiv ? "fast_bear_divergence" : scalpRsiShortOk ? "high_turning_down" : "short_rsi_not_turning") : "none"
 bool selectedStructureClear = selectedTrendSupport ? trendLongContext and strongTrendSupport : selectedTrendResistance ? trendShortContext and strongTrendResistance : selectedTopProbe ? strongTopProbeZone and topConfirmedShort : selectedBottomProbe ? strongBottomProbeZone and bottomConfirmedLong : false
@@ -1798,6 +1862,7 @@ var float activeActivationR = na
 var float activeQty = na
 var float activeInitialRisk = na
 var float activeStructureAnchor = na
+var int activeProbeCycleId = na
 var int activeSignalBar = na
 var int activeEntryBar = na
 var int activeExpiresBar = na
@@ -2075,7 +2140,7 @@ bool pendingExpired = pendingEntry and not na(activeExpiresBar) and bar_index > 
 bool pendingWindowExpired = pendingEntry and not inEntryWindow
 bool pendingEodCancel = pendingEntry and eodTimeReached
 bool pendingInvalidated = pendingEntry and (activeDirection == 1 ? close < activeStop : close > activeStop)
-bool pendingOppositeSelected = pendingEntry and selectedDirection != 0 and selectedDirection != activeDirection and selectedStructureClear and selectedEntryNearAnchorOnly and selectedRsiPassed and selectedSmallStopGatePassed and selectedExpectedRPassed
+bool pendingOppositeSelected = pendingEntry and selectedDirection != 0 and selectedDirection != activeDirection and selectedStructureClear and selectedEntryNearAnchorOnly and selectedProbeCyclePassed and selectedRsiPassed and selectedSmallStopGatePassed and selectedExpectedRPassed
 bool pendingLostConfirmation = pendingEntry and activeEntryIntent != "confirmed_limit"
 bool pendingAttackCoolingCancel = false
 bool pendingStructureAcceptedCancel = pendingEntry and (activeDirection == -1 ? upperStructureBreakAccepted : activeDirection == 1 ? lowerStructureBreakAccepted : false)
@@ -2102,6 +2167,24 @@ if pendingCancelNow
     strategy.cancel(orderIdForDirection(activeDirection))
     if enableAlerts
         alert(buildCancelPayload(planId("cancel", activeSetup, activeEntryIntent), activePositionId, pendingCancelReason), alert.freq_all)
+    if activeSetup == "probe_2b_top_short" and activeProbeCycleId == topProbeCycleId
+        topProbeCycleConsumed := true
+        lastTopFailureWatchBar := na
+        lastTopFailureWatchClose := na
+        lastTopFailureWatchVolumeProbe := false
+        topNoDemandStreak := 0
+        lastTopNoDemandBar := na
+        lastTopNoDemandHigh := na
+        lastTopNoDemandLow := na
+    if activeSetup == "probe_2b_bottom_long" and activeProbeCycleId == bottomProbeCycleId
+        bottomProbeCycleConsumed := true
+        lastBottomFailureWatchBar := na
+        lastBottomFailureWatchClose := na
+        lastBottomFailureWatchVolumeProbe := false
+        bottomNoSupplyStreak := 0
+        lastBottomNoSupplyBar := na
+        lastBottomNoSupplyHigh := na
+        lastBottomNoSupplyLow := na
     pendingEntry := false
     activeDirection := 0
     activeSetup := ""
@@ -2119,6 +2202,7 @@ if pendingCancelNow
     activeQty := na
     activeInitialRisk := na
     activeStructureAnchor := na
+    activeProbeCycleId := na
     activeSignalBar := na
     activeExpiresBar := na
     activeManualExitReason := ""
@@ -2130,7 +2214,7 @@ bool selectedFailureReentry = selectedTopProbe and topFailureRepeatShort
 bool selectedSameSideSignalFarEnough = selectedDirection == 0 or selectedPendingUpgrade or selectedFailureReentry or na(selectedSameSideSignalDistanceAtr) or selectedSameSideSignalDistanceAtr >= minSameSideSignalSeparationAtr
 bool selectedAnyPlanFarEnough = selectedDirection == 0 or selectedPendingUpgrade or selectedFailureReentry or na(selectedAnyPlanGapBars) or (selectedAnyPlanGapBars >= minAnyPlanGapBars and selectedAnyPlanDistanceAtr >= minAnyPlanDistanceAtr)
 bool selectedDailyRiskOk = selectedDirection == 0 or (dailyTotalTrades < maxDailyTotalTrades and dailyPnlDollars > -maxDailyLossDollars and (selectedDirection == 1 ? dailyLongTrades < maxDailySameSideTrades and dailyLongLosses < maxSameSideLosses : dailyShortTrades < maxDailySameSideTrades and dailyShortLosses < maxSameSideLosses))
-bool selectedPlanQualityOk = selectedStructureClear and selectedEntryNearAnchorOnly and selectedRsiPassed and selectedSmallStopGatePassed and selectedExpectedRPassed
+bool selectedPlanQualityOk = selectedStructureClear and selectedEntryNearAnchorOnly and selectedProbeCyclePassed and selectedRsiPassed and selectedSmallStopGatePassed and selectedExpectedRPassed
 bool selectedPlanSpacingOk = selectedSameSideSignalFarEnough and selectedAnyPlanFarEnough
 bool selectedPlanSessionOk = not eodTimeReached and inTradingSession and inEntryWindow
 bool selectedPlanValid = selectedDirection != 0 and selectedPlanQualityOk and selectedPlanSpacingOk and selectedDailyRiskOk and selectedQty >= 1.0 and selectedPlanSessionOk
@@ -2140,6 +2224,10 @@ if selectedDirection == 0
     selectedBlockReason := "no_candidate"
 else if not selectedStructureClear
     selectedBlockReason := "no_clear_structure"
+else if selectedProbeSetup and not selectedProbeCycleActive
+    selectedBlockReason := "probe_cycle_not_active"
+else if selectedProbeSetup and selectedProbeCycleConsumed
+    selectedBlockReason := "probe_cycle_consumed"
 else if not selectedEntryNearAnchorOnly
     selectedBlockReason := "entry_too_far_from_anchor"
 else if not selectedRsiPassed
@@ -2192,6 +2280,7 @@ if submitNewPlan
     activeQty := selectedQty
     activeInitialRisk := riskPerShare(selectedEntry, selectedStop)
     activeStructureAnchor := selectedStructureAnchor
+    activeProbeCycleId := selectedProbeSetup ? selectedProbeCycleId : na
     activeSignalBar := bar_index
     activeExpiresBar := bar_index + entryOrderTtlBars
     activeEntryBar := na
@@ -2214,6 +2303,10 @@ if submitNewPlan
         topExhaustionUsed := selectedProbePattern == "extension_exhaustion_top" ? true : topExhaustionUsed
     if selectedBottomProbe
         bottomExhaustionUsed := selectedProbePattern == "extension_exhaustion_bottom" ? true : bottomExhaustionUsed
+    if selectedTopProbe and selectedProbeCycleId == topProbeCycleId
+        topProbeCycleConsumed := true
+    if selectedBottomProbe and selectedProbeCycleId == bottomProbeCycleId
+        bottomProbeCycleConsumed := true
 
 // Active position risk management.
 if confirmed and activePosition and hasOpenStrategyPosition
@@ -2300,6 +2393,24 @@ if confirmed and positionClosedNow
             dailyShortLosses += 1
     if enableAlerts
         alert(buildExitPayload(planId("exit", activeSetup, activeEntryIntent), activePositionId, exitReason, exitPrice, pnlPerShare), alert.freq_all)
+    if activeSetup == "probe_2b_top_short" and activeProbeCycleId == topProbeCycleId
+        topProbeCycleConsumed := true
+        lastTopFailureWatchBar := na
+        lastTopFailureWatchClose := na
+        lastTopFailureWatchVolumeProbe := false
+        topNoDemandStreak := 0
+        lastTopNoDemandBar := na
+        lastTopNoDemandHigh := na
+        lastTopNoDemandLow := na
+    if activeSetup == "probe_2b_bottom_long" and activeProbeCycleId == bottomProbeCycleId
+        bottomProbeCycleConsumed := true
+        lastBottomFailureWatchBar := na
+        lastBottomFailureWatchClose := na
+        lastBottomFailureWatchVolumeProbe := false
+        bottomNoSupplyStreak := 0
+        lastBottomNoSupplyBar := na
+        lastBottomNoSupplyHigh := na
+        lastBottomNoSupplyLow := na
     activePosition := false
     activeDirection := 0
     activeSetup := ""
@@ -2317,6 +2428,7 @@ if confirmed and positionClosedNow
     activeQty := na
     activeInitialRisk := na
     activeStructureAnchor := na
+    activeProbeCycleId := na
     activeSignalBar := na
     activeEntryBar := na
     activeExpiresBar := na

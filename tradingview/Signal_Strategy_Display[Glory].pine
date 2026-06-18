@@ -18,9 +18,7 @@ emaSlowLen = input.int(100, "EMA slow", minval=1, group="01 Structure")
 emaLongLen = input.int(200, "EMA long context", minval=1, group="01 Structure")
 structureLookbackBars = input.int(60, "Structure lookback bars", minval=10, maxval=300, group="01 Structure")
 fractalPeriod = input.int(4, "Pivot period", minval=2, maxval=20, group="01 Structure")
-minConfluenceCount = input.int(2, "Minimum structure confluence", minval=1, maxval=5, group="01 Structure")
 confluenceZoneAtr = input.float(0.25, "Confluence zone (x ATR)", step=0.05, minval=0.05, maxval=2.0, group="01 Structure")
-predictionArmDistanceAtr = input.float(1.20, "Max distance to predictive zone (x ATR)", step=0.10, minval=0.10, maxval=5.0, group="01 Structure")
 predictiveEntryOffsetAtr = input.float(0.05, "Predictive entry offset (x ATR)", step=0.01, minval=0.0, maxval=0.50, group="01 Structure")
 stopBufferAtr = input.float(0.08, "Invalidation buffer (x ATR)", step=0.01, minval=0.0, maxval=1.0, group="01 Structure")
 referenceSession = input.session("0930-1600", "Reference day structure session", group="01 Structure")
@@ -28,11 +26,9 @@ dayStructConfirmBars = input.int(2, "Day structure confirm bars", minval=1, maxv
 dayStructMinReversalAtr = input.float(0.60, "Day structure reversal (x ATR)", step=0.05, minval=0.10, maxval=5.0, group="01 Structure")
 trendMinSwingMoveAtr = input.float(0.70, "Trend swing min move (x ATR)", step=0.05, minval=0.10, maxval=5.0, group="01 Structure")
 probeMinAnchorAgeBars = input.int(6, "Probe min anchor age bars", minval=1, maxval=60, group="01 Structure")
-probeMinPullbackAtr = input.float(0.80, "Probe min pullback (x ATR)", step=0.05, minval=0.10, maxval=5.0, group="01 Structure")
 probeRetestBandAtr = input.float(0.35, "Probe retest band (x ATR)", step=0.05, minval=0.05, maxval=3.0, group="01 Structure")
 probeStrictTouchToleranceAtr = input.float(0.05, "Probe strict touch tolerance (x ATR)", step=0.01, minval=0.0, maxval=0.50, group="01 Structure")
 probeMinSignalGapBars = input.int(6, "Probe min signal gap bars", minval=1, maxval=60, group="01 Structure")
-probeMinSignalGapAtr = input.float(0.60, "Probe min signal gap (x ATR)", step=0.05, minval=0.10, maxval=5.0, group="01 Structure")
 structureClusterBandAtr = input.float(0.40, "Structure cluster band (x ATR)", step=0.05, minval=0.05, maxval=3.0, group="01 Structure")
 minStructureSeparationAtr = input.float(1.00, "Independent structure separation (x ATR)", step=0.05, minval=0.10, maxval=5.0, group="01 Structure")
 minMiddleSwingAtr = input.float(1.00, "Middle swing for second test (x ATR)", step=0.05, minval=0.10, maxval=5.0, group="01 Structure")
@@ -68,7 +64,6 @@ distributionDropClosePosMax = input.float(0.45, "Distribution close position max
 distributionDropMaxDistanceAtr = input.float(0.80, "Distribution max distance (x ATR)", step=0.05, minval=0.05, maxval=5.0, group="01 Structure")
 structureBreakAcceptBars = input.int(3, "Structure break accept bars", minval=1, maxval=10, group="01 Structure")
 structureBreakAcceptCloseAtr = input.float(0.15, "Structure break accept close (x ATR)", step=0.05, minval=0.0, maxval=2.0, group="01 Structure")
-planReplaceMinMoveAtr = input.float(0.60, "Plan replace min move (x ATR)", step=0.05, minval=0.05, maxval=5.0, group="01 Structure")
 
 sdLength = input.int(128, "Regression length", minval=20, group="02 SD / DTP")
 sdBandMult = input.float(2.0, "SD band multiplier", step=0.25, minval=0.25, maxval=5.0, group="02 SD / DTP")
@@ -76,7 +71,6 @@ dtpSmaLength = input.int(100, "DTP SMA length", minval=5, group="02 SD / DTP")
 dtpAtrLength = input.int(200, "DTP ATR length", minval=5, group="02 SD / DTP")
 dtpMomentumLookback = input.int(12, "DTP momentum lookback", minval=1, group="02 SD / DTP")
 dtpTrendThreshold = input.float(0.10, "DTP trend threshold (ATR units)", step=0.05, group="02 SD / DTP")
-dtpEarlyBars = input.int(12, "DTP early bars", minval=1, maxval=48, group="02 SD / DTP")
 crsiDomcycle = input.int(20, "cRSI dominant cycle", minval=10, group="02 SD / DTP")
 crsiVibration = input.int(6, "cRSI vibration", minval=1, group="02 SD / DTP")
 divLookback = input.int(4, "Divergence pivot lookback", minval=1, maxval=20, group="02 SD / DTP")
@@ -314,24 +308,6 @@ minNear(float current, float level, float basis, float tolerance) =>
 maxNear(float current, float level, float basis, float tolerance) =>
     levelNear(level, basis, tolerance) ? (na(current) ? level : math.max(current, level)) : current
 
-appendSource(string current, string source) =>
-    current == "" ? source : current + "," + source
-
-appendNearSource(string current, float level, float basis, float tolerance, string source) =>
-    levelNear(level, basis, tolerance) ? appendSource(current, source) : current
-
-signalConfluenceCount(bool rsiOk, bool nakedOk, bool volumeOk, bool middleOk, bool rightOk) =>
-    (rsiOk ? 1 : 0) + (nakedOk ? 1 : 0) + (volumeOk ? 1 : 0) + (middleOk ? 1 : 0) + (rightOk ? 1 : 0)
-
-signalConfluenceSources(bool rsiOk, bool nakedOk, bool volumeOk, string volumeReason, bool middleOk, bool rightOk) =>
-    string result = ""
-    result := rsiOk ? appendSource(result, "rsi_turn") : result
-    result := nakedOk ? appendSource(result, "naked_k") : result
-    result := volumeOk ? appendSource(result, volumeReason) : result
-    result := middleOk ? appendSource(result, "local_m") : result
-    result := rightOk ? appendSource(result, "right_retest") : result
-    result
-
 setupDisplayName(string setup) =>
     setup == "trend_support_long" ? "多·强趋势回踩" : setup == "trend_resistance_short" ? "空·强趋势反弹" : setup == "probe_2b_top_short" ? "空·结构首顶/右肩" : setup == "probe_2b_bottom_long" ? "多·结构首底/右肩" : setup
 
@@ -381,6 +357,10 @@ reasonCn(string reason) =>
         result := "缺少强收确认"
     else if reason == "entry_too_far_from_anchor"
         result := "离结构位太远"
+    else if reason == "probe_cycle_not_active"
+        result := "未重新触及结构位"
+    else if reason == "probe_cycle_consumed"
+        result := "本次结构周期已结束"
     else if reason == "rsi_not_turning"
         result := "RSI未转弱/转强"
     else if reason == "micro_structure_too_close"
@@ -563,18 +543,13 @@ float dtpNorm = dtpAtr > 0.0 ? dtpMomentum / dtpAtr : 0.0
 bool dtpBullTurn = ta.crossover(dtpNorm, dtpTrendThreshold)
 bool dtpBearTurn = ta.crossunder(dtpNorm, -dtpTrendThreshold)
 var int dtpDir = 0
-var int dtpStartBar = na
 if confirmed
     if dtpBullTurn or dtpNorm > dtpTrendThreshold and close > dtpAvg and dtpDir != 1
         dtpDir := 1
-        dtpStartBar := bar_index
     if dtpBearTurn or dtpNorm < -dtpTrendThreshold and close < dtpAvg and dtpDir != -1
         dtpDir := -1
-        dtpStartBar := bar_index
-int dtpPhaseBars = na(dtpStartBar) ? 0 : bar_index - dtpStartBar + 1
 bool dtpBull = dtpDir == 1 and close >= dtpAvg
 bool dtpBear = dtpDir == -1 and close <= dtpAvg
-bool dtpEarly = dtpPhaseBars > 0 and dtpPhaseBars <= dtpEarlyBars
 
 float sdMid = ta.linreg(close, sdLength, 0)
 float sdDev = ta.stdev(close, sdLength)
@@ -736,6 +711,10 @@ var float lastTopFailureWatchBase = na
 var float lastTopFailureWatchBodyMid = na
 var float lastTopFailureWatchClose = na
 var bool lastTopFailureWatchVolumeProbe = false
+var int topProbeCycleId = 0
+var bool topProbeCycleActive = false
+var bool topProbeCycleConsumed = false
+var int topProbeCycleTouchBar = na
 var bool topPullbackArmed = false
 var int topPullbackArmedBar = na
 var int topNoDemandStreak = 0
@@ -752,6 +731,10 @@ var float lastBottomFailureWatchBase = na
 var float lastBottomFailureWatchBodyMid = na
 var float lastBottomFailureWatchClose = na
 var bool lastBottomFailureWatchVolumeProbe = false
+var int bottomProbeCycleId = 0
+var bool bottomProbeCycleActive = false
+var bool bottomProbeCycleConsumed = false
+var int bottomProbeCycleTouchBar = na
 var bool bottomPullbackArmed = false
 var int bottomPullbackArmedBar = na
 var int bottomNoSupplyStreak = 0
@@ -847,6 +830,9 @@ if confirmed and referenceDayReset
     lastTopFailureWatchBar := na
     lastTopFailureWatchClose := na
     lastTopFailureWatchVolumeProbe := false
+    topProbeCycleActive := false
+    topProbeCycleConsumed := false
+    topProbeCycleTouchBar := na
     topPullbackArmed := false
     topPullbackArmedBar := na
     topNoDemandStreak := 0
@@ -859,6 +845,9 @@ if confirmed and referenceDayReset
     lastBottomFailureWatchBar := na
     lastBottomFailureWatchClose := na
     lastBottomFailureWatchVolumeProbe := false
+    bottomProbeCycleActive := false
+    bottomProbeCycleConsumed := false
+    bottomProbeCycleTouchBar := na
     bottomPullbackArmed := false
     bottomPullbackArmedBar := na
     bottomNoSupplyStreak := 0
@@ -1042,6 +1031,9 @@ if confirmed and inReferenceSession
             lastTopFailureWatchBar := na
             lastTopFailureWatchClose := na
             lastTopFailureWatchVolumeProbe := false
+            topProbeCycleActive := false
+            topProbeCycleConsumed := false
+            topProbeCycleTouchBar := na
             topPullbackArmed := false
             topPullbackArmedBar := na
             topNoDemandStreak := 0
@@ -1097,6 +1089,9 @@ if confirmed and inReferenceSession
             lastBottomFailureWatchBar := na
             lastBottomFailureWatchClose := na
             lastBottomFailureWatchVolumeProbe := false
+            bottomProbeCycleActive := false
+            bottomProbeCycleConsumed := false
+            bottomProbeCycleTouchBar := na
             bottomPullbackArmed := false
             bottomPullbackArmedBar := na
             bottomNoSupplyStreak := 0
@@ -1155,6 +1150,9 @@ if confirmed and inReferenceSession
         lastTopFailureWatchBar := na
         lastTopFailureWatchClose := na
         lastTopFailureWatchVolumeProbe := false
+        topProbeCycleActive := false
+        topProbeCycleConsumed := false
+        topProbeCycleTouchBar := na
         topPullbackArmed := false
         topPullbackArmedBar := na
         topNoDemandStreak := 0
@@ -1191,6 +1189,9 @@ if confirmed and inReferenceSession
         lastBottomFailureWatchBar := na
         lastBottomFailureWatchClose := na
         lastBottomFailureWatchVolumeProbe := false
+        bottomProbeCycleActive := false
+        bottomProbeCycleConsumed := false
+        bottomProbeCycleTouchBar := na
         bottomPullbackArmed := false
         bottomPullbackArmedBar := na
         bottomNoSupplyStreak := 0
@@ -1273,19 +1274,9 @@ bool trendShortContext = strongStructTrendShort or dominantTrendShort
 bool topCounterTrendAllowed = not dominantTrendLong
 bool bottomCounterTrendAllowed = not dominantTrendShort
 string trendRegime = dominantTrendLong ? "dominant_bull" : dominantTrendShort ? "dominant_bear" : strongStructTrendLong ? "strong_bull" : strongStructTrendShort ? "strong_bear" : "range"
-string dominantTrendSide = dominantTrendLong ? "long" : dominantTrendShort ? "short" : "none"
 float tolerance = atr * confluenceZoneAtr
 
 float supportBasis = nearestBelow(close, emaFast, emaMid, emaSlow, dtpAvg, sdMid, sdLower, recentLow, lastPivotLow)
-int supportCount = 0
-supportCount := addNearCount(supportCount, emaFast, supportBasis, tolerance)
-supportCount := addNearCount(supportCount, emaMid, supportBasis, tolerance)
-supportCount := addNearCount(supportCount, emaSlow, supportBasis, tolerance)
-supportCount := addNearCount(supportCount, dtpAvg, supportBasis, tolerance)
-supportCount := addNearCount(supportCount, sdMid, supportBasis, tolerance)
-supportCount := addNearCount(supportCount, sdLower, supportBasis, tolerance)
-supportCount := addNearCount(supportCount, recentLow, supportBasis, tolerance)
-supportCount := addNearCount(supportCount, lastPivotLow, supportBasis, tolerance)
 float supportZoneLow = na
 supportZoneLow := minNear(supportZoneLow, emaFast, supportBasis, tolerance)
 supportZoneLow := minNear(supportZoneLow, emaMid, supportBasis, tolerance)
@@ -1304,27 +1295,8 @@ supportZoneHigh := maxNear(supportZoneHigh, sdMid, supportBasis, tolerance)
 supportZoneHigh := maxNear(supportZoneHigh, sdLower, supportBasis, tolerance)
 supportZoneHigh := maxNear(supportZoneHigh, recentLow, supportBasis, tolerance)
 supportZoneHigh := maxNear(supportZoneHigh, lastPivotLow, supportBasis, tolerance)
-string supportSources = ""
-supportSources := appendNearSource(supportSources, emaFast, supportBasis, tolerance, "ema20")
-supportSources := appendNearSource(supportSources, emaMid, supportBasis, tolerance, "ema50")
-supportSources := appendNearSource(supportSources, emaSlow, supportBasis, tolerance, "ema100")
-supportSources := appendNearSource(supportSources, dtpAvg, supportBasis, tolerance, "dtp_avg")
-supportSources := appendNearSource(supportSources, sdMid, supportBasis, tolerance, "sd_mid")
-supportSources := appendNearSource(supportSources, sdLower, supportBasis, tolerance, "sd_lower")
-supportSources := appendNearSource(supportSources, recentLow, supportBasis, tolerance, "recent_low")
-supportSources := appendNearSource(supportSources, lastPivotLow, supportBasis, tolerance, "pivot_low")
-bool strongSupport = supportCount >= minConfluenceCount and not na(supportZoneLow) and not na(supportZoneHigh)
 
 float resistanceBasis = nearestAbove(close, emaFast, emaMid, emaSlow, dtpAvg, sdMid, sdUpper, recentHigh, lastPivotHigh)
-int resistanceCount = 0
-resistanceCount := addNearCount(resistanceCount, emaFast, resistanceBasis, tolerance)
-resistanceCount := addNearCount(resistanceCount, emaMid, resistanceBasis, tolerance)
-resistanceCount := addNearCount(resistanceCount, emaSlow, resistanceBasis, tolerance)
-resistanceCount := addNearCount(resistanceCount, dtpAvg, resistanceBasis, tolerance)
-resistanceCount := addNearCount(resistanceCount, sdMid, resistanceBasis, tolerance)
-resistanceCount := addNearCount(resistanceCount, sdUpper, resistanceBasis, tolerance)
-resistanceCount := addNearCount(resistanceCount, recentHigh, resistanceBasis, tolerance)
-resistanceCount := addNearCount(resistanceCount, lastPivotHigh, resistanceBasis, tolerance)
 float resistanceZoneLow = na
 resistanceZoneLow := minNear(resistanceZoneLow, emaFast, resistanceBasis, tolerance)
 resistanceZoneLow := minNear(resistanceZoneLow, emaMid, resistanceBasis, tolerance)
@@ -1343,16 +1315,6 @@ resistanceZoneHigh := maxNear(resistanceZoneHigh, sdMid, resistanceBasis, tolera
 resistanceZoneHigh := maxNear(resistanceZoneHigh, sdUpper, resistanceBasis, tolerance)
 resistanceZoneHigh := maxNear(resistanceZoneHigh, recentHigh, resistanceBasis, tolerance)
 resistanceZoneHigh := maxNear(resistanceZoneHigh, lastPivotHigh, resistanceBasis, tolerance)
-string resistanceSources = ""
-resistanceSources := appendNearSource(resistanceSources, emaFast, resistanceBasis, tolerance, "ema20")
-resistanceSources := appendNearSource(resistanceSources, emaMid, resistanceBasis, tolerance, "ema50")
-resistanceSources := appendNearSource(resistanceSources, emaSlow, resistanceBasis, tolerance, "ema100")
-resistanceSources := appendNearSource(resistanceSources, dtpAvg, resistanceBasis, tolerance, "dtp_avg")
-resistanceSources := appendNearSource(resistanceSources, sdMid, resistanceBasis, tolerance, "sd_mid")
-resistanceSources := appendNearSource(resistanceSources, sdUpper, resistanceBasis, tolerance, "sd_upper")
-resistanceSources := appendNearSource(resistanceSources, recentHigh, resistanceBasis, tolerance, "recent_high")
-resistanceSources := appendNearSource(resistanceSources, lastPivotHigh, resistanceBasis, tolerance, "pivot_high")
-bool strongResistance = resistanceCount >= minConfluenceCount and not na(resistanceZoneLow) and not na(resistanceZoneHigh)
 
 // Trend trades require a formed intraday HH/HL or LL/LH, then use the latest structural HL/LH as the invalidation anchor.
 float trendSupportBasis = trendLongContext ? todayStructLow : na
@@ -1377,13 +1339,6 @@ trendSupportZoneHigh := maxNear(trendSupportZoneHigh, emaSlow, trendSupportBasis
 trendSupportZoneHigh := maxNear(trendSupportZoneHigh, dtpAvg, trendSupportBasis, tolerance)
 trendSupportZoneHigh := maxNear(trendSupportZoneHigh, sdMid, trendSupportBasis, tolerance)
 trendSupportZoneHigh := maxNear(trendSupportZoneHigh, sdLower, trendSupportBasis, tolerance)
-string trendSupportSources = not na(trendSupportBasis) ? "today_HL" : ""
-trendSupportSources := appendNearSource(trendSupportSources, emaFast, trendSupportBasis, tolerance, "ema20")
-trendSupportSources := appendNearSource(trendSupportSources, emaMid, trendSupportBasis, tolerance, "ema50")
-trendSupportSources := appendNearSource(trendSupportSources, emaSlow, trendSupportBasis, tolerance, "ema100")
-trendSupportSources := appendNearSource(trendSupportSources, dtpAvg, trendSupportBasis, tolerance, "dtp_avg")
-trendSupportSources := appendNearSource(trendSupportSources, sdMid, trendSupportBasis, tolerance, "sd_mid")
-trendSupportSources := appendNearSource(trendSupportSources, sdLower, trendSupportBasis, tolerance, "sd_lower")
 int trendSupportAgeBars = not na(todayStructLowBar) ? bar_index - todayStructLowBar : 0
 bool strongTrendSupport = trendLongContext and dayRangeClear and trendSupportAgeBars >= minTrendSupportAgeBars and not na(trendSupportZoneLow) and not na(trendSupportZoneHigh)
 
@@ -1409,38 +1364,21 @@ trendResistanceZoneHigh := maxNear(trendResistanceZoneHigh, emaSlow, trendResist
 trendResistanceZoneHigh := maxNear(trendResistanceZoneHigh, dtpAvg, trendResistanceBasis, tolerance)
 trendResistanceZoneHigh := maxNear(trendResistanceZoneHigh, sdMid, trendResistanceBasis, tolerance)
 trendResistanceZoneHigh := maxNear(trendResistanceZoneHigh, sdUpper, trendResistanceBasis, tolerance)
-string trendResistanceSources = not na(trendResistanceBasis) ? "today_LH" : ""
-trendResistanceSources := appendNearSource(trendResistanceSources, emaFast, trendResistanceBasis, tolerance, "ema20")
-trendResistanceSources := appendNearSource(trendResistanceSources, emaMid, trendResistanceBasis, tolerance, "ema50")
-trendResistanceSources := appendNearSource(trendResistanceSources, emaSlow, trendResistanceBasis, tolerance, "ema100")
-trendResistanceSources := appendNearSource(trendResistanceSources, dtpAvg, trendResistanceBasis, tolerance, "dtp_avg")
-trendResistanceSources := appendNearSource(trendResistanceSources, sdMid, trendResistanceBasis, tolerance, "sd_mid")
-trendResistanceSources := appendNearSource(trendResistanceSources, sdUpper, trendResistanceBasis, tolerance, "sd_upper")
 int trendResistanceAgeBars = not na(todayStructHighBar) ? bar_index - todayStructHighBar : 0
 bool strongTrendResistance = trendShortContext and dayRangeClear and trendResistanceAgeBars >= minTrendSupportAgeBars and not na(trendResistanceZoneLow) and not na(trendResistanceZoneHigh)
 
-float trendLongPredictStop = strongTrendSupport ? trendSupportZoneLow - invalidationBuffer : na
-float trendLongPredictEntry = strongTrendSupport ? stopBoundedEntry(1, trendSupportZoneLow + atr * predictiveEntryOffsetAtr, trendLongPredictStop, atr, predictiveMaxStopAtr, predictiveMaxStopBps) : na
 float trendLongConfirmStop = strongTrendSupport ? math.min(low, trendSupportZoneLow) - invalidationBuffer : na
 float trendLongConfirmEntryRaw = strongTrendSupport ? math.min(close, trendSupportZoneHigh) : na
 float trendLongConfirmEntry = strongTrendSupport ? stopBoundedEntry(1, scalpLimitEntry(1, close, trendSupportBasis, trendLongConfirmEntryRaw, atr, scalpLimitOffsetAtr), trendLongConfirmStop, atr, confirmedMaxStopAtr, confirmedMaxStopBps) : na
-bool trendLongPredictContext = trendLongContext and strongTrendSupport and trendLongPredictEntry <= close and close - trendSupportZoneHigh <= atr * predictionArmDistanceAtr
 bool trendLongConfirmContext = trendLongContext and strongTrendSupport and low <= trendSupportZoneHigh and close > trendSupportZoneHigh and close > open
-float trendLongPredictQty = calcTrialQty(trendLongPredictEntry, trendLongPredictStop, predictiveMaxRiskDollars)
 float trendLongConfirmQty = calcTrialQty(trendLongConfirmEntry, trendLongConfirmStop, confirmedMaxRiskDollars)
-bool trendLongPredictAllowed = trendLongPredictContext and smallStopTrialAllowed(1, trendLongPredictEntry, trendLongPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and trendLongPredictQty >= 1.0
 bool trendLongConfirmAllowed = trendLongConfirmContext and smallStopTrialAllowed(1, trendLongConfirmEntry, trendLongConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and trendLongConfirmQty >= 1.0
 
-float trendShortPredictStop = strongTrendResistance ? trendResistanceZoneHigh + invalidationBuffer : na
-float trendShortPredictEntry = strongTrendResistance ? stopBoundedEntry(-1, trendResistanceZoneHigh - atr * predictiveEntryOffsetAtr, trendShortPredictStop, atr, predictiveMaxStopAtr, predictiveMaxStopBps) : na
 float trendShortConfirmStop = strongTrendResistance ? math.max(high, trendResistanceZoneHigh) + invalidationBuffer : na
 float trendShortConfirmEntryRaw = strongTrendResistance ? math.max(close, trendResistanceZoneLow) : na
 float trendShortConfirmEntry = strongTrendResistance ? stopBoundedEntry(-1, scalpLimitEntry(-1, close, trendResistanceBasis, trendShortConfirmEntryRaw, atr, scalpLimitOffsetAtr), trendShortConfirmStop, atr, confirmedMaxStopAtr, confirmedMaxStopBps) : na
-bool trendShortPredictContext = trendShortContext and strongTrendResistance and trendShortPredictEntry >= close and trendResistanceZoneLow - close <= atr * predictionArmDistanceAtr
 bool trendShortConfirmContext = trendShortContext and strongTrendResistance and high >= trendResistanceZoneLow and close < trendResistanceZoneLow and close < open
-float trendShortPredictQty = calcTrialQty(trendShortPredictEntry, trendShortPredictStop, predictiveMaxRiskDollars)
 float trendShortConfirmQty = calcTrialQty(trendShortConfirmEntry, trendShortConfirmStop, confirmedMaxRiskDollars)
-bool trendShortPredictAllowed = trendShortPredictContext and smallStopTrialAllowed(-1, trendShortPredictEntry, trendShortPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and trendShortPredictQty >= 1.0
 bool trendShortConfirmAllowed = trendShortConfirmContext and smallStopTrialAllowed(-1, trendShortConfirmEntry, trendShortConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and trendShortConfirmQty >= 1.0
 
 float topBasis = todayStructHigh
@@ -1448,6 +1386,16 @@ float topZoneLow = na(todayStructHighZoneLow) ? todayStructHigh : todayStructHig
 float topZoneHigh = na(todayStructHighZoneHigh) ? todayStructHigh : todayStructHighZoneHigh
 float topStructuralRetestLevel = upperBreakAcceptedRegime and not na(prevStructHigh) ? prevStructHigh : topBasis
 bool topStrictRetestTouch = not na(topStructuralRetestLevel) and high >= topStructuralRetestLevel - strictRetestTolerance
+if confirmed and topProbeCycleActive and topProbeCycleConsumed and not topStrictRetestTouch
+    topProbeCycleActive := false
+    topProbeCycleTouchBar := na
+    lastTopFailureWatchBar := na
+    lastTopFailureWatchClose := na
+    lastTopFailureWatchVolumeProbe := false
+    topNoDemandStreak := 0
+    lastTopNoDemandBar := na
+    lastTopNoDemandHigh := na
+    lastTopNoDemandLow := na
 int topCount = not na(todayStructHigh) ? 1 : 0
 topCount := addNearCount(topCount, sdUpper, topBasis, tolerance)
 topCount := addNearCount(topCount, resistanceZoneHigh, topBasis, tolerance)
@@ -1467,13 +1415,6 @@ topZoneHigh := maxNear(topZoneHigh, emaFast, topBasis, tolerance)
 topZoneHigh := maxNear(topZoneHigh, emaMid, topBasis, tolerance)
 topZoneHigh := maxNear(topZoneHigh, emaSlow, topBasis, tolerance)
 topZoneHigh := maxNear(topZoneHigh, dtpAvg, topBasis, tolerance)
-string topSources = not na(todayStructHigh) ? "today_struct_high" : ""
-topSources := appendNearSource(topSources, sdUpper, topBasis, tolerance, "sd_upper")
-topSources := appendNearSource(topSources, resistanceZoneHigh, topBasis, tolerance, "resistance_cluster")
-topSources := appendNearSource(topSources, emaFast, topBasis, tolerance, "ema20")
-topSources := appendNearSource(topSources, emaMid, topBasis, tolerance, "ema50")
-topSources := appendNearSource(topSources, emaSlow, topBasis, tolerance, "ema100")
-topSources := appendNearSource(topSources, dtpAvg, topBasis, tolerance, "dtp_avg")
 bool strongTopProbeZone = not na(todayStructHigh) and not na(topZoneLow) and not na(topZoneHigh)
 int topAnchorAgeBars = not na(todayStructHighBar) ? bar_index - todayStructHighBar : 0
 float topPullbackAtr = not na(todayStructHigh) and not na(lowSinceStructHigh) ? (todayStructHigh - lowSinceStructHigh) / atr : na
@@ -1493,7 +1434,6 @@ float topMiddleSpeed = not na(topMiddleLeg) and not na(topMiddleBars) ? topMiddl
 float topRightSpeed = not na(topRightLeg) and not na(topRightBars) ? topRightLeg / topRightBars : na
 float topMomentumDecayRatio = not na(topMiddleSpeed) and topMiddleSpeed > 0.0 ? topRightSpeed / topMiddleSpeed : na
 bool topMomentumDecayed = not na(topMomentumDecayRatio) and topMomentumDecayRatio <= momentumDecayMaxRatio
-float topPriorLevelDistanceAtr = not na(todayStructHigh) and atr > 0.0 ? math.abs(high - todayStructHigh) / atr : na
 bool topVisualLeftOk = (not na(topLeftLegBps) and topLeftLegBps >= minVisualLegBps) or (not na(topLocalLeftLegBps) and topLocalLeftLegBps >= minVisualLegBps)
 bool topLargePullbackReady = not na(topMiddleLeg) and topMiddleLeg >= atr * minMiddleSwingAtr and topMiddleRetraceRatio >= minVisualMiddleRetraceRatio
 bool topPullbackArmedEvent = confirmed and dayRangeClear and strongTopProbeZone and topVisualLeftOk and topLargePullbackReady and not topPullbackArmed
@@ -1502,7 +1442,6 @@ if topPullbackArmedEvent
     topPullbackArmedBar := na(topPullbackArmedBar) ? bar_index : topPullbackArmedBar
 bool topMiddleSwingReady = not na(lowSinceStructHighBar) and topVisualLeftOk and topMiddleRetraceRatio >= minVisualMiddleRetraceRatio
 bool topRightRetestReady = topMiddleSwingReady and topRightRetestRatio >= minVisualRightRetestRatio
-bool topRetestFastEnough = topRightRetestReady and bar_index > lowSinceStructHighBar and bar_index - lowSinceStructHighBar <= maxRetestAfterMiddleSwingBars
 bool topAnchorReady = dayRangeClear and topAnchorAgeBars >= probeMinAnchorAgeBars and topPullbackArmed
 bool topRetestBand = not na(topZoneLow) and not na(topZoneHigh) and high >= topZoneLow - atr * probeRetestBandAtr and low <= topZoneHigh + atr * probeRetestBandAtr
 bool topImmediatePullbackShort = topPullbackArmedEvent and topRetestBand and topStrictRetestTouch and close < open and (closePosition <= distributionDropClosePosMax or close < topZoneLow)
@@ -1590,7 +1529,6 @@ float topDistributionDistanceAtr = not na(topWeakBase) and atr > 0.0 ? math.abs(
 bool topWeakNewHighConfirmed = topWeakNewHighWatch and (topWeakCloseBack or upperWeakClose)
 bool topDistributionDropConfirmed = confirmed and recentWeakNewHighWindow and volumeRatio >= distributionDropVolumeMult and close < open and closePosition <= distributionDropClosePosMax and (topWeakCloseBack or not na(lastWeakNewHighLow) and close < lastWeakNewHighLow) and not na(topDistributionDistanceAtr) and topDistributionDistanceAtr <= distributionDropMaxDistanceAtr
 float barsSinceTopFailureWatch = not na(lastTopFailureWatchBar) ? (bar_index - lastTopFailureWatchBar) * 1.0 : na
-bool recentTopFailureWatchWindow = not na(barsSinceTopFailureWatch) and barsSinceTopFailureWatch > 0.0 and barsSinceTopFailureWatch <= failedBreakConfirmBars
 bool topFailureWatchActive = not na(barsSinceTopFailureWatch) and barsSinceTopFailureWatch > 0.0
 bool topHighVolumeDropCloseBack = not na(lastTopFailureWatchBase) and close <= lastTopFailureWatchBase - atr * failedBreakCloseBackAtr
 bool topHighVolumeDropBreakLow = not na(lastTopFailureWatchLow) and close < lastTopFailureWatchLow
@@ -1664,6 +1602,12 @@ else if not topMomentumDecayReady
 else if not upperWeakClose
     topExhaustionReason := "no_weak_close_confirm"
 bool topConfirmedShort = topSweepFailed or upperExhaustionConfirmedShort or topWeakNewHighConfirmed or topDistributionDropConfirmed or topVolumeClimaxFailedBreakConfirmed or topHighVolumeDropConfirmed or topNoDemandBreakConfirmed or topImmediateReversalShort
+bool topProbeCycleTouchNow = topImmediatePullbackShort or topSweptStructure or topNakedTouchEvent or topVolumeClimaxAttackEvent or topWeakNewHighEvent or topHighVolumeProbeWatch or topNoDemandWatch or upperExhaustionZone
+if topProbeCycleTouchNow and not topProbeCycleActive
+    topProbeCycleId += 1
+    topProbeCycleActive := true
+    topProbeCycleConsumed := false
+    topProbeCycleTouchBar := bar_index
 if topVolumeClimaxFailedBreakConfirmed
     topProbePattern := "volume_climax_failed_break_short"
 else if topHighVolumeDropConfirmed
@@ -1686,7 +1630,6 @@ else if topNakedTouchEvent
     topProbePattern := "naked_high_watch"
 else if topWeakNewHighWatch
     topProbePattern := "weak_new_high_watch"
-bool topPredictVolumeOk = true
 bool topConfirmVolumeOk = topSweepFailed or topImmediateReversalShort or topHighVolumeDropConfirmed or topNoDemandBreakConfirmed or topHighVolumeFailedBreak or upperExhaustionConfirmedShort or topWeakNewHighConfirmed or topDistributionDropConfirmed or topVolumeClimaxFailedBreakConfirmed
 string topVolumeReason = "normal_volume_retest_ok"
 if topHighVolumeDropConfirmed
@@ -1722,11 +1665,8 @@ float topNoDemandStop = looserStop(math.max(nz(lastTopNoDemandHigh, high), high)
 float topClimaxStop = looserStop(math.max(nz(lastTopVolumeClimaxHigh, high), high) + invalidationBuffer, topPriorHighStop, -1)
 float topConfirmStop = topConfirmedShort ? (topVolumeClimaxFailedBreakConfirmed ? topClimaxStop : topNoDemandBreakConfirmed ? topNoDemandStop : topHighVolumeDropConfirmed or topImmediateReversalShort ? topFailureWatchStop : looserStop(math.max(high, topZoneHigh) + invalidationBuffer, topPriorHighStop, -1)) : na
 float topConfirmEntry = topConfirmedShort ? stopBoundedEntry(-1, topCloseLimitShort ? topConfirmEntryRaw : scalpLimitEntry(-1, close, topBasis, topConfirmEntryRaw, atr, scalpLimitOffsetAtr), topConfirmStop, atr, confirmedMaxStopAtr, confirmedMaxStopBps) : na
-bool topPredictContext = (topFirstExhaustion or topRightShoulder) and topCounterTrendAllowed and topPredictEntry >= close and topPredictEntry - close <= atr * predictionArmDistanceAtr and topSignalGapOk and topPredictVolumeOk
 bool topConfirmContext = topConfirmedShort and (topCounterTrendAllowed or upperExhaustionConfirmedShort or topWeakNewHighConfirmed or topDistributionDropConfirmed or topFailureRepeatShort) and topConfirmGapOk and topConfirmVolumeOk
-float topPredictQty = calcTrialQty(topPredictEntry, topPredictStop, predictiveMaxRiskDollars)
 float topConfirmQty = calcTrialQty(topConfirmEntry, topConfirmStop, confirmedMaxRiskDollars)
-bool topPredictAllowed = topPredictContext and smallStopTrialAllowed(-1, topPredictEntry, topPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and topPredictQty >= 1.0
 bool topConfirmAllowed = topConfirmContext and smallStopTrialAllowed(-1, topConfirmEntry, topConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and topConfirmQty >= 1.0
 string topProbeFilterReason = "passed"
 if na(todayStructHigh)
@@ -1757,6 +1697,16 @@ float bottomZoneLow = na(todayStructLowZoneLow) ? todayStructLow : todayStructLo
 float bottomZoneHigh = na(todayStructLowZoneHigh) ? todayStructLow : todayStructLowZoneHigh
 float bottomStructuralRetestLevel = lowerBreakAcceptedRegime and not na(prevStructLow) ? prevStructLow : bottomBasis
 bool bottomStrictRetestTouch = not na(bottomStructuralRetestLevel) and low <= bottomStructuralRetestLevel + strictRetestTolerance
+if confirmed and bottomProbeCycleActive and bottomProbeCycleConsumed and not bottomStrictRetestTouch
+    bottomProbeCycleActive := false
+    bottomProbeCycleTouchBar := na
+    lastBottomFailureWatchBar := na
+    lastBottomFailureWatchClose := na
+    lastBottomFailureWatchVolumeProbe := false
+    bottomNoSupplyStreak := 0
+    lastBottomNoSupplyBar := na
+    lastBottomNoSupplyHigh := na
+    lastBottomNoSupplyLow := na
 int bottomCount = not na(todayStructLow) ? 1 : 0
 bottomCount := addNearCount(bottomCount, sdLower, bottomBasis, tolerance)
 bottomCount := addNearCount(bottomCount, supportZoneLow, bottomBasis, tolerance)
@@ -1776,13 +1726,6 @@ bottomZoneHigh := maxNear(bottomZoneHigh, emaFast, bottomBasis, tolerance)
 bottomZoneHigh := maxNear(bottomZoneHigh, emaMid, bottomBasis, tolerance)
 bottomZoneHigh := maxNear(bottomZoneHigh, emaSlow, bottomBasis, tolerance)
 bottomZoneHigh := maxNear(bottomZoneHigh, dtpAvg, bottomBasis, tolerance)
-string bottomSources = not na(todayStructLow) ? "today_struct_low" : ""
-bottomSources := appendNearSource(bottomSources, sdLower, bottomBasis, tolerance, "sd_lower")
-bottomSources := appendNearSource(bottomSources, supportZoneLow, bottomBasis, tolerance, "support_cluster")
-bottomSources := appendNearSource(bottomSources, emaFast, bottomBasis, tolerance, "ema20")
-bottomSources := appendNearSource(bottomSources, emaMid, bottomBasis, tolerance, "ema50")
-bottomSources := appendNearSource(bottomSources, emaSlow, bottomBasis, tolerance, "ema100")
-bottomSources := appendNearSource(bottomSources, dtpAvg, bottomBasis, tolerance, "dtp_avg")
 bool strongBottomProbeZone = not na(todayStructLow) and not na(bottomZoneLow) and not na(bottomZoneHigh)
 int bottomAnchorAgeBars = not na(todayStructLowBar) ? bar_index - todayStructLowBar : 0
 float bottomPullbackAtr = not na(todayStructLow) and not na(highSinceStructLow) ? (highSinceStructLow - todayStructLow) / atr : na
@@ -1802,7 +1745,6 @@ float bottomMiddleSpeed = not na(bottomMiddleLeg) and not na(bottomMiddleBars) ?
 float bottomRightSpeed = not na(bottomRightLeg) and not na(bottomRightBars) ? bottomRightLeg / bottomRightBars : na
 float bottomMomentumDecayRatio = not na(bottomMiddleSpeed) and bottomMiddleSpeed > 0.0 ? bottomRightSpeed / bottomMiddleSpeed : na
 bool bottomMomentumDecayed = not na(bottomMomentumDecayRatio) and bottomMomentumDecayRatio <= momentumDecayMaxRatio
-float bottomPriorLevelDistanceAtr = not na(todayStructLow) and atr > 0.0 ? math.abs(low - todayStructLow) / atr : na
 bool bottomVisualLeftOk = (not na(bottomLeftLegBps) and bottomLeftLegBps >= minVisualLegBps) or (not na(bottomLocalLeftLegBps) and bottomLocalLeftLegBps >= minVisualLegBps)
 bool bottomLargePullbackReady = not na(bottomMiddleLeg) and bottomMiddleLeg >= atr * minMiddleSwingAtr and bottomMiddleRetraceRatio >= minVisualMiddleRetraceRatio
 bool bottomPullbackArmedEvent = confirmed and dayRangeClear and strongBottomProbeZone and bottomVisualLeftOk and bottomLargePullbackReady and not bottomPullbackArmed
@@ -1811,7 +1753,6 @@ if bottomPullbackArmedEvent
     bottomPullbackArmedBar := na(bottomPullbackArmedBar) ? bar_index : bottomPullbackArmedBar
 bool bottomMiddleSwingReady = not na(highSinceStructLowBar) and bottomVisualLeftOk and bottomMiddleRetraceRatio >= minVisualMiddleRetraceRatio
 bool bottomRightRetestReady = bottomMiddleSwingReady and bottomRightRetestRatio >= minVisualRightRetestRatio
-bool bottomRetestFastEnough = bottomRightRetestReady and bar_index > highSinceStructLowBar and bar_index - highSinceStructLowBar <= maxRetestAfterMiddleSwingBars
 bool bottomAnchorReady = dayRangeClear and bottomAnchorAgeBars >= probeMinAnchorAgeBars and bottomPullbackArmed
 bool bottomRetestBand = not na(bottomZoneLow) and not na(bottomZoneHigh) and low <= bottomZoneHigh + atr * probeRetestBandAtr and high >= bottomZoneLow - atr * probeRetestBandAtr
 bool bottomFirstExhaustion = strongBottomProbeZone and not bottomExhaustionUsed and bottomAnchorReady and bottomRetestBand and close > bottomZoneHigh
@@ -1944,6 +1885,12 @@ else if not bottomMomentumDecayReady
 else if not lowerStrongClose
     bottomExhaustionReason := "no_strong_close_confirm"
 bool bottomConfirmedLong = bottomSweepFailed or lowerExhaustionConfirmedLong or bottomWeakNewLowConfirmed or bottomAccumulationRiseConfirmed or bottomHighVolumeRiseConfirmed or bottomNoSupplyBreakConfirmed
+bool bottomProbeCycleTouchNow = bottomSweptStructure or bottomNakedTouchEvent or bottomWeakNewLowEvent or bottomHighVolumeProbeWatch or bottomNoSupplyWatch or lowerExhaustionZone
+if bottomProbeCycleTouchNow and not bottomProbeCycleActive
+    bottomProbeCycleId += 1
+    bottomProbeCycleActive := true
+    bottomProbeCycleConsumed := false
+    bottomProbeCycleTouchBar := bar_index
 if bottomHighVolumeRiseConfirmed
     bottomProbePattern := "naked_low_volume_reversal_long"
 else if bottomNoSupplyBreakImmediate
@@ -1962,7 +1909,6 @@ else if bottomNakedTouchEvent
     bottomProbePattern := "naked_low_watch"
 else if bottomWeakNewLowWatch
     bottomProbePattern := "weak_new_low_watch"
-bool bottomPredictVolumeOk = true
 bool bottomConfirmVolumeOk = bottomSweepFailed or bottomHighVolumeRiseConfirmed or bottomNoSupplyBreakConfirmed or bottomHighVolumeFailedBreak or lowerExhaustionConfirmedLong or bottomWeakNewLowConfirmed or bottomAccumulationRiseConfirmed
 string bottomVolumeReason = "normal_volume_retest_ok"
 if bottomHighVolumeRiseConfirmed
@@ -1990,11 +1936,8 @@ float bottomFailureWatchStop = looserStop(math.min(nz(lastBottomFailureWatchLow,
 float bottomNoSupplyStop = looserStop(math.min(nz(lastBottomNoSupplyLow, low), low) - invalidationBuffer, bottomPriorLowStop, 1)
 float bottomConfirmStop = bottomConfirmedLong ? (bottomNoSupplyBreakConfirmed ? bottomNoSupplyStop : bottomHighVolumeRiseConfirmed ? bottomFailureWatchStop : looserStop(math.min(low, bottomZoneLow) - invalidationBuffer, bottomPriorLowStop, 1)) : na
 float bottomConfirmEntry = bottomConfirmedLong ? stopBoundedEntry(1, bottomCloseLimitLong ? bottomConfirmEntryRaw : scalpLimitEntry(1, close, bottomBasis, bottomConfirmEntryRaw, atr, scalpLimitOffsetAtr), bottomConfirmStop, atr, confirmedMaxStopAtr, confirmedMaxStopBps) : na
-bool bottomPredictContext = (bottomFirstExhaustion or bottomRightShoulder) and bottomCounterTrendAllowed and bottomPredictEntry <= close and close - bottomPredictEntry <= atr * predictionArmDistanceAtr and bottomSignalGapOk and bottomPredictVolumeOk
 bool bottomConfirmContext = bottomConfirmedLong and (bottomCounterTrendAllowed or lowerExhaustionConfirmedLong or bottomWeakNewLowConfirmed or bottomAccumulationRiseConfirmed or bottomHighVolumeRiseConfirmed or bottomNoSupplyBreakConfirmed) and bottomSignalGapOk and bottomConfirmVolumeOk
-float bottomPredictQty = calcTrialQty(bottomPredictEntry, bottomPredictStop, predictiveMaxRiskDollars)
 float bottomConfirmQty = calcTrialQty(bottomConfirmEntry, bottomConfirmStop, confirmedMaxRiskDollars)
-bool bottomPredictAllowed = bottomPredictContext and smallStopTrialAllowed(1, bottomPredictEntry, bottomPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and bottomPredictQty >= 1.0
 bool bottomConfirmAllowed = bottomConfirmContext and smallStopTrialAllowed(1, bottomConfirmEntry, bottomConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and bottomConfirmQty >= 1.0
 string bottomProbeFilterReason = "passed"
 if na(todayStructLow)
@@ -2023,9 +1966,7 @@ else if not bottomSignalPriceGapOk
     bottomProbeFilterReason := "micro_structure_too_close"
 
 bool trendLongConfirmNow = trendLongConfirmAllowed and not upperExhaustionZone
-bool trendLongPredictNow = false
 bool trendShortConfirmNow = trendShortConfirmAllowed and not lowerExhaustionZone
-bool trendShortPredictNow = false
 bool longActionable = trendLongConfirmNow or bottomConfirmAllowed
 bool shortActionable = trendShortConfirmNow or topConfirmAllowed
 bool bottomWeakLongAllowed = bottomConfirmAllowed and (bottomWeakNewLowConfirmed or bottomAccumulationRiseConfirmed or bottomHighVolumeRiseConfirmed or bottomNoSupplyBreakConfirmed)
@@ -2048,13 +1989,10 @@ float selectedStop = selectedLong ? (trendLongConfirmNow ? trendLongConfirmStop 
 float selectedQty = selectedLong ? (trendLongConfirmNow ? trendLongConfirmQty : bottomConfirmQty) : selectedShort ? (trendShortConfirmNow ? trendShortConfirmQty : topConfirmQty) : 0.0
 float selectedZoneLow = selectedLong ? (selectedTrendSupport ? trendSupportZoneLow : bottomZoneLow) : selectedShort ? (selectedTrendResistance ? trendResistanceZoneLow : topZoneLow) : na
 float selectedZoneHigh = selectedLong ? (selectedTrendSupport ? trendSupportZoneHigh : bottomZoneHigh) : selectedShort ? (selectedTrendResistance ? trendResistanceZoneHigh : topZoneHigh) : na
-float selectedPredictionLevel = selectedDirection == 1 ? selectedZoneLow : selectedZoneHigh
-float selectedInvalidation = selectedStop
 float selectedRiskBudget = selectedDirection != 0 ? confirmedMaxRiskDollars : na
 float selectedMaxStopAtr = selectedDirection != 0 ? confirmedMaxStopAtr : na
 float selectedMaxStopBps = selectedDirection != 0 ? confirmedMaxStopBps : na
-float selectedActivationR = selectedDirection != 0 ? scalpBreakevenR : na
-float selectedRunnerActivation = selectedDirection != 0 ? calcTargetAtR(selectedEntry, selectedStop, selectedDirection, selectedActivationR) : na
+float selectedRunnerActivation = selectedDirection != 0 ? calcTargetAtR(selectedEntry, selectedStop, selectedDirection, scalpBreakevenR) : na
 float selectedTarget = selectedDirection != 0 ? scalpEmaTarget(selectedDirection, emaFast, atr, emaTargetOffsetAtr) : na
 float selectedStopDistanceAtr = stopDistanceAtr(selectedEntry, selectedStop, atr)
 float selectedStopDistanceBps = stopDistanceBps(selectedEntry, selectedStop)
@@ -2069,7 +2007,13 @@ float selectedEntryAnchorDistanceAtr = selectedDirection != 0 and not na(selecte
 float selectedCurrentAnchorDistanceAtr = selectedDirection != 0 and not na(selectedStructureAnchor) and atr > 0.0 ? math.abs(close - selectedStructureAnchor) / atr : na
 bool selectedProbeStrictTouchOk = selectedTopProbe ? topStrictRetestTouch : selectedBottomProbe ? bottomStrictRetestTouch : false
 bool selectedFailureRetestLimit = selectedTopProbe and topCloseLimitShort or selectedBottomProbe and bottomCloseLimitLong
-bool selectedEntryNearAnchorOnly = selectedDirection == 0 or selectedProbeStrictTouchOk or selectedFailureRetestLimit or (not na(selectedEntryAnchorDistanceAtr) and selectedEntryAnchorDistanceAtr <= scalpMaxEntryAwayAtr)
+bool selectedProbeSetup = selectedTopProbe or selectedBottomProbe
+bool selectedProbeCycleActive = selectedTopProbe ? topProbeCycleActive : selectedBottomProbe ? bottomProbeCycleActive : true
+bool selectedProbeCycleConsumed = selectedTopProbe ? topProbeCycleConsumed : selectedBottomProbe ? bottomProbeCycleConsumed : false
+int selectedProbeCycleId = selectedTopProbe ? topProbeCycleId : selectedBottomProbe ? bottomProbeCycleId : na
+int selectedProbeCycleTouchBar = selectedTopProbe ? topProbeCycleTouchBar : selectedBottomProbe ? bottomProbeCycleTouchBar : na
+bool selectedProbeCyclePassed = not selectedProbeSetup or (selectedProbeCycleActive and not selectedProbeCycleConsumed)
+bool selectedEntryNearAnchorOnly = selectedDirection == 0 or selectedProbeStrictTouchOk or (not na(selectedEntryAnchorDistanceAtr) and selectedEntryAnchorDistanceAtr <= scalpMaxEntryAwayAtr)
 bool selectedCloseNearAnchor = selectedDirection == 0 or selectedProbeStrictTouchOk or (not na(selectedCurrentAnchorDistanceAtr) and selectedCurrentAnchorDistanceAtr <= scalpMaxEntryAwayAtr)
 bool selectedCloseFarFromAnchor = selectedDirection != 0 and selectedEntryNearAnchorOnly and not selectedCloseNearAnchor
 string selectedLimitWaitMode = selectedCloseFarFromAnchor ? "close_far_wait_pullback_limit" : "normal_limit"
@@ -2079,10 +2023,6 @@ string selectedRsiProofText = selectedDirection == -1 ? (scalpFastBearDiv ? "快
 bool selectedStructureClear = selectedTrendSupport ? trendLongContext and strongTrendSupport : selectedTrendResistance ? trendShortContext and strongTrendResistance : selectedTopProbe ? strongTopProbeZone and topConfirmedShort : selectedBottomProbe ? strongBottomProbeZone and bottomConfirmedLong : false
 string selectedProbePattern = selectedTopProbe ? topProbePattern : selectedBottomProbe ? bottomProbePattern : "none"
 string selectedProbeFilterReason = selectedTopProbe ? topProbeFilterReason : selectedBottomProbe ? bottomProbeFilterReason : "none"
-int selectedConfluenceCount = selectedTrendSupport ? trendSupportCount : selectedTrendResistance ? trendResistanceCount : selectedTopProbe ? topCount : selectedBottomProbe ? bottomCount : 0
-string selectedConfluenceSources = selectedTrendSupport ? trendSupportSources : selectedTrendResistance ? trendResistanceSources : selectedTopProbe ? topSources : selectedBottomProbe ? bottomSources : "none"
-int selectedPriceConfluenceCount = selectedConfluenceCount
-string selectedPriceConfluenceSources = selectedConfluenceSources
 bool selectedStrongStructureZone = selectedTrendSupport ? trendLongContext and strongTrendSupport : selectedTrendResistance ? trendShortContext and strongTrendResistance : selectedTopProbe ? strongTopProbeZone : selectedBottomProbe ? strongBottomProbeZone : false
 bool selectedConfirmStructureSignal = selectedTrendSupport ? trendLongConfirmNow : selectedTrendResistance ? trendShortConfirmNow : selectedTopProbe ? topConfirmedShort : selectedBottomProbe ? bottomConfirmedLong : false
 string selectedStructureGateReason = "passed"
@@ -2094,37 +2034,18 @@ else if not selectedConfirmStructureSignal
     selectedStructureGateReason := "confirm_signal_missing"
 else if not selectedStructureClear
     selectedStructureGateReason := selectedProbeFilterReason != "passed" ? selectedProbeFilterReason : "no_clear_structure"
-string selectedStructureGateFlags = selectedTopProbe ? "strongTopProbeZone=" + str.tostring(strongTopProbeZone) + " / topConfirmedShort=" + str.tostring(topConfirmedShort) : selectedBottomProbe ? "strongBottomProbeZone=" + str.tostring(strongBottomProbeZone) + " / bottomConfirmedLong=" + str.tostring(bottomConfirmedLong) : selectedTrendSupport ? "strongTrendSupport=" + str.tostring(strongTrendSupport) + " / trendLongConfirmNow=" + str.tostring(trendLongConfirmNow) : selectedTrendResistance ? "strongTrendResistance=" + str.tostring(strongTrendResistance) + " / trendShortConfirmNow=" + str.tostring(trendShortConfirmNow) : "none"
-float selectedProbeAnchorAgeBars = selectedTopProbe ? topAnchorAgeBars * 1.0 : selectedBottomProbe ? bottomAnchorAgeBars * 1.0 : na
+string selectedStructureGateFlags = selectedTopProbe ? "top_probe" : selectedBottomProbe ? "bottom_probe" : selectedTrendSupport ? "trend_support" : selectedTrendResistance ? "trend_resistance" : "none"
 float selectedProbePullbackAtr = selectedTopProbe ? topPullbackAtr : selectedBottomProbe ? bottomPullbackAtr : na
 bool selectedProbePullbackArmed = selectedTopProbe ? topPullbackArmed : selectedBottomProbe ? bottomPullbackArmed : false
 float selectedProbeRetestGapBars = selectedTopProbe and not na(lowSinceStructHighBar) ? (bar_index - lowSinceStructHighBar) * 1.0 : selectedBottomProbe and not na(highSinceStructLowBar) ? (bar_index - highSinceStructLowBar) * 1.0 : na
 float selectedProbeLeftLegBps = selectedTopProbe ? topLeftLegBps : selectedBottomProbe ? bottomLeftLegBps : na
 float selectedProbeMiddleRatio = selectedTopProbe ? topMiddleRetraceRatio : selectedBottomProbe ? bottomMiddleRetraceRatio : na
-float selectedProbeMiddleRatioLocal = selectedTopProbe ? topLocalMiddleRetraceRatio : selectedBottomProbe ? bottomLocalMiddleRetraceRatio : na
-float selectedProbeMiddleRatioGlobal = selectedTopProbe ? topGlobalMiddleRetraceRatio : selectedBottomProbe ? bottomGlobalMiddleRetraceRatio : na
-string selectedProbeMiddleRatioMode = not na(selectedProbeMiddleRatioLocal) ? "local" : not na(selectedProbeMiddleRatioGlobal) ? "global_fallback" : "none"
 float selectedProbeRightRatio = selectedTopProbe ? topRightRetestRatio : selectedBottomProbe ? bottomRightRetestRatio : na
-string selectedThreeLegReason = selectedTopProbe or selectedBottomProbe ? (na(selectedProbeMiddleRatio) ? "middle_leg_too_small" : selectedProbeMiddleRatio < minVisualMiddleRetraceRatio ? "middle_pullback_not_enough" : na(selectedProbeRightRatio) ? "right_retest_too_small" : selectedProbeRightRatio < minVisualRightRetestRatio ? "right_retest_too_small" : not na(selectedProbeRetestGapBars) and selectedProbeRetestGapBars > maxRetestAfterMiddleSwingBars ? "retest_too_slow" : "passed") : "none"
 string selectedVolumeReason = selectedTopProbe ? topVolumeReason : selectedBottomProbe ? bottomVolumeReason : "none"
 float selectedVolumeRatio = selectedTopProbe or selectedBottomProbe ? volumeRatio : na
 float selectedClosePosition = selectedTopProbe or selectedBottomProbe ? closePosition : na
-float selectedMomentumDecayRatio = selectedTopProbe ? topMomentumDecayRatio : selectedBottomProbe ? bottomMomentumDecayRatio : na
-float selectedPriorLevelDistanceAtr = selectedTopProbe ? topPriorLevelDistanceAtr : selectedBottomProbe ? bottomPriorLevelDistanceAtr : na
-float selectedMomentumDecayStreak = selectedTopProbe ? topDecayStreak * 1.0 : selectedBottomProbe ? bottomDecayStreak * 1.0 : na
-float selectedMomentumDecayConfirmBars = selectedTopProbe or selectedBottomProbe ? exhaustionDecayConfirmBars * 1.0 : na
 bool selectedAttackVolumeCooling = selectedTopProbe ? attackUpCooling : selectedBottomProbe ? attackDownCooling : selectedDirection == -1 ? attackUpCooling : selectedDirection == 1 ? attackDownCooling : false
-float selectedAttackVolumeCooldownBars = selectedDirection != 0 ? attackVolumeCooldownBars * 1.0 : na
-bool selectedStructureBreakAccepted = selectedTopProbe ? upperStructureBreakAccepted : selectedBottomProbe ? lowerStructureBreakAccepted : false
-float selectedStructureBreakAcceptBars = selectedTopProbe or selectedBottomProbe ? structureBreakAcceptBars * 1.0 : na
-string selectedExhaustionSide = selectedTopProbe ? "upper" : selectedBottomProbe ? "lower" : "none"
-bool selectedExhaustionConfirmed = selectedTopProbe ? upperExhaustionConfirmedShort : selectedBottomProbe ? lowerExhaustionConfirmedLong : false
-string selectedExhaustionReason = selectedTopProbe ? topExhaustionReason : selectedBottomProbe ? bottomExhaustionReason : "none"
 string selectedLevelRole = selectedTrendSupport ? "trend_pullback_support" : selectedTrendResistance ? "trend_pullback_resistance" : selectedTopProbe and upperExhaustionZone ? "prior_high_second_test_exhaustion" : selectedBottomProbe and lowerExhaustionZone ? "prior_low_second_test_exhaustion" : "structure_probe"
-float selectedProbeAnchorPrice = selectedTopProbe ? todayStructHigh : selectedBottomProbe ? todayStructLow : na
-string trendStructDir = strongStructTrendLong ? "bull_HH_HL" : strongStructTrendShort ? "bear_LL_LH" : dominantTrendLong ? "dominant_bull" : dominantTrendShort ? "dominant_bear" : "none"
-string selectedTrendStructPattern = selectedTrendSupport ? "HH_HL" : selectedTrendResistance ? "LL_LH" : "none"
-string selectedTrendSources = selectedTrendSupport ? trendSupportSources : selectedTrendResistance ? trendResistanceSources : "none"
 string selectedTopMainReason = "today_struct_high_probe_failed_breakout"
 if topVolumeClimaxFailedBreakConfirmed
     selectedTopMainReason := "new_high_volume_climax_failed"
@@ -2166,13 +2087,8 @@ else if selectedTopProbe
     selectedMainReason := selectedTopMainReason
 else if selectedBottomProbe
     selectedMainReason := selectedBottomMainReason
-string selectedSecondaryReason = selectedTrendSupport ? trendSupportSources : selectedTrendResistance ? trendResistanceSources : selectedTopProbe ? topSources : selectedBottomProbe ? bottomSources : "none"
+string selectedSecondaryReason = selectedDirection != 0 ? selectedLevelRole + " / " + selectedVolumeReason : "none"
 bool selectedNakedReversalCandidate = selectedMainReason == "naked_high_immediate_reversal" or selectedMainReason == "naked_high_volume_reversal" or selectedMainReason == "naked_high_decay_break" or selectedMainReason == "naked_low_volume_reversal" or selectedMainReason == "naked_low_decay_break"
-bool selectedVolumeConfluence = selectedVolumeReason != "none" and selectedVolumeReason != "normal_volume_retest_ok"
-bool selectedMiddleConfluence = not na(selectedProbeMiddleRatio) and selectedProbeMiddleRatio >= minVisualMiddleRetraceRatio
-bool selectedRightConfluence = not na(selectedProbeRightRatio) and selectedProbeRightRatio >= minVisualRightRetestRatio
-int selectedSignalConfluenceCount = signalConfluenceCount(selectedRsiPassed, selectedNakedReversalCandidate, selectedVolumeConfluence, selectedMiddleConfluence, selectedRightConfluence)
-string selectedSignalConfluenceSources = signalConfluenceSources(selectedRsiPassed, selectedNakedReversalCandidate, selectedVolumeConfluence, selectedVolumeReason, selectedMiddleConfluence, selectedRightConfluence)
 
 bool inEntryWindow = not useIntradayEntryWindow or not na(time(timeframe.period, entrySession))
 float selectedLastSameSidePlanPrice = selectedDirection == 1 ? lastLongPlanPrice : selectedDirection == -1 ? lastShortPlanPrice : na
@@ -2181,11 +2097,9 @@ bool selectedFailureReentry = selectedTopProbe and topFailureRepeatShort
 bool selectedSameSideSignalFarEnough = selectedDirection == 0 or selectedFailureReentry or na(selectedSameSideSignalDistanceAtr) or selectedSameSideSignalDistanceAtr >= minSameSideSignalSeparationAtr
 float selectedAnyPlanGapBars = na(lastAnyPlanBar) ? na : (bar_index - lastAnyPlanBar) * 1.0
 float selectedAnyPlanDistanceAtr = not na(lastAnyPlanPrice) and atr > 0.0 ? math.abs(selectedEntry - lastAnyPlanPrice) / atr : na
-string selectedScalpCycleState = selectedDirection == 0 ? "none" : (na(selectedAnyPlanDistanceAtr) or selectedAnyPlanDistanceAtr >= minAnyPlanDistanceAtr ? "ready" : "used_or_too_close")
-string selectedScalpCycleId = selectedDirection == 0 ? "none" : str.replace_all(syminfo.ticker, " ", "_") + "_" + (selectedDirection == 1 ? "long" : "short") + "_" + str.tostring(math.round(nz(selectedStructureAnchor, selectedEntry) / syminfo.mintick))
 bool selectedAnyPlanFarEnough = selectedDirection == 0 or selectedFailureReentry or na(selectedAnyPlanGapBars) or (selectedAnyPlanGapBars >= minAnyPlanGapBars and selectedAnyPlanDistanceAtr >= minAnyPlanDistanceAtr)
 bool selectedDailyRiskOk = selectedDirection == 0 or (dailyTotalTrades < maxDailyTotalTrades and dailyPnlDollars > -maxDailyLossDollars and (selectedDirection == 1 ? dailyLongTrades < maxDailySameSideTrades and dailyLongLosses < maxSameSideLosses : dailyShortTrades < maxDailySameSideTrades and dailyShortLosses < maxSameSideLosses))
-bool selectedPlanQualityOk = selectedStructureClear and selectedEntryNearAnchorOnly and selectedRsiPassed and selectedSmallStopGatePassed and selectedExpectedRPassed
+bool selectedPlanQualityOk = selectedStructureClear and selectedEntryNearAnchorOnly and selectedProbeCyclePassed and selectedRsiPassed and selectedSmallStopGatePassed and selectedExpectedRPassed
 bool selectedPlanSpacingOk = selectedSameSideSignalFarEnough and selectedAnyPlanFarEnough
 bool selectedPlanValid = selectedDirection != 0 and selectedPlanQualityOk and selectedPlanSpacingOk and selectedDailyRiskOk and selectedQty >= 1.0 and inEntryWindow
 string selectedExpectedRBlockReason = not selectedEmaTargetInProfit or selectedEmaProfitAtr < minEmaProfitAtr ? "ema_tp_too_close" : "expected_r_too_small"
@@ -2194,6 +2108,10 @@ if selectedDirection == 0
     selectedBlockReason := "no_candidate"
 else if not selectedStructureClear
     selectedBlockReason := "no_clear_structure"
+else if selectedProbeSetup and not selectedProbeCycleActive
+    selectedBlockReason := "probe_cycle_not_active"
+else if selectedProbeSetup and selectedProbeCycleConsumed
+    selectedBlockReason := "probe_cycle_consumed"
 else if not selectedEntryNearAnchorOnly
     selectedBlockReason := "entry_too_far_from_anchor"
 else if not selectedRsiPassed
@@ -2279,22 +2197,18 @@ selectedPlanDetail(string decisionRef, int currentFlowId) =>
     result := result + "\n结构锚点 " + fmt(selectedStructureAnchor) + " / expected " + fmt(selectedExpectedR) + "R / EMA空间 " + fmt(selectedEmaProfitAtr) + "ATR"
     result := result + "\n距结构 entry/close " + fmt(selectedEntryAnchorDistanceAtr) + "/" + fmt(selectedCurrentAnchorDistanceAtr) + "ATR / " + selectedLimitWaitMode
     result := result + "\n严格回触: " + str.tostring(selectedProbeStrictTouchOk) + " / 失败回抽限价 " + str.tostring(selectedFailureRetestLimit)
+    result := result + "\n探针周期: id " + str.tostring(selectedProbeCycleId) + " / active " + str.tostring(selectedProbeCycleActive) + " / consumed " + str.tostring(selectedProbeCycleConsumed) + " / touchBar " + str.tostring(selectedProbeCycleTouchBar)
+    result := result + "\n说明: 失败回抽限价只决定挂单价，不绕过重新触及周期"
     if selectedCloseFarFromAnchor
         result := result + "\nclose已走远：只挂回抽限价，不追价"
     result := result + "\nRSI " + fmt(scalpRsi) + " / smooth " + fmt(scalpRsiSmooth) + " / " + selectedRsiState
     result := result + "\nRSI证明: " + selectedRsiProofText + " / fastDiv " + str.tostring(selectedDirection == -1 ? scalpFastBearDiv : selectedDirection == 1 ? scalpFastBullDiv : false)
-    result := result + "\n价格共振: " + str.tostring(selectedPriceConfluenceCount) + "/" + str.tostring(minConfluenceCount) + " 仅诊断 / " + (selectedPriceConfluenceSources == "" ? "none" : selectedPriceConfluenceSources)
-    result := result + "\n信号共振: " + str.tostring(selectedSignalConfluenceCount) + " / " + (selectedSignalConfluenceSources == "" ? "none" : selectedSignalConfluenceSources)
     result := result + "\n结构区 " + fmt(selectedZoneLow) + " - " + fmt(selectedZoneHigh)
     result := result + "\n三段结构 L" + fmt(selectedProbeLeftLegBps) + "bps / M" + fmt(selectedProbeMiddleRatio) + " / R" + fmt(selectedProbeRightRatio) + " / 回测 " + fmt(selectedProbeRetestGapBars) + "/" + str.tostring(maxRetestAfterMiddleSwingBars) + " bars"
-    result := result + "\nM local/global " + fmt(selectedProbeMiddleRatioLocal) + "/" + fmt(selectedProbeMiddleRatioGlobal) + " / used " + selectedProbeMiddleRatioMode
     result := result + "\n大回落已成立 " + str.tostring(selectedProbePullbackArmed) + " / 回落 " + fmt(selectedProbePullbackAtr) + "ATR / min " + fmt(minMiddleSwingAtr)
     result := result + "\n量能 vol/MA " + fmt(selectedVolumeRatio) + " / closePos " + fmt(selectedClosePosition) + " / " + selectedVolumeReason
     result := result + "\n成交量判断: " + volumeJudge
     result := result + "\n位置角色 " + selectedLevelRole + " / trend " + trendRegime
-    result := result + "\n日内高低 " + (dayRangeFormed ? "formed" : "waiting") + " / " + fmt(dayRangeAtr) + "ATR"
-    result := result + "\n衰竭 " + selectedExhaustionSide + " / " + selectedExhaustionReason + " / MDecay " + fmt(selectedMomentumDecayRatio) + " / 连续 " + fmt(selectedMomentumDecayStreak) + "/" + fmt(selectedMomentumDecayConfirmBars)
-    result := result + "\n量能攻击状态 " + str.tostring(selectedAttackVolumeCooling) + " / 不拦截"
     result := result + "\n同向距离 " + fmt(selectedSameSideSignalDistanceAtr) + "ATR / min " + fmt(minSameSideSignalSeparationAtr)
     result := result + "\nplan " + fmt(selectedEntry) + " / qty " + qtyText(selectedQty)
     result := result + "\n红SL " + fmt(selectedStop) + " " + moneyText(pnlDollars(selectedEntry, selectedStop, selectedDirection, selectedQty))
@@ -2313,28 +2227,22 @@ blockedCandidateDetail(string blockPrefix, string displayBlockReason) =>
     result := result + "\n原因: " + reasonCn(displayBlockReason) + " / " + displayBlockReason
     result := result + "\n结构清晰: " + str.tostring(selectedStructureClear) + " / 门槛: " + reasonCn(selectedStructureGateReason) + " / " + selectedStructureGateReason
     result := result + "\n价格行为条件: " + selectedStructureGateFlags
-    result := result + "\n共振计数: " + str.tostring(selectedConfluenceCount) + "/" + str.tostring(minConfluenceCount) + " 仅诊断 / 来源: " + (selectedConfluenceSources == "" ? "none" : selectedConfluenceSources)
-    result := result + "\n价格共振: " + str.tostring(selectedPriceConfluenceCount) + "/" + str.tostring(minConfluenceCount) + " 仅诊断 / " + (selectedPriceConfluenceSources == "" ? "none" : selectedPriceConfluenceSources)
-    result := result + "\n信号共振: " + str.tostring(selectedSignalConfluenceCount) + " / " + (selectedSignalConfluenceSources == "" ? "none" : selectedSignalConfluenceSources)
     result := result + "\n结构 " + fmt(selectedStructureAnchor) + " / expected " + fmt(selectedExpectedR) + "R / EMA空间 " + fmt(selectedEmaProfitAtr) + "ATR"
     result := result + "\nRSI " + fmt(scalpRsi) + " / smooth " + fmt(scalpRsiSmooth) + " / " + selectedRsiState
     result := result + "\nRSI证明: " + selectedRsiProofText + " / fastDiv " + str.tostring(selectedDirection == -1 ? scalpFastBearDiv : selectedDirection == 1 ? scalpFastBullDiv : false)
     result := result + "\n距结构 entry/close " + fmt(selectedEntryAnchorDistanceAtr) + "/" + fmt(selectedCurrentAnchorDistanceAtr) + "ATR / " + selectedLimitWaitMode
     result := result + "\n严格回触: " + str.tostring(selectedProbeStrictTouchOk) + " / 失败回抽限价 " + str.tostring(selectedFailureRetestLimit)
+    result := result + "\n探针周期: id " + str.tostring(selectedProbeCycleId) + " / active " + str.tostring(selectedProbeCycleActive) + " / consumed " + str.tostring(selectedProbeCycleConsumed) + " / touchBar " + str.tostring(selectedProbeCycleTouchBar)
+    result := result + "\n说明: 失败回抽限价只决定挂单价，不绕过重新触及周期"
     if selectedCloseFarFromAnchor
         result := result + "\nclose已走远：只挂回抽限价，不追价"
     result := result + "\n同向距离 " + fmt(selectedSameSideSignalDistanceAtr) + "ATR / min " + fmt(minSameSideSignalSeparationAtr)
     result := result + "\n结构区 " + fmt(selectedZoneLow) + " - " + fmt(selectedZoneHigh)
     result := result + "\n三段结构 L" + fmt(selectedProbeLeftLegBps) + "bps / M" + fmt(selectedProbeMiddleRatio) + " / R" + fmt(selectedProbeRightRatio) + " / 回测 " + fmt(selectedProbeRetestGapBars) + "/" + str.tostring(maxRetestAfterMiddleSwingBars) + " bars"
-    result := result + "\n三段阈值: M " + fmt(selectedProbeMiddleRatio) + "/" + fmt(minVisualMiddleRetraceRatio) + " / R " + fmt(selectedProbeRightRatio) + "/" + fmt(minVisualRightRetestRatio) + " / " + selectedThreeLegReason
-    result := result + "\nM local/global " + fmt(selectedProbeMiddleRatioLocal) + "/" + fmt(selectedProbeMiddleRatioGlobal) + " / used " + selectedProbeMiddleRatioMode
     result := result + "\n大回落已成立 " + str.tostring(selectedProbePullbackArmed) + " / 回落 " + fmt(selectedProbePullbackAtr) + "ATR / min " + fmt(minMiddleSwingAtr)
     result := result + "\n量能 vol/MA " + fmt(selectedVolumeRatio) + " / closePos " + fmt(selectedClosePosition) + " / " + selectedVolumeReason
     result := result + "\n成交量判断: " + volumeJudge
     result := result + "\n位置角色 " + selectedLevelRole + " / trend " + trendRegime
-    result := result + "\n日内高低 " + (dayRangeFormed ? "formed" : "waiting") + " / " + fmt(dayRangeAtr) + "ATR"
-    result := result + "\n衰竭 " + selectedExhaustionSide + " / " + selectedExhaustionReason + " / MDecay " + fmt(selectedMomentumDecayRatio) + " / 连续 " + fmt(selectedMomentumDecayStreak) + "/" + fmt(selectedMomentumDecayConfirmBars)
-    result := result + "\n量能攻击状态 " + str.tostring(selectedAttackVolumeCooling) + " / 不拦截"
     result := result + "\n距离 " + fmt(selectedStopDistanceAtr) + "ATR / " + fmt(selectedStopDistanceBps) + "bps"
     if displayBlockReason == "no_clear_structure" and selectedNakedReversalCandidate
         result := result + "\n说明: 裸K反转已触发候选，但价格行为结构未通过，所以不挂单"
@@ -2348,13 +2256,12 @@ var bool shadowPending = false
 var bool shadowOpen = false
 var int shadowDirection = 0
 var string shadowSetup = ""
-var string shadowIntent = ""
-var string shadowTrialRiskMode = ""
 var float shadowEntry = na
 var float shadowStop = na
 var float shadowTarget = na
 var float shadowRunner = na
 var float shadowQty = na
+var int shadowProbeCycleId = na
 var int shadowSignalBar = na
 var int shadowExpiresBar = na
 var int shadowEntryBar = na
@@ -2428,7 +2335,8 @@ planGateDetailText(bool childAllowed, bool selectedByMain, bool planCreatedNow, 
     result := result + "\n子条件: " + (childAllowed ? "通过" : "未通过") + " / " + reasonCn(childReason) + " / " + childReason
     result := result + "\n最终选择: " + setupDisplayName(selectedSetup) + " / " + dirName(selectedDirection) + " / selectedByMain " + str.tostring(selectedByMain)
     result := result + "\nselectedPlanValid: " + str.tostring(selectedPlanValid) + " / block " + reasonCn(selectedBlockReason) + " / " + selectedBlockReason
-    result := result + "\n质量gate: structure " + str.tostring(selectedStructureClear) + " / near " + str.tostring(selectedEntryNearAnchorOnly) + " / failureLimit " + str.tostring(selectedFailureRetestLimit) + " / rsi " + str.tostring(selectedRsiPassed) + " / smallStop " + str.tostring(selectedSmallStopGatePassed) + " / expectedR " + str.tostring(selectedExpectedRPassed)
+    result := result + "\n质量gate: structure " + str.tostring(selectedStructureClear) + " / near " + str.tostring(selectedEntryNearAnchorOnly) + " / cycle " + str.tostring(selectedProbeCyclePassed) + " / rsi " + str.tostring(selectedRsiPassed) + " / smallStop " + str.tostring(selectedSmallStopGatePassed) + " / expectedR " + str.tostring(selectedExpectedRPassed)
+    result := result + "\n探针周期: id " + str.tostring(selectedProbeCycleId) + " / active " + str.tostring(selectedProbeCycleActive) + " / consumed " + str.tostring(selectedProbeCycleConsumed) + " / touchBar " + str.tostring(selectedProbeCycleTouchBar)
     result := result + "\n空间: EMA " + fmt(selectedEmaProfitAtr) + "/" + fmt(minEmaProfitAtr) + "ATR / expectedR " + fmt(selectedExpectedR) + "/" + fmt(scalpMinExpectedR)
     result := result + "\n间距gate: " + str.tostring(selectedPlanSpacingOk) + " / 同向 " + fmt(selectedSameSideSignalDistanceAtr) + "/" + fmt(minSameSideSignalSeparationAtr) + "ATR"
     result := result + "\n上一计划: bars " + fmt(selectedAnyPlanGapBars) + "/" + str.tostring(minAnyPlanGapBars) + " / dist " + fmt(selectedAnyPlanDistanceAtr) + "/" + fmt(minAnyPlanDistanceAtr) + "ATR"
@@ -2458,13 +2366,12 @@ if newPlanNow
     shadowReleasedBar := na
     shadowDirection := selectedDirection
     shadowSetup := selectedSetup
-    shadowIntent := selectedEntryIntent
-    shadowTrialRiskMode := selectedTrialRiskMode
     shadowEntry := selectedEntry
     shadowStop := selectedStop
     shadowTarget := selectedTarget
     shadowRunner := selectedRunnerActivation
     shadowQty := selectedQty
+    shadowProbeCycleId := selectedProbeSetup ? selectedProbeCycleId : na
     shadowSignalBar := bar_index
     shadowExpiresBar := bar_index + entryOrderTtlBars
     shadowEntryBar := na
@@ -2476,6 +2383,10 @@ if newPlanNow
         topExhaustionUsed := selectedProbePattern == "extension_exhaustion_top" ? true : topExhaustionUsed
     if selectedBottomProbe
         bottomExhaustionUsed := selectedProbePattern == "extension_exhaustion_bottom" ? true : bottomExhaustionUsed
+    if selectedTopProbe and selectedProbeCycleId == topProbeCycleId
+        topProbeCycleConsumed := true
+    if selectedBottomProbe and selectedProbeCycleId == bottomProbeCycleId
+        bottomProbeCycleConsumed := true
     string detail = selectedPlanDetail(decisionRef, flowId)
     string compact = "F" + str.tostring(flowId) + " " + dirName(selectedDirection) + " plan " + fmt(selectedEntry)
     if flowLabelsVisible
@@ -2540,8 +2451,27 @@ if pendingCancelled
     string compact = "F" + str.tostring(flowId) + " 撤销"
     if flowLabelsVisible
         drawFlowLabel(shadowDirection, "blocked", "blocked", "blocked", 1.8, compact, detail)
+    if shadowSetup == "probe_2b_top_short" and shadowProbeCycleId == topProbeCycleId
+        topProbeCycleConsumed := true
+        lastTopFailureWatchBar := na
+        lastTopFailureWatchClose := na
+        lastTopFailureWatchVolumeProbe := false
+        topNoDemandStreak := 0
+        lastTopNoDemandBar := na
+        lastTopNoDemandHigh := na
+        lastTopNoDemandLow := na
+    if shadowSetup == "probe_2b_bottom_long" and shadowProbeCycleId == bottomProbeCycleId
+        bottomProbeCycleConsumed := true
+        lastBottomFailureWatchBar := na
+        lastBottomFailureWatchClose := na
+        lastBottomFailureWatchVolumeProbe := false
+        bottomNoSupplyStreak := 0
+        lastBottomNoSupplyBar := na
+        lastBottomNoSupplyHigh := na
+        lastBottomNoSupplyLow := na
     shadowPending := false
     shadowReleasedBar := bar_index
+    shadowProbeCycleId := na
 
 bool pendingNextNoFill = confirmed and showDiagnosticEventFlow and shadowPending and not pendingTouched and not pendingExpired and not pendingInvalidated and not na(shadowSignalBar) and bar_index == shadowSignalBar + 1
 if pendingNextNoFill
@@ -2617,8 +2547,27 @@ if shadowExitNow
     string compact = "F" + str.tostring(flowId) + " EXIT $" + fmt(pnl)
     if flowLabelsVisible
         drawProfitLabel(shadowDirection, "exit", 1.8, compact, detail, flowColor("exit", shadowDirection))
+    if shadowSetup == "probe_2b_top_short" and shadowProbeCycleId == topProbeCycleId
+        topProbeCycleConsumed := true
+        lastTopFailureWatchBar := na
+        lastTopFailureWatchClose := na
+        lastTopFailureWatchVolumeProbe := false
+        topNoDemandStreak := 0
+        lastTopNoDemandBar := na
+        lastTopNoDemandHigh := na
+        lastTopNoDemandLow := na
+    if shadowSetup == "probe_2b_bottom_long" and shadowProbeCycleId == bottomProbeCycleId
+        bottomProbeCycleConsumed := true
+        lastBottomFailureWatchBar := na
+        lastBottomFailureWatchClose := na
+        lastBottomFailureWatchVolumeProbe := false
+        bottomNoSupplyStreak := 0
+        lastBottomNoSupplyBar := na
+        lastBottomNoSupplyHigh := na
+        lastBottomNoSupplyLow := na
     shadowOpen := false
     shadowReleasedBar := bar_index
+    shadowProbeCycleId := na
 
 bool structureBreakAcceptedEvent = confirmed and showDiagnosticEventFlow and (upperStructureBreakAccepted or lowerStructureBreakAccepted)
 drawStructureBreakAcceptedFlow() =>
