@@ -132,6 +132,7 @@ showDebugComponents = input.bool(false, "Show SD/F/D component markers", group="
 showFractalMarkers = input.bool(false, "Show fractal markers", group="04 Display")
 showEmaCrossMarkers = input.bool(true, "Show EMA20/50 cross markers", group="04 Display")
 flowLabelTransparency = input.int(45, "Flow label transparency", minval=0, maxval=90, group="04 Display")
+tipVerticalDistanceAtr = input.float(2.0, "Tip vertical distance (x ATR)", step=0.10, minval=0.50, maxval=8.0, group="04 Display")
 labelDetailMode = input.string("compact_tooltip", "Flow label detail mode", options=["compact_tooltip", "full_labels", "off"], group="04 Display")
 eventMarkerMode = input.string("小点tooltip", "Event marker mode", options=["小点tooltip", "大标签调试", "关闭"], group="04 Display")
 labelTextMode = input.string("auto", "Label text color", options=["auto", "white", "black"], group="04 Display")
@@ -313,6 +314,12 @@ reasonCn(string reason) =>
         result := "无候选"
     else if reason == "no_clear_structure"
         result := "结构不清晰"
+    else if reason == "confluence_count_too_low"
+        result := "共振数量不足"
+    else if reason == "confirm_signal_missing"
+        result := "确认信号不足"
+    else if reason == "trend_context_missing"
+        result := "趋势上下文不足"
     else if reason == "day_range_not_formed"
         result := "日内高低未形成"
     else if reason == "day_range_too_small"
@@ -384,6 +391,12 @@ labelAboveForDirection(int direction) =>
 flowY(int direction, float offsetAtr) =>
     labelYForSide(labelAboveForDirection(direction), offsetAtr)
 
+eventFlowMinOffset(string state) =>
+    state == "structure" ? math.max(1.20, tipVerticalDistanceAtr * 0.70) : state == "observe" or state == "watch" ? math.max(1.40, tipVerticalDistanceAtr * 0.80) : state == "candidate" or state == "confirmed" or state == "risk" ? math.max(1.60, tipVerticalDistanceAtr * 0.90) : tipVerticalDistanceAtr
+
+eventFlowY(int direction, string state, float offsetAtr) =>
+    flowY(direction, math.max(offsetAtr, eventFlowMinOffset(state)))
+
 profitY(int direction, float offsetAtr) =>
     labelYForSide(direction == 1, offsetAtr)
 
@@ -413,7 +426,7 @@ eventMarkerLane(string markerKind) =>
 
 eventMarkerY(int direction, string markerKind, float offsetAtr) =>
     float laneOffset = offsetAtr + eventMarkerLane(markerKind)
-    labelYForSide(labelAboveForDirection(direction), laneOffset)
+    labelYForSide(labelAboveForDirection(direction), math.max(laneOffset, eventFlowMinOffset(markerKind)))
 
 eventMarker(int direction, string markerKind, string markerText, string detailText, float offsetAtr) =>
     label.new(bar_index, eventMarkerY(direction, markerKind, offsetAtr), eventMarkerText(eventMarkerGlyph(markerKind, direction, markerText), detailText), style=eventMarkerStyle(markerKind, direction), color=color.new(color.white, 100), textcolor=eventMarkerColor(markerKind, direction), size=eventMarkerSize(), tooltip=eventMarkerTooltip(detailText))
@@ -432,6 +445,12 @@ entryWindowTextColor(bool windowEnabled, bool windowOpen) =>
 
 flowStyle(int direction) =>
     labelStyleForSide(labelAboveForDirection(direction))
+
+drawFlowLabel(int direction, string offsetState, string colorState, string textState, float offsetAtr, string compactText, string detailText) =>
+    label.new(bar_index, eventFlowY(direction, offsetState, offsetAtr), flowLabelText(compactText, detailText), style=flowStyle(direction), color=flowColor(colorState, direction), textcolor=labelTextColor(textState, direction), size=flowLabelSize(), tooltip=flowLabelTooltip(detailText))
+
+drawProfitLabel(int direction, string textState, float offsetAtr, string compactText, string detailText, color labelColor) =>
+    label.new(bar_index, profitY(direction, offsetAtr), flowLabelText(compactText, detailText), style=profitStyle(direction), color=labelColor, textcolor=labelTextColor(textState, direction), size=flowLabelSize(), tooltip=flowLabelTooltip(detailText))
 
 // -----------------------------------------------------------------------------
 // Market structure and candidate generation (mirrors Core).
@@ -1897,6 +1916,20 @@ string selectedRsiState = selectedDirection == 1 ? (scalpRsiLongOk ? "low_turnin
 bool selectedStructureClear = selectedTrendSupport ? trendLongContext and strongTrendSupport : selectedTrendResistance ? trendShortContext and strongTrendResistance : selectedTopProbe ? strongTopProbeZone and topConfirmedShort : selectedBottomProbe ? strongBottomProbeZone and bottomConfirmedLong : false
 string selectedProbePattern = selectedTopProbe ? topProbePattern : selectedBottomProbe ? bottomProbePattern : "none"
 string selectedProbeFilterReason = selectedTopProbe ? topProbeFilterReason : selectedBottomProbe ? bottomProbeFilterReason : "none"
+int selectedConfluenceCount = selectedTrendSupport ? trendSupportCount : selectedTrendResistance ? trendResistanceCount : selectedTopProbe ? topCount : selectedBottomProbe ? bottomCount : 0
+string selectedConfluenceSources = selectedTrendSupport ? trendSupportSources : selectedTrendResistance ? trendResistanceSources : selectedTopProbe ? topSources : selectedBottomProbe ? bottomSources : "none"
+bool selectedStrongStructureZone = selectedTrendSupport ? trendLongContext and strongTrendSupport : selectedTrendResistance ? trendShortContext and strongTrendResistance : selectedTopProbe ? strongTopProbeZone : selectedBottomProbe ? strongBottomProbeZone : false
+bool selectedConfirmStructureSignal = selectedTrendSupport ? trendLongConfirmNow : selectedTrendResistance ? trendShortConfirmNow : selectedTopProbe ? topConfirmedShort : selectedBottomProbe ? bottomConfirmedLong : false
+string selectedStructureGateReason = "passed"
+if selectedDirection == 0
+    selectedStructureGateReason := "no_candidate"
+else if not selectedStrongStructureZone
+    selectedStructureGateReason := (selectedTopProbe or selectedBottomProbe) and selectedConfluenceCount < minConfluenceCount ? "confluence_count_too_low" : (selectedTrendSupport or selectedTrendResistance) ? "trend_context_missing" : "no_clear_structure"
+else if not selectedConfirmStructureSignal
+    selectedStructureGateReason := "confirm_signal_missing"
+else if not selectedStructureClear
+    selectedStructureGateReason := selectedProbeFilterReason != "passed" ? selectedProbeFilterReason : "no_clear_structure"
+string selectedStructureGateFlags = selectedTopProbe ? "strongTopProbeZone=" + str.tostring(strongTopProbeZone) + " / topConfirmedShort=" + str.tostring(topConfirmedShort) : selectedBottomProbe ? "strongBottomProbeZone=" + str.tostring(strongBottomProbeZone) + " / bottomConfirmedLong=" + str.tostring(bottomConfirmedLong) : selectedTrendSupport ? "strongTrendSupport=" + str.tostring(strongTrendSupport) + " / trendLongConfirmNow=" + str.tostring(trendLongConfirmNow) : selectedTrendResistance ? "strongTrendResistance=" + str.tostring(strongTrendResistance) + " / trendShortConfirmNow=" + str.tostring(trendShortConfirmNow) : "none"
 float selectedProbeAnchorAgeBars = selectedTopProbe ? topAnchorAgeBars * 1.0 : selectedBottomProbe ? bottomAnchorAgeBars * 1.0 : na
 float selectedProbePullbackAtr = selectedTopProbe ? topPullbackAtr : selectedBottomProbe ? bottomPullbackAtr : na
 bool selectedProbePullbackArmed = selectedTopProbe ? topPullbackArmed : selectedBottomProbe ? bottomPullbackArmed : false
@@ -1904,6 +1937,7 @@ float selectedProbeRetestGapBars = selectedTopProbe and not na(lowSinceStructHig
 float selectedProbeLeftLegBps = selectedTopProbe ? topLeftLegBps : selectedBottomProbe ? bottomLeftLegBps : na
 float selectedProbeMiddleRatio = selectedTopProbe ? topMiddleRetraceRatio : selectedBottomProbe ? bottomMiddleRetraceRatio : na
 float selectedProbeRightRatio = selectedTopProbe ? topRightRetestRatio : selectedBottomProbe ? bottomRightRetestRatio : na
+string selectedThreeLegReason = selectedTopProbe or selectedBottomProbe ? (na(selectedProbeMiddleRatio) ? "middle_leg_too_small" : selectedProbeMiddleRatio < minVisualMiddleRetraceRatio ? "middle_pullback_not_enough" : na(selectedProbeRightRatio) ? "right_retest_too_small" : selectedProbeRightRatio < minVisualRightRetestRatio ? "right_retest_too_small" : not na(selectedProbeRetestGapBars) and selectedProbeRetestGapBars > maxRetestAfterMiddleSwingBars ? "retest_too_slow" : "passed") : "none"
 string selectedVolumeReason = selectedTopProbe ? topVolumeReason : selectedBottomProbe ? bottomVolumeReason : "none"
 float selectedVolumeRatio = selectedTopProbe or selectedBottomProbe ? volumeRatio : na
 float selectedClosePosition = selectedTopProbe or selectedBottomProbe ? closePosition : na
@@ -1961,6 +1995,7 @@ else if selectedTopProbe
 else if selectedBottomProbe
     selectedMainReason := selectedBottomMainReason
 string selectedSecondaryReason = selectedTrendSupport ? trendSupportSources : selectedTrendResistance ? trendResistanceSources : selectedTopProbe ? topSources : selectedBottomProbe ? bottomSources : "none"
+bool selectedNakedReversalCandidate = selectedMainReason == "naked_high_immediate_reversal" or selectedMainReason == "naked_high_volume_reversal" or selectedMainReason == "naked_high_decay_break" or selectedMainReason == "naked_low_volume_reversal" or selectedMainReason == "naked_low_decay_break"
 
 bool inEntryWindow = not useIntradayEntryWindow or not na(time(timeframe.period, entrySession))
 float selectedLastSameSidePlanPrice = selectedDirection == 1 ? lastLongPlanPrice : selectedDirection == -1 ? lastShortPlanPrice : na
@@ -1996,6 +2031,61 @@ else if not selectedSmallStopGatePassed
     selectedBlockReason := selectedSmallStopGateReason
 else if not selectedExpectedRPassed
     selectedBlockReason := selectedExpectedRBlockReason
+
+selectedPlanDetail(string decisionRef, int currentFlowId) =>
+    string result = "F" + str.tostring(currentFlowId) + " ②" + intentName(selectedEntryIntent) + " " + dirName(selectedDirection)
+    result := result + "\n关联流: " + decisionRef + " -> F" + str.tostring(currentFlowId)
+    result := result + "\n" + setupDisplayName(selectedSetup)
+    result := result + "\n主因: " + selectedMainReason
+    result := result + "\n次因: " + (selectedSecondaryReason == "" ? "none" : selectedSecondaryReason)
+    result := result + "\n结构锚点 " + fmt(selectedStructureAnchor) + " / expected " + fmt(selectedExpectedR) + "R / EMA空间 " + fmt(selectedEmaProfitAtr) + "ATR"
+    result := result + "\nRSI " + fmt(scalpRsi) + " / smooth " + fmt(scalpRsiSmooth) + " / " + selectedRsiState
+    result := result + "\n结构区 " + fmt(selectedZoneLow) + " - " + fmt(selectedZoneHigh)
+    result := result + "\n三段结构 L" + fmt(selectedProbeLeftLegBps) + "bps / M" + fmt(selectedProbeMiddleRatio) + " / R" + fmt(selectedProbeRightRatio) + " / 回测 " + fmt(selectedProbeRetestGapBars) + "/" + str.tostring(maxRetestAfterMiddleSwingBars) + " bars"
+    result := result + "\n大回落已成立 " + str.tostring(selectedProbePullbackArmed) + " / 回落 " + fmt(selectedProbePullbackAtr) + "ATR / min " + fmt(minMiddleSwingAtr)
+    result := result + "\n量能 vol/MA " + fmt(selectedVolumeRatio) + " / closePos " + fmt(selectedClosePosition) + " / " + selectedVolumeReason
+    result := result + "\n成交量判断: " + volumeJudge
+    result := result + "\n位置角色 " + selectedLevelRole + " / trend " + trendRegime
+    result := result + "\n日内高低 " + (dayRangeFormed ? "formed" : "waiting") + " / " + fmt(dayRangeAtr) + "ATR"
+    result := result + "\n衰竭 " + selectedExhaustionSide + " / " + selectedExhaustionReason + " / MDecay " + fmt(selectedMomentumDecayRatio) + " / 连续 " + fmt(selectedMomentumDecayStreak) + "/" + fmt(selectedMomentumDecayConfirmBars)
+    result := result + "\n量能攻击状态 " + str.tostring(selectedAttackVolumeCooling) + " / 不拦截"
+    result := result + "\n同向距离 " + fmt(selectedSameSideSignalDistanceAtr) + "ATR / min " + fmt(minSameSideSignalSeparationAtr)
+    result := result + "\nplan " + fmt(selectedEntry) + " / qty " + qtyText(selectedQty)
+    result := result + "\n红SL " + fmt(selectedStop) + " " + moneyText(pnlDollars(selectedEntry, selectedStop, selectedDirection, selectedQty))
+    result := result + "\n蓝0.6R " + fmt(selectedRunnerActivation) + " " + moneyText(pnlDollars(selectedEntry, selectedRunnerActivation, selectedDirection, selectedQty))
+    result := result + "\n绿EMA20 TP " + fmt(selectedTarget) + " " + moneyText(pnlDollars(selectedEntry, selectedTarget, selectedDirection, selectedQty))
+    result := result + "\n小止损: " + selectedSmallStopGateReason + " / " + fmt(selectedStopDistanceAtr) + "ATR / " + fmt(selectedStopDistanceBps) + "bps"
+    result := result + "\nprobe: " + selectedProbePattern + " / filter " + selectedProbeFilterReason
+    result := result + "\n风险模式: " + selectedTrialRiskMode + " $" + fmt(selectedRiskBudget) + " / TTL " + str.tostring(entryOrderTtlBars)
+    result
+
+blockedCandidateDetail(string blockPrefix, string displayBlockReason) =>
+    string result = blockPrefix + "确认但过滤 " + dirName(selectedDirection)
+    result := result + "\n主因: " + selectedMainReason
+    result := result + "\n次因: " + (selectedSecondaryReason == "" ? "none" : selectedSecondaryReason)
+    result := result + "\n原因: " + reasonCn(displayBlockReason) + " / " + displayBlockReason
+    result := result + "\n结构清晰: " + str.tostring(selectedStructureClear) + " / 门槛: " + reasonCn(selectedStructureGateReason) + " / " + selectedStructureGateReason
+    result := result + "\n强结构条件: " + selectedStructureGateFlags
+    result := result + "\n共振计数: " + str.tostring(selectedConfluenceCount) + "/" + str.tostring(minConfluenceCount) + " / 来源: " + (selectedConfluenceSources == "" ? "none" : selectedConfluenceSources)
+    result := result + "\n结构 " + fmt(selectedStructureAnchor) + " / expected " + fmt(selectedExpectedR) + "R / EMA空间 " + fmt(selectedEmaProfitAtr) + "ATR"
+    result := result + "\nRSI " + fmt(scalpRsi) + " / smooth " + fmt(scalpRsiSmooth) + " / " + selectedRsiState
+    result := result + "\n距结构 entry/close " + fmt(selectedEntryAnchorDistanceAtr) + "/" + fmt(selectedCurrentAnchorDistanceAtr) + "ATR"
+    result := result + "\n同向距离 " + fmt(selectedSameSideSignalDistanceAtr) + "ATR / min " + fmt(minSameSideSignalSeparationAtr)
+    result := result + "\n结构区 " + fmt(selectedZoneLow) + " - " + fmt(selectedZoneHigh)
+    result := result + "\n三段结构 L" + fmt(selectedProbeLeftLegBps) + "bps / M" + fmt(selectedProbeMiddleRatio) + " / R" + fmt(selectedProbeRightRatio) + " / 回测 " + fmt(selectedProbeRetestGapBars) + "/" + str.tostring(maxRetestAfterMiddleSwingBars) + " bars"
+    result := result + "\n三段阈值: M " + fmt(selectedProbeMiddleRatio) + "/" + fmt(minVisualMiddleRetraceRatio) + " / R " + fmt(selectedProbeRightRatio) + "/" + fmt(minVisualRightRetestRatio) + " / " + selectedThreeLegReason
+    result := result + "\n大回落已成立 " + str.tostring(selectedProbePullbackArmed) + " / 回落 " + fmt(selectedProbePullbackAtr) + "ATR / min " + fmt(minMiddleSwingAtr)
+    result := result + "\n量能 vol/MA " + fmt(selectedVolumeRatio) + " / closePos " + fmt(selectedClosePosition) + " / " + selectedVolumeReason
+    result := result + "\n成交量判断: " + volumeJudge
+    result := result + "\n位置角色 " + selectedLevelRole + " / trend " + trendRegime
+    result := result + "\n日内高低 " + (dayRangeFormed ? "formed" : "waiting") + " / " + fmt(dayRangeAtr) + "ATR"
+    result := result + "\n衰竭 " + selectedExhaustionSide + " / " + selectedExhaustionReason + " / MDecay " + fmt(selectedMomentumDecayRatio) + " / 连续 " + fmt(selectedMomentumDecayStreak) + "/" + fmt(selectedMomentumDecayConfirmBars)
+    result := result + "\n量能攻击状态 " + str.tostring(selectedAttackVolumeCooling) + " / 不拦截"
+    result := result + "\n距离 " + fmt(selectedStopDistanceAtr) + "ATR / " + fmt(selectedStopDistanceBps) + "bps"
+    if displayBlockReason == "no_clear_structure" and selectedNakedReversalCandidate
+        result := result + "\n说明: 裸K反转已触发候选，但强结构门槛未通过，所以不挂单"
+    result
+
 
 // -----------------------------------------------------------------------------
 // Visual lifecycle shadow.
@@ -2056,33 +2146,11 @@ if newPlanNow
         topExhaustionUsed := selectedProbePattern == "extension_exhaustion_top" ? true : topExhaustionUsed
     if selectedBottomProbe
         bottomExhaustionUsed := selectedProbePattern == "extension_exhaustion_bottom" ? true : bottomExhaustionUsed
-    string detail = "F" + str.tostring(flowId) + " ②" + intentName(selectedEntryIntent) + " " + dirName(selectedDirection)
-    detail := detail + "\n关联流: " + decisionRef + " -> F" + str.tostring(flowId)
-    detail := detail + "\n" + setupDisplayName(selectedSetup)
-    detail := detail + "\n主因: " + selectedMainReason
-    detail := detail + "\n次因: " + (selectedSecondaryReason == "" ? "none" : selectedSecondaryReason)
-    detail := detail + "\n结构锚点 " + fmt(selectedStructureAnchor) + " / expected " + fmt(selectedExpectedR) + "R / EMA空间 " + fmt(selectedEmaProfitAtr) + "ATR"
-    detail := detail + "\nRSI " + fmt(scalpRsi) + " / smooth " + fmt(scalpRsiSmooth) + " / " + selectedRsiState
-    detail := detail + "\n结构区 " + fmt(selectedZoneLow) + " - " + fmt(selectedZoneHigh)
-    detail := detail + "\n三段结构 L" + fmt(selectedProbeLeftLegBps) + "bps / M" + fmt(selectedProbeMiddleRatio) + " / R" + fmt(selectedProbeRightRatio) + " / 回测 " + fmt(selectedProbeRetestGapBars) + "/" + str.tostring(maxRetestAfterMiddleSwingBars) + " bars"
-    detail := detail + "\n大回落已成立 " + str.tostring(selectedProbePullbackArmed) + " / 回落 " + fmt(selectedProbePullbackAtr) + "ATR / min " + fmt(minMiddleSwingAtr)
-    detail := detail + "\n量能 vol/MA " + fmt(selectedVolumeRatio) + " / closePos " + fmt(selectedClosePosition) + " / " + selectedVolumeReason
-    detail := detail + "\n成交量判断: " + volumeJudge
-    detail := detail + "\n位置角色 " + selectedLevelRole + " / trend " + trendRegime
-    detail := detail + "\n日内高低 " + (dayRangeFormed ? "formed" : "waiting") + " / " + fmt(dayRangeAtr) + "ATR"
-    detail := detail + "\n衰竭 " + selectedExhaustionSide + " / " + selectedExhaustionReason + " / MDecay " + fmt(selectedMomentumDecayRatio) + " / 连续 " + fmt(selectedMomentumDecayStreak) + "/" + fmt(selectedMomentumDecayConfirmBars)
-    detail := detail + "\n量能攻击状态 " + str.tostring(selectedAttackVolumeCooling) + " / 不拦截"
-    detail := detail + "\n同向距离 " + fmt(selectedSameSideSignalDistanceAtr) + "ATR / min " + fmt(minSameSideSignalSeparationAtr)
-    detail := detail + "\nplan " + fmt(selectedEntry) + " / qty " + qtyText(selectedQty)
-    detail := detail + "\n红SL " + fmt(selectedStop) + " " + moneyText(pnlDollars(selectedEntry, selectedStop, selectedDirection, selectedQty))
-    detail := detail + "\n蓝0.6R " + fmt(selectedRunnerActivation) + " " + moneyText(pnlDollars(selectedEntry, selectedRunnerActivation, selectedDirection, selectedQty))
-    detail := detail + "\n绿EMA20 TP " + fmt(selectedTarget) + " " + moneyText(pnlDollars(selectedEntry, selectedTarget, selectedDirection, selectedQty))
-    detail := detail + "\n小止损: " + selectedSmallStopGateReason + " / " + fmt(selectedStopDistanceAtr) + "ATR / " + fmt(selectedStopDistanceBps) + "bps"
-    detail := detail + "\nprobe: " + selectedProbePattern + " / filter " + selectedProbeFilterReason
-    detail := detail + "\n风险模式: " + selectedTrialRiskMode + " $" + fmt(selectedRiskBudget) + " / TTL " + str.tostring(entryOrderTtlBars)
+    string detail = selectedPlanDetail(decisionRef, flowId)
     string compact = "F" + str.tostring(flowId) + " " + dirName(selectedDirection) + " plan " + fmt(selectedEntry)
     if flowLabelsVisible
-        label.new(bar_index, flowY(selectedDirection, 1.5), flowLabelText(compact, detail), style=flowStyle(selectedDirection), color=flowColor(selectedEntryIntent == "predictive_limit" ? "predictive" : "confirmed", selectedDirection), textcolor=labelTextColor(selectedEntryIntent == "predictive_limit" ? "predictive" : "confirmed", selectedDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(detail))
+        string planVisualState = selectedEntryIntent == "predictive_limit" ? "predictive" : "confirmed"
+        drawFlowLabel(selectedDirection, planVisualState, planVisualState, planVisualState, 1.5, compact, detail)
     int lineEnd = bar_index + entryOrderTtlBars
     currentEntryLine := line.new(bar_index, shadowEntry, lineEnd, shadowEntry, color=color.new(color.yellow, 0), width=2)
     currentStopLine := line.new(bar_index, shadowStop, lineEnd, shadowStop, color=color.new(color.red, 0), width=2)
@@ -2129,13 +2197,13 @@ if pendingTouched
     string detail = "F" + str.tostring(flowId) + " ④触及 " + dirName(shadowDirection) + "\nplan " + fmt(shadowEntry) + " 已触及\nDisplay shadow，不代表 TV strategy 已成交；真实成交看 Core Strategy Tester / Core entry_fill / 券商订单"
     string compact = "F" + str.tostring(flowId) + " 触及 " + fmt(shadowEntry)
     if flowLabelsVisible
-        label.new(bar_index, flowY(shadowDirection, 1.8), flowLabelText(compact, detail), style=flowStyle(shadowDirection), color=flowColor("confirmed", shadowDirection), textcolor=labelTextColor("confirmed", shadowDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(detail))
+        drawFlowLabel(shadowDirection, "confirmed", "confirmed", "confirmed", 1.8, compact, detail)
 if pendingExpired or pendingInvalidated
     string reason = pendingInvalidated ? "结构失效/打穿止损" : "挂单TTL过期"
     string detail = "F" + str.tostring(flowId) + " ④撤销 " + dirName(shadowDirection) + "\n原因: " + reason + "\nplan " + fmt(shadowEntry) + " / SL " + fmt(shadowStop) + "\n信号bar " + str.tostring(shadowSignalBar) + " / expires " + str.tostring(shadowExpiresBar)
     string compact = "F" + str.tostring(flowId) + " 撤销"
     if flowLabelsVisible
-        label.new(bar_index, flowY(shadowDirection, 1.8), flowLabelText(compact, detail), style=flowStyle(shadowDirection), color=flowColor("blocked", shadowDirection), textcolor=labelTextColor("blocked", shadowDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(detail))
+        drawFlowLabel(shadowDirection, "blocked", "blocked", "blocked", 1.8, compact, detail)
     shadowPending := false
 
 bool shadowExitNow = false
@@ -2154,7 +2222,7 @@ if confirmed and shadowOpen
         string detail = "F" + str.tostring(flowId) + " ⑤保本/Runner\n到达蓝线 " + fmt(shadowRunner) + "\nSL -> " + fmt(shadowStop)
         string compact = "F" + str.tostring(flowId) + " RUN"
         if flowLabelsVisible
-            label.new(bar_index, profitY(shadowDirection, 1.4), flowLabelText(compact, detail), style=profitStyle(shadowDirection), color=color.new(color.blue, flowLabelTransparency), textcolor=labelTextColor("runner", shadowDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(detail))
+            drawProfitLabel(shadowDirection, "runner", 1.4, compact, detail, color.new(color.blue, flowLabelTransparency))
     if shadowRunnerActive
         float rawTrailStop = shadowDirection == 1 ? shadowRunnerExtreme - atr * runnerTrailAtrMult : shadowRunnerExtreme + atr * runnerTrailAtrMult
         float structureTrailStop = floatingStructureStop(shadowDirection, shadowStop, lastPivotLow, lastPivotHigh, close, invalidationBuffer)
@@ -2178,7 +2246,7 @@ if confirmed and shadowOpen
         string detail = "F" + str.tostring(flowId) + " ⑤衰竭保护 " + dirName(shadowDirection) + "\n" + (shadowDirection == 1 ? "前高二测，保护多单利润" : "前低二测，保护空单利润") + "\nSL -> " + fmt(shadowStop) + " / TP -> " + fmt(shadowTarget)
         string compact = "F" + str.tostring(flowId) + " 保护"
         if flowLabelsVisible
-            label.new(bar_index, profitY(shadowDirection, 1.4), flowLabelText(compact, detail), style=profitStyle(shadowDirection), color=color.new(color.orange, flowLabelTransparency), textcolor=labelTextColor("runner", shadowDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(detail))
+            drawProfitLabel(shadowDirection, "runner", 1.4, compact, detail, color.new(color.orange, flowLabelTransparency))
     bool stopHit = shadowDirection == 1 ? low <= shadowStop : high >= shadowStop
     bool targetHit = shadowDirection == 1 ? high >= shadowTarget : low <= shadowTarget
     shadowExitNow := shadowNoFollowExit or shadowExhaustExit or stopHit or targetHit
@@ -2196,7 +2264,7 @@ if shadowExitNow
     string detail = "F" + str.tostring(flowId) + " ⑤退出 " + dirName(shadowDirection) + "\n原因: " + shadowExitReason + "\n价格 " + fmt(shadowExitPrice) + "\nPnL $" + fmt(pnl) + " / " + fmt(pnlR) + "R"
     string compact = "F" + str.tostring(flowId) + " EXIT $" + fmt(pnl)
     if flowLabelsVisible
-        label.new(bar_index, profitY(shadowDirection, 1.8), flowLabelText(compact, detail), style=profitStyle(shadowDirection), color=flowColor("exit", shadowDirection), textcolor=labelTextColor("exit", shadowDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(detail))
+        drawProfitLabel(shadowDirection, "exit", 1.8, compact, detail, flowColor("exit", shadowDirection))
     shadowOpen := false
 
 bool structureBreakAcceptedEvent = confirmed and showDiagnosticEventFlow and (upperStructureBreakAccepted or lowerStructureBreakAccepted)
@@ -2210,7 +2278,7 @@ if structureBreakAcceptedEvent
     if eventMarkersVisible
         eventMarker(acceptedDirection, "structure", " ", acceptedDetail, 0.28)
     if diagnosticLabelsVisible
-        label.new(bar_index, flowY(acceptedDirection, 1.2), flowLabelText(acceptedCompact, acceptedDetail), style=flowStyle(acceptedDirection), color=flowColor("blocked", acceptedDirection), textcolor=labelTextColor("blocked", acceptedDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(acceptedDetail))
+        drawFlowLabel(acceptedDirection, "structure", "blocked", "blocked", 1.2, acceptedCompact, acceptedDetail)
 
 bool structureBreakExtendedEvent = confirmed and showDiagnosticEventFlow and (upperStructureBreakExtended or lowerStructureBreakExtended)
 if structureBreakExtendedEvent
@@ -2222,7 +2290,7 @@ if structureBreakExtendedEvent
     if eventMarkersVisible
         eventMarker(extendedDirection, "structure", " ", extendedDetail, 0.28)
     if diagnosticLabelsVisible
-        label.new(bar_index, flowY(extendedDirection, 1.2), flowLabelText(extendedCompact, extendedDetail), style=flowStyle(extendedDirection), color=flowColor("blocked", extendedDirection), textcolor=labelTextColor("blocked", extendedDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(extendedDetail))
+        drawFlowLabel(extendedDirection, "structure", "blocked", "blocked", 1.2, extendedCompact, extendedDetail)
 
 bool liveHighStateEvent = confirmed and showDiagnosticEventFlow and not upperStructureBreakAccepted and not upperStructureBreakExtended and structureHighRaised
 bool liveLowStateEvent = confirmed and showDiagnosticEventFlow and not lowerStructureBreakAccepted and not lowerStructureBreakExtended and structureLowRaised
@@ -2260,7 +2328,7 @@ if liveHighStateEvent or liveLowStateEvent or candidateHighWaitEvent or candidat
     if eventMarkersVisible
         eventMarker(liveDirection, "structure", " ", liveDetail, 0.24)
     if diagnosticLabelsVisible
-        label.new(bar_index, flowY(liveDirection, 1.05), flowLabelText(liveCompact, liveDetail), style=flowStyle(liveDirection), color=flowColor("blocked", liveDirection), textcolor=labelTextColor("blocked", liveDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(liveDetail))
+        drawFlowLabel(liveDirection, "structure", "blocked", "blocked", 1.05, liveCompact, liveDetail)
 
 bool blockedCandidate = confirmed and showDiagnosticEventFlow and selectedDirection != 0 and (selectedBlockReason != "passed" or not inEntryWindow)
 if blockedCandidate
@@ -2273,29 +2341,12 @@ if blockedCandidate
     string blockKey = selectedTopProbe ? "T" + str.tostring(activeTopDecisionSeq) : selectedBottomProbe ? "B" + str.tostring(activeBottomDecisionSeq) : ""
     string blockPrefix = blockKey == "" ? "" : blockKey + " ④"
     string displayBlockReason = not inEntryWindow ? "outside_entry_session" : selectedBlockReason
-    string detail = blockPrefix + "确认但过滤 " + dirName(selectedDirection)
-    detail := detail + "\n主因: " + selectedMainReason
-    detail := detail + "\n次因: " + (selectedSecondaryReason == "" ? "none" : selectedSecondaryReason)
-    detail := detail + "\n原因: " + reasonCn(displayBlockReason) + " / " + displayBlockReason
-    detail := detail + "\n结构 " + fmt(selectedStructureAnchor) + " / expected " + fmt(selectedExpectedR) + "R / EMA空间 " + fmt(selectedEmaProfitAtr) + "ATR"
-    detail := detail + "\nRSI " + fmt(scalpRsi) + " / smooth " + fmt(scalpRsiSmooth) + " / " + selectedRsiState
-    detail := detail + "\n距结构 entry/close " + fmt(selectedEntryAnchorDistanceAtr) + "/" + fmt(selectedCurrentAnchorDistanceAtr) + "ATR"
-    detail := detail + "\n同向距离 " + fmt(selectedSameSideSignalDistanceAtr) + "ATR / min " + fmt(minSameSideSignalSeparationAtr)
-    detail := detail + "\n结构区 " + fmt(selectedZoneLow) + " - " + fmt(selectedZoneHigh)
-    detail := detail + "\n三段结构 L" + fmt(selectedProbeLeftLegBps) + "bps / M" + fmt(selectedProbeMiddleRatio) + " / R" + fmt(selectedProbeRightRatio) + " / 回测 " + fmt(selectedProbeRetestGapBars) + "/" + str.tostring(maxRetestAfterMiddleSwingBars) + " bars"
-    detail := detail + "\n大回落已成立 " + str.tostring(selectedProbePullbackArmed) + " / 回落 " + fmt(selectedProbePullbackAtr) + "ATR / min " + fmt(minMiddleSwingAtr)
-    detail := detail + "\n量能 vol/MA " + fmt(selectedVolumeRatio) + " / closePos " + fmt(selectedClosePosition) + " / " + selectedVolumeReason
-    detail := detail + "\n成交量判断: " + volumeJudge
-    detail := detail + "\n位置角色 " + selectedLevelRole + " / trend " + trendRegime
-    detail := detail + "\n日内高低 " + (dayRangeFormed ? "formed" : "waiting") + " / " + fmt(dayRangeAtr) + "ATR"
-    detail := detail + "\n衰竭 " + selectedExhaustionSide + " / " + selectedExhaustionReason + " / MDecay " + fmt(selectedMomentumDecayRatio) + " / 连续 " + fmt(selectedMomentumDecayStreak) + "/" + fmt(selectedMomentumDecayConfirmBars)
-    detail := detail + "\n量能攻击状态 " + str.tostring(selectedAttackVolumeCooling) + " / 不拦截"
-    detail := detail + "\n距离 " + fmt(selectedStopDistanceAtr) + "ATR / " + fmt(selectedStopDistanceBps) + "bps"
+    string detail = blockedCandidateDetail(blockPrefix, displayBlockReason)
     string compact = blockPrefix + "确认但过滤 " + dirName(selectedDirection) + "\n" + reasonCn(displayBlockReason)
     if eventMarkersVisible
         eventMarker(selectedDirection, "blocked", " ", detail, 0.34)
     if diagnosticLabelsVisible
-        label.new(bar_index, flowY(selectedDirection, 1.2), flowLabelText(compact, detail), style=flowStyle(selectedDirection), color=flowColor("blocked", selectedDirection), textcolor=labelTextColor("blocked", selectedDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(detail))
+        drawFlowLabel(selectedDirection, "blocked", "blocked", "blocked", 1.2, compact, detail)
 
 bool pullbackArmedFlowEvent = confirmed and showDiagnosticEventFlow and selectedDirection == 0 and (topPullbackArmedEvent or bottomPullbackArmedEvent)
 if pullbackArmedFlowEvent
@@ -2317,7 +2368,7 @@ if pullbackArmedFlowEvent
     if eventMarkersVisible
         eventMarker(armedDirection, "observe", " ", armedDetail, 0.24)
     if diagnosticLabelsVisible
-        label.new(bar_index, flowY(armedDirection, 1.1), flowLabelText(armedCompact, armedDetail), style=flowStyle(armedDirection), color=flowColor("blocked", armedDirection), textcolor=labelTextColor("blocked", armedDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(armedDetail))
+        drawFlowLabel(armedDirection, "structure", "blocked", "blocked", 1.1, armedCompact, armedDetail)
 
 bool volumeClimaxTopWatchEvent = confirmed and showDiagnosticEventFlow and selectedDirection == 0 and topVolumeClimaxAttackEvent
 if volumeClimaxTopWatchEvent
@@ -2337,7 +2388,7 @@ if volumeClimaxTopWatchEvent
     if eventMarkersVisible
         eventMarker(-1, "watch", " ", climaxWatchDetail, 0.28)
     if diagnosticLabelsVisible
-        label.new(bar_index, flowY(-1, 1.25), flowLabelText(climaxWatchCompact, climaxWatchDetail), style=flowStyle(-1), color=flowColor("blocked", -1), textcolor=labelTextColor("blocked", -1), size=flowLabelSize(), tooltip=flowLabelTooltip(climaxWatchDetail))
+        drawFlowLabel(-1, "watch", "blocked", "blocked", 1.25, climaxWatchCompact, climaxWatchDetail)
 
 bool volumeClimaxTopConfirmRaw = confirmed and showDiagnosticEventFlow and topVolumeClimaxFailedBreakConfirmed
 bool volumeClimaxTopConfirmEvent = volumeClimaxTopConfirmRaw and not volumeClimaxTopConfirmRaw[1]
@@ -2371,7 +2422,7 @@ if volumeClimaxTopConfirmEvent
     if eventMarkersVisible
         eventMarker(-1, topConfirmAllowed ? "candidate" : "blocked", " ", climaxConfirmDetail, 0.34)
     if diagnosticLabelsVisible
-        label.new(bar_index, flowY(-1, 1.35), flowLabelText(climaxConfirmCompact, climaxConfirmDetail), style=flowStyle(-1), color=flowColor("confirmed", -1), textcolor=labelTextColor("confirmed", -1), size=flowLabelSize(), tooltip=flowLabelTooltip(climaxConfirmDetail))
+        drawFlowLabel(-1, topConfirmAllowed ? "candidate" : "blocked", "confirmed", "confirmed", 1.35, climaxConfirmCompact, climaxConfirmDetail)
 
 bool nakedTouchEvent = confirmed and showDiagnosticEventFlow and selectedDirection == 0 and (topNakedTouchEvent or bottomNakedTouchEvent)
 if nakedTouchEvent
@@ -2396,7 +2447,7 @@ if nakedTouchEvent
     if eventMarkersVisible
         eventMarker(touchDirection, "observe", " ", touchDetail, 0.24)
     if diagnosticLabelsVisible
-        label.new(bar_index, flowY(touchDirection, 1.15), flowLabelText(touchCompact, touchDetail), style=flowStyle(touchDirection), color=flowColor("blocked", touchDirection), textcolor=labelTextColor("blocked", touchDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(touchDetail))
+        drawFlowLabel(touchDirection, "observe", "blocked", "blocked", 1.15, touchCompact, touchDetail)
 
 bool nakedVolumeProbeEvent = confirmed and showDiagnosticEventFlow and selectedDirection == 0 and (topHighVolumeProbeWatch or bottomHighVolumeProbeWatch) and not volumeClimaxTopWatchEvent
 if nakedVolumeProbeEvent
@@ -2420,7 +2471,7 @@ if nakedVolumeProbeEvent
     if eventMarkersVisible
         eventMarker(attackDirection, "watch", " ", attackDetail, 0.28)
     if diagnosticLabelsVisible
-        label.new(bar_index, flowY(attackDirection, 1.25), flowLabelText(attackCompact, attackDetail), style=flowStyle(attackDirection), color=flowColor("blocked", attackDirection), textcolor=labelTextColor("blocked", attackDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(attackDetail))
+        drawFlowLabel(attackDirection, "watch", "blocked", "blocked", 1.25, attackCompact, attackDetail)
 
 bool nakedQuietWatchEvent = confirmed and showDiagnosticEventFlow and selectedDirection == 0 and (topNoDemandWatch or bottomNoSupplyWatch)
 if nakedQuietWatchEvent
@@ -2449,7 +2500,7 @@ if nakedQuietWatchEvent
     if eventMarkersVisible
         eventMarker(quietDirection, "watch", " ", quietDetail, 0.30)
     if diagnosticLabelsVisible
-        label.new(bar_index, flowY(quietDirection, 1.25), flowLabelText(quietCompact, quietDetail), style=flowStyle(quietDirection), color=flowColor("blocked", quietDirection), textcolor=labelTextColor("blocked", quietDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(quietDetail))
+        drawFlowLabel(quietDirection, "watch", "blocked", "blocked", 1.25, quietCompact, quietDetail)
 
 bool weakNewTopWatchEvent = confirmed and showDiagnosticEventFlow and selectedDirection == 0 and topWeakNewHighWatch and not topWeakNewHighConfirmed and not topDistributionDropConfirmed and not topHighVolumeDropConfirmed and not topNoDemandWatch and not topNoDemandBreakConfirmed
 bool weakNewBottomWatchEvent = confirmed and showDiagnosticEventFlow and selectedDirection == 0 and bottomWeakNewLowWatch and not bottomWeakNewLowConfirmed and not bottomAccumulationRiseConfirmed and not bottomHighVolumeRiseConfirmed and not bottomNoSupplyWatch and not bottomNoSupplyBreakConfirmed
@@ -2472,7 +2523,7 @@ if weakNewTopWatchEvent or weakNewBottomWatchEvent
     if eventMarkersVisible
         eventMarker(weakWatchDirection, "observe", " ", weakWatchDetail, 0.26)
     if diagnosticLabelsVisible
-        label.new(bar_index, flowY(weakWatchDirection, 1.2), flowLabelText(weakWatchCompact, weakWatchDetail), style=flowStyle(weakWatchDirection), color=flowColor("blocked", weakWatchDirection), textcolor=labelTextColor("blocked", weakWatchDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(weakWatchDetail))
+        drawFlowLabel(weakWatchDirection, "observe", "blocked", "blocked", 1.2, weakWatchCompact, weakWatchDetail)
 
 bool topDistributionOrDropConfirmed = topDistributionDropConfirmed or topImmediateReversalShort or (topHighVolumeDropConfirmed and not topVolumeClimaxFailedBreakConfirmed) or topNoDemandBreakConfirmed
 bool bottomAccumulationOrRiseConfirmed = bottomAccumulationRiseConfirmed or bottomHighVolumeRiseConfirmed or bottomNoSupplyBreakConfirmed
@@ -2535,7 +2586,7 @@ if distributionConfirmEvent
     if eventMarkersVisible
         eventMarker(distributionDirection, distributionAllowed ? "candidate" : "blocked", " ", distributionDetail, 0.34)
     if diagnosticLabelsVisible
-        label.new(bar_index, flowY(distributionDirection, 1.35), flowLabelText(distributionCompact, distributionDetail), style=flowStyle(distributionDirection), color=flowColor("confirmed", distributionDirection), textcolor=labelTextColor("confirmed", distributionDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(distributionDetail))
+        drawFlowLabel(distributionDirection, distributionAllowed ? "candidate" : "blocked", "confirmed", "confirmed", 1.35, distributionCompact, distributionDetail)
 
 bool exhaustionWatchTop = confirmed and showDiagnosticEventFlow and selectedDirection == 0 and dayRangeClear and topRightShoulder and topRetestBand and upperNoVolumeExpansion and topMomentumDecayed and not upperExhaustionConfirmedShort and not topNoDemandWatch and not topNoDemandBreakConfirmed
 bool exhaustionWatchBottom = confirmed and showDiagnosticEventFlow and selectedDirection == 0 and dayRangeClear and bottomRightShoulder and bottomRetestBand and lowerNoVolumeExpansion and bottomMomentumDecayed and not lowerExhaustionConfirmedLong and not bottomNoSupplyWatch and not bottomNoSupplyBreakConfirmed
@@ -2560,7 +2611,7 @@ if exhaustionWatchTop or exhaustionWatchBottom
     if eventMarkersVisible
         eventMarker(watchDirection, "observe", " ", watchDetail, 0.26)
     if diagnosticLabelsVisible
-        label.new(bar_index, flowY(watchDirection, 1.2), flowLabelText(watchCompact, watchDetail), style=flowStyle(watchDirection), color=flowColor("blocked", watchDirection), textcolor=labelTextColor("blocked", watchDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(watchDetail))
+        drawFlowLabel(watchDirection, "observe", "blocked", "blocked", 1.2, watchCompact, watchDetail)
 
 bool unconfirmedTopWatch = confirmed and showDiagnosticEventFlow and selectedDirection == 0 and strongTopProbeZone and (topFirstExhaustion or topRightShoulder) and not topConfirmAllowed and not volumeClimaxTopWatchEvent and not topVolumeClimaxFailedBreakConfirmed and not topHighVolumeDropConfirmed and not topNoDemandWatch and not topNoDemandBreakConfirmed and not exhaustionWatchTop
 bool unconfirmedBottomWatch = confirmed and showDiagnosticEventFlow and selectedDirection == 0 and strongBottomProbeZone and (bottomFirstExhaustion or bottomRightShoulder) and not bottomConfirmAllowed and not bottomHighVolumeRiseConfirmed and not bottomNoSupplyWatch and not bottomNoSupplyBreakConfirmed and not exhaustionWatchBottom
@@ -2585,7 +2636,7 @@ if unconfirmedTopWatch or unconfirmedBottomWatch
     if eventMarkersVisible
         eventMarker(waitDirection, "observe", " ", waitDetail, 0.24)
     if diagnosticLabelsVisible
-        label.new(bar_index, flowY(waitDirection, 1.2), flowLabelText(waitCompact, waitDetail), style=flowStyle(waitDirection), color=flowColor("blocked", waitDirection), textcolor=labelTextColor("blocked", waitDirection), size=flowLabelSize(), tooltip=flowLabelTooltip(waitDetail))
+        drawFlowLabel(waitDirection, "observe", "blocked", "blocked", 1.2, waitCompact, waitDetail)
 
 // Lightweight context plots for reading the structure; these are visual only.
 color dtpLineColor = dtpDir == 1 ? color.new(color.aqua, 0) : dtpDir == -1 ? color.new(color.red, 0) : color.new(color.gray, 25)
