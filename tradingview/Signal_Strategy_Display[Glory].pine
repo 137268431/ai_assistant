@@ -36,6 +36,7 @@ structureClusterBandAtr = input.float(0.40, "Structure cluster band (x ATR)", st
 minStructureSeparationAtr = input.float(1.00, "Independent structure separation (x ATR)", step=0.05, minval=0.10, maxval=5.0, group="01 Structure")
 minMiddleSwingAtr = input.float(1.00, "Middle swing for second test (x ATR)", step=0.05, minval=0.10, maxval=5.0, group="01 Structure")
 maxRetestAfterMiddleSwingBars = input.int(12, "Max bars after middle swing retest", minval=1, maxval=60, group="01 Structure")
+probeLocalLegLookbackBars = input.int(30, "Local M leg lookback bars", minval=5, maxval=120, group="01 Structure")
 minVisualMiddleRetraceRatio = input.float(0.35, "Visual middle retrace ratio", step=0.05, minval=0.05, maxval=0.95, group="01 Structure")
 minVisualRightRetestRatio = input.float(0.65, "Visual right retest ratio", step=0.05, minval=0.10, maxval=1.50, group="01 Structure")
 minVisualLegBps = input.float(12.0, "Visual min leg (bps)", step=1.0, minval=1.0, maxval=500.0, group="01 Structure")
@@ -114,7 +115,7 @@ maxDailyTotalTrades = input.int(6, "Max total trades per day", minval=1, maxval=
 maxSameSideLosses = input.int(2, "Max same-side losses per day", minval=1, maxval=10, group="03 Small Stop Risk")
 maxDailyLossDollars = input.float(150.0, "Max daily planned loss stop ($)", step=10.0, minval=1.0, group="03 Small Stop Risk")
 
-entrySession = input.session("0910-1530", "Entry window", group="04 Display")
+entrySession = input.session("0940-1530", "Entry window", group="04 Display")
 useIntradayEntryWindow = input.bool(true, "Use entry window", group="04 Display")
 entryOrderTtlBars = input.int(3, "Entry order TTL bars", minval=1, maxval=20, group="04 Display")
 displayPreset = input.string("核心交易流程", "Display preset", options=["核心交易流程", "指标辅助", "调试全量"], group="04 Display")
@@ -297,6 +298,18 @@ appendSource(string current, string source) =>
 appendNearSource(string current, float level, float basis, float tolerance, string source) =>
     levelNear(level, basis, tolerance) ? appendSource(current, source) : current
 
+signalConfluenceCount(bool rsiOk, bool nakedOk, bool volumeOk, bool middleOk, bool rightOk) =>
+    (rsiOk ? 1 : 0) + (nakedOk ? 1 : 0) + (volumeOk ? 1 : 0) + (middleOk ? 1 : 0) + (rightOk ? 1 : 0)
+
+signalConfluenceSources(bool rsiOk, bool nakedOk, bool volumeOk, string volumeReason, bool middleOk, bool rightOk) =>
+    string result = ""
+    result := rsiOk ? appendSource(result, "rsi_turn") : result
+    result := nakedOk ? appendSource(result, "naked_k") : result
+    result := volumeOk ? appendSource(result, volumeReason) : result
+    result := middleOk ? appendSource(result, "local_m") : result
+    result := rightOk ? appendSource(result, "right_retest") : result
+    result
+
 setupDisplayName(string setup) =>
     setup == "trend_support_long" ? "多·强趋势回踩" : setup == "trend_resistance_short" ? "空·强趋势反弹" : setup == "probe_2b_top_short" ? "空·结构首顶/右肩" : setup == "probe_2b_bottom_long" ? "多·结构首底/右肩" : setup
 
@@ -365,7 +378,7 @@ reasonCn(string reason) =>
     result
 
 flowColor(string state, int direction) =>
-    state == "blocked" ? color.new(color.gray, flowLabelTransparency) : state == "predictive" ? color.new(color.orange, flowLabelTransparency) : state == "confirmed" ? color.new(color.teal, flowLabelTransparency) : state == "exit" ? color.new(color.purple, flowLabelTransparency) : direction == 1 ? color.new(color.green, flowLabelTransparency) : color.new(color.red, flowLabelTransparency)
+    state == "blocked" or state == "trend_blocked" ? color.new(color.gray, flowLabelTransparency) : state == "armed" ? color.new(color.yellow, flowLabelTransparency) : state == "entry_far_limit_wait" ? color.new(color.orange, flowLabelTransparency) : state == "weak_structure_reversal" ? color.new(color.maroon, flowLabelTransparency) : state == "predictive" ? color.new(color.orange, flowLabelTransparency) : state == "confirmed" ? color.new(color.teal, flowLabelTransparency) : state == "exit" ? color.new(color.purple, flowLabelTransparency) : direction == 1 ? color.new(color.green, flowLabelTransparency) : color.new(color.red, flowLabelTransparency)
 
 labelTextColor(string state, int direction) =>
     labelTextMode == "white" ? color.white : labelTextMode == "black" ? color.black : state == "predictive" or state == "blocked" ? color.black : color.white
@@ -392,7 +405,7 @@ flowY(int direction, float offsetAtr) =>
     labelYForSide(labelAboveForDirection(direction), offsetAtr)
 
 eventFlowMinOffset(string state) =>
-    state == "structure" ? math.max(1.20, tipVerticalDistanceAtr * 0.70) : state == "observe" or state == "watch" ? math.max(1.40, tipVerticalDistanceAtr * 0.80) : state == "candidate" or state == "confirmed" or state == "risk" ? math.max(1.60, tipVerticalDistanceAtr * 0.90) : tipVerticalDistanceAtr
+    state == "structure" ? math.max(1.20, tipVerticalDistanceAtr * 0.70) : state == "observe" or state == "watch" ? math.max(1.40, tipVerticalDistanceAtr * 0.80) : state == "armed" or state == "candidate" or state == "confirmed" or state == "entry_far_limit_wait" or state == "weak_structure_reversal" or state == "trend_blocked" or state == "risk" ? math.max(1.60, tipVerticalDistanceAtr * 0.90) : tipVerticalDistanceAtr
 
 eventFlowY(int direction, string state, float offsetAtr) =>
     flowY(direction, math.max(offsetAtr, eventFlowMinOffset(state)))
@@ -409,27 +422,27 @@ eventMarkerText(string markerText, string detailText) =>
 eventMarkerTooltip(string detailText) =>
     detailText
 
-eventMarkerSize() =>
-    size.tiny
+eventMarkerSize(string markerKind) =>
+    markerKind == "confirmed" or markerKind == "entry_far_limit_wait" or markerKind == "armed" ? size.small : size.tiny
 
 eventMarkerGlyph(string markerKind, int direction, string markerText) =>
-    markerText != "" and markerText != " " ? markerText : markerKind == "candidate" ? (direction == 1 ? "^" : "v") : markerKind == "blocked" ? "x" : markerKind == "risk" ? "!" : markerKind == "watch" ? (direction == 1 ? "+" : "-") : "o"
+    markerText != "" and markerText != " " ? markerText : markerKind == "confirmed" ? (direction == 1 ? "多" : "空") : markerKind == "entry_far_limit_wait" ? "限" : markerKind == "armed" ? "待" : markerKind == "weak_structure_reversal" ? "弱" : markerKind == "trend_blocked" ? "逆" : markerKind == "candidate" ? (direction == 1 ? "^" : "v") : markerKind == "blocked" ? "x" : markerKind == "risk" ? "!" : markerKind == "watch" ? (direction == 1 ? "+" : "-") : "o"
 
 eventMarkerColor(string markerKind, int direction) =>
-    markerKind == "structure" ? color.new(color.aqua, 0) : markerKind == "candidate" ? color.new(color.orange, 0) : markerKind == "blocked" ? color.new(color.purple, 0) : markerKind == "risk" ? color.new(color.blue, 0) : markerKind == "observe" ? color.new(color.gray, 0) : markerKind == "watch" ? color.new(direction == 1 ? color.lime : color.red, 0) : color.new(direction == 1 ? color.lime : color.red, 0)
+    markerKind == "structure" ? color.new(color.aqua, 0) : markerKind == "armed" ? color.new(color.yellow, 0) : markerKind == "entry_far_limit_wait" ? color.new(color.orange, 0) : markerKind == "weak_structure_reversal" ? color.new(color.maroon, 0) : markerKind == "trend_blocked" ? color.new(color.gray, 0) : markerKind == "confirmed" ? color.new(direction == 1 ? color.lime : color.red, 0) : markerKind == "candidate" ? color.new(color.orange, 0) : markerKind == "blocked" ? color.new(color.purple, 0) : markerKind == "risk" ? color.new(color.blue, 0) : markerKind == "observe" ? color.new(color.gray, 0) : markerKind == "watch" ? color.new(direction == 1 ? color.lime : color.red, 0) : color.new(direction == 1 ? color.lime : color.red, 0)
 
 eventMarkerStyle(string markerKind, int direction) =>
     label.style_none
 
 eventMarkerLane(string markerKind) =>
-    markerKind == "structure" ? 0.02 : markerKind == "observe" ? 0.14 : markerKind == "watch" ? 0.26 : markerKind == "candidate" ? 0.38 : markerKind == "blocked" ? 0.50 : markerKind == "risk" ? 0.62 : 0.20
+    markerKind == "structure" ? 0.02 : markerKind == "observe" ? 0.14 : markerKind == "armed" ? 0.22 : markerKind == "watch" ? 0.30 : markerKind == "candidate" ? 0.42 : markerKind == "confirmed" or markerKind == "entry_far_limit_wait" ? 0.54 : markerKind == "weak_structure_reversal" or markerKind == "trend_blocked" ? 0.58 : markerKind == "blocked" ? 0.66 : markerKind == "risk" ? 0.74 : 0.20
 
 eventMarkerY(int direction, string markerKind, float offsetAtr) =>
     float laneOffset = offsetAtr + eventMarkerLane(markerKind)
     labelYForSide(labelAboveForDirection(direction), math.max(laneOffset, eventFlowMinOffset(markerKind)))
 
 eventMarker(int direction, string markerKind, string markerText, string detailText, float offsetAtr) =>
-    label.new(bar_index, eventMarkerY(direction, markerKind, offsetAtr), eventMarkerText(eventMarkerGlyph(markerKind, direction, markerText), detailText), style=eventMarkerStyle(markerKind, direction), color=color.new(color.white, 100), textcolor=eventMarkerColor(markerKind, direction), size=eventMarkerSize(), tooltip=eventMarkerTooltip(detailText))
+    label.new(bar_index, eventMarkerY(direction, markerKind, offsetAtr), eventMarkerText(eventMarkerGlyph(markerKind, direction, markerText), detailText), style=eventMarkerStyle(markerKind, direction), color=color.new(color.white, 100), textcolor=eventMarkerColor(markerKind, direction), size=eventMarkerSize(markerKind), tooltip=eventMarkerTooltip(detailText))
 
 tableBgColor(int row) =>
     row == 0 ? color.new(color.black, 0) : row % 2 == 0 ? color.new(color.black, 8) : color.new(color.black, 18)
@@ -489,6 +502,8 @@ float sdUpper = sdMid + sdDev * sdBandMult
 float sdLower = sdMid - sdDev * sdBandMult
 float recentHigh = ta.highest(high[1], structureLookbackBars)
 float recentLow = ta.lowest(low[1], structureLookbackBars)
+float localProbeHigh = ta.highest(high[1], probeLocalLegLookbackBars)
+float localProbeLow = ta.lowest(low[1], probeLocalLegLookbackBars)
 float pivotHigh = ta.pivothigh(high, fractalPeriod, fractalPeriod)
 float pivotLow = ta.pivotlow(low, fractalPeriod, fractalPeriod)
 bool fractalBear = confirmed and not na(pivotHigh)
@@ -1365,10 +1380,14 @@ bool strongTopProbeZone = topCount >= minConfluenceCount and not na(topZoneLow) 
 int topAnchorAgeBars = not na(todayStructHighBar) ? bar_index - todayStructHighBar : 0
 float topPullbackAtr = not na(todayStructHigh) and not na(lowSinceStructHigh) ? (todayStructHigh - lowSinceStructHigh) / atr : na
 float topLeftLeg = not na(todayStructHigh) and not na(lowBeforeStructHigh) ? todayStructHigh - lowBeforeStructHigh : na
+float topLocalLeftLeg = not na(todayStructHigh) and not na(localProbeLow) ? todayStructHigh - localProbeLow : na
 float topMiddleLeg = not na(todayStructHigh) and not na(lowSinceStructHigh) ? todayStructHigh - lowSinceStructHigh : na
 float topRightLeg = not na(lowSinceStructHigh) ? high - lowSinceStructHigh : na
 float topLeftLegBps = visualLegBps(topLeftLeg, todayStructHigh)
-float topMiddleRetraceRatio = visualLegRatio(topMiddleLeg, topLeftLeg)
+float topLocalLeftLegBps = visualLegBps(topLocalLeftLeg, todayStructHigh)
+float topGlobalMiddleRetraceRatio = visualLegRatio(topMiddleLeg, topLeftLeg)
+float topLocalMiddleRetraceRatio = visualLegRatio(topMiddleLeg, topLocalLeftLeg)
+float topMiddleRetraceRatio = not na(topLocalMiddleRetraceRatio) ? topLocalMiddleRetraceRatio : topGlobalMiddleRetraceRatio
 float topRightRetestRatio = visualLegRatio(topRightLeg, topMiddleLeg)
 float topMiddleBars = not na(lowSinceStructHighBar) and not na(todayStructHighBar) ? math.max((lowSinceStructHighBar - todayStructHighBar) * 1.0, 1.0) : na
 float topRightBars = not na(lowSinceStructHighBar) ? math.max((bar_index - lowSinceStructHighBar) * 1.0, 1.0) : na
@@ -1377,7 +1396,7 @@ float topRightSpeed = not na(topRightLeg) and not na(topRightBars) ? topRightLeg
 float topMomentumDecayRatio = not na(topMiddleSpeed) and topMiddleSpeed > 0.0 ? topRightSpeed / topMiddleSpeed : na
 bool topMomentumDecayed = not na(topMomentumDecayRatio) and topMomentumDecayRatio <= momentumDecayMaxRatio
 float topPriorLevelDistanceAtr = not na(todayStructHigh) and atr > 0.0 ? math.abs(high - todayStructHigh) / atr : na
-bool topVisualLeftOk = not na(topLeftLegBps) and topLeftLegBps >= minVisualLegBps
+bool topVisualLeftOk = (not na(topLeftLegBps) and topLeftLegBps >= minVisualLegBps) or (not na(topLocalLeftLegBps) and topLocalLeftLegBps >= minVisualLegBps)
 bool topLargePullbackReady = not na(topMiddleLeg) and topMiddleLeg >= atr * minMiddleSwingAtr and topMiddleRetraceRatio >= minVisualMiddleRetraceRatio
 bool topPullbackArmedEvent = confirmed and dayRangeClear and strongTopProbeZone and topVisualLeftOk and topLargePullbackReady and not topPullbackArmed
 if topPullbackArmedEvent
@@ -1649,10 +1668,14 @@ bool strongBottomProbeZone = bottomCount >= minConfluenceCount and not na(bottom
 int bottomAnchorAgeBars = not na(todayStructLowBar) ? bar_index - todayStructLowBar : 0
 float bottomPullbackAtr = not na(todayStructLow) and not na(highSinceStructLow) ? (highSinceStructLow - todayStructLow) / atr : na
 float bottomLeftLeg = not na(todayStructLow) and not na(highBeforeStructLow) ? highBeforeStructLow - todayStructLow : na
+float bottomLocalLeftLeg = not na(todayStructLow) and not na(localProbeHigh) ? localProbeHigh - todayStructLow : na
 float bottomMiddleLeg = not na(todayStructLow) and not na(highSinceStructLow) ? highSinceStructLow - todayStructLow : na
 float bottomRightLeg = not na(highSinceStructLow) ? highSinceStructLow - low : na
 float bottomLeftLegBps = visualLegBps(bottomLeftLeg, todayStructLow)
-float bottomMiddleRetraceRatio = visualLegRatio(bottomMiddleLeg, bottomLeftLeg)
+float bottomLocalLeftLegBps = visualLegBps(bottomLocalLeftLeg, todayStructLow)
+float bottomGlobalMiddleRetraceRatio = visualLegRatio(bottomMiddleLeg, bottomLeftLeg)
+float bottomLocalMiddleRetraceRatio = visualLegRatio(bottomMiddleLeg, bottomLocalLeftLeg)
+float bottomMiddleRetraceRatio = not na(bottomLocalMiddleRetraceRatio) ? bottomLocalMiddleRetraceRatio : bottomGlobalMiddleRetraceRatio
 float bottomRightRetestRatio = visualLegRatio(bottomRightLeg, bottomMiddleLeg)
 float bottomMiddleBars = not na(highSinceStructLowBar) and not na(todayStructLowBar) ? math.max((highSinceStructLowBar - todayStructLowBar) * 1.0, 1.0) : na
 float bottomRightBars = not na(highSinceStructLowBar) ? math.max((bar_index - highSinceStructLowBar) * 1.0, 1.0) : na
@@ -1661,7 +1684,7 @@ float bottomRightSpeed = not na(bottomRightLeg) and not na(bottomRightBars) ? bo
 float bottomMomentumDecayRatio = not na(bottomMiddleSpeed) and bottomMiddleSpeed > 0.0 ? bottomRightSpeed / bottomMiddleSpeed : na
 bool bottomMomentumDecayed = not na(bottomMomentumDecayRatio) and bottomMomentumDecayRatio <= momentumDecayMaxRatio
 float bottomPriorLevelDistanceAtr = not na(todayStructLow) and atr > 0.0 ? math.abs(low - todayStructLow) / atr : na
-bool bottomVisualLeftOk = not na(bottomLeftLegBps) and bottomLeftLegBps >= minVisualLegBps
+bool bottomVisualLeftOk = (not na(bottomLeftLegBps) and bottomLeftLegBps >= minVisualLegBps) or (not na(bottomLocalLeftLegBps) and bottomLocalLeftLegBps >= minVisualLegBps)
 bool bottomLargePullbackReady = not na(bottomMiddleLeg) and bottomMiddleLeg >= atr * minMiddleSwingAtr and bottomMiddleRetraceRatio >= minVisualMiddleRetraceRatio
 bool bottomPullbackArmedEvent = confirmed and dayRangeClear and strongBottomProbeZone and bottomVisualLeftOk and bottomLargePullbackReady and not bottomPullbackArmed
 if bottomPullbackArmedEvent
@@ -1910,7 +1933,10 @@ string selectedSmallStopGateReason = selectedDirection == 0 ? "no_candidate" : s
 float selectedStructureAnchor = selectedTrendSupport ? trendSupportBasis : selectedTrendResistance ? trendResistanceBasis : selectedTopProbe ? todayStructHigh : selectedBottomProbe ? todayStructLow : na
 float selectedEntryAnchorDistanceAtr = selectedDirection != 0 and not na(selectedStructureAnchor) and atr > 0.0 ? math.abs(selectedEntry - selectedStructureAnchor) / atr : na
 float selectedCurrentAnchorDistanceAtr = selectedDirection != 0 and not na(selectedStructureAnchor) and atr > 0.0 ? math.abs(close - selectedStructureAnchor) / atr : na
-bool selectedEntryNearAnchor = selectedDirection == 0 or (not na(selectedEntryAnchorDistanceAtr) and selectedEntryAnchorDistanceAtr <= scalpMaxEntryAwayAtr and not na(selectedCurrentAnchorDistanceAtr) and selectedCurrentAnchorDistanceAtr <= scalpMaxEntryAwayAtr)
+bool selectedEntryNearAnchorOnly = selectedDirection == 0 or (not na(selectedEntryAnchorDistanceAtr) and selectedEntryAnchorDistanceAtr <= scalpMaxEntryAwayAtr)
+bool selectedCloseNearAnchor = selectedDirection == 0 or (not na(selectedCurrentAnchorDistanceAtr) and selectedCurrentAnchorDistanceAtr <= scalpMaxEntryAwayAtr)
+bool selectedCloseFarFromAnchor = selectedDirection != 0 and selectedEntryNearAnchorOnly and not selectedCloseNearAnchor
+string selectedLimitWaitMode = selectedCloseFarFromAnchor ? "close_far_wait_pullback_limit" : "normal_limit"
 bool selectedRsiPassed = selectedDirection == 1 ? scalpRsiLongOk : selectedDirection == -1 ? scalpRsiShortOk : false
 string selectedRsiState = selectedDirection == 1 ? (scalpRsiLongOk ? "low_turning_up" : "long_rsi_not_turning") : selectedDirection == -1 ? (scalpRsiShortOk ? "high_turning_down" : "short_rsi_not_turning") : "none"
 bool selectedStructureClear = selectedTrendSupport ? trendLongContext and strongTrendSupport : selectedTrendResistance ? trendShortContext and strongTrendResistance : selectedTopProbe ? strongTopProbeZone and topConfirmedShort : selectedBottomProbe ? strongBottomProbeZone and bottomConfirmedLong : false
@@ -1918,6 +1944,8 @@ string selectedProbePattern = selectedTopProbe ? topProbePattern : selectedBotto
 string selectedProbeFilterReason = selectedTopProbe ? topProbeFilterReason : selectedBottomProbe ? bottomProbeFilterReason : "none"
 int selectedConfluenceCount = selectedTrendSupport ? trendSupportCount : selectedTrendResistance ? trendResistanceCount : selectedTopProbe ? topCount : selectedBottomProbe ? bottomCount : 0
 string selectedConfluenceSources = selectedTrendSupport ? trendSupportSources : selectedTrendResistance ? trendResistanceSources : selectedTopProbe ? topSources : selectedBottomProbe ? bottomSources : "none"
+int selectedPriceConfluenceCount = selectedConfluenceCount
+string selectedPriceConfluenceSources = selectedConfluenceSources
 bool selectedStrongStructureZone = selectedTrendSupport ? trendLongContext and strongTrendSupport : selectedTrendResistance ? trendShortContext and strongTrendResistance : selectedTopProbe ? strongTopProbeZone : selectedBottomProbe ? strongBottomProbeZone : false
 bool selectedConfirmStructureSignal = selectedTrendSupport ? trendLongConfirmNow : selectedTrendResistance ? trendShortConfirmNow : selectedTopProbe ? topConfirmedShort : selectedBottomProbe ? bottomConfirmedLong : false
 string selectedStructureGateReason = "passed"
@@ -1936,6 +1964,9 @@ bool selectedProbePullbackArmed = selectedTopProbe ? topPullbackArmed : selected
 float selectedProbeRetestGapBars = selectedTopProbe and not na(lowSinceStructHighBar) ? (bar_index - lowSinceStructHighBar) * 1.0 : selectedBottomProbe and not na(highSinceStructLowBar) ? (bar_index - highSinceStructLowBar) * 1.0 : na
 float selectedProbeLeftLegBps = selectedTopProbe ? topLeftLegBps : selectedBottomProbe ? bottomLeftLegBps : na
 float selectedProbeMiddleRatio = selectedTopProbe ? topMiddleRetraceRatio : selectedBottomProbe ? bottomMiddleRetraceRatio : na
+float selectedProbeMiddleRatioLocal = selectedTopProbe ? topLocalMiddleRetraceRatio : selectedBottomProbe ? bottomLocalMiddleRetraceRatio : na
+float selectedProbeMiddleRatioGlobal = selectedTopProbe ? topGlobalMiddleRetraceRatio : selectedBottomProbe ? bottomGlobalMiddleRetraceRatio : na
+string selectedProbeMiddleRatioMode = not na(selectedProbeMiddleRatioLocal) ? "local" : not na(selectedProbeMiddleRatioGlobal) ? "global_fallback" : "none"
 float selectedProbeRightRatio = selectedTopProbe ? topRightRetestRatio : selectedBottomProbe ? bottomRightRetestRatio : na
 string selectedThreeLegReason = selectedTopProbe or selectedBottomProbe ? (na(selectedProbeMiddleRatio) ? "middle_leg_too_small" : selectedProbeMiddleRatio < minVisualMiddleRetraceRatio ? "middle_pullback_not_enough" : na(selectedProbeRightRatio) ? "right_retest_too_small" : selectedProbeRightRatio < minVisualRightRetestRatio ? "right_retest_too_small" : not na(selectedProbeRetestGapBars) and selectedProbeRetestGapBars > maxRetestAfterMiddleSwingBars ? "retest_too_slow" : "passed") : "none"
 string selectedVolumeReason = selectedTopProbe ? topVolumeReason : selectedBottomProbe ? bottomVolumeReason : "none"
@@ -1996,6 +2027,11 @@ else if selectedBottomProbe
     selectedMainReason := selectedBottomMainReason
 string selectedSecondaryReason = selectedTrendSupport ? trendSupportSources : selectedTrendResistance ? trendResistanceSources : selectedTopProbe ? topSources : selectedBottomProbe ? bottomSources : "none"
 bool selectedNakedReversalCandidate = selectedMainReason == "naked_high_immediate_reversal" or selectedMainReason == "naked_high_volume_reversal" or selectedMainReason == "naked_high_decay_break" or selectedMainReason == "naked_low_volume_reversal" or selectedMainReason == "naked_low_decay_break"
+bool selectedVolumeConfluence = selectedVolumeReason != "none" and selectedVolumeReason != "normal_volume_retest_ok"
+bool selectedMiddleConfluence = not na(selectedProbeMiddleRatio) and selectedProbeMiddleRatio >= minVisualMiddleRetraceRatio
+bool selectedRightConfluence = not na(selectedProbeRightRatio) and selectedProbeRightRatio >= minVisualRightRetestRatio
+int selectedSignalConfluenceCount = signalConfluenceCount(selectedRsiPassed, selectedNakedReversalCandidate, selectedVolumeConfluence, selectedMiddleConfluence, selectedRightConfluence)
+string selectedSignalConfluenceSources = signalConfluenceSources(selectedRsiPassed, selectedNakedReversalCandidate, selectedVolumeConfluence, selectedVolumeReason, selectedMiddleConfluence, selectedRightConfluence)
 
 bool inEntryWindow = not useIntradayEntryWindow or not na(time(timeframe.period, entrySession))
 float selectedLastSameSidePlanPrice = selectedDirection == 1 ? lastLongPlanPrice : selectedDirection == -1 ? lastShortPlanPrice : na
@@ -2008,7 +2044,7 @@ string selectedScalpCycleState = selectedDirection == 0 ? "none" : (na(selectedA
 string selectedScalpCycleId = selectedDirection == 0 ? "none" : str.replace_all(syminfo.ticker, " ", "_") + "_" + (selectedDirection == 1 ? "long" : "short") + "_" + str.tostring(math.round(nz(selectedStructureAnchor, selectedEntry) / syminfo.mintick))
 bool selectedAnyPlanFarEnough = selectedDirection == 0 or selectedFailureReentry or na(selectedAnyPlanGapBars) or (selectedAnyPlanGapBars >= minAnyPlanGapBars and selectedAnyPlanDistanceAtr >= minAnyPlanDistanceAtr)
 bool selectedDailyRiskOk = selectedDirection == 0 or (dailyTotalTrades < maxDailyTotalTrades and dailyPnlDollars > -maxDailyLossDollars and (selectedDirection == 1 ? dailyLongTrades < maxDailySameSideTrades and dailyLongLosses < maxSameSideLosses : dailyShortTrades < maxDailySameSideTrades and dailyShortLosses < maxSameSideLosses))
-bool selectedPlanQualityOk = selectedStructureClear and selectedEntryNearAnchor and selectedRsiPassed and selectedSmallStopGatePassed and selectedExpectedRPassed
+bool selectedPlanQualityOk = selectedStructureClear and selectedEntryNearAnchorOnly and selectedRsiPassed and selectedSmallStopGatePassed and selectedExpectedRPassed
 bool selectedPlanSpacingOk = selectedSameSideSignalFarEnough and selectedAnyPlanFarEnough
 bool selectedPlanValid = selectedDirection != 0 and selectedPlanQualityOk and selectedPlanSpacingOk and selectedDailyRiskOk and selectedQty >= 1.0 and inEntryWindow
 string selectedExpectedRBlockReason = not selectedEmaTargetInProfit or selectedEmaProfitAtr < minEmaProfitAtr ? "ema_tp_too_close" : "expected_r_too_small"
@@ -2017,7 +2053,7 @@ if selectedDirection == 0
     selectedBlockReason := "no_candidate"
 else if not selectedStructureClear
     selectedBlockReason := "no_clear_structure"
-else if not selectedEntryNearAnchor
+else if not selectedEntryNearAnchorOnly
     selectedBlockReason := "entry_too_far_from_anchor"
 else if not selectedRsiPassed
     selectedBlockReason := "rsi_not_turning"
@@ -2039,9 +2075,15 @@ selectedPlanDetail(string decisionRef, int currentFlowId) =>
     result := result + "\n主因: " + selectedMainReason
     result := result + "\n次因: " + (selectedSecondaryReason == "" ? "none" : selectedSecondaryReason)
     result := result + "\n结构锚点 " + fmt(selectedStructureAnchor) + " / expected " + fmt(selectedExpectedR) + "R / EMA空间 " + fmt(selectedEmaProfitAtr) + "ATR"
+    result := result + "\n距结构 entry/close " + fmt(selectedEntryAnchorDistanceAtr) + "/" + fmt(selectedCurrentAnchorDistanceAtr) + "ATR / " + selectedLimitWaitMode
+    if selectedCloseFarFromAnchor
+        result := result + "\nclose已走远：只挂回抽限价，不追价"
     result := result + "\nRSI " + fmt(scalpRsi) + " / smooth " + fmt(scalpRsiSmooth) + " / " + selectedRsiState
+    result := result + "\n价格共振: " + str.tostring(selectedPriceConfluenceCount) + "/" + str.tostring(minConfluenceCount) + " / " + (selectedPriceConfluenceSources == "" ? "none" : selectedPriceConfluenceSources)
+    result := result + "\n信号共振: " + str.tostring(selectedSignalConfluenceCount) + " / " + (selectedSignalConfluenceSources == "" ? "none" : selectedSignalConfluenceSources)
     result := result + "\n结构区 " + fmt(selectedZoneLow) + " - " + fmt(selectedZoneHigh)
     result := result + "\n三段结构 L" + fmt(selectedProbeLeftLegBps) + "bps / M" + fmt(selectedProbeMiddleRatio) + " / R" + fmt(selectedProbeRightRatio) + " / 回测 " + fmt(selectedProbeRetestGapBars) + "/" + str.tostring(maxRetestAfterMiddleSwingBars) + " bars"
+    result := result + "\nM local/global " + fmt(selectedProbeMiddleRatioLocal) + "/" + fmt(selectedProbeMiddleRatioGlobal) + " / used " + selectedProbeMiddleRatioMode
     result := result + "\n大回落已成立 " + str.tostring(selectedProbePullbackArmed) + " / 回落 " + fmt(selectedProbePullbackAtr) + "ATR / min " + fmt(minMiddleSwingAtr)
     result := result + "\n量能 vol/MA " + fmt(selectedVolumeRatio) + " / closePos " + fmt(selectedClosePosition) + " / " + selectedVolumeReason
     result := result + "\n成交量判断: " + volumeJudge
@@ -2067,13 +2109,18 @@ blockedCandidateDetail(string blockPrefix, string displayBlockReason) =>
     result := result + "\n结构清晰: " + str.tostring(selectedStructureClear) + " / 门槛: " + reasonCn(selectedStructureGateReason) + " / " + selectedStructureGateReason
     result := result + "\n强结构条件: " + selectedStructureGateFlags
     result := result + "\n共振计数: " + str.tostring(selectedConfluenceCount) + "/" + str.tostring(minConfluenceCount) + " / 来源: " + (selectedConfluenceSources == "" ? "none" : selectedConfluenceSources)
+    result := result + "\n价格共振: " + str.tostring(selectedPriceConfluenceCount) + "/" + str.tostring(minConfluenceCount) + " / " + (selectedPriceConfluenceSources == "" ? "none" : selectedPriceConfluenceSources)
+    result := result + "\n信号共振: " + str.tostring(selectedSignalConfluenceCount) + " / " + (selectedSignalConfluenceSources == "" ? "none" : selectedSignalConfluenceSources)
     result := result + "\n结构 " + fmt(selectedStructureAnchor) + " / expected " + fmt(selectedExpectedR) + "R / EMA空间 " + fmt(selectedEmaProfitAtr) + "ATR"
     result := result + "\nRSI " + fmt(scalpRsi) + " / smooth " + fmt(scalpRsiSmooth) + " / " + selectedRsiState
-    result := result + "\n距结构 entry/close " + fmt(selectedEntryAnchorDistanceAtr) + "/" + fmt(selectedCurrentAnchorDistanceAtr) + "ATR"
+    result := result + "\n距结构 entry/close " + fmt(selectedEntryAnchorDistanceAtr) + "/" + fmt(selectedCurrentAnchorDistanceAtr) + "ATR / " + selectedLimitWaitMode
+    if selectedCloseFarFromAnchor
+        result := result + "\nclose已走远：只挂回抽限价，不追价"
     result := result + "\n同向距离 " + fmt(selectedSameSideSignalDistanceAtr) + "ATR / min " + fmt(minSameSideSignalSeparationAtr)
     result := result + "\n结构区 " + fmt(selectedZoneLow) + " - " + fmt(selectedZoneHigh)
     result := result + "\n三段结构 L" + fmt(selectedProbeLeftLegBps) + "bps / M" + fmt(selectedProbeMiddleRatio) + " / R" + fmt(selectedProbeRightRatio) + " / 回测 " + fmt(selectedProbeRetestGapBars) + "/" + str.tostring(maxRetestAfterMiddleSwingBars) + " bars"
     result := result + "\n三段阈值: M " + fmt(selectedProbeMiddleRatio) + "/" + fmt(minVisualMiddleRetraceRatio) + " / R " + fmt(selectedProbeRightRatio) + "/" + fmt(minVisualRightRetestRatio) + " / " + selectedThreeLegReason
+    result := result + "\nM local/global " + fmt(selectedProbeMiddleRatioLocal) + "/" + fmt(selectedProbeMiddleRatioGlobal) + " / used " + selectedProbeMiddleRatioMode
     result := result + "\n大回落已成立 " + str.tostring(selectedProbePullbackArmed) + " / 回落 " + fmt(selectedProbePullbackAtr) + "ATR / min " + fmt(minMiddleSwingAtr)
     result := result + "\n量能 vol/MA " + fmt(selectedVolumeRatio) + " / closePos " + fmt(selectedClosePosition) + " / " + selectedVolumeReason
     result := result + "\n成交量判断: " + volumeJudge
@@ -2151,6 +2198,8 @@ if newPlanNow
     if flowLabelsVisible
         string planVisualState = selectedEntryIntent == "predictive_limit" ? "predictive" : "confirmed"
         drawFlowLabel(selectedDirection, planVisualState, planVisualState, planVisualState, 1.5, compact, detail)
+    if eventMarkersVisible
+        eventMarker(selectedDirection, selectedCloseFarFromAnchor ? "entry_far_limit_wait" : "confirmed", " ", detail, 0.42)
     int lineEnd = bar_index + entryOrderTtlBars
     currentEntryLine := line.new(bar_index, shadowEntry, lineEnd, shadowEntry, color=color.new(color.yellow, 0), width=2)
     currentStopLine := line.new(bar_index, shadowStop, lineEnd, shadowStop, color=color.new(color.red, 0), width=2)
@@ -2343,10 +2392,13 @@ if blockedCandidate
     string displayBlockReason = not inEntryWindow ? "outside_entry_session" : selectedBlockReason
     string detail = blockedCandidateDetail(blockPrefix, displayBlockReason)
     string compact = blockPrefix + "确认但过滤 " + dirName(selectedDirection) + "\n" + reasonCn(displayBlockReason)
+    bool weakStructureReversal = displayBlockReason == "no_clear_structure" and selectedNakedReversalCandidate and selectedRsiPassed
+    bool trendBlocked = selectedProbeFilterReason == "blocked_by_dominant_bull_trend" or selectedProbeFilterReason == "blocked_by_dominant_bear_trend" or selectedStructureGateReason == "trend_context_missing"
+    string blockedMarkerKind = weakStructureReversal ? "weak_structure_reversal" : trendBlocked ? "trend_blocked" : "blocked"
     if eventMarkersVisible
-        eventMarker(selectedDirection, "blocked", " ", detail, 0.34)
+        eventMarker(selectedDirection, blockedMarkerKind, " ", detail, 0.34)
     if diagnosticLabelsVisible
-        drawFlowLabel(selectedDirection, "blocked", "blocked", "blocked", 1.2, compact, detail)
+        drawFlowLabel(selectedDirection, blockedMarkerKind, blockedMarkerKind, "blocked", 1.2, compact, detail)
 
 bool pullbackArmedFlowEvent = confirmed and showDiagnosticEventFlow and selectedDirection == 0 and (topPullbackArmedEvent or bottomPullbackArmedEvent)
 if pullbackArmedFlowEvent
@@ -2366,9 +2418,9 @@ if pullbackArmedFlowEvent
     armedDetail := armedDetail + "\n比例 " + fmt(armedDirection == -1 ? topMiddleRetraceRatio : bottomMiddleRetraceRatio) + " / min " + fmt(minVisualMiddleRetraceRatio)
     string armedCompact = armedKey + (armedDirection == -1 ? " ①大回落成立 空" : " ①大反弹成立 多") + "\n等回结构位"
     if eventMarkersVisible
-        eventMarker(armedDirection, "observe", " ", armedDetail, 0.24)
+        eventMarker(armedDirection, "armed", " ", armedDetail, 0.24)
     if diagnosticLabelsVisible
-        drawFlowLabel(armedDirection, "structure", "blocked", "blocked", 1.1, armedCompact, armedDetail)
+        drawFlowLabel(armedDirection, "armed", "armed", "blocked", 1.1, armedCompact, armedDetail)
 
 bool volumeClimaxTopWatchEvent = confirmed and showDiagnosticEventFlow and selectedDirection == 0 and topVolumeClimaxAttackEvent
 if volumeClimaxTopWatchEvent

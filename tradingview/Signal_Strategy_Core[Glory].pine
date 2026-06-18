@@ -37,6 +37,7 @@ structureClusterBandAtr = input.float(0.40, "Structure cluster band (x ATR)", st
 minStructureSeparationAtr = input.float(1.00, "Independent structure separation (x ATR)", step=0.05, minval=0.10, maxval=5.0, group="01 Structure")
 minMiddleSwingAtr = input.float(1.00, "Middle swing for second test (x ATR)", step=0.05, minval=0.10, maxval=5.0, group="01 Structure")
 maxRetestAfterMiddleSwingBars = input.int(12, "Max bars after middle swing retest", minval=1, maxval=60, group="01 Structure")
+probeLocalLegLookbackBars = input.int(30, "Local M leg lookback bars", minval=5, maxval=120, group="01 Structure")
 minVisualMiddleRetraceRatio = input.float(0.35, "Visual middle retrace ratio", step=0.05, minval=0.05, maxval=0.95, group="01 Structure")
 minVisualRightRetestRatio = input.float(0.65, "Visual right retest ratio", step=0.05, minval=0.10, maxval=1.50, group="01 Structure")
 minVisualLegBps = input.float(12.0, "Visual min leg (bps)", step=1.0, minval=1.0, maxval=500.0, group="01 Structure")
@@ -109,8 +110,8 @@ maxDailyTotalTrades = input.int(6, "Max total trades per day", minval=1, maxval=
 maxSameSideLosses = input.int(2, "Max same-side losses per day", minval=1, maxval=10, group="03 Small Stop Risk")
 maxDailyLossDollars = input.float(150.0, "Max daily planned loss stop ($)", step=10.0, minval=1.0, group="03 Small Stop Risk")
 
-tradingSession = input.session("0910-1530", "Trading session", group="04 TV Primary Events")
-entrySession = input.session("0910-1530", "Entry window", group="04 TV Primary Events")
+tradingSession = input.session("0940-1530", "Trading session", group="04 TV Primary Events")
+entrySession = input.session("0940-1530", "Entry window", group="04 TV Primary Events")
 useIntradayEntryWindow = input.bool(true, "Use entry window", group="04 TV Primary Events")
 entryOrderTtlBars = input.int(3, "Entry order TTL bars", minval=1, maxval=20, group="04 TV Primary Events")
 enableAlerts = input.bool(true, "Emit TV-primary alert() payloads", group="04 TV Primary Events")
@@ -310,6 +311,8 @@ float sdUpper = sdMid + sdDev * sdBandMult
 float sdLower = sdMid - sdDev * sdBandMult
 float recentHigh = ta.highest(high[1], structureLookbackBars)
 float recentLow = ta.lowest(low[1], structureLookbackBars)
+float localProbeHigh = ta.highest(high[1], probeLocalLegLookbackBars)
+float localProbeLow = ta.lowest(low[1], probeLocalLegLookbackBars)
 float pivotHigh = ta.pivothigh(high, fractalPeriod, fractalPeriod)
 float pivotLow = ta.pivotlow(low, fractalPeriod, fractalPeriod)
 var float lastPivotHigh = na
@@ -1065,10 +1068,14 @@ bool strongTopProbeZone = topCount >= minConfluenceCount and not na(topZoneLow) 
 int topAnchorAgeBars = not na(todayStructHighBar) ? bar_index - todayStructHighBar : 0
 float topPullbackAtr = not na(todayStructHigh) and not na(lowSinceStructHigh) ? (todayStructHigh - lowSinceStructHigh) / atr : na
 float topLeftLeg = not na(todayStructHigh) and not na(lowBeforeStructHigh) ? todayStructHigh - lowBeforeStructHigh : na
+float topLocalLeftLeg = not na(todayStructHigh) and not na(localProbeLow) ? todayStructHigh - localProbeLow : na
 float topMiddleLeg = not na(todayStructHigh) and not na(lowSinceStructHigh) ? todayStructHigh - lowSinceStructHigh : na
 float topRightLeg = not na(lowSinceStructHigh) ? high - lowSinceStructHigh : na
 float topLeftLegBps = visualLegBps(topLeftLeg, todayStructHigh)
-float topMiddleRetraceRatio = visualLegRatio(topMiddleLeg, topLeftLeg)
+float topLocalLeftLegBps = visualLegBps(topLocalLeftLeg, todayStructHigh)
+float topGlobalMiddleRetraceRatio = visualLegRatio(topMiddleLeg, topLeftLeg)
+float topLocalMiddleRetraceRatio = visualLegRatio(topMiddleLeg, topLocalLeftLeg)
+float topMiddleRetraceRatio = not na(topLocalMiddleRetraceRatio) ? topLocalMiddleRetraceRatio : topGlobalMiddleRetraceRatio
 float topRightRetestRatio = visualLegRatio(topRightLeg, topMiddleLeg)
 float topMiddleBars = not na(lowSinceStructHighBar) and not na(todayStructHighBar) ? math.max((lowSinceStructHighBar - todayStructHighBar) * 1.0, 1.0) : na
 float topRightBars = not na(lowSinceStructHighBar) ? math.max((bar_index - lowSinceStructHighBar) * 1.0, 1.0) : na
@@ -1077,7 +1084,7 @@ float topRightSpeed = not na(topRightLeg) and not na(topRightBars) ? topRightLeg
 float topMomentumDecayRatio = not na(topMiddleSpeed) and topMiddleSpeed > 0.0 ? topRightSpeed / topMiddleSpeed : na
 bool topMomentumDecayed = not na(topMomentumDecayRatio) and topMomentumDecayRatio <= momentumDecayMaxRatio
 float topPriorLevelDistanceAtr = not na(todayStructHigh) and atr > 0.0 ? math.abs(high - todayStructHigh) / atr : na
-bool topVisualLeftOk = not na(topLeftLegBps) and topLeftLegBps >= minVisualLegBps
+bool topVisualLeftOk = (not na(topLeftLegBps) and topLeftLegBps >= minVisualLegBps) or (not na(topLocalLeftLegBps) and topLocalLeftLegBps >= minVisualLegBps)
 bool topLargePullbackReady = not na(topMiddleLeg) and topMiddleLeg >= atr * minMiddleSwingAtr and topMiddleRetraceRatio >= minVisualMiddleRetraceRatio
 bool topPullbackArmedEvent = confirmed and dayRangeClear and strongTopProbeZone and topVisualLeftOk and topLargePullbackReady and not topPullbackArmed
 if topPullbackArmedEvent
@@ -1347,10 +1354,14 @@ bool strongBottomProbeZone = bottomCount >= minConfluenceCount and not na(bottom
 int bottomAnchorAgeBars = not na(todayStructLowBar) ? bar_index - todayStructLowBar : 0
 float bottomPullbackAtr = not na(todayStructLow) and not na(highSinceStructLow) ? (highSinceStructLow - todayStructLow) / atr : na
 float bottomLeftLeg = not na(todayStructLow) and not na(highBeforeStructLow) ? highBeforeStructLow - todayStructLow : na
+float bottomLocalLeftLeg = not na(todayStructLow) and not na(localProbeHigh) ? localProbeHigh - todayStructLow : na
 float bottomMiddleLeg = not na(todayStructLow) and not na(highSinceStructLow) ? highSinceStructLow - todayStructLow : na
 float bottomRightLeg = not na(highSinceStructLow) ? highSinceStructLow - low : na
 float bottomLeftLegBps = visualLegBps(bottomLeftLeg, todayStructLow)
-float bottomMiddleRetraceRatio = visualLegRatio(bottomMiddleLeg, bottomLeftLeg)
+float bottomLocalLeftLegBps = visualLegBps(bottomLocalLeftLeg, todayStructLow)
+float bottomGlobalMiddleRetraceRatio = visualLegRatio(bottomMiddleLeg, bottomLeftLeg)
+float bottomLocalMiddleRetraceRatio = visualLegRatio(bottomMiddleLeg, bottomLocalLeftLeg)
+float bottomMiddleRetraceRatio = not na(bottomLocalMiddleRetraceRatio) ? bottomLocalMiddleRetraceRatio : bottomGlobalMiddleRetraceRatio
 float bottomRightRetestRatio = visualLegRatio(bottomRightLeg, bottomMiddleLeg)
 float bottomMiddleBars = not na(highSinceStructLowBar) and not na(todayStructLowBar) ? math.max((highSinceStructLowBar - todayStructLowBar) * 1.0, 1.0) : na
 float bottomRightBars = not na(highSinceStructLowBar) ? math.max((bar_index - highSinceStructLowBar) * 1.0, 1.0) : na
@@ -1359,7 +1370,7 @@ float bottomRightSpeed = not na(bottomRightLeg) and not na(bottomRightBars) ? bo
 float bottomMomentumDecayRatio = not na(bottomMiddleSpeed) and bottomMiddleSpeed > 0.0 ? bottomRightSpeed / bottomMiddleSpeed : na
 bool bottomMomentumDecayed = not na(bottomMomentumDecayRatio) and bottomMomentumDecayRatio <= momentumDecayMaxRatio
 float bottomPriorLevelDistanceAtr = not na(todayStructLow) and atr > 0.0 ? math.abs(low - todayStructLow) / atr : na
-bool bottomVisualLeftOk = not na(bottomLeftLegBps) and bottomLeftLegBps >= minVisualLegBps
+bool bottomVisualLeftOk = (not na(bottomLeftLegBps) and bottomLeftLegBps >= minVisualLegBps) or (not na(bottomLocalLeftLegBps) and bottomLocalLeftLegBps >= minVisualLegBps)
 bool bottomLargePullbackReady = not na(bottomMiddleLeg) and bottomMiddleLeg >= atr * minMiddleSwingAtr and bottomMiddleRetraceRatio >= minVisualMiddleRetraceRatio
 bool bottomPullbackArmedEvent = confirmed and dayRangeClear and strongBottomProbeZone and bottomVisualLeftOk and bottomLargePullbackReady and not bottomPullbackArmed
 if bottomPullbackArmedEvent
@@ -1605,8 +1616,7 @@ bool selectedSmallStopGatePassed = selectedDirection != 0 and smallStopTrialAllo
 string selectedSmallStopGateReason = selectedDirection == 0 ? "no_candidate" : smallStopGateReason(selectedEntry, selectedStop, atr, selectedRiskBudget, selectedMaxStopAtr, selectedMaxStopBps)
 float selectedStructureAnchor = selectedTrendSupport ? trendSupportBasis : selectedTrendResistance ? trendResistanceBasis : selectedTopProbe ? todayStructHigh : selectedBottomProbe ? todayStructLow : na
 float selectedEntryAnchorDistanceAtr = selectedDirection != 0 and not na(selectedStructureAnchor) and atr > 0.0 ? math.abs(selectedEntry - selectedStructureAnchor) / atr : na
-float selectedCurrentAnchorDistanceAtr = selectedDirection != 0 and not na(selectedStructureAnchor) and atr > 0.0 ? math.abs(close - selectedStructureAnchor) / atr : na
-bool selectedEntryNearAnchor = selectedDirection == 0 or (not na(selectedEntryAnchorDistanceAtr) and selectedEntryAnchorDistanceAtr <= scalpMaxEntryAwayAtr and not na(selectedCurrentAnchorDistanceAtr) and selectedCurrentAnchorDistanceAtr <= scalpMaxEntryAwayAtr)
+bool selectedEntryNearAnchorOnly = selectedDirection == 0 or (not na(selectedEntryAnchorDistanceAtr) and selectedEntryAnchorDistanceAtr <= scalpMaxEntryAwayAtr)
 bool selectedRsiPassed = selectedDirection == 1 ? scalpRsiLongOk : selectedDirection == -1 ? scalpRsiShortOk : false
 string selectedRsiState = selectedDirection == 1 ? (scalpRsiLongOk ? "low_turning_up" : "long_rsi_not_turning") : selectedDirection == -1 ? (scalpRsiShortOk ? "high_turning_down" : "short_rsi_not_turning") : "none"
 bool selectedStructureClear = selectedTrendSupport ? trendLongContext and strongTrendSupport : selectedTrendResistance ? trendShortContext and strongTrendResistance : selectedTopProbe ? strongTopProbeZone and topConfirmedShort : selectedBottomProbe ? strongBottomProbeZone and bottomConfirmedLong : false
@@ -1976,7 +1986,7 @@ bool pendingExpired = pendingEntry and not na(activeExpiresBar) and bar_index > 
 bool pendingWindowExpired = pendingEntry and not inEntryWindow
 bool pendingEodCancel = pendingEntry and eodTimeReached
 bool pendingInvalidated = pendingEntry and (activeDirection == 1 ? close < activeStop : close > activeStop)
-bool pendingOppositeSelected = pendingEntry and selectedDirection != 0 and selectedDirection != activeDirection and selectedStructureClear and selectedEntryNearAnchor and selectedRsiPassed and selectedSmallStopGatePassed and selectedExpectedRPassed
+bool pendingOppositeSelected = pendingEntry and selectedDirection != 0 and selectedDirection != activeDirection and selectedStructureClear and selectedEntryNearAnchorOnly and selectedRsiPassed and selectedSmallStopGatePassed and selectedExpectedRPassed
 bool pendingLostConfirmation = pendingEntry and activeEntryIntent != "confirmed_limit"
 bool pendingAttackCoolingCancel = false
 bool pendingStructureAcceptedCancel = pendingEntry and (activeDirection == -1 ? upperStructureBreakAccepted : activeDirection == 1 ? lowerStructureBreakAccepted : false)
@@ -2031,7 +2041,7 @@ bool selectedFailureReentry = selectedTopProbe and topFailureRepeatShort
 bool selectedSameSideSignalFarEnough = selectedDirection == 0 or selectedPendingUpgrade or selectedFailureReentry or na(selectedSameSideSignalDistanceAtr) or selectedSameSideSignalDistanceAtr >= minSameSideSignalSeparationAtr
 bool selectedAnyPlanFarEnough = selectedDirection == 0 or selectedPendingUpgrade or selectedFailureReentry or na(selectedAnyPlanGapBars) or (selectedAnyPlanGapBars >= minAnyPlanGapBars and selectedAnyPlanDistanceAtr >= minAnyPlanDistanceAtr)
 bool selectedDailyRiskOk = selectedDirection == 0 or (dailyTotalTrades < maxDailyTotalTrades and dailyPnlDollars > -maxDailyLossDollars and (selectedDirection == 1 ? dailyLongTrades < maxDailySameSideTrades and dailyLongLosses < maxSameSideLosses : dailyShortTrades < maxDailySameSideTrades and dailyShortLosses < maxSameSideLosses))
-bool selectedPlanQualityOk = selectedStructureClear and selectedEntryNearAnchor and selectedRsiPassed and selectedSmallStopGatePassed and selectedExpectedRPassed
+bool selectedPlanQualityOk = selectedStructureClear and selectedEntryNearAnchorOnly and selectedRsiPassed and selectedSmallStopGatePassed and selectedExpectedRPassed
 bool selectedPlanSpacingOk = selectedSameSideSignalFarEnough and selectedAnyPlanFarEnough
 bool selectedPlanSessionOk = not eodTimeReached and inTradingSession and inEntryWindow
 bool selectedPlanValid = selectedDirection != 0 and selectedPlanQualityOk and selectedPlanSpacingOk and selectedDailyRiskOk and selectedQty >= 1.0 and selectedPlanSessionOk
@@ -2041,7 +2051,7 @@ if selectedDirection == 0
     selectedBlockReason := "no_candidate"
 else if not selectedStructureClear
     selectedBlockReason := "no_clear_structure"
-else if not selectedEntryNearAnchor
+else if not selectedEntryNearAnchorOnly
     selectedBlockReason := "entry_too_far_from_anchor"
 else if not selectedRsiPassed
     selectedBlockReason := "rsi_not_turning"
