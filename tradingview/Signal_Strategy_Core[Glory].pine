@@ -83,6 +83,9 @@ atrLength = input.int(10, "ATR length", minval=1, group="03 Small Stop Risk")
 positionAmount = input.float(5000, "Notional cap per trade ($)", step=500, minval=100, group="03 Small Stop Risk")
 predictiveMaxRiskDollars = input.float(37.5, "Predictive max trial risk ($)", step=2.5, minval=1.0, group="03 Small Stop Risk")
 confirmedMaxRiskDollars = input.float(75.0, "Confirmed max trial risk ($)", step=5.0, minval=1.0, group="03 Small Stop Risk")
+riskQtySafetyPct = input.float(0.95, "Risk qty safety pct", step=0.01, minval=0.50, maxval=1.0, group="03 Small Stop Risk")
+riskQtyBufferAtr = input.float(0.03, "Risk qty safety buffer (x ATR)", step=0.01, minval=0.0, maxval=1.0, group="03 Small Stop Risk")
+useNotionalCap = input.bool(false, "Apply notional cap after risk qty", group="03 Small Stop Risk")
 predictiveMaxStopAtr = input.float(0.70, "Predictive max stop distance (x ATR)", step=0.05, minval=0.05, maxval=5.0, group="03 Small Stop Risk")
 confirmedMaxStopAtr = input.float(0.90, "Confirmed max stop distance (x ATR)", step=0.05, minval=0.05, maxval=5.0, group="03 Small Stop Risk")
 predictiveMaxStopBps = input.float(60.0, "Predictive max stop distance (bps)", step=5.0, minval=1.0, maxval=1000.0, group="03 Small Stop Risk")
@@ -195,6 +198,19 @@ orderIdForDirection(int direction) =>
 riskPerShare(float entryPrice, float stopPrice) =>
     math.abs(entryPrice - stopPrice)
 
+riskSafetyBuffer(float atrValue) =>
+    riskQtyBufferAtr > 0.0 ? math.max(syminfo.mintick, atrValue * riskQtyBufferAtr) : 0.0
+
+stopBoundedEntry(int direction, float proposedEntry, float stopPrice, float atrValue, float maxAtrMultiple, float maxBps) =>
+    if na(proposedEntry) or na(stopPrice) or stopPrice <= 0.0
+        proposedEntry
+    else
+        float maxAtrDistance = atrValue * maxAtrMultiple
+        float maxBpsDistance = stopPrice * maxBps / 10000.0
+        float maxDistance = math.max(syminfo.mintick, math.min(maxAtrDistance, maxBpsDistance))
+        float bounded = direction == -1 ? math.max(proposedEntry, stopPrice - maxDistance) : direction == 1 ? math.min(proposedEntry, stopPrice + maxDistance) : proposedEntry
+        direction == -1 ? math.min(bounded, stopPrice - syminfo.mintick) : direction == 1 ? math.max(bounded, stopPrice + syminfo.mintick) : bounded
+
 stopDistanceAtr(float entryPrice, float stopPrice, float atrValue) =>
     atrValue > 0.0 ? riskPerShare(entryPrice, stopPrice) / atrValue : na
 
@@ -207,22 +223,24 @@ visualLegBps(float legValue, float basisPrice) =>
 visualLegRatio(float numerator, float denominator) =>
     not na(numerator) and denominator > 0.0 ? math.max(0.0, numerator) / denominator : na
 
-smallStopTrialAllowed(float entryPrice, float stopPrice, float atrValue, float maxRiskDollars, float maxAtrMultiple, float maxBps) =>
+smallStopTrialAllowed(int direction, float entryPrice, float stopPrice, float atrValue, float maxRiskDollars, float maxAtrMultiple, float maxBps) =>
     float rps = riskPerShare(entryPrice, stopPrice)
     float atrDistance = stopDistanceAtr(entryPrice, stopPrice, atrValue)
     float bpsDistance = stopDistanceBps(entryPrice, stopPrice)
-    entryPrice > 0.0 and stopPrice > 0.0 and rps > 0.0 and rps <= maxRiskDollars and atrDistance <= maxAtrMultiple and bpsDistance <= maxBps
+    bool sideOk = direction == 1 ? stopPrice < entryPrice : direction == -1 ? stopPrice > entryPrice : false
+    sideOk and entryPrice > 0.0 and stopPrice > 0.0 and rps > 0.0 and rps <= maxRiskDollars and atrDistance <= maxAtrMultiple and bpsDistance <= maxBps
 
-smallStopGateReason(float entryPrice, float stopPrice, float atrValue, float maxRiskDollars, float maxAtrMultiple, float maxBps) =>
+smallStopGateReason(int direction, float entryPrice, float stopPrice, float atrValue, float maxRiskDollars, float maxAtrMultiple, float maxBps) =>
     float rps = riskPerShare(entryPrice, stopPrice)
     float atrDistance = stopDistanceAtr(entryPrice, stopPrice, atrValue)
     float bpsDistance = stopDistanceBps(entryPrice, stopPrice)
-    entryPrice <= 0.0 or stopPrice <= 0.0 ? "invalid_price" : rps <= 0.0 ? "invalid_stop" : rps > maxRiskDollars ? "one_share_risk_too_large" : atrDistance > maxAtrMultiple ? "stop_distance_atr_too_large" : bpsDistance > maxBps ? "stop_distance_bps_too_large" : "passed"
+    bool sideOk = direction == 1 ? stopPrice < entryPrice : direction == -1 ? stopPrice > entryPrice : false
+    not sideOk ? (direction == -1 ? "short_stop_not_above_entry" : direction == 1 ? "long_stop_not_below_entry" : "invalid_stop_direction") : entryPrice <= 0.0 or stopPrice <= 0.0 ? "invalid_price" : rps <= 0.0 ? "invalid_stop" : rps > maxRiskDollars ? "one_share_risk_too_large" : atrDistance > maxAtrMultiple ? "stop_distance_atr_too_large" : bpsDistance > maxBps ? "stop_distance_bps_too_large" : "passed"
 
 calcTrialQty(float entryPrice, float stopPrice, float maxRiskDollars) =>
-    float rps = riskPerShare(entryPrice, stopPrice)
-    float notionalQty = entryPrice > 0.0 ? math.floor(positionAmount / entryPrice) : 0.0
-    float riskQty = rps > 0.0 ? math.floor(maxRiskDollars / rps) : 0.0
+    float rps = riskPerShare(entryPrice, stopPrice) + riskSafetyBuffer(atr)
+    float riskQty = rps > 0.0 ? math.floor(maxRiskDollars * riskQtySafetyPct / rps) : 0.0
+    float notionalQty = useNotionalCap and entryPrice > 0.0 ? math.floor(positionAmount / entryPrice) : riskQty
     math.max(0.0, math.min(notionalQty, riskQty))
 
 calcTargetAtR(float entryPrice, float stopPrice, int direction, float rMultiple) =>
@@ -1002,7 +1020,7 @@ trendSupportSources := appendNearSource(trendSupportSources, dtpAvg, trendSuppor
 trendSupportSources := appendNearSource(trendSupportSources, sdMid, trendSupportBasis, tolerance, "sd_mid")
 trendSupportSources := appendNearSource(trendSupportSources, sdLower, trendSupportBasis, tolerance, "sd_lower")
 int trendSupportAgeBars = not na(todayStructLowBar) ? bar_index - todayStructLowBar : 0
-bool strongTrendSupport = trendLongContext and dayRangeClear and trendSupportAgeBars >= minTrendSupportAgeBars and trendSupportCount >= minConfluenceCount and not na(trendSupportZoneLow) and not na(trendSupportZoneHigh)
+bool strongTrendSupport = trendLongContext and dayRangeClear and trendSupportAgeBars >= minTrendSupportAgeBars and not na(trendSupportZoneLow) and not na(trendSupportZoneHigh)
 
 float trendResistanceBasis = trendShortContext ? todayStructHigh : na
 int trendResistanceCount = not na(trendResistanceBasis) ? 1 : 0
@@ -1034,31 +1052,31 @@ trendResistanceSources := appendNearSource(trendResistanceSources, dtpAvg, trend
 trendResistanceSources := appendNearSource(trendResistanceSources, sdMid, trendResistanceBasis, tolerance, "sd_mid")
 trendResistanceSources := appendNearSource(trendResistanceSources, sdUpper, trendResistanceBasis, tolerance, "sd_upper")
 int trendResistanceAgeBars = not na(todayStructHighBar) ? bar_index - todayStructHighBar : 0
-bool strongTrendResistance = trendShortContext and dayRangeClear and trendResistanceAgeBars >= minTrendSupportAgeBars and trendResistanceCount >= minConfluenceCount and not na(trendResistanceZoneLow) and not na(trendResistanceZoneHigh)
+bool strongTrendResistance = trendShortContext and dayRangeClear and trendResistanceAgeBars >= minTrendSupportAgeBars and not na(trendResistanceZoneLow) and not na(trendResistanceZoneHigh)
 
-float trendLongPredictEntry = strongTrendSupport ? trendSupportZoneLow + atr * predictiveEntryOffsetAtr : na
 float trendLongPredictStop = strongTrendSupport ? trendSupportZoneLow - invalidationBuffer : na
-float trendLongConfirmEntryRaw = strongTrendSupport ? math.min(close, trendSupportZoneHigh) : na
-float trendLongConfirmEntry = strongTrendSupport ? scalpLimitEntry(1, close, trendSupportBasis, trendLongConfirmEntryRaw, atr, scalpLimitOffsetAtr) : na
+float trendLongPredictEntry = strongTrendSupport ? stopBoundedEntry(1, trendSupportZoneLow + atr * predictiveEntryOffsetAtr, trendLongPredictStop, atr, predictiveMaxStopAtr, predictiveMaxStopBps) : na
 float trendLongConfirmStop = strongTrendSupport ? math.min(low, trendSupportZoneLow) - invalidationBuffer : na
+float trendLongConfirmEntryRaw = strongTrendSupport ? math.min(close, trendSupportZoneHigh) : na
+float trendLongConfirmEntry = strongTrendSupport ? stopBoundedEntry(1, scalpLimitEntry(1, close, trendSupportBasis, trendLongConfirmEntryRaw, atr, scalpLimitOffsetAtr), trendLongConfirmStop, atr, confirmedMaxStopAtr, confirmedMaxStopBps) : na
 bool trendLongPredictContext = trendLongContext and strongTrendSupport and trendLongPredictEntry <= close and close - trendSupportZoneHigh <= atr * predictionArmDistanceAtr
 bool trendLongConfirmContext = trendLongContext and strongTrendSupport and low <= trendSupportZoneHigh and close > trendSupportZoneHigh and close > open
 float trendLongPredictQty = calcTrialQty(trendLongPredictEntry, trendLongPredictStop, predictiveMaxRiskDollars)
 float trendLongConfirmQty = calcTrialQty(trendLongConfirmEntry, trendLongConfirmStop, confirmedMaxRiskDollars)
-bool trendLongPredictAllowed = trendLongPredictContext and smallStopTrialAllowed(trendLongPredictEntry, trendLongPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and trendLongPredictQty >= 1.0
-bool trendLongConfirmAllowed = trendLongConfirmContext and smallStopTrialAllowed(trendLongConfirmEntry, trendLongConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and trendLongConfirmQty >= 1.0
+bool trendLongPredictAllowed = trendLongPredictContext and smallStopTrialAllowed(1, trendLongPredictEntry, trendLongPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and trendLongPredictQty >= 1.0
+bool trendLongConfirmAllowed = trendLongConfirmContext and smallStopTrialAllowed(1, trendLongConfirmEntry, trendLongConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and trendLongConfirmQty >= 1.0
 
-float trendShortPredictEntry = strongTrendResistance ? trendResistanceZoneHigh - atr * predictiveEntryOffsetAtr : na
 float trendShortPredictStop = strongTrendResistance ? trendResistanceZoneHigh + invalidationBuffer : na
-float trendShortConfirmEntryRaw = strongTrendResistance ? math.max(close, trendResistanceZoneLow) : na
-float trendShortConfirmEntry = strongTrendResistance ? scalpLimitEntry(-1, close, trendResistanceBasis, trendShortConfirmEntryRaw, atr, scalpLimitOffsetAtr) : na
+float trendShortPredictEntry = strongTrendResistance ? stopBoundedEntry(-1, trendResistanceZoneHigh - atr * predictiveEntryOffsetAtr, trendShortPredictStop, atr, predictiveMaxStopAtr, predictiveMaxStopBps) : na
 float trendShortConfirmStop = strongTrendResistance ? math.max(high, trendResistanceZoneHigh) + invalidationBuffer : na
+float trendShortConfirmEntryRaw = strongTrendResistance ? math.max(close, trendResistanceZoneLow) : na
+float trendShortConfirmEntry = strongTrendResistance ? stopBoundedEntry(-1, scalpLimitEntry(-1, close, trendResistanceBasis, trendShortConfirmEntryRaw, atr, scalpLimitOffsetAtr), trendShortConfirmStop, atr, confirmedMaxStopAtr, confirmedMaxStopBps) : na
 bool trendShortPredictContext = trendShortContext and strongTrendResistance and trendShortPredictEntry >= close and trendResistanceZoneLow - close <= atr * predictionArmDistanceAtr
 bool trendShortConfirmContext = trendShortContext and strongTrendResistance and high >= trendResistanceZoneLow and close < trendResistanceZoneLow and close < open
 float trendShortPredictQty = calcTrialQty(trendShortPredictEntry, trendShortPredictStop, predictiveMaxRiskDollars)
 float trendShortConfirmQty = calcTrialQty(trendShortConfirmEntry, trendShortConfirmStop, confirmedMaxRiskDollars)
-bool trendShortPredictAllowed = trendShortPredictContext and smallStopTrialAllowed(trendShortPredictEntry, trendShortPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and trendShortPredictQty >= 1.0
-bool trendShortConfirmAllowed = trendShortConfirmContext and smallStopTrialAllowed(trendShortConfirmEntry, trendShortConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and trendShortConfirmQty >= 1.0
+bool trendShortPredictAllowed = trendShortPredictContext and smallStopTrialAllowed(-1, trendShortPredictEntry, trendShortPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and trendShortPredictQty >= 1.0
+bool trendShortConfirmAllowed = trendShortConfirmContext and smallStopTrialAllowed(-1, trendShortConfirmEntry, trendShortConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and trendShortConfirmQty >= 1.0
 
 float topBasis = todayStructHigh
 float topZoneLow = na(todayStructHighZoneLow) ? todayStructHigh : todayStructHighZoneLow
@@ -1091,7 +1109,7 @@ topSources := appendNearSource(topSources, emaFast, topBasis, tolerance, "ema20"
 topSources := appendNearSource(topSources, emaMid, topBasis, tolerance, "ema50")
 topSources := appendNearSource(topSources, emaSlow, topBasis, tolerance, "ema100")
 topSources := appendNearSource(topSources, dtpAvg, topBasis, tolerance, "dtp_avg")
-bool strongTopProbeZone = topCount >= minConfluenceCount and not na(topZoneLow) and not na(topZoneHigh)
+bool strongTopProbeZone = not na(todayStructHigh) and not na(topZoneLow) and not na(topZoneHigh)
 int topAnchorAgeBars = not na(todayStructHighBar) ? bar_index - todayStructHighBar : 0
 float topPullbackAtr = not na(todayStructHigh) and not na(lowSinceStructHigh) ? (todayStructHigh - lowSinceStructHigh) / atr : na
 float topLeftLeg = not na(todayStructHigh) and not na(lowBeforeStructHigh) ? todayStructHigh - lowBeforeStructHigh : na
@@ -1136,8 +1154,9 @@ bool topRightShoulder = strongTopProbeZone and topAnchorReady and topRetestBand
 string topProbePattern = topRightShoulder ? "retest_2b_top" : topFirstExhaustion ? "extension_exhaustion_top" : "none"
 float topWeakBase = topStructuralRetestLevel
 float topWeakExtensionAtr = not na(topWeakBase) and atr > 0.0 ? (high - topWeakBase) / atr : na
-float topPredictEntry = strongTopProbeZone ? topZoneHigh - atr * predictiveEntryOffsetAtr : na
-float topPredictStop = strongTopProbeZone ? topZoneHigh + invalidationBuffer : na
+float topPriorHighStop = math.max(nz(topStructuralRetestLevel, high), nz(topZoneHigh, high)) + invalidationBuffer
+float topPredictStop = strongTopProbeZone ? topPriorHighStop : na
+float topPredictEntry = strongTopProbeZone ? stopBoundedEntry(-1, topZoneHigh - atr * predictiveEntryOffsetAtr, topPredictStop, atr, predictiveMaxStopAtr, predictiveMaxStopBps) : na
 float topSignalDistanceAtr = not na(lastTopProbeSignalPrice) and atr > 0.0 ? math.abs(topPredictEntry - lastTopProbeSignalPrice) / atr : na
 bool topSignalBarsOk = na(lastTopProbeSignalBar) or bar_index - lastTopProbeSignalBar >= probeMinSignalGapBars
 bool topSignalPriceGapOk = na(topSignalDistanceAtr) or topSignalDistanceAtr >= minSameSideSignalSeparationAtr
@@ -1331,16 +1350,17 @@ float retestCloseEntryOffset = math.max(syminfo.mintick, atr * predictiveEntryOf
 float topFailureRetestEntry = nz(lastTopFailureWatchClose, close) + retestCloseEntryOffset
 float topClimaxRetestEntry = nz(lastTopVolumeClimaxClose, close) + retestCloseEntryOffset
 float topConfirmEntryRaw = topConfirmedShort ? (topVolumeClimaxFailedBreakConfirmed ? topClimaxRetestEntry : topCloseLimitShort ? topFailureRetestEntry : math.max(close, topZoneLow - atr * predictiveEntryOffsetAtr)) : na
-float topConfirmEntry = topConfirmedShort ? (topCloseLimitShort ? topConfirmEntryRaw : scalpLimitEntry(-1, close, topBasis, topConfirmEntryRaw, atr, scalpLimitOffsetAtr)) : na
-float topFailureWatchStop = math.max(nz(lastTopFailureWatchHigh, high), high) + invalidationBuffer
-float topNoDemandStop = math.max(nz(lastTopNoDemandHigh, high), high) + invalidationBuffer
-float topConfirmStop = topConfirmedShort ? (topVolumeClimaxFailedBreakConfirmed ? math.max(nz(lastTopVolumeClimaxHigh, high), high) + invalidationBuffer : topNoDemandBreakConfirmed ? topNoDemandStop : topHighVolumeDropConfirmed or topImmediateReversalShort ? topFailureWatchStop : math.max(high, topZoneHigh) + invalidationBuffer) : na
+float topFailureWatchStop = looserStop(math.max(nz(lastTopFailureWatchHigh, high), high) + invalidationBuffer, topPriorHighStop, -1)
+float topNoDemandStop = looserStop(math.max(nz(lastTopNoDemandHigh, high), high) + invalidationBuffer, topPriorHighStop, -1)
+float topClimaxStop = looserStop(math.max(nz(lastTopVolumeClimaxHigh, high), high) + invalidationBuffer, topPriorHighStop, -1)
+float topConfirmStop = topConfirmedShort ? (topVolumeClimaxFailedBreakConfirmed ? topClimaxStop : topNoDemandBreakConfirmed ? topNoDemandStop : topHighVolumeDropConfirmed or topImmediateReversalShort ? topFailureWatchStop : looserStop(math.max(high, topZoneHigh) + invalidationBuffer, topPriorHighStop, -1)) : na
+float topConfirmEntry = topConfirmedShort ? stopBoundedEntry(-1, topCloseLimitShort ? topConfirmEntryRaw : scalpLimitEntry(-1, close, topBasis, topConfirmEntryRaw, atr, scalpLimitOffsetAtr), topConfirmStop, atr, confirmedMaxStopAtr, confirmedMaxStopBps) : na
 bool topPredictContext = (topFirstExhaustion or topRightShoulder) and topCounterTrendAllowed and topPredictEntry >= close and topPredictEntry - close <= atr * predictionArmDistanceAtr and topSignalGapOk and topPredictVolumeOk
 bool topConfirmContext = topConfirmedShort and (topCounterTrendAllowed or upperExhaustionConfirmedShort or topWeakNewHighConfirmed or topDistributionDropConfirmed or topFailureRepeatShort) and topConfirmGapOk and topConfirmVolumeOk
 float topPredictQty = calcTrialQty(topPredictEntry, topPredictStop, predictiveMaxRiskDollars)
 float topConfirmQty = calcTrialQty(topConfirmEntry, topConfirmStop, confirmedMaxRiskDollars)
-bool topPredictAllowed = topPredictContext and smallStopTrialAllowed(topPredictEntry, topPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and topPredictQty >= 1.0
-bool topConfirmAllowed = topConfirmContext and smallStopTrialAllowed(topConfirmEntry, topConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and topConfirmQty >= 1.0
+bool topPredictAllowed = topPredictContext and smallStopTrialAllowed(-1, topPredictEntry, topPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and topPredictQty >= 1.0
+bool topConfirmAllowed = topConfirmContext and smallStopTrialAllowed(-1, topConfirmEntry, topConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and topConfirmQty >= 1.0
 string topProbeFilterReason = "passed"
 if na(todayStructHigh)
     topProbeFilterReason := "no_today_struct_high"
@@ -1396,7 +1416,7 @@ bottomSources := appendNearSource(bottomSources, emaFast, bottomBasis, tolerance
 bottomSources := appendNearSource(bottomSources, emaMid, bottomBasis, tolerance, "ema50")
 bottomSources := appendNearSource(bottomSources, emaSlow, bottomBasis, tolerance, "ema100")
 bottomSources := appendNearSource(bottomSources, dtpAvg, bottomBasis, tolerance, "dtp_avg")
-bool strongBottomProbeZone = bottomCount >= minConfluenceCount and not na(bottomZoneLow) and not na(bottomZoneHigh)
+bool strongBottomProbeZone = not na(todayStructLow) and not na(bottomZoneLow) and not na(bottomZoneHigh)
 int bottomAnchorAgeBars = not na(todayStructLowBar) ? bar_index - todayStructLowBar : 0
 float bottomPullbackAtr = not na(todayStructLow) and not na(highSinceStructLow) ? (highSinceStructLow - todayStructLow) / atr : na
 float bottomLeftLeg = not na(todayStructLow) and not na(highBeforeStructLow) ? highBeforeStructLow - todayStructLow : na
@@ -1432,8 +1452,9 @@ bool bottomRightShoulder = strongBottomProbeZone and bottomAnchorReady and botto
 string bottomProbePattern = bottomRightShoulder ? "retest_2b_bottom" : bottomFirstExhaustion ? "extension_exhaustion_bottom" : "none"
 float bottomWeakBase = bottomStructuralRetestLevel
 float bottomWeakExtensionAtr = not na(bottomWeakBase) and atr > 0.0 ? (bottomWeakBase - low) / atr : na
-float bottomPredictEntry = strongBottomProbeZone ? bottomZoneLow + atr * predictiveEntryOffsetAtr : na
-float bottomPredictStop = strongBottomProbeZone ? bottomZoneLow - invalidationBuffer : na
+float bottomPriorLowStop = math.min(nz(bottomStructuralRetestLevel, low), nz(bottomZoneLow, low)) - invalidationBuffer
+float bottomPredictStop = strongBottomProbeZone ? bottomPriorLowStop : na
+float bottomPredictEntry = strongBottomProbeZone ? stopBoundedEntry(1, bottomZoneLow + atr * predictiveEntryOffsetAtr, bottomPredictStop, atr, predictiveMaxStopAtr, predictiveMaxStopBps) : na
 float bottomSignalDistanceAtr = not na(lastBottomProbeSignalPrice) and atr > 0.0 ? math.abs(bottomPredictEntry - lastBottomProbeSignalPrice) / atr : na
 bool bottomSignalBarsOk = na(lastBottomProbeSignalBar) or bar_index - lastBottomProbeSignalBar >= probeMinSignalGapBars
 bool bottomSignalPriceGapOk = na(bottomSignalDistanceAtr) or bottomSignalDistanceAtr >= minSameSideSignalSeparationAtr
@@ -1596,16 +1617,16 @@ else if volumeQuietRetest
 bool bottomCloseLimitLong = bottomHighVolumeRiseConfirmed or bottomNoSupplyBreakConfirmed
 float bottomFailureRetestEntry = nz(lastBottomFailureWatchClose, close) - retestCloseEntryOffset
 float bottomConfirmEntryRaw = bottomConfirmedLong ? (bottomCloseLimitLong ? bottomFailureRetestEntry : math.min(close, bottomZoneHigh + atr * predictiveEntryOffsetAtr)) : na
-float bottomConfirmEntry = bottomConfirmedLong ? (bottomCloseLimitLong ? bottomConfirmEntryRaw : scalpLimitEntry(1, close, bottomBasis, bottomConfirmEntryRaw, atr, scalpLimitOffsetAtr)) : na
-float bottomFailureWatchStop = math.min(nz(lastBottomFailureWatchLow, low), low) - invalidationBuffer
-float bottomNoSupplyStop = math.min(nz(lastBottomNoSupplyLow, low), low) - invalidationBuffer
-float bottomConfirmStop = bottomConfirmedLong ? (bottomNoSupplyBreakConfirmed ? bottomNoSupplyStop : bottomHighVolumeRiseConfirmed ? bottomFailureWatchStop : math.min(low, bottomZoneLow) - invalidationBuffer) : na
+float bottomFailureWatchStop = looserStop(math.min(nz(lastBottomFailureWatchLow, low), low) - invalidationBuffer, bottomPriorLowStop, 1)
+float bottomNoSupplyStop = looserStop(math.min(nz(lastBottomNoSupplyLow, low), low) - invalidationBuffer, bottomPriorLowStop, 1)
+float bottomConfirmStop = bottomConfirmedLong ? (bottomNoSupplyBreakConfirmed ? bottomNoSupplyStop : bottomHighVolumeRiseConfirmed ? bottomFailureWatchStop : looserStop(math.min(low, bottomZoneLow) - invalidationBuffer, bottomPriorLowStop, 1)) : na
+float bottomConfirmEntry = bottomConfirmedLong ? stopBoundedEntry(1, bottomCloseLimitLong ? bottomConfirmEntryRaw : scalpLimitEntry(1, close, bottomBasis, bottomConfirmEntryRaw, atr, scalpLimitOffsetAtr), bottomConfirmStop, atr, confirmedMaxStopAtr, confirmedMaxStopBps) : na
 bool bottomPredictContext = (bottomFirstExhaustion or bottomRightShoulder) and bottomCounterTrendAllowed and bottomPredictEntry <= close and close - bottomPredictEntry <= atr * predictionArmDistanceAtr and bottomSignalGapOk and bottomPredictVolumeOk
 bool bottomConfirmContext = bottomConfirmedLong and (bottomCounterTrendAllowed or lowerExhaustionConfirmedLong or bottomWeakNewLowConfirmed or bottomAccumulationRiseConfirmed or bottomHighVolumeRiseConfirmed or bottomNoSupplyBreakConfirmed) and bottomSignalGapOk and bottomConfirmVolumeOk
 float bottomPredictQty = calcTrialQty(bottomPredictEntry, bottomPredictStop, predictiveMaxRiskDollars)
 float bottomConfirmQty = calcTrialQty(bottomConfirmEntry, bottomConfirmStop, confirmedMaxRiskDollars)
-bool bottomPredictAllowed = bottomPredictContext and smallStopTrialAllowed(bottomPredictEntry, bottomPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and bottomPredictQty >= 1.0
-bool bottomConfirmAllowed = bottomConfirmContext and smallStopTrialAllowed(bottomConfirmEntry, bottomConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and bottomConfirmQty >= 1.0
+bool bottomPredictAllowed = bottomPredictContext and smallStopTrialAllowed(1, bottomPredictEntry, bottomPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and bottomPredictQty >= 1.0
+bool bottomConfirmAllowed = bottomConfirmContext and smallStopTrialAllowed(1, bottomConfirmEntry, bottomConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and bottomConfirmQty >= 1.0
 string bottomProbeFilterReason = "passed"
 if na(todayStructLow)
     bottomProbeFilterReason := "no_today_struct_low"
@@ -1672,12 +1693,13 @@ float selectedEmaProfitAtr = selectedDirection != 0 and atr > 0.0 ? math.abs(sel
 bool selectedEmaTargetInProfit = selectedDirection == 1 ? selectedTarget > selectedEntry : selectedDirection == -1 ? selectedTarget < selectedEntry : false
 float selectedExpectedR = selectedDirection != 0 and riskPerShare(selectedEntry, selectedStop) > 0.0 ? math.abs(selectedTarget - selectedEntry) / riskPerShare(selectedEntry, selectedStop) : na
 bool selectedExpectedRPassed = selectedDirection != 0 and selectedEmaTargetInProfit and selectedEmaProfitAtr >= minEmaProfitAtr and selectedExpectedR >= scalpMinExpectedR
-bool selectedSmallStopGatePassed = selectedDirection != 0 and smallStopTrialAllowed(selectedEntry, selectedStop, atr, selectedRiskBudget, selectedMaxStopAtr, selectedMaxStopBps)
-string selectedSmallStopGateReason = selectedDirection == 0 ? "no_candidate" : smallStopGateReason(selectedEntry, selectedStop, atr, selectedRiskBudget, selectedMaxStopAtr, selectedMaxStopBps)
+bool selectedSmallStopGatePassed = selectedDirection != 0 and smallStopTrialAllowed(selectedDirection, selectedEntry, selectedStop, atr, selectedRiskBudget, selectedMaxStopAtr, selectedMaxStopBps)
+string selectedSmallStopGateReason = selectedDirection == 0 ? "no_candidate" : smallStopGateReason(selectedDirection, selectedEntry, selectedStop, atr, selectedRiskBudget, selectedMaxStopAtr, selectedMaxStopBps)
 float selectedStructureAnchor = selectedTrendSupport ? trendSupportBasis : selectedTrendResistance ? trendResistanceBasis : selectedTopProbe ? todayStructHigh : selectedBottomProbe ? todayStructLow : na
 float selectedEntryAnchorDistanceAtr = selectedDirection != 0 and not na(selectedStructureAnchor) and atr > 0.0 ? math.abs(selectedEntry - selectedStructureAnchor) / atr : na
 bool selectedProbeStrictTouchOk = selectedTopProbe ? topStrictRetestTouch : selectedBottomProbe ? bottomStrictRetestTouch : false
-bool selectedEntryNearAnchorOnly = selectedDirection == 0 or selectedProbeStrictTouchOk or (not na(selectedEntryAnchorDistanceAtr) and selectedEntryAnchorDistanceAtr <= scalpMaxEntryAwayAtr)
+bool selectedFailureRetestLimit = selectedTopProbe and topCloseLimitShort or selectedBottomProbe and bottomCloseLimitLong
+bool selectedEntryNearAnchorOnly = selectedDirection == 0 or selectedProbeStrictTouchOk or selectedFailureRetestLimit or (not na(selectedEntryAnchorDistanceAtr) and selectedEntryAnchorDistanceAtr <= scalpMaxEntryAwayAtr)
 bool selectedRsiPassed = selectedDirection == 1 ? scalpRsiLongOk : selectedDirection == -1 ? scalpRsiShortOk : false
 string selectedRsiState = selectedDirection == 1 ? (scalpFastBullDiv ? "fast_bull_divergence" : scalpRsiLongOk ? "low_turning_up" : "long_rsi_not_turning") : selectedDirection == -1 ? (scalpFastBearDiv ? "fast_bear_divergence" : scalpRsiShortOk ? "high_turning_down" : "short_rsi_not_turning") : "none"
 bool selectedStructureClear = selectedTrendSupport ? trendLongContext and strongTrendSupport : selectedTrendResistance ? trendShortContext and strongTrendResistance : selectedTopProbe ? strongTopProbeZone and topConfirmedShort : selectedBottomProbe ? strongBottomProbeZone and bottomConfirmedLong : false
@@ -1796,7 +1818,8 @@ exitReasonDisplayNameCore(string reason) =>
     reason == "take_profit" ? "TP" : reason == "runner_stop" ? "RUN" : reason == "no_follow_scalp_exit" ? "NFT" : reason == "exhaustion_take_profit" ? "XTP" : reason == "stop_loss" ? "SL" : reason == "force_flat_eod" ? "EOD" : reason == "strategy_closed" ? "CLS" : reason
 
 entryOrderComment(int direction, float entryPrice, float qty, float stopPrice, float targetPrice, float runnerPrice) =>
-    (direction == 1 ? "L " : "S ") + fmtPrice(entryPrice) + " Q" + str.tostring(qty, "#")
+    float plannedRisk = riskPerShare(entryPrice, stopPrice) * qty
+    (direction == 1 ? "L " : "S ") + fmtPrice(entryPrice) + " Q" + str.tostring(qty, "#") + " SL " + fmtPrice(stopPrice) + " TP " + fmtPrice(targetPrice) + " R$" + str.tostring(plannedRisk, "#.##")
 
 exitOrderComment(string reason, float exitPrice) =>
     float pnlPerShare = activeDirection == 1 ? exitPrice - activeEntry : activeEntry - exitPrice
@@ -2128,6 +2151,8 @@ else if not selectedDailyRiskOk
     selectedBlockReason := "daily_risk_cap_hit"
 else if not selectedSmallStopGatePassed
     selectedBlockReason := selectedSmallStopGateReason
+else if selectedQty < 1.0
+    selectedBlockReason := "qty_too_small"
 else if not selectedExpectedRPassed
     selectedBlockReason := selectedExpectedRBlockReason
 bool meaningfulPlanMove = math.abs(nz(activeEntry, selectedEntry) - selectedEntry) >= atr * planReplaceMinMoveAtr or math.abs(nz(activeStop, selectedStop) - selectedStop) >= atr * planReplaceMinMoveAtr or math.abs(nz(activeStructureAnchor, selectedStructureAnchor) - selectedStructureAnchor) >= atr * planReplaceMinMoveAtr

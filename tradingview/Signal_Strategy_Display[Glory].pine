@@ -88,6 +88,9 @@ atrLength = input.int(10, "ATR length", minval=1, group="03 Small Stop Risk")
 positionAmount = input.float(5000, "Notional cap per trade ($)", step=500, minval=100, group="03 Small Stop Risk")
 predictiveMaxRiskDollars = input.float(37.5, "Predictive max trial risk ($)", step=2.5, minval=1.0, group="03 Small Stop Risk")
 confirmedMaxRiskDollars = input.float(75.0, "Confirmed max trial risk ($)", step=5.0, minval=1.0, group="03 Small Stop Risk")
+riskQtySafetyPct = input.float(0.95, "Risk qty safety pct", step=0.01, minval=0.50, maxval=1.0, group="03 Small Stop Risk")
+riskQtyBufferAtr = input.float(0.03, "Risk qty safety buffer (x ATR)", step=0.01, minval=0.0, maxval=1.0, group="03 Small Stop Risk")
+useNotionalCap = input.bool(false, "Apply notional cap after risk qty", group="03 Small Stop Risk")
 predictiveMaxStopAtr = input.float(0.70, "Predictive max stop distance (x ATR)", step=0.05, minval=0.05, maxval=5.0, group="03 Small Stop Risk")
 confirmedMaxStopAtr = input.float(0.90, "Confirmed max stop distance (x ATR)", step=0.05, minval=0.05, maxval=5.0, group="03 Small Stop Risk")
 predictiveMaxStopBps = input.float(60.0, "Predictive max stop distance (bps)", step=5.0, minval=1.0, maxval=1000.0, group="03 Small Stop Risk")
@@ -123,8 +126,6 @@ entryOrderTtlBars = input.int(3, "Entry order TTL bars", minval=1, maxval=20, gr
 displayPreset = input.string("核心交易流程", "Display preset", options=["核心交易流程", "指标辅助", "调试全量"], group="04 Display")
 showSignalEventFlow = input.bool(true, "Show signal event flow", group="04 Display")
 showHistoricalPlanLines = input.bool(true, "Keep historical plan lines", group="04 Display")
-showStatusTable = input.bool(false, "Show status table", group="04 Display")
-showEntryWindowStatus = input.bool(true, "Show entry window status", group="04 Display")
 showEntryWindowMarkers = input.bool(true, "Show entry window markers", group="04 Display")
 showEma = input.bool(true, "Show EMA fast/slow", group="04 Display")
 showBands = input.bool(true, "Show SD bands", group="04 Display")
@@ -214,8 +215,18 @@ moneyText(float value) =>
 qtyText(float qty) =>
     na(qty) ? "--" : str.tostring(qty, "#")
 
-planMoneyText(float entryPrice, float stopPrice, float runnerPrice, float targetPrice, int direction, float qty) =>
-    "SL " + moneyText(pnlDollars(entryPrice, stopPrice, direction, qty)) + " / Runner " + moneyText(pnlDollars(entryPrice, runnerPrice, direction, qty)) + " / TP " + moneyText(pnlDollars(entryPrice, targetPrice, direction, qty))
+riskSafetyBuffer(float atrValue) =>
+    riskQtyBufferAtr > 0.0 ? math.max(syminfo.mintick, atrValue * riskQtyBufferAtr) : 0.0
+
+stopBoundedEntry(int direction, float proposedEntry, float stopPrice, float atrValue, float maxAtrMultiple, float maxBps) =>
+    if na(proposedEntry) or na(stopPrice) or stopPrice <= 0.0
+        proposedEntry
+    else
+        float maxAtrDistance = atrValue * maxAtrMultiple
+        float maxBpsDistance = stopPrice * maxBps / 10000.0
+        float maxDistance = math.max(syminfo.mintick, math.min(maxAtrDistance, maxBpsDistance))
+        float bounded = direction == -1 ? math.max(proposedEntry, stopPrice - maxDistance) : direction == 1 ? math.min(proposedEntry, stopPrice + maxDistance) : proposedEntry
+        direction == -1 ? math.min(bounded, stopPrice - syminfo.mintick) : direction == 1 ? math.max(bounded, stopPrice + syminfo.mintick) : bounded
 
 stopDistanceAtr(float entryPrice, float stopPrice, float atrValue) =>
     atrValue > 0.0 ? riskPerShare(entryPrice, stopPrice) / atrValue : na
@@ -229,22 +240,24 @@ visualLegBps(float legValue, float basisPrice) =>
 visualLegRatio(float numerator, float denominator) =>
     not na(numerator) and denominator > 0.0 ? math.max(0.0, numerator) / denominator : na
 
-smallStopTrialAllowed(float entryPrice, float stopPrice, float atrValue, float maxRiskDollars, float maxAtrMultiple, float maxBps) =>
+smallStopTrialAllowed(int direction, float entryPrice, float stopPrice, float atrValue, float maxRiskDollars, float maxAtrMultiple, float maxBps) =>
     float rps = riskPerShare(entryPrice, stopPrice)
     float atrDistance = stopDistanceAtr(entryPrice, stopPrice, atrValue)
     float bpsDistance = stopDistanceBps(entryPrice, stopPrice)
-    entryPrice > 0.0 and stopPrice > 0.0 and rps > 0.0 and rps <= maxRiskDollars and atrDistance <= maxAtrMultiple and bpsDistance <= maxBps
+    bool sideOk = direction == 1 ? stopPrice < entryPrice : direction == -1 ? stopPrice > entryPrice : false
+    sideOk and entryPrice > 0.0 and stopPrice > 0.0 and rps > 0.0 and rps <= maxRiskDollars and atrDistance <= maxAtrMultiple and bpsDistance <= maxBps
 
-smallStopGateReason(float entryPrice, float stopPrice, float atrValue, float maxRiskDollars, float maxAtrMultiple, float maxBps) =>
+smallStopGateReason(int direction, float entryPrice, float stopPrice, float atrValue, float maxRiskDollars, float maxAtrMultiple, float maxBps) =>
     float rps = riskPerShare(entryPrice, stopPrice)
     float atrDistance = stopDistanceAtr(entryPrice, stopPrice, atrValue)
     float bpsDistance = stopDistanceBps(entryPrice, stopPrice)
-    entryPrice <= 0.0 or stopPrice <= 0.0 ? "invalid_price" : rps <= 0.0 ? "invalid_stop" : rps > maxRiskDollars ? "one_share_risk_too_large" : atrDistance > maxAtrMultiple ? "stop_distance_atr_too_large" : bpsDistance > maxBps ? "stop_distance_bps_too_large" : "passed"
+    bool sideOk = direction == 1 ? stopPrice < entryPrice : direction == -1 ? stopPrice > entryPrice : false
+    not sideOk ? (direction == -1 ? "short_stop_not_above_entry" : direction == 1 ? "long_stop_not_below_entry" : "invalid_stop_direction") : entryPrice <= 0.0 or stopPrice <= 0.0 ? "invalid_price" : rps <= 0.0 ? "invalid_stop" : rps > maxRiskDollars ? "one_share_risk_too_large" : atrDistance > maxAtrMultiple ? "stop_distance_atr_too_large" : bpsDistance > maxBps ? "stop_distance_bps_too_large" : "passed"
 
 calcTrialQty(float entryPrice, float stopPrice, float maxRiskDollars) =>
-    float rps = riskPerShare(entryPrice, stopPrice)
-    float notionalQty = entryPrice > 0.0 ? math.floor(positionAmount / entryPrice) : 0.0
-    float riskQty = rps > 0.0 ? math.floor(maxRiskDollars / rps) : 0.0
+    float rps = riskPerShare(entryPrice, stopPrice) + riskSafetyBuffer(atr)
+    float riskQty = rps > 0.0 ? math.floor(maxRiskDollars * riskQtySafetyPct / rps) : 0.0
+    float notionalQty = useNotionalCap and entryPrice > 0.0 ? math.floor(positionAmount / entryPrice) : riskQty
     math.max(0.0, math.min(notionalQty, riskQty))
 
 calcTargetAtR(float entryPrice, float stopPrice, int direction, float rMultiple) =>
@@ -335,9 +348,7 @@ reasonCn(string reason) =>
     else if reason == "no_candidate"
         result := "无候选"
     else if reason == "no_clear_structure"
-        result := "结构不清晰"
-    else if reason == "confluence_count_too_low"
-        result := "共振数量不足"
+        result := "价格行为结构未成立"
     else if reason == "confirm_signal_missing"
         result := "确认信号不足"
     else if reason == "trend_context_missing"
@@ -374,6 +385,8 @@ reasonCn(string reason) =>
         result := "RSI未转弱/转强"
     else if reason == "micro_structure_too_close"
         result := "同向信号太近"
+    else if reason == "signal_bars_too_close"
+        result := "信号bar间隔太近"
     else if reason == "any_plan_too_close"
         result := "距离上一计划太近"
     else if reason == "daily_risk_cap_hit"
@@ -384,13 +397,37 @@ reasonCn(string reason) =>
         result := "盈亏比不够"
     else if reason == "outside_entry_session"
         result := "不在入场时间"
+    else if reason == "weak_next_no_retest"
+        result := "下一根未再次触达结构位"
+    else if reason == "weak_next_no_break_watch"
+        result := "下一根未突破观察位"
+    else if reason == "weak_next_rsi_missing"
+        result := "下一根RSI未证明"
+    else if reason == "weak_next_distance_too_far"
+        result := "下一根离结构位太远"
+    else if reason == "weak_next_filtered"
+        result := "下一根最终过滤"
+    else if reason == "pending_limit_not_touched"
+        result := "限价未成交"
+    else if reason == "weak_next_no_confirmation"
+        result := "下一根未形成确认"
+    else if reason == "qty_too_small"
+        result := "数量不足"
+    else if reason == "short_stop_not_above_entry"
+        result := "空单止损不在入场上方"
+    else if reason == "long_stop_not_below_entry"
+        result := "多单止损不在入场下方"
+    else if reason == "invalid_stop_direction"
+        result := "止损方向无效"
+    else if reason == "main_flow_filter"
+        result := "主流程过滤"
     result
 
 flowColor(string state, int direction) =>
-    state == "blocked" or state == "trend_blocked" ? color.new(color.gray, flowLabelTransparency) : state == "armed" ? color.new(color.yellow, flowLabelTransparency) : state == "entry_far_limit_wait" ? color.new(color.orange, flowLabelTransparency) : state == "weak_structure_reversal" ? color.new(color.maroon, flowLabelTransparency) : state == "predictive" ? color.new(color.orange, flowLabelTransparency) : state == "confirmed" ? color.new(color.teal, flowLabelTransparency) : state == "exit" ? color.new(color.purple, flowLabelTransparency) : direction == 1 ? color.new(color.green, flowLabelTransparency) : color.new(color.red, flowLabelTransparency)
+    state == "blocked" or state == "trend_blocked" ? color.new(color.gray, flowLabelTransparency) : state == "armed" ? color.new(color.yellow, flowLabelTransparency) : state == "entry_far_limit_wait" or state == "weak_next_x" ? color.new(color.orange, flowLabelTransparency) : state == "weak_structure_reversal" ? color.new(color.maroon, flowLabelTransparency) : state == "predictive" ? color.new(color.orange, flowLabelTransparency) : state == "confirmed" ? color.new(color.teal, flowLabelTransparency) : state == "exit" ? color.new(color.purple, flowLabelTransparency) : direction == 1 ? color.new(color.green, flowLabelTransparency) : color.new(color.red, flowLabelTransparency)
 
 labelTextColor(string state, int direction) =>
-    labelTextMode == "white" ? color.white : labelTextMode == "black" ? color.black : state == "predictive" or state == "blocked" ? color.black : color.white
+    labelTextMode == "white" ? color.white : labelTextMode == "black" ? color.black : state == "predictive" or state == "blocked" or state == "weak_next_x" ? color.black : color.white
 
 flowLabelText(string compactText, string detailText) =>
     labelDetailMode == "compact_tooltip" ? compactText : detailText
@@ -414,7 +451,7 @@ flowY(int direction, float offsetAtr) =>
     labelYForSide(labelAboveForDirection(direction), offsetAtr)
 
 eventFlowMinOffset(string state) =>
-    state == "structure" ? math.max(1.20, tipVerticalDistanceAtr * 0.70) : state == "observe" or state == "watch" ? math.max(1.40, tipVerticalDistanceAtr * 0.80) : state == "armed" or state == "candidate" or state == "confirmed" or state == "entry_far_limit_wait" or state == "weak_structure_reversal" or state == "trend_blocked" or state == "risk" ? math.max(1.60, tipVerticalDistanceAtr * 0.90) : tipVerticalDistanceAtr
+    state == "structure" ? math.max(1.20, tipVerticalDistanceAtr * 0.70) : state == "observe" or state == "watch" or state == "weak_next_x" ? math.max(1.40, tipVerticalDistanceAtr * 0.80) : state == "armed" or state == "candidate" or state == "confirmed" or state == "entry_far_limit_wait" or state == "weak_structure_reversal" or state == "trend_blocked" or state == "risk" ? math.max(1.60, tipVerticalDistanceAtr * 0.90) : tipVerticalDistanceAtr
 
 eventFlowY(int direction, string state, float offsetAtr) =>
     flowY(direction, math.max(offsetAtr, eventFlowMinOffset(state)))
@@ -435,35 +472,69 @@ eventMarkerSize(string markerKind) =>
     markerKind == "confirmed" or markerKind == "entry_far_limit_wait" or markerKind == "armed" ? size.small : size.tiny
 
 eventMarkerGlyph(string markerKind, int direction, string markerText) =>
-    markerText != "" and markerText != " " ? markerText : markerKind == "confirmed" ? (direction == 1 ? "多" : "空") : markerKind == "entry_far_limit_wait" ? "限" : markerKind == "armed" ? "待" : markerKind == "weak_structure_reversal" ? "弱" : markerKind == "trend_blocked" ? "逆" : markerKind == "candidate" ? (direction == 1 ? "^" : "v") : markerKind == "blocked" ? "x" : markerKind == "risk" ? "!" : markerKind == "watch" ? (direction == 1 ? "+" : "-") : "o"
+    markerText != "" and markerText != " " ? markerText : markerKind == "confirmed" ? (direction == 1 ? "多" : "空") : markerKind == "entry_far_limit_wait" ? "限" : markerKind == "armed" ? "待" : markerKind == "weak_next_x" ? "X" : markerKind == "weak_structure_reversal" ? "弱" : markerKind == "trend_blocked" ? "逆" : markerKind == "candidate" ? (direction == 1 ? "^" : "v") : markerKind == "blocked" ? "x" : markerKind == "risk" ? "!" : markerKind == "watch" ? (direction == 1 ? "+" : "-") : "o"
 
 eventMarkerColor(string markerKind, int direction) =>
-    markerKind == "structure" ? color.new(color.aqua, 0) : markerKind == "armed" ? color.new(color.yellow, 0) : markerKind == "entry_far_limit_wait" ? color.new(color.orange, 0) : markerKind == "weak_structure_reversal" ? color.new(color.maroon, 0) : markerKind == "trend_blocked" ? color.new(color.gray, 0) : markerKind == "confirmed" ? color.new(direction == 1 ? color.lime : color.red, 0) : markerKind == "candidate" ? color.new(color.orange, 0) : markerKind == "blocked" ? color.new(color.purple, 0) : markerKind == "risk" ? color.new(color.blue, 0) : markerKind == "observe" ? color.new(color.gray, 0) : markerKind == "watch" ? color.new(direction == 1 ? color.lime : color.red, 0) : color.new(direction == 1 ? color.lime : color.red, 0)
+    markerKind == "structure" ? color.new(color.aqua, 0) : markerKind == "armed" ? color.new(color.yellow, 0) : markerKind == "entry_far_limit_wait" or markerKind == "weak_next_x" ? color.new(color.orange, 0) : markerKind == "weak_structure_reversal" ? color.new(color.maroon, 0) : markerKind == "trend_blocked" ? color.new(color.gray, 0) : markerKind == "confirmed" ? color.new(direction == 1 ? color.lime : color.red, 0) : markerKind == "candidate" ? color.new(color.orange, 0) : markerKind == "blocked" ? color.new(color.purple, 0) : markerKind == "risk" ? color.new(color.blue, 0) : markerKind == "observe" ? color.new(color.gray, 0) : markerKind == "watch" ? color.new(direction == 1 ? color.lime : color.red, 0) : color.new(direction == 1 ? color.lime : color.red, 0)
 
 eventMarkerStyle(string markerKind, int direction) =>
     label.style_none
 
 eventMarkerLane(string markerKind) =>
-    markerKind == "structure" ? 0.02 : markerKind == "observe" ? 0.14 : markerKind == "armed" ? 0.22 : markerKind == "watch" ? 0.30 : markerKind == "candidate" ? 0.42 : markerKind == "confirmed" or markerKind == "entry_far_limit_wait" ? 0.54 : markerKind == "weak_structure_reversal" or markerKind == "trend_blocked" ? 0.58 : markerKind == "blocked" ? 0.66 : markerKind == "risk" ? 0.74 : 0.20
+    markerKind == "structure" ? 0.02 : markerKind == "observe" ? 0.14 : markerKind == "armed" ? 0.22 : markerKind == "watch" ? 0.30 : markerKind == "weak_next_x" ? 0.36 : markerKind == "candidate" ? 0.42 : markerKind == "confirmed" or markerKind == "entry_far_limit_wait" ? 0.54 : markerKind == "weak_structure_reversal" or markerKind == "trend_blocked" ? 0.58 : markerKind == "blocked" ? 0.66 : markerKind == "risk" ? 0.74 : 0.20
 
 eventMarkerY(int direction, string markerKind, float offsetAtr) =>
     float laneOffset = offsetAtr + eventMarkerLane(markerKind)
     labelYForSide(labelAboveForDirection(direction), math.max(laneOffset, eventFlowMinOffset(markerKind)))
 
-eventMarker(int direction, string markerKind, string markerText, string detailText, float offsetAtr) =>
+eventMarkerPriority(string markerKind) =>
+    markerKind == "confirmed" or markerKind == "entry_far_limit_wait" ? 100 : markerKind == "candidate" ? 90 : markerKind == "blocked" or markerKind == "weak_structure_reversal" or markerKind == "trend_blocked" ? 80 : markerKind == "armed" ? 60 : markerKind == "watch" ? 50 : markerKind == "observe" ? 40 : markerKind == "structure" ? 30 : markerKind == "weak_next_x" ? 20 : 10
+
+eventMarkerPreserved(string markerKind) =>
+    markerKind == "structure" or markerKind == "watch"
+
+newEventMarkerLabel(int direction, string markerKind, string markerText, string detailText, float offsetAtr) =>
     label.new(bar_index, eventMarkerY(direction, markerKind, offsetAtr), eventMarkerText(eventMarkerGlyph(markerKind, direction, markerText), detailText), style=eventMarkerStyle(markerKind, direction), color=color.new(color.white, 100), textcolor=eventMarkerColor(markerKind, direction), size=eventMarkerSize(markerKind), tooltip=eventMarkerTooltip(detailText))
 
-tableBgColor(int row) =>
-    row == 0 ? color.new(color.black, 0) : row % 2 == 0 ? color.new(color.black, 8) : color.new(color.black, 18)
-
-tableTextColor(int row) =>
-    color.white
-
-entryWindowBgColor(bool windowEnabled, bool windowOpen) =>
-    not windowEnabled ? color.new(color.silver, 12) : windowOpen ? color.new(color.teal, 0) : color.new(color.black, 18)
-
-entryWindowTextColor(bool windowEnabled, bool windowOpen) =>
-    not windowEnabled ? color.black : windowOpen ? color.black : color.white
+eventMarker(int direction, string markerKind, string markerText, string detailText, float offsetAtr) =>
+    var int topMarkerBar = na
+    var int bottomMarkerBar = na
+    var int topMarkerPriority = -1
+    var int bottomMarkerPriority = -1
+    var label topMarkerLabel = na
+    var label bottomMarkerLabel = na
+    int priority = eventMarkerPriority(markerKind)
+    bool preserved = eventMarkerPreserved(markerKind)
+    label result = na
+    if direction == -1
+        if topMarkerBar != bar_index
+            topMarkerBar := bar_index
+            topMarkerPriority := -1
+            topMarkerLabel := na
+        if preserved
+            result := newEventMarkerLabel(direction, markerKind, markerText, detailText, offsetAtr)
+        else if priority >= topMarkerPriority
+            if not na(topMarkerLabel)
+                label.delete(topMarkerLabel)
+            topMarkerLabel := newEventMarkerLabel(direction, markerKind, markerText, detailText, offsetAtr)
+            topMarkerPriority := priority
+            result := topMarkerLabel
+    else if direction == 1
+        if bottomMarkerBar != bar_index
+            bottomMarkerBar := bar_index
+            bottomMarkerPriority := -1
+            bottomMarkerLabel := na
+        if preserved
+            result := newEventMarkerLabel(direction, markerKind, markerText, detailText, offsetAtr)
+        else if priority >= bottomMarkerPriority
+            if not na(bottomMarkerLabel)
+                label.delete(bottomMarkerLabel)
+            bottomMarkerLabel := newEventMarkerLabel(direction, markerKind, markerText, detailText, offsetAtr)
+            bottomMarkerPriority := priority
+            result := bottomMarkerLabel
+    else
+        result := newEventMarkerLabel(direction, markerKind, markerText, detailText, offsetAtr)
+    result
 
 flowStyle(int direction) =>
     labelStyleForSide(labelAboveForDirection(direction))
@@ -1314,7 +1385,7 @@ trendSupportSources := appendNearSource(trendSupportSources, dtpAvg, trendSuppor
 trendSupportSources := appendNearSource(trendSupportSources, sdMid, trendSupportBasis, tolerance, "sd_mid")
 trendSupportSources := appendNearSource(trendSupportSources, sdLower, trendSupportBasis, tolerance, "sd_lower")
 int trendSupportAgeBars = not na(todayStructLowBar) ? bar_index - todayStructLowBar : 0
-bool strongTrendSupport = trendLongContext and dayRangeClear and trendSupportAgeBars >= minTrendSupportAgeBars and trendSupportCount >= minConfluenceCount and not na(trendSupportZoneLow) and not na(trendSupportZoneHigh)
+bool strongTrendSupport = trendLongContext and dayRangeClear and trendSupportAgeBars >= minTrendSupportAgeBars and not na(trendSupportZoneLow) and not na(trendSupportZoneHigh)
 
 float trendResistanceBasis = trendShortContext ? todayStructHigh : na
 int trendResistanceCount = not na(trendResistanceBasis) ? 1 : 0
@@ -1346,31 +1417,31 @@ trendResistanceSources := appendNearSource(trendResistanceSources, dtpAvg, trend
 trendResistanceSources := appendNearSource(trendResistanceSources, sdMid, trendResistanceBasis, tolerance, "sd_mid")
 trendResistanceSources := appendNearSource(trendResistanceSources, sdUpper, trendResistanceBasis, tolerance, "sd_upper")
 int trendResistanceAgeBars = not na(todayStructHighBar) ? bar_index - todayStructHighBar : 0
-bool strongTrendResistance = trendShortContext and dayRangeClear and trendResistanceAgeBars >= minTrendSupportAgeBars and trendResistanceCount >= minConfluenceCount and not na(trendResistanceZoneLow) and not na(trendResistanceZoneHigh)
+bool strongTrendResistance = trendShortContext and dayRangeClear and trendResistanceAgeBars >= minTrendSupportAgeBars and not na(trendResistanceZoneLow) and not na(trendResistanceZoneHigh)
 
-float trendLongPredictEntry = strongTrendSupport ? trendSupportZoneLow + atr * predictiveEntryOffsetAtr : na
 float trendLongPredictStop = strongTrendSupport ? trendSupportZoneLow - invalidationBuffer : na
-float trendLongConfirmEntryRaw = strongTrendSupport ? math.min(close, trendSupportZoneHigh) : na
-float trendLongConfirmEntry = strongTrendSupport ? scalpLimitEntry(1, close, trendSupportBasis, trendLongConfirmEntryRaw, atr, scalpLimitOffsetAtr) : na
+float trendLongPredictEntry = strongTrendSupport ? stopBoundedEntry(1, trendSupportZoneLow + atr * predictiveEntryOffsetAtr, trendLongPredictStop, atr, predictiveMaxStopAtr, predictiveMaxStopBps) : na
 float trendLongConfirmStop = strongTrendSupport ? math.min(low, trendSupportZoneLow) - invalidationBuffer : na
+float trendLongConfirmEntryRaw = strongTrendSupport ? math.min(close, trendSupportZoneHigh) : na
+float trendLongConfirmEntry = strongTrendSupport ? stopBoundedEntry(1, scalpLimitEntry(1, close, trendSupportBasis, trendLongConfirmEntryRaw, atr, scalpLimitOffsetAtr), trendLongConfirmStop, atr, confirmedMaxStopAtr, confirmedMaxStopBps) : na
 bool trendLongPredictContext = trendLongContext and strongTrendSupport and trendLongPredictEntry <= close and close - trendSupportZoneHigh <= atr * predictionArmDistanceAtr
 bool trendLongConfirmContext = trendLongContext and strongTrendSupport and low <= trendSupportZoneHigh and close > trendSupportZoneHigh and close > open
 float trendLongPredictQty = calcTrialQty(trendLongPredictEntry, trendLongPredictStop, predictiveMaxRiskDollars)
 float trendLongConfirmQty = calcTrialQty(trendLongConfirmEntry, trendLongConfirmStop, confirmedMaxRiskDollars)
-bool trendLongPredictAllowed = trendLongPredictContext and smallStopTrialAllowed(trendLongPredictEntry, trendLongPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and trendLongPredictQty >= 1.0
-bool trendLongConfirmAllowed = trendLongConfirmContext and smallStopTrialAllowed(trendLongConfirmEntry, trendLongConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and trendLongConfirmQty >= 1.0
+bool trendLongPredictAllowed = trendLongPredictContext and smallStopTrialAllowed(1, trendLongPredictEntry, trendLongPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and trendLongPredictQty >= 1.0
+bool trendLongConfirmAllowed = trendLongConfirmContext and smallStopTrialAllowed(1, trendLongConfirmEntry, trendLongConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and trendLongConfirmQty >= 1.0
 
-float trendShortPredictEntry = strongTrendResistance ? trendResistanceZoneHigh - atr * predictiveEntryOffsetAtr : na
 float trendShortPredictStop = strongTrendResistance ? trendResistanceZoneHigh + invalidationBuffer : na
-float trendShortConfirmEntryRaw = strongTrendResistance ? math.max(close, trendResistanceZoneLow) : na
-float trendShortConfirmEntry = strongTrendResistance ? scalpLimitEntry(-1, close, trendResistanceBasis, trendShortConfirmEntryRaw, atr, scalpLimitOffsetAtr) : na
+float trendShortPredictEntry = strongTrendResistance ? stopBoundedEntry(-1, trendResistanceZoneHigh - atr * predictiveEntryOffsetAtr, trendShortPredictStop, atr, predictiveMaxStopAtr, predictiveMaxStopBps) : na
 float trendShortConfirmStop = strongTrendResistance ? math.max(high, trendResistanceZoneHigh) + invalidationBuffer : na
+float trendShortConfirmEntryRaw = strongTrendResistance ? math.max(close, trendResistanceZoneLow) : na
+float trendShortConfirmEntry = strongTrendResistance ? stopBoundedEntry(-1, scalpLimitEntry(-1, close, trendResistanceBasis, trendShortConfirmEntryRaw, atr, scalpLimitOffsetAtr), trendShortConfirmStop, atr, confirmedMaxStopAtr, confirmedMaxStopBps) : na
 bool trendShortPredictContext = trendShortContext and strongTrendResistance and trendShortPredictEntry >= close and trendResistanceZoneLow - close <= atr * predictionArmDistanceAtr
 bool trendShortConfirmContext = trendShortContext and strongTrendResistance and high >= trendResistanceZoneLow and close < trendResistanceZoneLow and close < open
 float trendShortPredictQty = calcTrialQty(trendShortPredictEntry, trendShortPredictStop, predictiveMaxRiskDollars)
 float trendShortConfirmQty = calcTrialQty(trendShortConfirmEntry, trendShortConfirmStop, confirmedMaxRiskDollars)
-bool trendShortPredictAllowed = trendShortPredictContext and smallStopTrialAllowed(trendShortPredictEntry, trendShortPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and trendShortPredictQty >= 1.0
-bool trendShortConfirmAllowed = trendShortConfirmContext and smallStopTrialAllowed(trendShortConfirmEntry, trendShortConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and trendShortConfirmQty >= 1.0
+bool trendShortPredictAllowed = trendShortPredictContext and smallStopTrialAllowed(-1, trendShortPredictEntry, trendShortPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and trendShortPredictQty >= 1.0
+bool trendShortConfirmAllowed = trendShortConfirmContext and smallStopTrialAllowed(-1, trendShortConfirmEntry, trendShortConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and trendShortConfirmQty >= 1.0
 
 float topBasis = todayStructHigh
 float topZoneLow = na(todayStructHighZoneLow) ? todayStructHigh : todayStructHighZoneLow
@@ -1403,7 +1474,7 @@ topSources := appendNearSource(topSources, emaFast, topBasis, tolerance, "ema20"
 topSources := appendNearSource(topSources, emaMid, topBasis, tolerance, "ema50")
 topSources := appendNearSource(topSources, emaSlow, topBasis, tolerance, "ema100")
 topSources := appendNearSource(topSources, dtpAvg, topBasis, tolerance, "dtp_avg")
-bool strongTopProbeZone = topCount >= minConfluenceCount and not na(topZoneLow) and not na(topZoneHigh)
+bool strongTopProbeZone = not na(todayStructHigh) and not na(topZoneLow) and not na(topZoneHigh)
 int topAnchorAgeBars = not na(todayStructHighBar) ? bar_index - todayStructHighBar : 0
 float topPullbackAtr = not na(todayStructHigh) and not na(lowSinceStructHigh) ? (todayStructHigh - lowSinceStructHigh) / atr : na
 float topLeftLeg = not na(todayStructHigh) and not na(lowBeforeStructHigh) ? todayStructHigh - lowBeforeStructHigh : na
@@ -1448,8 +1519,9 @@ bool topRightShoulder = strongTopProbeZone and topAnchorReady and topRetestBand
 string topProbePattern = topRightShoulder ? "retest_2b_top" : topFirstExhaustion ? "extension_exhaustion_top" : "none"
 float topWeakBase = topStructuralRetestLevel
 float topWeakExtensionAtr = not na(topWeakBase) and atr > 0.0 ? (high - topWeakBase) / atr : na
-float topPredictEntry = strongTopProbeZone ? topZoneHigh - atr * predictiveEntryOffsetAtr : na
-float topPredictStop = strongTopProbeZone ? topZoneHigh + invalidationBuffer : na
+float topPriorHighStop = math.max(nz(topStructuralRetestLevel, high), nz(topZoneHigh, high)) + invalidationBuffer
+float topPredictStop = strongTopProbeZone ? topPriorHighStop : na
+float topPredictEntry = strongTopProbeZone ? stopBoundedEntry(-1, topZoneHigh - atr * predictiveEntryOffsetAtr, topPredictStop, atr, predictiveMaxStopAtr, predictiveMaxStopBps) : na
 float topSignalDistanceAtr = not na(lastTopProbeSignalPrice) and atr > 0.0 ? math.abs(topPredictEntry - lastTopProbeSignalPrice) / atr : na
 bool topSignalBarsOk = na(lastTopProbeSignalBar) or bar_index - lastTopProbeSignalBar >= probeMinSignalGapBars
 bool topSignalPriceGapOk = na(topSignalDistanceAtr) or topSignalDistanceAtr >= minSameSideSignalSeparationAtr
@@ -1645,16 +1717,17 @@ float retestCloseEntryOffset = math.max(syminfo.mintick, atr * predictiveEntryOf
 float topFailureRetestEntry = nz(lastTopFailureWatchClose, close) + retestCloseEntryOffset
 float topClimaxRetestEntry = nz(lastTopVolumeClimaxClose, close) + retestCloseEntryOffset
 float topConfirmEntryRaw = topConfirmedShort ? (topVolumeClimaxFailedBreakConfirmed ? topClimaxRetestEntry : topCloseLimitShort ? topFailureRetestEntry : math.max(close, topZoneLow - atr * predictiveEntryOffsetAtr)) : na
-float topConfirmEntry = topConfirmedShort ? (topCloseLimitShort ? topConfirmEntryRaw : scalpLimitEntry(-1, close, topBasis, topConfirmEntryRaw, atr, scalpLimitOffsetAtr)) : na
-float topFailureWatchStop = math.max(nz(lastTopFailureWatchHigh, high), high) + invalidationBuffer
-float topNoDemandStop = math.max(nz(lastTopNoDemandHigh, high), high) + invalidationBuffer
-float topConfirmStop = topConfirmedShort ? (topVolumeClimaxFailedBreakConfirmed ? math.max(nz(lastTopVolumeClimaxHigh, high), high) + invalidationBuffer : topNoDemandBreakConfirmed ? topNoDemandStop : topHighVolumeDropConfirmed or topImmediateReversalShort ? topFailureWatchStop : math.max(high, topZoneHigh) + invalidationBuffer) : na
+float topFailureWatchStop = looserStop(math.max(nz(lastTopFailureWatchHigh, high), high) + invalidationBuffer, topPriorHighStop, -1)
+float topNoDemandStop = looserStop(math.max(nz(lastTopNoDemandHigh, high), high) + invalidationBuffer, topPriorHighStop, -1)
+float topClimaxStop = looserStop(math.max(nz(lastTopVolumeClimaxHigh, high), high) + invalidationBuffer, topPriorHighStop, -1)
+float topConfirmStop = topConfirmedShort ? (topVolumeClimaxFailedBreakConfirmed ? topClimaxStop : topNoDemandBreakConfirmed ? topNoDemandStop : topHighVolumeDropConfirmed or topImmediateReversalShort ? topFailureWatchStop : looserStop(math.max(high, topZoneHigh) + invalidationBuffer, topPriorHighStop, -1)) : na
+float topConfirmEntry = topConfirmedShort ? stopBoundedEntry(-1, topCloseLimitShort ? topConfirmEntryRaw : scalpLimitEntry(-1, close, topBasis, topConfirmEntryRaw, atr, scalpLimitOffsetAtr), topConfirmStop, atr, confirmedMaxStopAtr, confirmedMaxStopBps) : na
 bool topPredictContext = (topFirstExhaustion or topRightShoulder) and topCounterTrendAllowed and topPredictEntry >= close and topPredictEntry - close <= atr * predictionArmDistanceAtr and topSignalGapOk and topPredictVolumeOk
 bool topConfirmContext = topConfirmedShort and (topCounterTrendAllowed or upperExhaustionConfirmedShort or topWeakNewHighConfirmed or topDistributionDropConfirmed or topFailureRepeatShort) and topConfirmGapOk and topConfirmVolumeOk
 float topPredictQty = calcTrialQty(topPredictEntry, topPredictStop, predictiveMaxRiskDollars)
 float topConfirmQty = calcTrialQty(topConfirmEntry, topConfirmStop, confirmedMaxRiskDollars)
-bool topPredictAllowed = topPredictContext and smallStopTrialAllowed(topPredictEntry, topPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and topPredictQty >= 1.0
-bool topConfirmAllowed = topConfirmContext and smallStopTrialAllowed(topConfirmEntry, topConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and topConfirmQty >= 1.0
+bool topPredictAllowed = topPredictContext and smallStopTrialAllowed(-1, topPredictEntry, topPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and topPredictQty >= 1.0
+bool topConfirmAllowed = topConfirmContext and smallStopTrialAllowed(-1, topConfirmEntry, topConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and topConfirmQty >= 1.0
 string topProbeFilterReason = "passed"
 if na(todayStructHigh)
     topProbeFilterReason := "no_today_struct_high"
@@ -1710,7 +1783,7 @@ bottomSources := appendNearSource(bottomSources, emaFast, bottomBasis, tolerance
 bottomSources := appendNearSource(bottomSources, emaMid, bottomBasis, tolerance, "ema50")
 bottomSources := appendNearSource(bottomSources, emaSlow, bottomBasis, tolerance, "ema100")
 bottomSources := appendNearSource(bottomSources, dtpAvg, bottomBasis, tolerance, "dtp_avg")
-bool strongBottomProbeZone = bottomCount >= minConfluenceCount and not na(bottomZoneLow) and not na(bottomZoneHigh)
+bool strongBottomProbeZone = not na(todayStructLow) and not na(bottomZoneLow) and not na(bottomZoneHigh)
 int bottomAnchorAgeBars = not na(todayStructLowBar) ? bar_index - todayStructLowBar : 0
 float bottomPullbackAtr = not na(todayStructLow) and not na(highSinceStructLow) ? (highSinceStructLow - todayStructLow) / atr : na
 float bottomLeftLeg = not na(todayStructLow) and not na(highBeforeStructLow) ? highBeforeStructLow - todayStructLow : na
@@ -1746,8 +1819,9 @@ bool bottomRightShoulder = strongBottomProbeZone and bottomAnchorReady and botto
 string bottomProbePattern = bottomRightShoulder ? "retest_2b_bottom" : bottomFirstExhaustion ? "extension_exhaustion_bottom" : "none"
 float bottomWeakBase = bottomStructuralRetestLevel
 float bottomWeakExtensionAtr = not na(bottomWeakBase) and atr > 0.0 ? (bottomWeakBase - low) / atr : na
-float bottomPredictEntry = strongBottomProbeZone ? bottomZoneLow + atr * predictiveEntryOffsetAtr : na
-float bottomPredictStop = strongBottomProbeZone ? bottomZoneLow - invalidationBuffer : na
+float bottomPriorLowStop = math.min(nz(bottomStructuralRetestLevel, low), nz(bottomZoneLow, low)) - invalidationBuffer
+float bottomPredictStop = strongBottomProbeZone ? bottomPriorLowStop : na
+float bottomPredictEntry = strongBottomProbeZone ? stopBoundedEntry(1, bottomZoneLow + atr * predictiveEntryOffsetAtr, bottomPredictStop, atr, predictiveMaxStopAtr, predictiveMaxStopBps) : na
 float bottomSignalDistanceAtr = not na(lastBottomProbeSignalPrice) and atr > 0.0 ? math.abs(bottomPredictEntry - lastBottomProbeSignalPrice) / atr : na
 bool bottomSignalBarsOk = na(lastBottomProbeSignalBar) or bar_index - lastBottomProbeSignalBar >= probeMinSignalGapBars
 bool bottomSignalPriceGapOk = na(bottomSignalDistanceAtr) or bottomSignalDistanceAtr >= minSameSideSignalSeparationAtr
@@ -1912,16 +1986,16 @@ else if volumeQuietRetest
 bool bottomCloseLimitLong = bottomHighVolumeRiseConfirmed or bottomNoSupplyBreakConfirmed
 float bottomFailureRetestEntry = nz(lastBottomFailureWatchClose, close) - retestCloseEntryOffset
 float bottomConfirmEntryRaw = bottomConfirmedLong ? (bottomCloseLimitLong ? bottomFailureRetestEntry : math.min(close, bottomZoneHigh + atr * predictiveEntryOffsetAtr)) : na
-float bottomConfirmEntry = bottomConfirmedLong ? (bottomCloseLimitLong ? bottomConfirmEntryRaw : scalpLimitEntry(1, close, bottomBasis, bottomConfirmEntryRaw, atr, scalpLimitOffsetAtr)) : na
-float bottomFailureWatchStop = math.min(nz(lastBottomFailureWatchLow, low), low) - invalidationBuffer
-float bottomNoSupplyStop = math.min(nz(lastBottomNoSupplyLow, low), low) - invalidationBuffer
-float bottomConfirmStop = bottomConfirmedLong ? (bottomNoSupplyBreakConfirmed ? bottomNoSupplyStop : bottomHighVolumeRiseConfirmed ? bottomFailureWatchStop : math.min(low, bottomZoneLow) - invalidationBuffer) : na
+float bottomFailureWatchStop = looserStop(math.min(nz(lastBottomFailureWatchLow, low), low) - invalidationBuffer, bottomPriorLowStop, 1)
+float bottomNoSupplyStop = looserStop(math.min(nz(lastBottomNoSupplyLow, low), low) - invalidationBuffer, bottomPriorLowStop, 1)
+float bottomConfirmStop = bottomConfirmedLong ? (bottomNoSupplyBreakConfirmed ? bottomNoSupplyStop : bottomHighVolumeRiseConfirmed ? bottomFailureWatchStop : looserStop(math.min(low, bottomZoneLow) - invalidationBuffer, bottomPriorLowStop, 1)) : na
+float bottomConfirmEntry = bottomConfirmedLong ? stopBoundedEntry(1, bottomCloseLimitLong ? bottomConfirmEntryRaw : scalpLimitEntry(1, close, bottomBasis, bottomConfirmEntryRaw, atr, scalpLimitOffsetAtr), bottomConfirmStop, atr, confirmedMaxStopAtr, confirmedMaxStopBps) : na
 bool bottomPredictContext = (bottomFirstExhaustion or bottomRightShoulder) and bottomCounterTrendAllowed and bottomPredictEntry <= close and close - bottomPredictEntry <= atr * predictionArmDistanceAtr and bottomSignalGapOk and bottomPredictVolumeOk
 bool bottomConfirmContext = bottomConfirmedLong and (bottomCounterTrendAllowed or lowerExhaustionConfirmedLong or bottomWeakNewLowConfirmed or bottomAccumulationRiseConfirmed or bottomHighVolumeRiseConfirmed or bottomNoSupplyBreakConfirmed) and bottomSignalGapOk and bottomConfirmVolumeOk
 float bottomPredictQty = calcTrialQty(bottomPredictEntry, bottomPredictStop, predictiveMaxRiskDollars)
 float bottomConfirmQty = calcTrialQty(bottomConfirmEntry, bottomConfirmStop, confirmedMaxRiskDollars)
-bool bottomPredictAllowed = bottomPredictContext and smallStopTrialAllowed(bottomPredictEntry, bottomPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and bottomPredictQty >= 1.0
-bool bottomConfirmAllowed = bottomConfirmContext and smallStopTrialAllowed(bottomConfirmEntry, bottomConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and bottomConfirmQty >= 1.0
+bool bottomPredictAllowed = bottomPredictContext and smallStopTrialAllowed(1, bottomPredictEntry, bottomPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and bottomPredictQty >= 1.0
+bool bottomConfirmAllowed = bottomConfirmContext and smallStopTrialAllowed(1, bottomConfirmEntry, bottomConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and bottomConfirmQty >= 1.0
 string bottomProbeFilterReason = "passed"
 if na(todayStructLow)
     bottomProbeFilterReason := "no_today_struct_low"
@@ -1988,13 +2062,14 @@ float selectedEmaProfitAtr = selectedDirection != 0 and atr > 0.0 ? math.abs(sel
 bool selectedEmaTargetInProfit = selectedDirection == 1 ? selectedTarget > selectedEntry : selectedDirection == -1 ? selectedTarget < selectedEntry : false
 float selectedExpectedR = selectedDirection != 0 and riskPerShare(selectedEntry, selectedStop) > 0.0 ? math.abs(selectedTarget - selectedEntry) / riskPerShare(selectedEntry, selectedStop) : na
 bool selectedExpectedRPassed = selectedDirection != 0 and selectedEmaTargetInProfit and selectedEmaProfitAtr >= minEmaProfitAtr and selectedExpectedR >= scalpMinExpectedR
-bool selectedSmallStopGatePassed = selectedDirection != 0 and smallStopTrialAllowed(selectedEntry, selectedStop, atr, selectedRiskBudget, selectedMaxStopAtr, selectedMaxStopBps)
-string selectedSmallStopGateReason = selectedDirection == 0 ? "no_candidate" : smallStopGateReason(selectedEntry, selectedStop, atr, selectedRiskBudget, selectedMaxStopAtr, selectedMaxStopBps)
+bool selectedSmallStopGatePassed = selectedDirection != 0 and smallStopTrialAllowed(selectedDirection, selectedEntry, selectedStop, atr, selectedRiskBudget, selectedMaxStopAtr, selectedMaxStopBps)
+string selectedSmallStopGateReason = selectedDirection == 0 ? "no_candidate" : smallStopGateReason(selectedDirection, selectedEntry, selectedStop, atr, selectedRiskBudget, selectedMaxStopAtr, selectedMaxStopBps)
 float selectedStructureAnchor = selectedTrendSupport ? trendSupportBasis : selectedTrendResistance ? trendResistanceBasis : selectedTopProbe ? todayStructHigh : selectedBottomProbe ? todayStructLow : na
 float selectedEntryAnchorDistanceAtr = selectedDirection != 0 and not na(selectedStructureAnchor) and atr > 0.0 ? math.abs(selectedEntry - selectedStructureAnchor) / atr : na
 float selectedCurrentAnchorDistanceAtr = selectedDirection != 0 and not na(selectedStructureAnchor) and atr > 0.0 ? math.abs(close - selectedStructureAnchor) / atr : na
 bool selectedProbeStrictTouchOk = selectedTopProbe ? topStrictRetestTouch : selectedBottomProbe ? bottomStrictRetestTouch : false
-bool selectedEntryNearAnchorOnly = selectedDirection == 0 or selectedProbeStrictTouchOk or (not na(selectedEntryAnchorDistanceAtr) and selectedEntryAnchorDistanceAtr <= scalpMaxEntryAwayAtr)
+bool selectedFailureRetestLimit = selectedTopProbe and topCloseLimitShort or selectedBottomProbe and bottomCloseLimitLong
+bool selectedEntryNearAnchorOnly = selectedDirection == 0 or selectedProbeStrictTouchOk or selectedFailureRetestLimit or (not na(selectedEntryAnchorDistanceAtr) and selectedEntryAnchorDistanceAtr <= scalpMaxEntryAwayAtr)
 bool selectedCloseNearAnchor = selectedDirection == 0 or selectedProbeStrictTouchOk or (not na(selectedCurrentAnchorDistanceAtr) and selectedCurrentAnchorDistanceAtr <= scalpMaxEntryAwayAtr)
 bool selectedCloseFarFromAnchor = selectedDirection != 0 and selectedEntryNearAnchorOnly and not selectedCloseNearAnchor
 string selectedLimitWaitMode = selectedCloseFarFromAnchor ? "close_far_wait_pullback_limit" : "normal_limit"
@@ -2014,7 +2089,7 @@ string selectedStructureGateReason = "passed"
 if selectedDirection == 0
     selectedStructureGateReason := "no_candidate"
 else if not selectedStrongStructureZone
-    selectedStructureGateReason := (selectedTopProbe or selectedBottomProbe) and selectedConfluenceCount < minConfluenceCount ? "confluence_count_too_low" : (selectedTrendSupport or selectedTrendResistance) ? "trend_context_missing" : "no_clear_structure"
+    selectedStructureGateReason := (selectedTrendSupport or selectedTrendResistance) ? "trend_context_missing" : "no_clear_structure"
 else if not selectedConfirmStructureSignal
     selectedStructureGateReason := "confirm_signal_missing"
 else if not selectedStructureClear
@@ -2131,8 +2206,69 @@ else if not selectedDailyRiskOk
     selectedBlockReason := "daily_risk_cap_hit"
 else if not selectedSmallStopGatePassed
     selectedBlockReason := selectedSmallStopGateReason
+else if selectedQty < 1.0
+    selectedBlockReason := "qty_too_small"
 else if not selectedExpectedRPassed
     selectedBlockReason := selectedExpectedRBlockReason
+
+weakNextReason(bool retestOk, bool watchBreakOk, bool rsiOk, bool distanceOk, bool finalFiltered) =>
+    string result = "weak_next_no_confirmation"
+    if not retestOk
+        result := "weak_next_no_retest"
+    else if not watchBreakOk
+        result := "weak_next_no_break_watch"
+    else if not rsiOk
+        result := "weak_next_rsi_missing"
+    else if not distanceOk
+        result := "weak_next_distance_too_far"
+    else if finalFiltered
+        result := "weak_next_filtered"
+    result
+
+pendingNoFillDetail(int direction, float entryPrice, int signalBar, int expiresBar) =>
+    string fillRule = direction == -1 ? "short fill 条件: high >= entry" : "long fill 条件: low <= entry"
+    string result = "X " + dirName(direction) + "·限价未成交"
+    result := result + "\n原因: " + reasonCn("pending_limit_not_touched") + " / pending_limit_not_touched"
+    result := result + "\n" + fillRule
+    result := result + "\n本根 high/low " + fmt(high) + " / " + fmt(low) + "，entry " + fmt(entryPrice)
+    result := result + "\n方向可能对，但没有回抽到限价，不追价"
+    result := result + "\nTTL " + str.tostring(bar_index - signalBar) + "/" + str.tostring(entryOrderTtlBars) + "，expires " + str.tostring(expiresBar)
+    result
+
+drawPendingNoFillX(int direction, float entryPrice, int signalBar, int expiresBar) =>
+    string detail = pendingNoFillDetail(direction, entryPrice, signalBar, expiresBar)
+    string compact = "X " + dirName(direction) + " 限价未成交"
+    if eventMarkersVisible
+        eventMarker(direction, "weak_next_x", "X", detail, 0.38)
+    if diagnosticLabelsVisible
+        drawFlowLabel(direction, "weak_next_x", "weak_next_x", "weak_next_x", 1.25, compact, detail)
+
+weakNextDetailText(int direction, string source, float level, float toleranceValue, float watchHigh, float watchLow, float bodyMid, float signalRsi, float signalRsiSmooth, bool signalRsiProof, bool signalFastDiv, string why, bool retestOk, bool watchBreakOk, bool rsiOk, float distanceAtr, string displayBlock, bool planValid) =>
+    string result = "X " + dirName(direction) + "·弱信号未生效"
+    result := result + "\n上一根: " + source
+    result := result + "\n本根未触发: " + reasonCn(why) + " / " + why
+    result := result + "\n触达结构: " + str.tostring(retestOk) + " / level " + fmt(level) + " / tol " + fmt(toleranceValue)
+    result := result + (direction == -1 ? "\nhigh " + fmt(high) + " >= " + fmt(level - toleranceValue) : "\nlow " + fmt(low) + " <= " + fmt(level + toleranceValue))
+    result := result + "\n破观察位: " + str.tostring(watchBreakOk) + " / watch H/L " + fmt(watchHigh) + " / " + fmt(watchLow) + " / bodyMid " + fmt(bodyMid)
+    result := result + "\nRSI证明: " + str.tostring(rsiOk) + " / 上根 " + fmt(signalRsi) + "/" + fmt(signalRsiSmooth) + " proof " + str.tostring(signalRsiProof) + " fastDiv " + str.tostring(signalFastDiv)
+    result := result + "\n距离: " + fmt(distanceAtr) + "ATR / max " + fmt(distributionDropMaxDistanceAtr)
+    result := result + "\n最终gate: " + reasonCn(displayBlock) + " / " + displayBlock + " / selectedPlanValid " + str.tostring(planValid)
+    result := result + "\n结论: 只观察，不挂单"
+    result
+
+drawWeakNextX(int direction, string source, float level, float toleranceValue, float watchHigh, float watchLow, float bodyMid, float signalRsi, float signalRsiSmooth, bool signalRsiProof, bool signalFastDiv, string displayBlock) =>
+    bool retestOk = direction == -1 ? not na(level) and high >= level - toleranceValue : direction == 1 ? not na(level) and low <= level + toleranceValue : false
+    bool watchBreakOk = direction == -1 ? (not na(watchLow) and close < watchLow or not na(bodyMid) and close <= bodyMid) : direction == 1 ? (not na(watchHigh) and close > watchHigh or not na(bodyMid) and close >= bodyMid) : false
+    bool rsiOk = direction == -1 ? (scalpRsiShortOk or scalpFastBearDiv) : direction == 1 ? (scalpRsiLongOk or scalpFastBullDiv) : false
+    float distanceAtr = not na(level) and atr > 0.0 ? math.abs(close - level) / atr : na
+    bool distanceOk = not na(distanceAtr) and distanceAtr <= distributionDropMaxDistanceAtr
+    string why = weakNextReason(retestOk, watchBreakOk, rsiOk, distanceOk, selectedDirection != 0 and not selectedPlanValid)
+    string detail = weakNextDetailText(direction, source, level, toleranceValue, watchHigh, watchLow, bodyMid, signalRsi, signalRsiSmooth, signalRsiProof, signalFastDiv, why, retestOk, watchBreakOk, rsiOk, distanceAtr, displayBlock, selectedPlanValid)
+    string compact = "X " + dirName(direction) + " 弱未生效\n" + reasonCn(why)
+    if eventMarkersVisible
+        eventMarker(direction, "weak_next_x", "X", detail, 0.38)
+    if diagnosticLabelsVisible
+        drawFlowLabel(direction, "weak_next_x", "weak_next_x", "weak_next_x", 1.25, compact, detail)
 
 selectedPlanDetail(string decisionRef, int currentFlowId) =>
     string result = "F" + str.tostring(currentFlowId) + " ②" + intentName(selectedEntryIntent) + " " + dirName(selectedDirection)
@@ -2142,12 +2278,12 @@ selectedPlanDetail(string decisionRef, int currentFlowId) =>
     result := result + "\n次因: " + (selectedSecondaryReason == "" ? "none" : selectedSecondaryReason)
     result := result + "\n结构锚点 " + fmt(selectedStructureAnchor) + " / expected " + fmt(selectedExpectedR) + "R / EMA空间 " + fmt(selectedEmaProfitAtr) + "ATR"
     result := result + "\n距结构 entry/close " + fmt(selectedEntryAnchorDistanceAtr) + "/" + fmt(selectedCurrentAnchorDistanceAtr) + "ATR / " + selectedLimitWaitMode
-    result := result + "\n严格回触: " + str.tostring(selectedProbeStrictTouchOk) + " / 允许高低点K收盘价限价"
+    result := result + "\n严格回触: " + str.tostring(selectedProbeStrictTouchOk) + " / 失败回抽限价 " + str.tostring(selectedFailureRetestLimit)
     if selectedCloseFarFromAnchor
         result := result + "\nclose已走远：只挂回抽限价，不追价"
     result := result + "\nRSI " + fmt(scalpRsi) + " / smooth " + fmt(scalpRsiSmooth) + " / " + selectedRsiState
     result := result + "\nRSI证明: " + selectedRsiProofText + " / fastDiv " + str.tostring(selectedDirection == -1 ? scalpFastBearDiv : selectedDirection == 1 ? scalpFastBullDiv : false)
-    result := result + "\n价格共振: " + str.tostring(selectedPriceConfluenceCount) + "/" + str.tostring(minConfluenceCount) + " / " + (selectedPriceConfluenceSources == "" ? "none" : selectedPriceConfluenceSources)
+    result := result + "\n价格共振: " + str.tostring(selectedPriceConfluenceCount) + "/" + str.tostring(minConfluenceCount) + " 仅诊断 / " + (selectedPriceConfluenceSources == "" ? "none" : selectedPriceConfluenceSources)
     result := result + "\n信号共振: " + str.tostring(selectedSignalConfluenceCount) + " / " + (selectedSignalConfluenceSources == "" ? "none" : selectedSignalConfluenceSources)
     result := result + "\n结构区 " + fmt(selectedZoneLow) + " - " + fmt(selectedZoneHigh)
     result := result + "\n三段结构 L" + fmt(selectedProbeLeftLegBps) + "bps / M" + fmt(selectedProbeMiddleRatio) + " / R" + fmt(selectedProbeRightRatio) + " / 回测 " + fmt(selectedProbeRetestGapBars) + "/" + str.tostring(maxRetestAfterMiddleSwingBars) + " bars"
@@ -2165,6 +2301,7 @@ selectedPlanDetail(string decisionRef, int currentFlowId) =>
     result := result + "\n蓝0.6R " + fmt(selectedRunnerActivation) + " " + moneyText(pnlDollars(selectedEntry, selectedRunnerActivation, selectedDirection, selectedQty))
     result := result + "\n绿EMA20 TP " + fmt(selectedTarget) + " " + moneyText(pnlDollars(selectedEntry, selectedTarget, selectedDirection, selectedQty))
     result := result + "\n小止损: " + selectedSmallStopGateReason + " / " + fmt(selectedStopDistanceAtr) + "ATR / " + fmt(selectedStopDistanceBps) + "bps"
+    result := result + "\n风险反推: 单股" + fmt(riskPerShare(selectedEntry, selectedStop)) + " + buffer" + fmt(riskSafetyBuffer(atr)) + " / qty按$" + fmt(selectedRiskBudget) + "反推"
     result := result + "\nprobe: " + selectedProbePattern + " / filter " + selectedProbeFilterReason
     result := result + "\n风险模式: " + selectedTrialRiskMode + " $" + fmt(selectedRiskBudget) + " / TTL " + str.tostring(entryOrderTtlBars)
     result
@@ -2175,15 +2312,15 @@ blockedCandidateDetail(string blockPrefix, string displayBlockReason) =>
     result := result + "\n次因: " + (selectedSecondaryReason == "" ? "none" : selectedSecondaryReason)
     result := result + "\n原因: " + reasonCn(displayBlockReason) + " / " + displayBlockReason
     result := result + "\n结构清晰: " + str.tostring(selectedStructureClear) + " / 门槛: " + reasonCn(selectedStructureGateReason) + " / " + selectedStructureGateReason
-    result := result + "\n强结构条件: " + selectedStructureGateFlags
-    result := result + "\n共振计数: " + str.tostring(selectedConfluenceCount) + "/" + str.tostring(minConfluenceCount) + " / 来源: " + (selectedConfluenceSources == "" ? "none" : selectedConfluenceSources)
-    result := result + "\n价格共振: " + str.tostring(selectedPriceConfluenceCount) + "/" + str.tostring(minConfluenceCount) + " / " + (selectedPriceConfluenceSources == "" ? "none" : selectedPriceConfluenceSources)
+    result := result + "\n价格行为条件: " + selectedStructureGateFlags
+    result := result + "\n共振计数: " + str.tostring(selectedConfluenceCount) + "/" + str.tostring(minConfluenceCount) + " 仅诊断 / 来源: " + (selectedConfluenceSources == "" ? "none" : selectedConfluenceSources)
+    result := result + "\n价格共振: " + str.tostring(selectedPriceConfluenceCount) + "/" + str.tostring(minConfluenceCount) + " 仅诊断 / " + (selectedPriceConfluenceSources == "" ? "none" : selectedPriceConfluenceSources)
     result := result + "\n信号共振: " + str.tostring(selectedSignalConfluenceCount) + " / " + (selectedSignalConfluenceSources == "" ? "none" : selectedSignalConfluenceSources)
     result := result + "\n结构 " + fmt(selectedStructureAnchor) + " / expected " + fmt(selectedExpectedR) + "R / EMA空间 " + fmt(selectedEmaProfitAtr) + "ATR"
     result := result + "\nRSI " + fmt(scalpRsi) + " / smooth " + fmt(scalpRsiSmooth) + " / " + selectedRsiState
     result := result + "\nRSI证明: " + selectedRsiProofText + " / fastDiv " + str.tostring(selectedDirection == -1 ? scalpFastBearDiv : selectedDirection == 1 ? scalpFastBullDiv : false)
     result := result + "\n距结构 entry/close " + fmt(selectedEntryAnchorDistanceAtr) + "/" + fmt(selectedCurrentAnchorDistanceAtr) + "ATR / " + selectedLimitWaitMode
-    result := result + "\n严格回触: " + str.tostring(selectedProbeStrictTouchOk) + " / 允许高低点K收盘价限价"
+    result := result + "\n严格回触: " + str.tostring(selectedProbeStrictTouchOk) + " / 失败回抽限价 " + str.tostring(selectedFailureRetestLimit)
     if selectedCloseFarFromAnchor
         result := result + "\nclose已走远：只挂回抽限价，不追价"
     result := result + "\n同向距离 " + fmt(selectedSameSideSignalDistanceAtr) + "ATR / min " + fmt(minSameSideSignalSeparationAtr)
@@ -2200,7 +2337,7 @@ blockedCandidateDetail(string blockPrefix, string displayBlockReason) =>
     result := result + "\n量能攻击状态 " + str.tostring(selectedAttackVolumeCooling) + " / 不拦截"
     result := result + "\n距离 " + fmt(selectedStopDistanceAtr) + "ATR / " + fmt(selectedStopDistanceBps) + "bps"
     if displayBlockReason == "no_clear_structure" and selectedNakedReversalCandidate
-        result := result + "\n说明: 裸K反转已触发候选，但强结构门槛未通过，所以不挂单"
+        result := result + "\n说明: 裸K反转已触发候选，但价格行为结构未通过，所以不挂单"
     result
 
 
@@ -2231,7 +2368,38 @@ var line currentStopLine = na
 var line currentRunnerLine = na
 var line currentTargetLine = na
 
-newPlanNow = confirmed and showSignalEventFlow and selectedPlanValid and not shadowPending and not shadowOpen
+mainPlanStatusText(bool childAllowed, bool selectedByMain, bool planCreatedNow, string childReason) =>
+    string status = planCreatedNow ? "主流程: 已生成plan / 可挂单" : "主流程: 未生成plan"
+    if not planCreatedNow
+        string cause = "unknown"
+        if not childAllowed
+            cause := "子条件过滤 " + reasonCn(childReason) + " / " + childReason
+        else if not selectedByMain
+            cause := "未被最终选择 selected=" + setupDisplayName(selectedSetup) + " " + dirName(selectedDirection)
+        else if shadowOpen
+            cause := "已有持仓占用"
+        else if shadowPending
+            cause := "已有挂单占用"
+        else
+            cause := reasonCn(selectedBlockReason) + " / " + selectedBlockReason
+        status := status + " / " + cause
+    status
+
+planGateDetailText(bool childAllowed, bool selectedByMain, bool planCreatedNow, string childReason) =>
+    string result = mainPlanStatusText(childAllowed, selectedByMain, planCreatedNow, childReason)
+    result := result + "\n子条件: " + (childAllowed ? "通过" : "未通过") + " / " + reasonCn(childReason) + " / " + childReason
+    result := result + "\n最终选择: " + setupDisplayName(selectedSetup) + " / " + dirName(selectedDirection) + " / selectedByMain " + str.tostring(selectedByMain)
+    result := result + "\nselectedPlanValid: " + str.tostring(selectedPlanValid) + " / block " + reasonCn(selectedBlockReason) + " / " + selectedBlockReason
+    result := result + "\n质量gate: structure " + str.tostring(selectedStructureClear) + " / near " + str.tostring(selectedEntryNearAnchorOnly) + " / failureLimit " + str.tostring(selectedFailureRetestLimit) + " / rsi " + str.tostring(selectedRsiPassed) + " / smallStop " + str.tostring(selectedSmallStopGatePassed) + " / expectedR " + str.tostring(selectedExpectedRPassed)
+    result := result + "\n空间: EMA " + fmt(selectedEmaProfitAtr) + "/" + fmt(minEmaProfitAtr) + "ATR / expectedR " + fmt(selectedExpectedR) + "/" + fmt(scalpMinExpectedR)
+    result := result + "\n间距gate: " + str.tostring(selectedPlanSpacingOk) + " / 同向 " + fmt(selectedSameSideSignalDistanceAtr) + "/" + fmt(minSameSideSignalSeparationAtr) + "ATR"
+    result := result + "\n上一计划: bars " + fmt(selectedAnyPlanGapBars) + "/" + str.tostring(minAnyPlanGapBars) + " / dist " + fmt(selectedAnyPlanDistanceAtr) + "/" + fmt(minAnyPlanDistanceAtr) + "ATR"
+    result := result + "\n交易窗口: " + str.tostring(inEntryWindow) + " / 量能冷却 " + str.tostring(selectedAttackVolumeCooling) + " 仅诊断不拦截"
+    result := result + "\n占用: planCreatedNow " + str.tostring(planCreatedNow) + " / pending " + str.tostring(shadowPending) + " / open " + str.tostring(shadowOpen)
+    result
+
+bool mainPlanWillDraw = confirmed and showSignalEventFlow and selectedPlanValid and not shadowPending and not shadowOpen
+newPlanNow = mainPlanWillDraw
 if newPlanNow
     if selectedTopProbe and activeTopDecisionSeq == 0
         topDecisionSeq += 1
@@ -2324,6 +2492,10 @@ if pendingExpired or pendingInvalidated
     if flowLabelsVisible
         drawFlowLabel(shadowDirection, "blocked", "blocked", "blocked", 1.8, compact, detail)
     shadowPending := false
+
+bool pendingNextNoFill = confirmed and showDiagnosticEventFlow and shadowPending and not pendingTouched and not pendingExpired and not pendingInvalidated and not na(shadowSignalBar) and bar_index == shadowSignalBar + 1
+if pendingNextNoFill
+    drawPendingNoFillX(shadowDirection, shadowEntry, shadowSignalBar, shadowExpiresBar)
 
 bool shadowExitNow = false
 string shadowExitReason = ""
@@ -2525,14 +2697,18 @@ if volumeClimaxTopConfirmEvent
         rawClimaxFilterReason := "passed"
     else if not topSignalGapOk
         rawClimaxFilterReason := "micro_structure_too_close"
-    else if not smallStopTrialAllowed(topConfirmEntry, topConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps)
-        rawClimaxFilterReason := smallStopGateReason(topConfirmEntry, topConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps)
+    else if not smallStopTrialAllowed(-1, topConfirmEntry, topConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps)
+        rawClimaxFilterReason := smallStopGateReason(-1, topConfirmEntry, topConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps)
     else if topConfirmQty < 1.0
         rawClimaxFilterReason := "qty_too_small"
-    string climaxFilterReason = topConfirmAllowed ? "可挂单" : "确认但过滤\n过滤原因: " + reasonCn(rawClimaxFilterReason) + " / " + rawClimaxFilterReason
+    bool climaxSelectedByMain = selectedDirection == -1 and selectedTopProbe and topVolumeClimaxFailedBreakConfirmed
+    bool climaxPlanCreated = newPlanNow and climaxSelectedByMain
+    string climaxFilterReason = topConfirmAllowed ? "子条件: 通过 / passed" : "子条件: 未通过\n过滤原因: " + reasonCn(rawClimaxFilterReason) + " / " + rawClimaxFilterReason
+    string climaxMarkerKind = climaxPlanCreated ? "candidate" : "blocked"
     string climaxConfirmDetail = topKey + " ③放量失败确认 空\n候选确认 空"
     climaxConfirmDetail := climaxConfirmDetail + "\n" + climaxFailKind
     climaxConfirmDetail := climaxConfirmDetail + "\n" + climaxFilterReason
+    climaxConfirmDetail := climaxConfirmDetail + "\n" + planGateDetailText(topConfirmAllowed, climaxSelectedByMain, climaxPlanCreated, rawClimaxFilterReason)
     climaxConfirmDetail := climaxConfirmDetail + "\nSL 前高+buffer " + fmt(topConfirmStop)
     climaxConfirmDetail := climaxConfirmDetail + "\nbase " + fmt(lastTopVolumeClimaxBase)
     climaxConfirmDetail := climaxConfirmDetail + "\nattack H/L " + fmt(lastTopVolumeClimaxHigh) + " / " + fmt(lastTopVolumeClimaxLow)
@@ -2540,11 +2716,11 @@ if volumeClimaxTopConfirmEvent
     climaxConfirmDetail := climaxConfirmDetail + "\n成交量判断: " + volumeJudge
     climaxConfirmDetail := climaxConfirmDetail + "\nvol/MA " + fmt(volumeRatio) + " / closePos " + fmt(closePosition)
     climaxConfirmDetail := climaxConfirmDetail + "\ndistance " + fmt(topVolumeClimaxDistanceAtr) + "ATR"
-    string climaxConfirmCompact = topKey + " 候选确认 空\n" + (topConfirmAllowed ? "可挂单" : "确认但过滤")
+    string climaxConfirmCompact = topKey + " 候选确认 空\n" + (climaxPlanCreated ? "已生成plan" : "主流程未挂单")
     if eventMarkersVisible
-        eventMarker(-1, topConfirmAllowed ? "candidate" : "blocked", " ", climaxConfirmDetail, 0.34)
+        eventMarker(-1, climaxMarkerKind, " ", climaxConfirmDetail, 0.34)
     if diagnosticLabelsVisible
-        drawFlowLabel(-1, topConfirmAllowed ? "candidate" : "blocked", "confirmed", "confirmed", 1.35, climaxConfirmCompact, climaxConfirmDetail)
+        drawFlowLabel(-1, climaxMarkerKind, climaxMarkerKind, "confirmed", 1.35, climaxConfirmCompact, climaxConfirmDetail)
 
 bool nakedTouchEvent = confirmed and showDiagnosticEventFlow and selectedDirection == 0 and (topNakedTouchEvent or bottomNakedTouchEvent)
 if nakedTouchEvent
@@ -2664,6 +2840,27 @@ if weakNewTopWatchEvent or weakNewBottomWatchEvent
     if diagnosticLabelsVisible
         drawFlowLabel(weakWatchDirection, "observe", "blocked", "blocked", 1.2, weakWatchCompact, weakWatchDetail)
 
+bool weakTopQuietForNext = nakedQuietWatchEvent and topNoDemandWatch and not topNoDemandBreakConfirmed
+bool weakBottomQuietForNext = nakedQuietWatchEvent and bottomNoSupplyWatch and not bottomNoSupplyBreakConfirmed
+bool weakTopAwayForNext = weakAwayFromRetestEvent and topPullbackArmed and topFailureWatchActive and topPressureWeak and not topRetestTouchNow
+bool weakBottomAwayForNext = weakAwayFromRetestEvent and bottomPullbackArmed and recentBottomFailureWatchWindow and bottomPressureWeak and not bottomRetestTouchNow
+bool weakTopNewForNext = weakNewTopWatchEvent
+bool weakBottomNewForNext = weakNewBottomWatchEvent
+bool weakWatchForNext = weakTopQuietForNext or weakBottomQuietForNext or weakTopAwayForNext or weakBottomAwayForNext or weakTopNewForNext or weakBottomNewForNext
+int weakWatchDirectionForNext = weakTopQuietForNext or weakTopAwayForNext or weakTopNewForNext ? -1 : weakWatchForNext ? 1 : 0
+string weakWatchSourceForNext = weakTopQuietForNext ? "高位衰弱/打压观察" : weakBottomQuietForNext ? "低位衰弱/打压观察" : weakTopAwayForNext ? "弱K但未回触前高" : weakBottomAwayForNext ? "弱K但未回触前低" : weakTopNewForNext ? "弱新高观察" : weakBottomNewForNext ? "弱新低观察" : ""
+float weakWatchLevelForNext = weakWatchDirectionForNext == -1 ? topStructuralRetestLevel : weakWatchDirectionForNext == 1 ? bottomStructuralRetestLevel : na
+float weakWatchToleranceForNext = weakWatchForNext ? strictRetestTolerance : na
+float weakWatchHighForNext = weakTopQuietForNext ? lastTopNoDemandHigh : weakBottomQuietForNext ? lastBottomNoSupplyHigh : weakTopAwayForNext ? lastTopFailureWatchHigh : weakBottomAwayForNext ? lastBottomFailureWatchHigh : weakTopNewForNext ? lastWeakNewHighHigh : weakBottomNewForNext ? lastWeakNewLowHigh : na
+float weakWatchLowForNext = weakTopQuietForNext ? lastTopNoDemandLow : weakBottomQuietForNext ? lastBottomNoSupplyLow : weakTopAwayForNext ? lastTopFailureWatchLow : weakBottomAwayForNext ? lastBottomFailureWatchLow : weakTopNewForNext ? lastWeakNewHighLow : weakBottomNewForNext ? lastWeakNewLowLow : na
+float weakWatchBodyMidForNext = weakTopNewForNext or weakBottomNewForNext ? (open + close) * 0.5 : weakWatchDirectionForNext == -1 ? lastTopFailureWatchBodyMid : weakWatchDirectionForNext == 1 ? lastBottomFailureWatchBodyMid : na
+bool weakWatchRsiProofForNext = weakWatchDirectionForNext == -1 ? (scalpRsiShortOk or scalpFastBearDiv) : weakWatchDirectionForNext == 1 ? (scalpRsiLongOk or scalpFastBullDiv) : false
+bool weakWatchFastDivForNext = weakWatchDirectionForNext == -1 ? scalpFastBearDiv : weakWatchDirectionForNext == 1 ? scalpFastBullDiv : false
+bool weakNextDue = confirmed and showDiagnosticEventFlow and weakWatchForNext[1]
+if weakNextDue and not (selectedPlanValid or pendingTouched)
+    string weakNextDisplayBlock = not inEntryWindow and selectedDirection != 0 ? "outside_entry_session" : selectedBlockReason
+    drawWeakNextX(weakWatchDirectionForNext[1], weakWatchSourceForNext[1], weakWatchLevelForNext[1], weakWatchToleranceForNext[1], weakWatchHighForNext[1], weakWatchLowForNext[1], weakWatchBodyMidForNext[1], scalpRsi[1], scalpRsiSmooth[1], weakWatchRsiProofForNext[1], weakWatchFastDivForNext[1], weakNextDisplayBlock)
+
 bool topDistributionOrDropConfirmed = topDistributionDropConfirmed or topImmediateReversalShort or (topHighVolumeDropConfirmed and not topVolumeClimaxFailedBreakConfirmed) or topNoDemandBreakConfirmed
 bool bottomAccumulationOrRiseConfirmed = bottomAccumulationRiseConfirmed or bottomHighVolumeRiseConfirmed or bottomNoSupplyBreakConfirmed
 bool distributionConfirmRaw = confirmed and showDiagnosticEventFlow and (topDistributionOrDropConfirmed or bottomAccumulationOrRiseConfirmed)
@@ -2682,17 +2879,20 @@ if distributionConfirmEvent
     float distributionEntry = distributionDirection == -1 ? topConfirmEntry : bottomConfirmEntry
     float distributionStop = distributionDirection == -1 ? topConfirmStop : bottomConfirmStop
     float distributionQty = distributionDirection == -1 ? topConfirmQty : bottomConfirmQty
-    bool distributionSmallStopOk = smallStopTrialAllowed(distributionEntry, distributionStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps)
+    bool distributionSmallStopOk = smallStopTrialAllowed(distributionDirection, distributionEntry, distributionStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps)
     string rawDistributionFilterReason = "main_flow_filter"
     if distributionAllowed
         rawDistributionFilterReason := "passed"
     else if not distributionGapOk
         rawDistributionFilterReason := "micro_structure_too_close"
     else if not distributionSmallStopOk
-        rawDistributionFilterReason := smallStopGateReason(distributionEntry, distributionStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps)
+        rawDistributionFilterReason := smallStopGateReason(distributionDirection, distributionEntry, distributionStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps)
     else if distributionQty < 1.0
         rawDistributionFilterReason := "qty_too_small"
-    string distributionFilterReason = distributionAllowed ? "可挂单" : "确认但过滤\n过滤原因: " + reasonCn(rawDistributionFilterReason) + " / " + rawDistributionFilterReason
+    bool distributionSelectedByMain = selectedDirection == distributionDirection and (distributionDirection == -1 ? selectedTopProbe : selectedBottomProbe)
+    bool distributionPlanCreated = newPlanNow and distributionSelectedByMain
+    string distributionFilterReason = distributionAllowed ? "子条件: 通过 / passed" : "子条件: 未通过\n过滤原因: " + reasonCn(rawDistributionFilterReason) + " / " + rawDistributionFilterReason
+    string distributionMarkerKind = distributionPlanCreated ? "candidate" : "blocked"
     bool distributionQuietBreak = distributionDirection == -1 ? topNoDemandBreakConfirmed : bottomNoSupplyBreakConfirmed
     bool distributionSameBarWeakConfirm = distributionDirection == -1 ? topNoDemandBreakImmediate : bottomNoSupplyBreakImmediate
     string distributionKind = "弱新低后分歧放量上涨"
@@ -2707,10 +2907,11 @@ if distributionConfirmEvent
     float distributionWatchLow = distributionDirection == -1 ? (topNoDemandBreakConfirmed ? lastTopNoDemandLow : lastTopFailureWatchLow) : (bottomNoSupplyBreakConfirmed ? lastBottomNoSupplyLow : lastBottomFailureWatchLow)
     float distributionWaitBars = distributionDirection == -1 ? (topNoDemandBreakConfirmed ? barsSinceTopNoDemand : barsSinceTopFailureWatch) : (bottomNoSupplyBreakConfirmed ? barsSinceBottomNoSupply : barsSinceBottomFailureWatch)
     float distributionDistance = distributionDirection == -1 ? (topNoDemandBreakConfirmed ? topNoDemandDistanceAtr : topHighVolumeDropConfirmed or topImmediateReversalShort ? topHighVolumeDropDistanceAtr : topDistributionDistanceAtr) : (bottomNoSupplyBreakConfirmed ? bottomNoSupplyDistanceAtr : bottomHighVolumeRiseConfirmed ? bottomHighVolumeRiseDistanceAtr : bottomAccumulationDistanceAtr)
-    string distributionStep = distributionDirection == -1 ? (distributionSameBarWeakConfirm ? " ③同根弱K确认 空\n候选确认 空\n" : distributionQuietBreak ? " ③跌破观察簇确认 空\n候选确认 空\n" : " ③放量失败确认 空\n候选确认 空\n") : (distributionSameBarWeakConfirm ? " ③同根弱K确认 多\n候选确认 多\n" : distributionQuietBreak ? " ③突破观察簇确认 多\n候选确认 多\n" : " ③放量失败确认 多\n候选确认 多\n")
+    string distributionStep = distributionDirection == -1 ? (distributionSameBarWeakConfirm ? " ③同根弱K确认 空\n候选确认 空\n" : distributionQuietBreak ? " ③跌破观察簇确认 空\n候选确认 空\n" : topImmediateReversalShort ? " ③高位失败确认 空\n候选确认 空\n" : topHighVolumeDropConfirmed ? " ③放量失败确认 空\n候选确认 空\n" : " ③分歧放量下跌确认 空\n候选确认 空\n") : (distributionSameBarWeakConfirm ? " ③同根弱K确认 多\n候选确认 多\n" : distributionQuietBreak ? " ③突破观察簇确认 多\n候选确认 多\n" : bottomHighVolumeRiseConfirmed ? " ③放量失败确认 多\n候选确认 多\n" : " ③分歧放量上涨确认 多\n候选确认 多\n")
     string distributionMain = distributionDirection == -1 ? (topNoDemandBreakImmediate ? "naked_high_same_bar_rsi_decay" : topNoDemandBreakConfirmed ? "naked_high_decay_break" : selectedMainReason) : (bottomNoSupplyBreakImmediate ? "naked_low_same_bar_rsi_decay" : bottomNoSupplyBreakConfirmed ? "naked_low_decay_break" : selectedMainReason)
     string distributionSlText = distributionDirection == -1 ? "前高+buffer " + fmt(topConfirmStop) : "前低-buffer " + fmt(bottomConfirmStop)
-    string distributionDetail = distributionKey + distributionStep + (distributionQuietBreak ? "裸K连续衰弱确认" : "裸K放量失败确认")
+    string distributionConfirmTitle = distributionQuietBreak ? "裸K连续衰弱确认" : distributionDirection == -1 and topImmediateReversalShort ? "裸K高位失败确认" : distributionDirection == -1 and topHighVolumeDropConfirmed ? "裸K放量失败确认" : distributionDirection == -1 ? "弱新高后分歧放量下跌" : bottomHighVolumeRiseConfirmed ? "裸K低位放量失败确认" : "弱新低后分歧放量上涨"
+    string distributionDetail = distributionKey + distributionStep + distributionConfirmTitle
     distributionDetail := distributionDetail + "\n主因: " + distributionMain
     distributionDetail := distributionDetail + "\n次因: " + distributionKind
     if distributionSameBarWeakConfirm
@@ -2718,6 +2919,7 @@ if distributionConfirmEvent
         distributionDetail := distributionDetail + "\n第一根弱K已确认，不再等下一根"
     distributionDetail := distributionDetail + "\nRSI证明: " + (distributionDirection == -1 ? (scalpFastBearDiv ? "快速空背离" : "RSI高位转弱") : (scalpFastBullDiv ? "快速多背离" : "RSI低位转强"))
     distributionDetail := distributionDetail + "\n" + distributionFilterReason
+    distributionDetail := distributionDetail + "\n" + planGateDetailText(distributionAllowed, distributionSelectedByMain, distributionPlanCreated, rawDistributionFilterReason)
     distributionDetail := distributionDetail + "\n回抽限价 entry " + fmt(distributionEntry) + (distributionQuietBreak ? " / 高低点K收盘价±offset" : "")
     distributionDetail := distributionDetail + "\nSL " + distributionSlText
     distributionDetail := distributionDetail + "\nbase " + fmt(distributionBase)
@@ -2726,11 +2928,12 @@ if distributionConfirmEvent
     distributionDetail := distributionDetail + "\n成交量判断: " + volumeJudge
     distributionDetail := distributionDetail + "\nvol/MA " + fmt(volumeRatio) + " / closePos " + fmt(closePosition)
     distributionDetail := distributionDetail + "\ndistance " + fmt(distributionDistance) + "ATR"
-    string distributionCompact = distributionDirection == -1 ? distributionKey + (distributionQuietBreak ? " 候选确认 空\n跌破观察簇" : " 候选确认 空\n放量失败") : distributionKey + (distributionQuietBreak ? " 候选确认 多\n突破观察簇" : " 候选确认 多\n放量失败")
+    string distributionCompactReason = distributionDirection == -1 ? (distributionQuietBreak ? "跌破观察簇" : topImmediateReversalShort ? "高位失败" : topHighVolumeDropConfirmed ? "放量失败" : "分歧放量") : (distributionQuietBreak ? "突破观察簇" : bottomHighVolumeRiseConfirmed ? "放量失败" : "分歧放量")
+    string distributionCompact = distributionKey + " 候选确认 " + dirName(distributionDirection) + "\n" + distributionCompactReason + " / " + (distributionPlanCreated ? "已生成plan" : "主流程未挂单")
     if eventMarkersVisible
-        eventMarker(distributionDirection, distributionAllowed ? "candidate" : "blocked", " ", distributionDetail, 0.34)
+        eventMarker(distributionDirection, distributionMarkerKind, " ", distributionDetail, 0.34)
     if diagnosticLabelsVisible
-        drawFlowLabel(distributionDirection, distributionAllowed ? "candidate" : "blocked", "confirmed", "confirmed", 1.35, distributionCompact, distributionDetail)
+        drawFlowLabel(distributionDirection, distributionMarkerKind, distributionMarkerKind, "confirmed", 1.35, distributionCompact, distributionDetail)
 
 bool exhaustionWatchTop = confirmed and showDiagnosticEventFlow and selectedDirection == 0 and dayRangeClear and topRightShoulder and topRetestBand and upperNoVolumeExpansion and topMomentumDecayed and not upperExhaustionConfirmedShort and not topNoDemandWatch and not topNoDemandBreakConfirmed
 bool exhaustionWatchBottom = confirmed and showDiagnosticEventFlow and selectedDirection == 0 and dayRangeClear and bottomRightShoulder and bottomRetestBand and lowerNoVolumeExpansion and bottomMomentumDecayed and not lowerExhaustionConfirmedLong and not bottomNoSupplyWatch and not bottomNoSupplyBreakConfirmed
@@ -2818,38 +3021,3 @@ if entryWindowStartEvent or entryWindowEndEvent
     string entryWindowBoundaryDetail = (entryWindowOpening ? "交易窗口 OPEN\n可挂单 " : "交易窗口 CLOSED\n仅观察 ") + entrySession
     line.new(bar_index, low - atr * 2.0, bar_index, high + atr * 2.0, xloc=xloc.bar_index, extend=extend.both, color=entryWindowLineColor, style=line.style_dashed, width=1)
     eventMarker(entryWindowOpening ? 1 : -1, "structure", entryWindowBoundaryText, entryWindowBoundaryDetail, 0.78)
-
-var table entryWindowTable = table.new(position.bottom_right, 1, 2)
-if showEntryWindowStatus and barstate.islast
-    string entryWindowTitle = not useIntradayEntryWindow ? "交易窗口 FILTER OFF" : inEntryWindow ? "交易窗口 OPEN" : "交易窗口 CLOSED"
-    string entryWindowDetail = not useIntradayEntryWindow ? "窗口过滤关闭 / 仅按策略条件" : (inEntryWindow ? "可挂单 " : "仅观察 ") + entrySession
-    table.cell(entryWindowTable, 0, 0, entryWindowTitle, text_color=entryWindowTextColor(useIntradayEntryWindow, inEntryWindow), bgcolor=entryWindowBgColor(useIntradayEntryWindow, inEntryWindow))
-    table.cell(entryWindowTable, 0, 1, entryWindowDetail, text_color=entryWindowTextColor(useIntradayEntryWindow, inEntryWindow), bgcolor=entryWindowBgColor(useIntradayEntryWindow, inEntryWindow))
-
-var table statusTable = table.new(position.top_right, 2, 9)
-if showStatusTable and barstate.islast
-    bool statusUsesShadowPlan = shadowPending or shadowOpen
-    float statusEntryPlan = statusUsesShadowPlan ? shadowEntry : selectedEntry
-    float statusStopPlan = statusUsesShadowPlan ? shadowStop : selectedStop
-    float statusRunnerPlan = statusUsesShadowPlan ? shadowRunner : selectedRunnerActivation
-    float statusTargetPlan = statusUsesShadowPlan ? shadowTarget : selectedTarget
-    int statusDirectionPlan = statusUsesShadowPlan ? shadowDirection : selectedDirection
-    float statusQtyPlan = statusUsesShadowPlan ? shadowQty : selectedQty
-    table.cell(statusTable, 0, 0, "v3状态", text_color=tableTextColor(0), bgcolor=tableBgColor(0))
-    table.cell(statusTable, 1, 0, shadowPending ? "预挂中" : shadowOpen ? "持仓影子" : selectedPlanValid ? "有计划" : "等待", text_color=tableTextColor(0), bgcolor=tableBgColor(0))
-    table.cell(statusTable, 0, 1, "方向", text_color=tableTextColor(1), bgcolor=tableBgColor(1))
-    table.cell(statusTable, 1, 1, selectedDirection != 0 ? dirName(selectedDirection) : dirName(shadowDirection), text_color=tableTextColor(1), bgcolor=tableBgColor(1))
-    table.cell(statusTable, 0, 2, "模式", text_color=tableTextColor(2), bgcolor=tableBgColor(2))
-    table.cell(statusTable, 1, 2, selectedEntryIntent, text_color=tableTextColor(2), bgcolor=tableBgColor(2))
-    table.cell(statusTable, 0, 3, "主因", text_color=tableTextColor(3), bgcolor=tableBgColor(3))
-    table.cell(statusTable, 1, 3, selectedMainReason, text_color=tableTextColor(3), bgcolor=tableBgColor(3))
-    table.cell(statusTable, 0, 4, "结构/小止损", text_color=tableTextColor(4), bgcolor=tableBgColor(4))
-    table.cell(statusTable, 1, 4, (selectedStructureClear ? "清晰" : "等待") + " / " + selectedBlockReason, text_color=tableTextColor(4), bgcolor=tableBgColor(4))
-    table.cell(statusTable, 0, 5, "黄/红/蓝/绿", text_color=tableTextColor(5), bgcolor=tableBgColor(5))
-    table.cell(statusTable, 1, 5, "Entry / SL / 0.6R / EMA20TP", text_color=tableTextColor(5), bgcolor=tableBgColor(5))
-    table.cell(statusTable, 0, 6, "窗口", text_color=tableTextColor(6), bgcolor=tableBgColor(6))
-    table.cell(statusTable, 1, 6, inEntryWindow ? "可入场" : "关闭", text_color=tableTextColor(6), bgcolor=tableBgColor(6))
-    table.cell(statusTable, 0, 7, "金额", text_color=tableTextColor(7), bgcolor=tableBgColor(7))
-    table.cell(statusTable, 1, 7, planMoneyText(statusEntryPlan, statusStopPlan, statusRunnerPlan, statusTargetPlan, statusDirectionPlan, statusQtyPlan), text_color=tableTextColor(7), bgcolor=tableBgColor(7))
-    table.cell(statusTable, 0, 8, "模型", text_color=tableTextColor(8), bgcolor=tableBgColor(8))
-    table.cell(statusTable, 1, 8, ENTRY_WINDOW_MODEL + " / " + (useIntradayEntryWindow ? entrySession : "窗口过滤关闭"), text_color=tableTextColor(8), bgcolor=tableBgColor(8))
