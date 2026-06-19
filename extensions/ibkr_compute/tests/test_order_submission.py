@@ -2556,6 +2556,26 @@ class IBGatewayOrderSubmissionWarningTest(unittest.TestCase):
 
 
 class OrderPlacerBracketMetadataTest(unittest.TestCase):
+    def test_market_close_metadata_accepts_explicit_false_safety_flags(self):
+        pb_client = FakeOrderPBClient()
+        broker = FakeMarketCloseBroker()
+        placer = OrderPlacer(pb_client=pb_client, broker=broker, account_id="DU123")
+
+        result = placer.place_market_close(
+            conid=123,
+            symbol="NFLX",
+            direction="short",
+            quantity=7,
+            safety_action=False,
+            bypass_normal_symbol_queue=False,
+            position_snapshot={"market_price": 101.5},
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(1, len(broker.calls))
+        self.assertEqual("NFLX", result["symbol_queue"]["symbol"])
+        self.assertEqual("place_market_close", result["symbol_queue"]["operation"])
+
     def test_marketable_limit_close_order_is_logged_with_actual_type_and_price(self):
         pb_client = FakeOrderPBClient()
         broker = FakeMarketCloseBroker()

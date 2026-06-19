@@ -157,11 +157,12 @@ class _FakeOrderModifier:
 
 
 class _FakeOrderPlacer:
-    def __init__(self, close_result=None):
+    def __init__(self, close_result=None, close_exception=None):
         self.brackets = []
         self.closes = []
         self.repairs = []
         self.close_result = dict(close_result or {})
+        self.close_exception = close_exception
 
     def place_bracket_order(self, **kwargs):
         self.brackets.append(dict(kwargs))
@@ -185,6 +186,8 @@ class _FakeOrderPlacer:
 
     def place_market_close(self, **kwargs):
         self.closes.append(dict(kwargs))
+        if self.close_exception:
+            raise self.close_exception
         if self.close_result:
             return dict(self.close_result)
         return {
@@ -725,6 +728,30 @@ class OrderLifecycleRiskLimitTests(unittest.TestCase):
         self.assertEqual("EOD 平仓失败且持仓无保护：需要立即人工确认", pb.events[0]["title"])
         self.assertEqual("error", pb.events[0]["level"])
         self.assertEqual("AAPL", pb.events[0]["detail"]["失败标的"])
+
+    def test_eod_close_records_close_exception_without_killing_lifecycle(self):
+        pb = _FakePB()
+        placer = _FakeOrderPlacer(close_exception=NameError("name 'self' is not defined"))
+        lifecycle = OrderLifecycle(
+            pb_client=pb,
+            order_placer=placer,
+            broker=_FakeBroker([{"ticker": "AAPL", "position": 5, "conid": 123}]),
+            environment="paper",
+            config=_FakeConfig({}),
+        )
+
+        result = lifecycle.eod_close_all(et_now=datetime(2026, 6, 12, 15, 55, tzinfo=ET))
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("eod_close_incomplete", result["reason"])
+        self.assertEqual(1, result["errors"])
+        self.assertFalse(lifecycle.status()["eod_closed_today"])
+        self.assertEqual(1, len(placer.closes))
+        self.assertEqual("eod_close_exception", result["error_items"][0]["error"])
+        self.assertEqual("NameError", result["error_items"][0]["result"]["exception_type"])
+        self.assertIn("name 'self' is not defined", result["error_items"][0]["result"]["exception"])
+        self.assertEqual("eod_close_incomplete", lifecycle.status()["last_eod_close_result"]["reason"])
+        self.assertTrue(pb.states)
 
     def test_eod_close_live_without_price_does_not_submit_or_mark_done(self):
         pb = _FakePB()

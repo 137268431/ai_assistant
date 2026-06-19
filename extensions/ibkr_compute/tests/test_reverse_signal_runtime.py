@@ -227,9 +227,10 @@ class _FakeOrderLifecycle:
 
 
 class _FakeOrderPlacer:
-    def __init__(self, result=None):
+    def __init__(self, result=None, exception=None):
         self.results = [copy.deepcopy(item) for item in result] if isinstance(result, list) else []
         self.result = {"ok": True, "order_id": "close-1"} if isinstance(result, list) else (result or {"ok": True, "order_id": "close-1"})
+        self.exception = exception
         self.calls = []
 
     def place_market_close(self, conid, symbol, direction, quantity, **kwargs):
@@ -242,6 +243,8 @@ class _FakeOrderPlacer:
                 **kwargs,
             }
         )
+        if self.exception:
+            raise self.exception
         if self.results:
             return copy.deepcopy(self.results.pop(0))
         return dict(self.result)
@@ -978,6 +981,62 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
         self.assertEqual(0, lifecycle.calls)
         self.assertEqual([], placer.calls)
         self.assertEqual("expired", pb.acks[0]["status"])
+
+    def test_close_exception_stays_pending_retry_and_next_record_continues(self):
+        reverse = {
+            "id": "rev-close-exception",
+            "symbol": "AAPL",
+            "conid": 123,
+            "action_type": "close",
+            "status": "pending",
+            "environment": "live",
+            "priority": 20,
+            "bar_time_ms": 2,
+            "extra": {"origin_signal_id": "sig-close-exception"},
+        }
+        legacy = {
+            "id": "rev-legacy",
+            "symbol": "MSFT",
+            "conid": 456,
+            "source": "legacy",
+            "action_type": "close",
+            "status": "pending",
+            "environment": "live",
+            "priority": 10,
+            "bar_time_ms": 1,
+        }
+        signals = [
+            {
+                "id": "sig-close-exception-row",
+                "signal_id": "sig-close-exception",
+                "environment": "live",
+                "symbol": "AAPL",
+                "direction": "long",
+                "status": "protected_active",
+                "extra": {"execution_by_mode": {"live": {"status": "filled"}}},
+            }
+        ]
+        pb = _FakePB(reverse_rows=[reverse, legacy], signal_rows=signals)
+        lifecycle = _FakeOrderLifecycle([[{"ticker": "AAPL", "position": 10}]])
+        placer = _FakeOrderPlacer(exception=NameError("name 'self' is not defined"))
+        handler = ReverseSignalHandler(pb, order_lifecycle=lifecycle, order_placer=placer, environment="live")
+
+        handler.check_and_process()
+
+        failed = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        failed_extra = failed["extra"]
+        self.assertEqual("pending", failed["status"])
+        self.assertIn("reverse pending retry: reverse_action_exception", failed["reason"])
+        self.assertEqual("pending_retry", failed_extra["result_status"])
+        self.assertTrue(failed_extra["reverse_runtime_detail"]["retryable"])
+        self.assertEqual("NameError", failed_extra["reverse_runtime_detail"]["blocked_context"]["exception_type"])
+        self.assertNotIn("rev-close-exception", handler._processed_ids)
+        self.assertEqual(1, len(placer.calls))
+
+        continued = pb.records[REVERSE_SIGNAL_COLLECTION][1]
+        self.assertEqual("expired", continued["status"])
+        self.assertEqual("legacy_non_tv_action_disabled", continued["reason"])
+        self.assertEqual(["pending", "expired"], [ack["status"] for ack in pb.acks])
 
     def test_tv_exit_origin_rejected_cancels_without_position_lookup(self):
         reverse = {

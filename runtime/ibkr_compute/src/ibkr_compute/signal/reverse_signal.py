@@ -145,7 +145,25 @@ class ReverseSignalHandler:
                 if action not in REVERSE_ACTIONS:
                     continue
 
-                result = self._process_reverse(r, action)
+                action_started = time.perf_counter()
+                try:
+                    result = self._process_reverse(r, action)
+                except Exception as e:
+                    logger.exception("Reverse signal action failed: id=%s action=%s", rid, action)
+                    record_signal_event(
+                        environment=self.environment,
+                        stage="reverse_action",
+                        signal_source=str(action or "unknown"),
+                        result="error",
+                        reason_code=e.__class__.__name__,
+                        duration_s=time.perf_counter() - action_started,
+                    )
+                    result = self._mark_retryable_blocked(
+                        self._base_reverse_detail(r, action),
+                        "reverse_action_exception",
+                        exception_type=e.__class__.__name__,
+                        exception=str(e),
+                    )
                 if not self._is_retryable_result(result):
                     self._processed_ids.add(rid)
 

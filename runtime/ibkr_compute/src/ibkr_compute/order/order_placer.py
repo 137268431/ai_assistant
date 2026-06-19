@@ -1224,8 +1224,7 @@ class OrderPlacer:
                 **metadata,
             }
 
-    @staticmethod
-    def _market_close_call_metadata(args: tuple, kwargs: dict) -> Dict[str, Any]:
+    def _market_close_call_metadata(self, args: tuple, kwargs: dict) -> Dict[str, Any]:
         names = ("conid", "symbol", "direction", "quantity")
         payload = {name: kwargs.get(name) for name in names if name in kwargs}
         for index, name in enumerate(names):

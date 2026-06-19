@@ -433,6 +433,28 @@ class OrderLifecycle:
         )
         return self._set_eod_close_result(payload, market_date=market_date, eod_closed_today=True)
 
+    def _mark_eod_close_exception(self, et_now: datetime, exc: Exception) -> dict[str, Any]:
+        if et_now.tzinfo is None:
+            et_now = et_now.replace(tzinfo=ET)
+        et_now = et_now.astimezone(ET)
+        eod_close_hour, eod_close_minute = self._eod_close_time()
+        market_date = self._eod_market_date(et_now)
+        payload = {
+            "ok": False,
+            "closed": 0,
+            "errors": 1,
+            "pending": 0,
+            "position_snapshot_ok": False,
+            "position_snapshot_unavailable": False,
+            "reason": "eod_close_exception",
+            "error": str(exc),
+            "exception_type": exc.__class__.__name__,
+            "retry_after_s": self._eod_close_retry_interval_sec(),
+            "eod_close_time": f"{eod_close_hour:02d}:{eod_close_minute:02d}",
+            "now_et": et_now.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        return self._set_eod_close_result(payload, market_date=market_date, eod_closed_today=False)
+
     def _position_limit_max(self) -> int:
         return max(0, self._get_config_int("position_limit_max", DEFAULT_POSITION_LIMIT_MAX))
 
@@ -1519,23 +1541,33 @@ class OrderLifecycle:
                     continue
 
             link_context = self._eod_close_link_context(symbol)
-            result = self._place_harvest_market_close(
-                conid=conid,
-                symbol=symbol,
-                direction=direction,
-                quantity=quantity,
-                trade_group_id=str(link_context.get("trade_group_id") or ""),
-                entry_order_unique_id=str(link_context.get("entry_order_unique_id") or ""),
-                signal_id=str(link_context.get("signal_id") or ""),
-                source="eod_force_close",
-                order_type=order_type,
-                allow_market=allow_market,
-                close_reason="force_flat_eod",
-                close_reason_human="EOD 平仓",
-                position_snapshot=position_snapshot,
-                wait_for_fill=True,
-                fill_timeout=max(1.0, self._get_config_float("eod_close_fill_timeout_sec", 5.0)),
-            )
+            try:
+                result = self._place_harvest_market_close(
+                    conid=conid,
+                    symbol=symbol,
+                    direction=direction,
+                    quantity=quantity,
+                    trade_group_id=str(link_context.get("trade_group_id") or ""),
+                    entry_order_unique_id=str(link_context.get("entry_order_unique_id") or ""),
+                    signal_id=str(link_context.get("signal_id") or ""),
+                    source="eod_force_close",
+                    order_type=order_type,
+                    allow_market=allow_market,
+                    close_reason="force_flat_eod",
+                    close_reason_human="EOD 平仓",
+                    position_snapshot=position_snapshot,
+                    wait_for_fill=True,
+                    fill_timeout=max(1.0, self._get_config_float("eod_close_fill_timeout_sec", 5.0)),
+                )
+            except Exception as exc:
+                logger.exception("EOD close failed for %s: unhandled close exception", symbol)
+                result = {
+                    "ok": False,
+                    "submitted": False,
+                    "error": "eod_close_exception",
+                    "exception_type": exc.__class__.__name__,
+                    "exception": str(exc),
+                }
             submitted = bool(
                 result.get("submitted")
                 or result.get("order_id")
@@ -4342,7 +4374,11 @@ class OrderLifecycle:
                     self._mark_eod_close_window_closed(et_now)
                 elif self._eod_close_attempt_due(et_now):
                     logger.info("EOD close triggered at %s", et_now.strftime("%H:%M:%S"))
-                    self.eod_close_all(et_now=et_now)
+                    try:
+                        self.eod_close_all(et_now=et_now)
+                    except Exception as exc:
+                        logger.exception("EOD close attempt failed with an unhandled exception")
+                        self._mark_eod_close_exception(et_now, exc)
 
             positions = self.get_positions()
             self._sync_positions_to_pb_from_snapshot(positions)
