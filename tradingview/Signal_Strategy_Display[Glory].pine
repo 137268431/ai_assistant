@@ -2013,7 +2013,7 @@ bool selectedProbeCycleConsumed = selectedTopProbe ? topProbeCycleConsumed : sel
 int selectedProbeCycleId = selectedTopProbe ? topProbeCycleId : selectedBottomProbe ? bottomProbeCycleId : na
 int selectedProbeCycleTouchBar = selectedTopProbe ? topProbeCycleTouchBar : selectedBottomProbe ? bottomProbeCycleTouchBar : na
 bool selectedProbeCyclePassed = not selectedProbeSetup or (selectedProbeCycleActive and not selectedProbeCycleConsumed)
-bool selectedEntryNearAnchorOnly = selectedDirection == 0 or selectedProbeStrictTouchOk or (not na(selectedEntryAnchorDistanceAtr) and selectedEntryAnchorDistanceAtr <= scalpMaxEntryAwayAtr)
+bool selectedEntryNearAnchorOnly = selectedDirection == 0 or selectedProbeStrictTouchOk or selectedFailureRetestLimit or (not na(selectedEntryAnchorDistanceAtr) and selectedEntryAnchorDistanceAtr <= scalpMaxEntryAwayAtr)
 bool selectedCloseNearAnchor = selectedDirection == 0 or selectedProbeStrictTouchOk or (not na(selectedCurrentAnchorDistanceAtr) and selectedCurrentAnchorDistanceAtr <= scalpMaxEntryAwayAtr)
 bool selectedCloseFarFromAnchor = selectedDirection != 0 and selectedEntryNearAnchorOnly and not selectedCloseNearAnchor
 string selectedLimitWaitMode = selectedCloseFarFromAnchor ? "close_far_wait_pullback_limit" : "normal_limit"
@@ -2199,6 +2199,8 @@ selectedPlanDetail(string decisionRef, int currentFlowId) =>
     result := result + "\n严格回触: " + str.tostring(selectedProbeStrictTouchOk) + " / 失败回抽限价 " + str.tostring(selectedFailureRetestLimit)
     result := result + "\n探针周期: id " + str.tostring(selectedProbeCycleId) + " / active " + str.tostring(selectedProbeCycleActive) + " / consumed " + str.tostring(selectedProbeCycleConsumed) + " / touchBar " + str.tostring(selectedProbeCycleTouchBar)
     result := result + "\n说明: 失败回抽限价只决定挂单价，不绕过重新触及周期"
+    if selectedFailureRetestLimit
+        result := result + "\nfailureRetestLimit=true -> 允许失败回抽限价入场"
     if selectedCloseFarFromAnchor
         result := result + "\nclose已走远：只挂回抽限价，不追价"
     result := result + "\nRSI " + fmt(scalpRsi) + " / smooth " + fmt(scalpRsiSmooth) + " / " + selectedRsiState
@@ -2234,6 +2236,8 @@ blockedCandidateDetail(string blockPrefix, string displayBlockReason) =>
     result := result + "\n严格回触: " + str.tostring(selectedProbeStrictTouchOk) + " / 失败回抽限价 " + str.tostring(selectedFailureRetestLimit)
     result := result + "\n探针周期: id " + str.tostring(selectedProbeCycleId) + " / active " + str.tostring(selectedProbeCycleActive) + " / consumed " + str.tostring(selectedProbeCycleConsumed) + " / touchBar " + str.tostring(selectedProbeCycleTouchBar)
     result := result + "\n说明: 失败回抽限价只决定挂单价，不绕过重新触及周期"
+    if selectedFailureRetestLimit
+        result := result + "\nfailureRetestLimit=true -> 允许失败回抽限价入场"
     if selectedCloseFarFromAnchor
         result := result + "\nclose已走远：只挂回抽限价，不追价"
     result := result + "\n同向距离 " + fmt(selectedSameSideSignalDistanceAtr) + "ATR / min " + fmt(minSameSideSignalSeparationAtr)
@@ -2335,7 +2339,7 @@ planGateDetailText(bool childAllowed, bool selectedByMain, bool planCreatedNow, 
     result := result + "\n子条件: " + (childAllowed ? "通过" : "未通过") + " / " + reasonCn(childReason) + " / " + childReason
     result := result + "\n最终选择: " + setupDisplayName(selectedSetup) + " / " + dirName(selectedDirection) + " / selectedByMain " + str.tostring(selectedByMain)
     result := result + "\nselectedPlanValid: " + str.tostring(selectedPlanValid) + " / block " + reasonCn(selectedBlockReason) + " / " + selectedBlockReason
-    result := result + "\n质量gate: structure " + str.tostring(selectedStructureClear) + " / near " + str.tostring(selectedEntryNearAnchorOnly) + " / cycle " + str.tostring(selectedProbeCyclePassed) + " / rsi " + str.tostring(selectedRsiPassed) + " / smallStop " + str.tostring(selectedSmallStopGatePassed) + " / expectedR " + str.tostring(selectedExpectedRPassed)
+    result := result + "\n质量gate: structure " + str.tostring(selectedStructureClear) + " / near " + str.tostring(selectedEntryNearAnchorOnly) + " / failureLimit " + str.tostring(selectedFailureRetestLimit) + " / cycle " + str.tostring(selectedProbeCyclePassed) + " / rsi " + str.tostring(selectedRsiPassed) + " / smallStop " + str.tostring(selectedSmallStopGatePassed) + " / expectedR " + str.tostring(selectedExpectedRPassed)
     result := result + "\n探针周期: id " + str.tostring(selectedProbeCycleId) + " / active " + str.tostring(selectedProbeCycleActive) + " / consumed " + str.tostring(selectedProbeCycleConsumed) + " / touchBar " + str.tostring(selectedProbeCycleTouchBar)
     result := result + "\n空间: EMA " + fmt(selectedEmaProfitAtr) + "/" + fmt(minEmaProfitAtr) + "ATR / expectedR " + fmt(selectedExpectedR) + "/" + fmt(scalpMinExpectedR)
     result := result + "\n间距gate: " + str.tostring(selectedPlanSpacingOk) + " / 同向 " + fmt(selectedSameSideSignalDistanceAtr) + "/" + fmt(minSameSideSignalSeparationAtr) + "ATR"
@@ -2383,10 +2387,6 @@ if newPlanNow
         topExhaustionUsed := selectedProbePattern == "extension_exhaustion_top" ? true : topExhaustionUsed
     if selectedBottomProbe
         bottomExhaustionUsed := selectedProbePattern == "extension_exhaustion_bottom" ? true : bottomExhaustionUsed
-    if selectedTopProbe and selectedProbeCycleId == topProbeCycleId
-        topProbeCycleConsumed := true
-    if selectedBottomProbe and selectedProbeCycleId == bottomProbeCycleId
-        bottomProbeCycleConsumed := true
     string detail = selectedPlanDetail(decisionRef, flowId)
     string compact = "F" + str.tostring(flowId) + " " + dirName(selectedDirection) + " plan " + fmt(selectedEntry)
     if flowLabelsVisible
@@ -2441,16 +2441,6 @@ if pendingTouched
         dailyLongTrades += 1
     if shadowDirection == -1
         dailyShortTrades += 1
-    string detail = "F" + str.tostring(flowId) + " ④触及 " + dirName(shadowDirection) + "\nplan " + fmt(shadowEntry) + " 已触及\nDisplay shadow，不代表 TV strategy 已成交；真实成交看 Core Strategy Tester / Core entry_fill / 券商订单"
-    string compact = "F" + str.tostring(flowId) + " 触及 " + fmt(shadowEntry)
-    if flowLabelsVisible
-        drawFlowLabel(shadowDirection, "confirmed", "confirmed", "confirmed", 1.8, compact, detail)
-if pendingCancelled
-    string reason = pendingInvalidated ? "结构失效/打穿止损" : "挂单TTL过期"
-    string detail = "F" + str.tostring(flowId) + " ④撤销 " + dirName(shadowDirection) + "\n原因: " + reason + "\nplan " + fmt(shadowEntry) + " / SL " + fmt(shadowStop) + "\n信号bar " + str.tostring(shadowSignalBar) + " / expires " + str.tostring(shadowExpiresBar)
-    string compact = "F" + str.tostring(flowId) + " 撤销"
-    if flowLabelsVisible
-        drawFlowLabel(shadowDirection, "blocked", "blocked", "blocked", 1.8, compact, detail)
     if shadowSetup == "probe_2b_top_short" and shadowProbeCycleId == topProbeCycleId
         topProbeCycleConsumed := true
         lastTopFailureWatchBar := na
@@ -2461,6 +2451,38 @@ if pendingCancelled
         lastTopNoDemandHigh := na
         lastTopNoDemandLow := na
     if shadowSetup == "probe_2b_bottom_long" and shadowProbeCycleId == bottomProbeCycleId
+        bottomProbeCycleConsumed := true
+        lastBottomFailureWatchBar := na
+        lastBottomFailureWatchClose := na
+        lastBottomFailureWatchVolumeProbe := false
+        bottomNoSupplyStreak := 0
+        lastBottomNoSupplyBar := na
+        lastBottomNoSupplyHigh := na
+        lastBottomNoSupplyLow := na
+    string detail = "F" + str.tostring(flowId) + " ④触及 " + dirName(shadowDirection) + "\nplan " + fmt(shadowEntry) + " 已触及\nDisplay shadow，不代表 TV strategy 已成交；真实成交看 Core Strategy Tester / Core entry_fill / 券商订单"
+    string compact = "F" + str.tostring(flowId) + " 触及 " + fmt(shadowEntry)
+    if flowLabelsVisible
+        drawFlowLabel(shadowDirection, "confirmed", "confirmed", "confirmed", 1.8, compact, detail)
+if pendingCancelled
+    string reason = pendingInvalidated ? "结构失效/打穿止损" : "挂单TTL过期"
+    float cancelTouchGap = shadowDirection == -1 ? math.max(shadowEntry - high, 0.0) : shadowDirection == 1 ? math.max(low - shadowEntry, 0.0) : na
+    float cancelTouchGapAtr = atr > 0.0 ? cancelTouchGap / atr : na
+    bool cancelConsumesProbeCycle = pendingInvalidated
+    string touchText = shadowDirection == -1 ? "本bar high " + fmt(high) + " < entry " + fmt(shadowEntry) : "本bar low " + fmt(low) + " > entry " + fmt(shadowEntry)
+    string detail = "F" + str.tostring(flowId) + " ④撤销 " + dirName(shadowDirection) + "\n原因: " + reason + "\n未触及限价: " + touchText + "\n距entry " + fmt(cancelTouchGapAtr) + "ATR / TTL " + str.tostring(bar_index - shadowSignalBar) + "/" + str.tostring(entryOrderTtlBars) + "\nplan " + fmt(shadowEntry) + " / SL " + fmt(shadowStop) + "\n信号bar " + str.tostring(shadowSignalBar) + " / expires " + str.tostring(shadowExpiresBar) + "\n消费结构周期: " + str.tostring(cancelConsumesProbeCycle)
+    string compact = "F" + str.tostring(flowId) + " 撤销"
+    if flowLabelsVisible
+        drawFlowLabel(shadowDirection, "blocked", "blocked", "blocked", 1.8, compact, detail)
+    if cancelConsumesProbeCycle and shadowSetup == "probe_2b_top_short" and shadowProbeCycleId == topProbeCycleId
+        topProbeCycleConsumed := true
+        lastTopFailureWatchBar := na
+        lastTopFailureWatchClose := na
+        lastTopFailureWatchVolumeProbe := false
+        topNoDemandStreak := 0
+        lastTopNoDemandBar := na
+        lastTopNoDemandHigh := na
+        lastTopNoDemandLow := na
+    if cancelConsumesProbeCycle and shadowSetup == "probe_2b_bottom_long" and shadowProbeCycleId == bottomProbeCycleId
         bottomProbeCycleConsumed := true
         lastBottomFailureWatchBar := na
         lastBottomFailureWatchClose := na
@@ -2651,6 +2673,20 @@ if blockedCandidate
         activeBottomDecisionSeq := bottomDecisionSeq
     string blockKey = selectedTopProbe ? "T" + str.tostring(activeTopDecisionSeq) : selectedBottomProbe ? "B" + str.tostring(activeBottomDecisionSeq) : ""
     drawBlockedCandidateFlow(blockKey)
+
+drawBusyCandidateFlow() =>
+    string busyCause = shadowPending ? "已有挂单，不能重复开仓" : shadowOpen ? "已有持仓，不能重复开仓" : "刚退出/撤销，本K等待下一根"
+    string busyDetail = "确认但未新开 " + dirName(selectedDirection)
+    busyDetail := busyDetail + "\n原因: " + busyCause
+    busyDetail := busyDetail + "\nentry " + fmt(selectedEntry) + " / SL " + fmt(selectedStop) + " / TP " + fmt(selectedTarget)
+    busyDetail := busyDetail + "\n质量gate: near " + str.tostring(selectedEntryNearAnchorOnly) + " / failureLimit " + str.tostring(selectedFailureRetestLimit) + " / cycle " + str.tostring(selectedProbeCyclePassed) + " / rsi " + str.tostring(selectedRsiPassed) + " / smallStop " + str.tostring(selectedSmallStopGatePassed) + " / expectedR " + str.tostring(selectedExpectedRPassed)
+    busyDetail := busyDetail + "\n探针周期: active " + str.tostring(selectedProbeCycleActive) + " / consumed " + str.tostring(selectedProbeCycleConsumed)
+    string busyCompact = "确认但未新开 " + dirName(selectedDirection) + "\n" + busyCause
+    drawDiagnosticEvent(selectedDirection, "blocked", "blocked", "blocked", "blocked", 0.36, 1.2, busyCompact, busyDetail)
+
+bool busyCandidate = confirmed and showDiagnosticEventFlow and selectedDirection != 0 and selectedPlanValid and visualSlotBusy and not newPlanNow and not pendingTouched and not pendingCancelled and not shadowExitNow
+if busyCandidate
+    drawBusyCandidateFlow()
 
 bool pullbackArmedFlowEvent = confirmed and showDiagnosticEventFlow and selectedDirection == 0 and (topPullbackArmedEvent or bottomPullbackArmedEvent)
 drawPullbackArmedFlow(int armedDirection, string armedKey) =>

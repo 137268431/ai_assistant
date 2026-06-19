@@ -1763,7 +1763,7 @@ bool selectedProbeCycleConsumed = selectedTopProbe ? topProbeCycleConsumed : sel
 int selectedProbeCycleId = selectedTopProbe ? topProbeCycleId : selectedBottomProbe ? bottomProbeCycleId : na
 int selectedProbeCycleTouchBar = selectedTopProbe ? topProbeCycleTouchBar : selectedBottomProbe ? bottomProbeCycleTouchBar : na
 bool selectedProbeCyclePassed = not selectedProbeSetup or (selectedProbeCycleActive and not selectedProbeCycleConsumed)
-bool selectedEntryNearAnchorOnly = selectedDirection == 0 or selectedProbeStrictTouchOk or (not na(selectedEntryAnchorDistanceAtr) and selectedEntryAnchorDistanceAtr <= scalpMaxEntryAwayAtr)
+bool selectedEntryNearAnchorOnly = selectedDirection == 0 or selectedProbeStrictTouchOk or selectedFailureRetestLimit or (not na(selectedEntryAnchorDistanceAtr) and selectedEntryAnchorDistanceAtr <= scalpMaxEntryAwayAtr)
 bool selectedRsiPassed = selectedDirection == 1 ? scalpRsiLongOk : selectedDirection == -1 ? scalpRsiShortOk : false
 string selectedRsiState = selectedDirection == 1 ? (scalpFastBullDiv ? "fast_bull_divergence" : scalpRsiLongOk ? "low_turning_up" : "long_rsi_not_turning") : selectedDirection == -1 ? (scalpFastBearDiv ? "fast_bear_divergence" : scalpRsiShortOk ? "high_turning_down" : "short_rsi_not_turning") : "none"
 bool selectedStructureClear = selectedTrendSupport ? trendLongContext and strongTrendSupport : selectedTrendResistance ? trendShortContext and strongTrendResistance : selectedTopProbe ? strongTopProbeZone and topConfirmedShort : selectedBottomProbe ? strongBottomProbeZone and bottomConfirmedLong : false
@@ -2133,6 +2133,24 @@ if positionJustFilled
         dailyLongTrades += 1
     if activeDirection == -1
         dailyShortTrades += 1
+    if activeSetup == "probe_2b_top_short" and activeProbeCycleId == topProbeCycleId
+        topProbeCycleConsumed := true
+        lastTopFailureWatchBar := na
+        lastTopFailureWatchClose := na
+        lastTopFailureWatchVolumeProbe := false
+        topNoDemandStreak := 0
+        lastTopNoDemandBar := na
+        lastTopNoDemandHigh := na
+        lastTopNoDemandLow := na
+    if activeSetup == "probe_2b_bottom_long" and activeProbeCycleId == bottomProbeCycleId
+        bottomProbeCycleConsumed := true
+        lastBottomFailureWatchBar := na
+        lastBottomFailureWatchClose := na
+        lastBottomFailureWatchVolumeProbe := false
+        bottomNoSupplyStreak := 0
+        lastBottomNoSupplyBar := na
+        lastBottomNoSupplyHigh := na
+        lastBottomNoSupplyLow := na
     if enableAlerts and enableFillConfirmAlerts
         alert(buildEntryFillPayload(planId("entry_fill", activeSetup, activeEntryIntent), activePositionId, strategy.position_avg_price), alert.freq_all)
 
@@ -2162,12 +2180,13 @@ else if pendingOppositeSelected
 else if pendingExpired
     pendingCancelReason := "entry_ttl_expired"
 bool pendingCancelNow = confirmed and pendingEntry and pendingCancelReason != ""
+bool pendingCancelConsumesProbeCycle = pendingCancelReason == "structure_break_accepted_cancel" or pendingCancelReason == "invalidation_price_breached" or pendingCancelReason == "opposite_confirmed_structure"
 
 if pendingCancelNow
     strategy.cancel(orderIdForDirection(activeDirection))
     if enableAlerts
         alert(buildCancelPayload(planId("cancel", activeSetup, activeEntryIntent), activePositionId, pendingCancelReason), alert.freq_all)
-    if activeSetup == "probe_2b_top_short" and activeProbeCycleId == topProbeCycleId
+    if pendingCancelConsumesProbeCycle and activeSetup == "probe_2b_top_short" and activeProbeCycleId == topProbeCycleId
         topProbeCycleConsumed := true
         lastTopFailureWatchBar := na
         lastTopFailureWatchClose := na
@@ -2176,7 +2195,7 @@ if pendingCancelNow
         lastTopNoDemandBar := na
         lastTopNoDemandHigh := na
         lastTopNoDemandLow := na
-    if activeSetup == "probe_2b_bottom_long" and activeProbeCycleId == bottomProbeCycleId
+    if pendingCancelConsumesProbeCycle and activeSetup == "probe_2b_bottom_long" and activeProbeCycleId == bottomProbeCycleId
         bottomProbeCycleConsumed := true
         lastBottomFailureWatchBar := na
         lastBottomFailureWatchClose := na
@@ -2303,10 +2322,6 @@ if submitNewPlan
         topExhaustionUsed := selectedProbePattern == "extension_exhaustion_top" ? true : topExhaustionUsed
     if selectedBottomProbe
         bottomExhaustionUsed := selectedProbePattern == "extension_exhaustion_bottom" ? true : bottomExhaustionUsed
-    if selectedTopProbe and selectedProbeCycleId == topProbeCycleId
-        topProbeCycleConsumed := true
-    if selectedBottomProbe and selectedProbeCycleId == bottomProbeCycleId
-        bottomProbeCycleConsumed := true
 
 // Active position risk management.
 if confirmed and activePosition and hasOpenStrategyPosition
