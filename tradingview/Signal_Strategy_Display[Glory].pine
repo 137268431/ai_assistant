@@ -98,10 +98,12 @@ exhaustionProtectMinMfeR = input.float(1.20, "Exhaustion protect min MFE (R)", s
 exhaustionProtectTrailAtr = input.float(0.60, "Exhaustion protect trail (x ATR)", step=0.05, minval=0.05, maxval=5.0, group="03 Small Stop Risk")
 scalpLimitOffsetAtr = input.float(0.10, "Scalp limit offset (x ATR)", step=0.01, minval=0.0, maxval=1.0, group="03 Small Stop Risk")
 scalpMaxEntryAwayAtr = input.float(0.35, "Scalp max entry distance from anchor (x ATR)", step=0.05, minval=0.05, maxval=3.0, group="03 Small Stop Risk")
-scalpMinExpectedR = input.float(1.00, "Scalp minimum expected reward (R)", step=0.10, minval=0.10, maxval=10.0, group="03 Small Stop Risk")
+scalpMinExpectedR = input.float(1.50, "Scalp minimum expected reward (R)", step=0.10, minval=0.10, maxval=10.0, group="03 Small Stop Risk")
 minEmaProfitAtr = input.float(0.80, "Minimum EMA target room (x ATR)", step=0.05, minval=0.05, maxval=10.0, group="03 Small Stop Risk")
 emaTargetOffsetAtr = input.float(0.10, "EMA target offset (x ATR)", step=0.01, minval=0.0, maxval=2.0, group="03 Small Stop Risk")
-scalpBreakevenR = input.float(0.60, "Scalp breakeven trigger (R)", step=0.05, minval=0.10, maxval=5.0, group="03 Small Stop Risk")
+scalpBreakevenR = input.float(1.00, "Scalp breakeven trigger (R)", step=0.05, minval=0.10, maxval=5.0, group="03 Small Stop Risk")
+minTpRunnerGapR = input.float(0.50, "Minimum TP-runner gap (R)", step=0.05, minval=0.0, maxval=10.0, group="03 Small Stop Risk")
+allowSameBarRunnerAfterFill = input.bool(false, "Allow same-bar runner after fill", group="03 Small Stop Risk")
 scalpNoFollowBars = input.int(4, "Scalp no-follow bars", minval=1, maxval=20, group="03 Small Stop Risk")
 rsiLen = input.int(14, "Scalp RSI length", minval=2, maxval=100, group="03 Small Stop Risk")
 rsiSmoothLen = input.int(7, "Scalp RSI smooth length", minval=1, maxval=100, group="03 Small Stop Risk")
@@ -375,6 +377,8 @@ reasonCn(string reason) =>
         result := "EMA止盈空间不够"
     else if reason == "expected_r_too_small"
         result := "盈亏比不够"
+    else if reason == "tp_runner_gap_too_small"
+        result := "止盈离Runner太近"
     else if reason == "outside_entry_session"
         result := "不在入场时间"
     else if reason == "weak_next_no_retest"
@@ -1999,7 +2003,9 @@ float selectedStopDistanceBps = stopDistanceBps(selectedEntry, selectedStop)
 float selectedEmaProfitAtr = selectedDirection != 0 and atr > 0.0 ? math.abs(selectedTarget - selectedEntry) / atr : na
 bool selectedEmaTargetInProfit = selectedDirection == 1 ? selectedTarget > selectedEntry : selectedDirection == -1 ? selectedTarget < selectedEntry : false
 float selectedExpectedR = selectedDirection != 0 and riskPerShare(selectedEntry, selectedStop) > 0.0 ? math.abs(selectedTarget - selectedEntry) / riskPerShare(selectedEntry, selectedStop) : na
+float selectedTpRunnerGapR = selectedDirection != 0 and riskPerShare(selectedEntry, selectedStop) > 0.0 ? math.abs(selectedTarget - selectedRunnerActivation) / riskPerShare(selectedEntry, selectedStop) : na
 bool selectedExpectedRPassed = selectedDirection != 0 and selectedEmaTargetInProfit and selectedEmaProfitAtr >= minEmaProfitAtr and selectedExpectedR >= scalpMinExpectedR
+bool selectedTpRunnerGapPassed = selectedDirection != 0 and not na(selectedTpRunnerGapR) and selectedTpRunnerGapR >= minTpRunnerGapR
 bool selectedSmallStopGatePassed = selectedDirection != 0 and smallStopTrialAllowed(selectedDirection, selectedEntry, selectedStop, atr, selectedRiskBudget, selectedMaxStopAtr, selectedMaxStopBps)
 string selectedSmallStopGateReason = selectedDirection == 0 ? "no_candidate" : smallStopGateReason(selectedDirection, selectedEntry, selectedStop, atr, selectedRiskBudget, selectedMaxStopAtr, selectedMaxStopBps)
 float selectedStructureAnchor = selectedTrendSupport ? trendSupportBasis : selectedTrendResistance ? trendResistanceBasis : selectedTopProbe ? todayStructHigh : selectedBottomProbe ? todayStructLow : na
@@ -2099,7 +2105,7 @@ float selectedAnyPlanGapBars = na(lastAnyPlanBar) ? na : (bar_index - lastAnyPla
 float selectedAnyPlanDistanceAtr = not na(lastAnyPlanPrice) and atr > 0.0 ? math.abs(selectedEntry - lastAnyPlanPrice) / atr : na
 bool selectedAnyPlanFarEnough = selectedDirection == 0 or selectedFailureReentry or na(selectedAnyPlanGapBars) or (selectedAnyPlanGapBars >= minAnyPlanGapBars and selectedAnyPlanDistanceAtr >= minAnyPlanDistanceAtr)
 bool selectedDailyRiskOk = selectedDirection == 0 or (dailyTotalTrades < maxDailyTotalTrades and dailyPnlDollars > -maxDailyLossDollars and (selectedDirection == 1 ? dailyLongTrades < maxDailySameSideTrades and dailyLongLosses < maxSameSideLosses : dailyShortTrades < maxDailySameSideTrades and dailyShortLosses < maxSameSideLosses))
-bool selectedPlanQualityOk = selectedStructureClear and selectedEntryNearAnchorOnly and selectedProbeCyclePassed and selectedRsiPassed and selectedSmallStopGatePassed and selectedExpectedRPassed
+bool selectedPlanQualityOk = selectedStructureClear and selectedEntryNearAnchorOnly and selectedProbeCyclePassed and selectedRsiPassed and selectedSmallStopGatePassed and selectedExpectedRPassed and selectedTpRunnerGapPassed
 bool selectedPlanSpacingOk = selectedSameSideSignalFarEnough and selectedAnyPlanFarEnough
 bool selectedPlanValid = selectedDirection != 0 and selectedPlanQualityOk and selectedPlanSpacingOk and selectedDailyRiskOk and selectedQty >= 1.0 and inEntryWindow
 string selectedExpectedRBlockReason = not selectedEmaTargetInProfit or selectedEmaProfitAtr < minEmaProfitAtr ? "ema_tp_too_close" : "expected_r_too_small"
@@ -2128,6 +2134,8 @@ else if selectedQty < 1.0
     selectedBlockReason := "qty_too_small"
 else if not selectedExpectedRPassed
     selectedBlockReason := selectedExpectedRBlockReason
+else if not selectedTpRunnerGapPassed
+    selectedBlockReason := "tp_runner_gap_too_small"
 
 weakNextReason(bool retestOk, bool watchBreakOk, bool rsiOk, bool distanceOk, bool finalFiltered) =>
     string result = "weak_next_no_confirmation"
@@ -2214,8 +2222,9 @@ selectedPlanDetail(string decisionRef, int currentFlowId) =>
     result := result + "\n同向距离 " + fmt(selectedSameSideSignalDistanceAtr) + "ATR / min " + fmt(minSameSideSignalSeparationAtr)
     result := result + "\nplan " + fmt(selectedEntry) + " / qty " + qtyText(selectedQty)
     result := result + "\n红SL " + fmt(selectedStop) + " " + moneyText(pnlDollars(selectedEntry, selectedStop, selectedDirection, selectedQty))
-    result := result + "\n蓝0.6R " + fmt(selectedRunnerActivation) + " " + moneyText(pnlDollars(selectedEntry, selectedRunnerActivation, selectedDirection, selectedQty))
+    result := result + "\n蓝" + fmt(scalpBreakevenR) + "R " + fmt(selectedRunnerActivation) + " " + moneyText(pnlDollars(selectedEntry, selectedRunnerActivation, selectedDirection, selectedQty))
     result := result + "\n绿EMA20 TP " + fmt(selectedTarget) + " " + moneyText(pnlDollars(selectedEntry, selectedTarget, selectedDirection, selectedQty))
+    result := result + "\nTP-runner gap " + fmt(selectedTpRunnerGapR) + "/" + fmt(minTpRunnerGapR) + "R"
     result := result + "\n小止损: " + selectedSmallStopGateReason + " / " + fmt(selectedStopDistanceAtr) + "ATR / " + fmt(selectedStopDistanceBps) + "bps"
     result := result + "\n风险反推: 单股" + fmt(riskPerShare(selectedEntry, selectedStop)) + " + buffer" + fmt(riskSafetyBuffer(atr)) + " / qty按$" + fmt(selectedRiskBudget) + "反推"
     result := result + "\nprobe: " + selectedProbePattern + " / filter " + selectedProbeFilterReason
@@ -2339,9 +2348,9 @@ planGateDetailText(bool childAllowed, bool selectedByMain, bool planCreatedNow, 
     result := result + "\n子条件: " + (childAllowed ? "通过" : "未通过") + " / " + reasonCn(childReason) + " / " + childReason
     result := result + "\n最终选择: " + setupDisplayName(selectedSetup) + " / " + dirName(selectedDirection) + " / selectedByMain " + str.tostring(selectedByMain)
     result := result + "\nselectedPlanValid: " + str.tostring(selectedPlanValid) + " / block " + reasonCn(selectedBlockReason) + " / " + selectedBlockReason
-    result := result + "\n质量gate: structure " + str.tostring(selectedStructureClear) + " / near " + str.tostring(selectedEntryNearAnchorOnly) + " / failureLimit " + str.tostring(selectedFailureRetestLimit) + " / cycle " + str.tostring(selectedProbeCyclePassed) + " / rsi " + str.tostring(selectedRsiPassed) + " / smallStop " + str.tostring(selectedSmallStopGatePassed) + " / expectedR " + str.tostring(selectedExpectedRPassed)
+    result := result + "\n质量gate: structure " + str.tostring(selectedStructureClear) + " / near " + str.tostring(selectedEntryNearAnchorOnly) + " / failureLimit " + str.tostring(selectedFailureRetestLimit) + " / cycle " + str.tostring(selectedProbeCyclePassed) + " / rsi " + str.tostring(selectedRsiPassed) + " / smallStop " + str.tostring(selectedSmallStopGatePassed) + " / expectedR " + str.tostring(selectedExpectedRPassed) + " / tpGap " + str.tostring(selectedTpRunnerGapPassed)
     result := result + "\n探针周期: id " + str.tostring(selectedProbeCycleId) + " / active " + str.tostring(selectedProbeCycleActive) + " / consumed " + str.tostring(selectedProbeCycleConsumed) + " / touchBar " + str.tostring(selectedProbeCycleTouchBar)
-    result := result + "\n空间: EMA " + fmt(selectedEmaProfitAtr) + "/" + fmt(minEmaProfitAtr) + "ATR / expectedR " + fmt(selectedExpectedR) + "/" + fmt(scalpMinExpectedR)
+    result := result + "\n空间: EMA " + fmt(selectedEmaProfitAtr) + "/" + fmt(minEmaProfitAtr) + "ATR / expectedR " + fmt(selectedExpectedR) + "/" + fmt(scalpMinExpectedR) + " / TP-runner " + fmt(selectedTpRunnerGapR) + "/" + fmt(minTpRunnerGapR) + "R"
     result := result + "\n间距gate: " + str.tostring(selectedPlanSpacingOk) + " / 同向 " + fmt(selectedSameSideSignalDistanceAtr) + "/" + fmt(minSameSideSignalSeparationAtr) + "ATR"
     result := result + "\n上一计划: bars " + fmt(selectedAnyPlanGapBars) + "/" + str.tostring(minAnyPlanGapBars) + " / dist " + fmt(selectedAnyPlanDistanceAtr) + "/" + fmt(minAnyPlanDistanceAtr) + "ATR"
     result := result + "\n交易窗口: " + str.tostring(inEntryWindow) + " / 量能冷却 " + str.tostring(selectedAttackVolumeCooling) + " 仅诊断不拦截"
@@ -2502,15 +2511,17 @@ if pendingNextNoFill
 bool shadowExitNow = false
 string shadowExitReason = ""
 float shadowExitPrice = na
-bool canEvaluateShadowExit = confirmed and shadowOpen and not na(shadowEntryBar) and bar_index > shadowEntryBar
+bool canEvaluateShadowExit = confirmed and shadowOpen and not na(shadowEntryBar) and (allowSameBarRunnerAfterFill or bar_index > shadowEntryBar)
 if canEvaluateShadowExit
     int barsInTrade = na(shadowEntryBar) ? 0 : bar_index - shadowEntryBar
-    shadowRunnerExtreme := shadowDirection == 1 ? math.max(nz(shadowRunnerExtreme, high), high) : math.min(nz(shadowRunnerExtreme, low), low)
+    float currentRunnerExtreme = shadowDirection == 1 ? high : low
+    shadowRunnerExtreme := shadowRunnerActive ? (shadowDirection == 1 ? math.max(nz(shadowRunnerExtreme, currentRunnerExtreme), currentRunnerExtreme) : math.min(nz(shadowRunnerExtreme, currentRunnerExtreme), currentRunnerExtreme)) : currentRunnerExtreme
     float mfeNow = shadowInitialRisk > 0.0 ? (shadowDirection == 1 ? (high - shadowEntry) / shadowInitialRisk : (shadowEntry - low) / shadowInitialRisk) : 0.0
     shadowMfeR := math.max(nz(shadowMfeR, 0.0), mfeNow)
     bool runnerReached = shadowDirection == 1 ? high >= shadowRunner : low <= shadowRunner
     if not shadowRunnerActive and runnerReached
         shadowRunnerActive := true
+        shadowRunnerExtreme := currentRunnerExtreme
         float beStop = shadowEntry + shadowInitialRisk * breakevenOffsetR * shadowDirection
         shadowStop := shadowDirection == 1 ? math.max(shadowStop, beStop) : math.min(shadowStop, beStop)
         string detail = "F" + str.tostring(flowId) + " ⑤保本/Runner\n到达蓝线 " + fmt(shadowRunner) + "\nSL -> " + fmt(shadowStop)

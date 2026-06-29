@@ -99,10 +99,12 @@ exhaustionProtectMinMfeR = input.float(1.20, "Exhaustion protect min MFE (R)", s
 exhaustionProtectTrailAtr = input.float(0.60, "Exhaustion protect trail (x ATR)", step=0.05, minval=0.05, maxval=5.0, group="03 Small Stop Risk")
 scalpLimitOffsetAtr = input.float(0.10, "Scalp limit offset (x ATR)", step=0.01, minval=0.0, maxval=1.0, group="03 Small Stop Risk")
 scalpMaxEntryAwayAtr = input.float(0.35, "Scalp max entry distance from anchor (x ATR)", step=0.05, minval=0.05, maxval=3.0, group="03 Small Stop Risk")
-scalpMinExpectedR = input.float(1.00, "Scalp minimum expected reward (R)", step=0.10, minval=0.10, maxval=10.0, group="03 Small Stop Risk")
+scalpMinExpectedR = input.float(1.50, "Scalp minimum expected reward (R)", step=0.10, minval=0.10, maxval=10.0, group="03 Small Stop Risk")
 minEmaProfitAtr = input.float(0.80, "Minimum EMA target room (x ATR)", step=0.05, minval=0.05, maxval=10.0, group="03 Small Stop Risk")
 emaTargetOffsetAtr = input.float(0.10, "EMA target offset (x ATR)", step=0.01, minval=0.0, maxval=2.0, group="03 Small Stop Risk")
-scalpBreakevenR = input.float(0.60, "Scalp breakeven trigger (R)", step=0.05, minval=0.10, maxval=5.0, group="03 Small Stop Risk")
+scalpBreakevenR = input.float(1.00, "Scalp breakeven trigger (R)", step=0.05, minval=0.10, maxval=5.0, group="03 Small Stop Risk")
+minTpRunnerGapR = input.float(0.50, "Minimum TP-runner gap (R)", step=0.05, minval=0.0, maxval=10.0, group="03 Small Stop Risk")
+allowSameBarRunnerAfterFill = input.bool(false, "Allow same-bar runner after fill", group="03 Small Stop Risk")
 scalpNoFollowBars = input.int(4, "Scalp no-follow bars", minval=1, maxval=20, group="03 Small Stop Risk")
 rsiLen = input.int(14, "Scalp RSI length", minval=2, maxval=100, group="03 Small Stop Risk")
 rsiSmoothLen = input.int(7, "Scalp RSI smooth length", minval=1, maxval=100, group="03 Small Stop Risk")
@@ -1750,7 +1752,9 @@ float selectedStopDistanceBps = stopDistanceBps(selectedEntry, selectedStop)
 float selectedEmaProfitAtr = selectedDirection != 0 and atr > 0.0 ? math.abs(selectedTarget - selectedEntry) / atr : na
 bool selectedEmaTargetInProfit = selectedDirection == 1 ? selectedTarget > selectedEntry : selectedDirection == -1 ? selectedTarget < selectedEntry : false
 float selectedExpectedR = selectedDirection != 0 and riskPerShare(selectedEntry, selectedStop) > 0.0 ? math.abs(selectedTarget - selectedEntry) / riskPerShare(selectedEntry, selectedStop) : na
+float selectedTpRunnerGapR = selectedDirection != 0 and riskPerShare(selectedEntry, selectedStop) > 0.0 ? math.abs(selectedTarget - selectedRunnerActivation) / riskPerShare(selectedEntry, selectedStop) : na
 bool selectedExpectedRPassed = selectedDirection != 0 and selectedEmaTargetInProfit and selectedEmaProfitAtr >= minEmaProfitAtr and selectedExpectedR >= scalpMinExpectedR
+bool selectedTpRunnerGapPassed = selectedDirection != 0 and not na(selectedTpRunnerGapR) and selectedTpRunnerGapR >= minTpRunnerGapR
 bool selectedSmallStopGatePassed = selectedDirection != 0 and smallStopTrialAllowed(selectedDirection, selectedEntry, selectedStop, atr, selectedRiskBudget, selectedMaxStopAtr, selectedMaxStopBps)
 string selectedSmallStopGateReason = selectedDirection == 0 ? "no_candidate" : smallStopGateReason(selectedDirection, selectedEntry, selectedStop, atr, selectedRiskBudget, selectedMaxStopAtr, selectedMaxStopBps)
 float selectedStructureAnchor = selectedTrendSupport ? trendSupportBasis : selectedTrendResistance ? trendResistanceBasis : selectedTopProbe ? todayStructHigh : selectedBottomProbe ? todayStructLow : na
@@ -1937,6 +1941,9 @@ buildEntryPayload(string eventIdValue, string signalIdValue, string tradeGroupId
      jsonNum("target_checkpoint", runnerActivationPrice) + "," +
      jsonNum("runner_activation_price", runnerActivationPrice) + "," +
      jsonNum("runner_activation_r", activationR) + "," +
+     jsonNum("tp_runner_gap_r", selectedTpRunnerGapR) + "," +
+     jsonNum("min_tp_runner_gap_r", minTpRunnerGapR) + "," +
+     jsonBool("same_bar_runner_allowed", allowSameBarRunnerAfterFill) + "," +
      jsonBool("runner_enabled", true) + "," +
      jsonBool("runner_active", false) + "," +
      jsonStr("target_role", "ema_fast_scalp_tp") + "," +
@@ -2072,7 +2079,10 @@ buildRiskUpdatePayload(string eventIdValue, string positionIdValue, string reaso
      jsonNum("runner_activation_price", activeRunnerActivation) + "," +
      jsonNum("runner_activation_r", activeActivationR) + "," +
      jsonBool("runner_enabled", true) + "," +
-     jsonBool("runner_active", activeRunnerActive) + "}"
+     jsonBool("runner_active", activeRunnerActive) + "," +
+     jsonNum("tp_runner_gap_r", activeInitialRisk > 0.0 ? math.abs(newTarget - activeRunnerActivation) / activeInitialRisk : na) + "," +
+     jsonNum("min_tp_runner_gap_r", minTpRunnerGapR) + "," +
+     jsonBool("same_bar_runner_allowed", allowSameBarRunnerAfterFill) + "}"
 
 buildExitPayload(string eventIdValue, string positionIdValue, string reason, float exitPrice, float pnlPerShare) =>
     basePayload("exit", eventIdValue, positionIdValue) + "," +
@@ -2092,7 +2102,10 @@ buildExitPayload(string eventIdValue, string positionIdValue, string reason, flo
      jsonNum("pnl_per_share", pnlPerShare) + "," +
      jsonNum("pnl_r", activeInitialRisk > 0.0 ? pnlPerShare / activeInitialRisk : na) + "," +
      jsonStr("profit_protect_reason", reason) + "," +
-     jsonBool("runner_active", activeRunnerActive) + "}"
+     jsonBool("runner_active", activeRunnerActive) + "," +
+     jsonNum("tp_runner_gap_r", activeInitialRisk > 0.0 ? math.abs(activeTarget - activeRunnerActivation) / activeInitialRisk : na) + "," +
+     jsonNum("min_tp_runner_gap_r", minTpRunnerGapR) + "," +
+     jsonBool("same_bar_runner_allowed", allowSameBarRunnerAfterFill) + "}"
 
 // -----------------------------------------------------------------------------
 // Order state and lifecycle
@@ -2233,7 +2246,7 @@ bool selectedFailureReentry = selectedTopProbe and topFailureRepeatShort
 bool selectedSameSideSignalFarEnough = selectedDirection == 0 or selectedPendingUpgrade or selectedFailureReentry or na(selectedSameSideSignalDistanceAtr) or selectedSameSideSignalDistanceAtr >= minSameSideSignalSeparationAtr
 bool selectedAnyPlanFarEnough = selectedDirection == 0 or selectedPendingUpgrade or selectedFailureReentry or na(selectedAnyPlanGapBars) or (selectedAnyPlanGapBars >= minAnyPlanGapBars and selectedAnyPlanDistanceAtr >= minAnyPlanDistanceAtr)
 bool selectedDailyRiskOk = selectedDirection == 0 or (dailyTotalTrades < maxDailyTotalTrades and dailyPnlDollars > -maxDailyLossDollars and (selectedDirection == 1 ? dailyLongTrades < maxDailySameSideTrades and dailyLongLosses < maxSameSideLosses : dailyShortTrades < maxDailySameSideTrades and dailyShortLosses < maxSameSideLosses))
-bool selectedPlanQualityOk = selectedStructureClear and selectedEntryNearAnchorOnly and selectedProbeCyclePassed and selectedRsiPassed and selectedSmallStopGatePassed and selectedExpectedRPassed
+bool selectedPlanQualityOk = selectedStructureClear and selectedEntryNearAnchorOnly and selectedProbeCyclePassed and selectedRsiPassed and selectedSmallStopGatePassed and selectedExpectedRPassed and selectedTpRunnerGapPassed
 bool selectedPlanSpacingOk = selectedSameSideSignalFarEnough and selectedAnyPlanFarEnough
 bool selectedPlanSessionOk = not eodTimeReached and inTradingSession and inEntryWindow
 bool selectedPlanValid = selectedDirection != 0 and selectedPlanQualityOk and selectedPlanSpacingOk and selectedDailyRiskOk and selectedQty >= 1.0 and selectedPlanSessionOk
@@ -2263,6 +2276,8 @@ else if selectedQty < 1.0
     selectedBlockReason := "qty_too_small"
 else if not selectedExpectedRPassed
     selectedBlockReason := selectedExpectedRBlockReason
+else if not selectedTpRunnerGapPassed
+    selectedBlockReason := "tp_runner_gap_too_small"
 bool meaningfulPlanMove = math.abs(nz(activeEntry, selectedEntry) - selectedEntry) >= atr * planReplaceMinMoveAtr or math.abs(nz(activeStop, selectedStop) - selectedStop) >= atr * planReplaceMinMoveAtr or math.abs(nz(activeStructureAnchor, selectedStructureAnchor) - selectedStructureAnchor) >= atr * planReplaceMinMoveAtr
 bool pendingSameDirectionReplace = false
 bool submitFreshPlan = confirmed and selectedPlanValid and not orderSlotBusy
@@ -2323,19 +2338,23 @@ if submitNewPlan
     if selectedBottomProbe
         bottomExhaustionUsed := selectedProbePattern == "extension_exhaustion_bottom" ? true : bottomExhaustionUsed
 
-// Active position risk management.
-if confirmed and activePosition and hasOpenStrategyPosition
+// Active position risk management. By default, skip the fill bar to avoid
+// TradingView OHLC ordering moving the stop before a real broker could.
+bool activeRiskTimingOk = allowSameBarRunnerAfterFill or na(activeEntryBar) or bar_index > activeEntryBar
+if confirmed and activePosition and hasOpenStrategyPosition and activeRiskTimingOk
     float previousStop = activeStop
     float previousTarget = activeTarget
     bool stopChanged = false
     bool targetChanged = false
     string riskReason = ""
     int barsInTrade = na(activeEntryBar) ? 0 : bar_index - activeEntryBar
-    activeRunnerExtreme := activeDirection == 1 ? math.max(nz(activeRunnerExtreme, high), high) : math.min(nz(activeRunnerExtreme, low), low)
+    float currentRunnerExtreme = activeDirection == 1 ? high : low
+    activeRunnerExtreme := activeRunnerActive ? (activeDirection == 1 ? math.max(nz(activeRunnerExtreme, currentRunnerExtreme), currentRunnerExtreme) : math.min(nz(activeRunnerExtreme, currentRunnerExtreme), currentRunnerExtreme)) : currentRunnerExtreme
     float mfeRNow = activeInitialRisk > 0.0 ? (activeDirection == 1 ? (high - activeEntry) / activeInitialRisk : (activeEntry - low) / activeInitialRisk) : 0.0
     activeMfeR := math.max(nz(activeMfeR, 0.0), mfeRNow)
     bool reachedRunner = activeDirection == 1 ? high >= activeRunnerActivation : low <= activeRunnerActivation
     if not activeBreakevenDone and reachedRunner
+        activeRunnerExtreme := currentRunnerExtreme
         float breakevenStop = activeEntry + activeInitialRisk * breakevenOffsetR * activeDirection
         activeStop := activeDirection == 1 ? math.max(activeStop, breakevenStop) : math.min(activeStop, breakevenStop)
         activeBreakevenDone := true
