@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 
 from flask import jsonify, request
 
@@ -108,6 +109,51 @@ def _record_account_snapshot_metrics(payload: dict) -> None:
         return
 
 
+def _safe_int(value, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except Exception:
+        return int(default)
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _positions_snapshot_stale(snapshot: dict) -> bool:
+    return bool((snapshot or {}).get("positions_stale") or (snapshot or {}).get("positions_refresh_required"))
+
+
+def _positions_snapshot_ts(snapshot: dict) -> float:
+    text = str((snapshot or {}).get("positions_fetched_at") or (snapshot or {}).get("fetched_at") or "").strip()
+    if not text:
+        return 0.0
+    try:
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except Exception:
+        return 0.0
+
+
+def _prefer_positions_snapshot(current: dict, candidate: dict) -> dict:
+    if not isinstance(candidate, dict) or candidate.get("ok") is False or not isinstance(candidate.get("positions"), list):
+        return current
+    current_stale = _positions_snapshot_stale(current)
+    candidate_stale = _positions_snapshot_stale(candidate)
+    if current_stale and not candidate_stale:
+        return candidate
+    if current_stale == candidate_stale and _positions_snapshot_ts(candidate) > _positions_snapshot_ts(current):
+        return candidate
+    return current
+
+
 def register_account_routes(app):
     if should_proxy_runtime_requests():
         register_runtime_proxy_route(app, "ibkr_account", "/ibkr/account", ["GET"])
@@ -171,21 +217,63 @@ def register_account_routes(app):
         if unavailable:
             return unavailable
         broker_force = _account_snapshot_broker_force()
+        manual_force = _account_snapshot_manual_force_refresh()
         snapshot = _build_ibkr_account_snapshot(
             service,
             include_pnl=False,
-            force_refresh=broker_force,
-            allow_stale=not broker_force,
+            force_refresh=bool(broker_force or manual_force),
+            allow_stale=True if manual_force else not broker_force,
             orders_fast=_account_snapshot_orders_fast(),
             orders_fast_open_only=_account_snapshot_open_orders_only(),
         )
+        if _positions_snapshot_stale(snapshot):
+            snapshot = _prefer_positions_snapshot(
+                snapshot,
+                _build_ibkr_account_snapshot(
+                    service,
+                    include_pnl=True,
+                    force_refresh=False,
+                    allow_stale=True,
+                    orders_fast=False,
+                    orders_fast_open_only=False,
+                ),
+            )
+        if _positions_snapshot_stale(snapshot):
+            snapshot = _prefer_positions_snapshot(
+                snapshot,
+                _build_ibkr_account_snapshot(
+                    service,
+                    include_pnl=False,
+                    force_refresh=True,
+                    allow_stale=True,
+                    orders_fast=False,
+                    orders_fast_open_only=False,
+                ),
+            )
+        counts = snapshot.get("counts") if isinstance(snapshot.get("counts"), dict) else {}
+        positions = snapshot.get("positions") if isinstance(snapshot.get("positions"), list) else []
+        position_rows = _safe_int(counts.get("position_rows", counts.get("positions", len(positions))), len(positions))
+        open_count = _safe_int(counts.get("open_positions"), 0)
+        if "open_positions" not in counts:
+            open_count = sum(1 for item in positions if _safe_float(item.get("quantity") or item.get("position") or 0) != 0)
+        flat_count = _safe_int(counts.get("flat_positions"), max(0, position_rows - open_count))
         return jsonify(
             {
                 "ok": True,
                 "environment": snapshot.get("environment"),
                 "account_id": snapshot.get("account_id"),
-                "positions": snapshot.get("positions", []),
-                "count": snapshot.get("counts", {}).get("positions", 0),
+                "positions": positions,
+                "count": _safe_int(counts.get("positions", position_rows), position_rows),
+                "position_rows": position_rows,
+                "open_count": open_count,
+                "flat_count": flat_count,
+                "has_open_positions": open_count > 0,
+                "positions_fetched_at": snapshot.get("positions_fetched_at"),
+                "positions_age_s": snapshot.get("positions_age_s"),
+                "positions_stale": bool(snapshot.get("positions_stale")),
+                "positions_refresh_required": bool(snapshot.get("positions_refresh_required")),
+                "positions_refresh_block_reason": str(snapshot.get("positions_refresh_block_reason") or ""),
+                "positions_source": snapshot.get("positions_source"),
                 "fetched_at": snapshot.get("fetched_at"),
             }
         )

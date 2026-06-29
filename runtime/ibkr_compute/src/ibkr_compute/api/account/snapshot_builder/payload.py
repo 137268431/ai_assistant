@@ -319,6 +319,12 @@ def _merge_position_counts(base_counts: dict, cached_counts: dict, *, available:
     return merged
 
 
+def _position_counts_hint(cached_counts: dict) -> dict:
+    source = cached_counts if isinstance(cached_counts, dict) else {}
+    keys = ("positions", "position_rows", "open_positions", "long_positions", "short_positions", "flat_positions")
+    return {key: source.get(key) for key in keys if key in source}
+
+
 def _buying_power_unavailable_reason(service_status: dict, summary_error: str, summary: dict) -> str:
     status = service_status if isinstance(service_status, dict) else {}
     gateway = status.get("gateway") if isinstance(status.get("gateway"), dict) else {}
@@ -2028,7 +2034,7 @@ def _build_orders_fast_ibkr_account_snapshot_payload(
     )
     positions_source = "omitted_open_orders_only" if open_orders_only else ("snapshot_cache" if cached_full else "unavailable")
     cached_counts = cached_full.get("counts") if isinstance(cached_full.get("counts"), dict) else {}
-    cached_position_counts_available = bool(
+    cached_position_counts_raw_available = bool(
         cached_counts
         and all(key in cached_counts for key in ("open_positions", "long_positions", "short_positions"))
     )
@@ -2052,6 +2058,26 @@ def _build_orders_fast_ibkr_account_snapshot_payload(
     positions_cache_age_s = cached_full.get("cache_age_s")
     if positions_cache_age_s in (None, ""):
         positions_cache_age_s = cached_full.get("positions_cache_age_s")
+    cached_position_counts_age_s = _positions_age_seconds(
+        {
+            "positions_age_s": cached_full.get("positions_age_s"),
+            "positions_cache_age_s": positions_cache_age_s,
+            "positions_fetched_at": positions_fetched_at,
+            "cache_age_s": cached_full.get("cache_age_s"),
+        }
+    )
+    cached_position_counts_max_stale_s = _positions_max_stale_seconds(service, context["runtime_environment"])
+    cached_position_counts_stale = bool(
+        cached_position_counts_raw_available
+        and (
+            cached_full.get("positions_stale")
+            or cached_full.get("positions_refresh_required")
+            or cached_position_counts_age_s is None
+            or cached_position_counts_age_s > cached_position_counts_max_stale_s
+        )
+    )
+    cached_position_counts_available = bool(cached_position_counts_raw_available and not cached_position_counts_stale)
+    stale_position_counts_hint = _position_counts_hint(cached_counts) if cached_position_counts_stale else {}
     positions = _with_position_refresh_metadata(
         positions,
         updated_at=positions_fetched_at,
@@ -2123,6 +2149,8 @@ def _build_orders_fast_ibkr_account_snapshot_payload(
         "positions_detail_available": bool(((not open_orders_only) and cached_full) or inferred_positions),
         "positions_source": positions_source,
         "positions_count_available": bool(((not open_orders_only) and cached_full) or cached_position_counts_available or inferred_positions),
+        "positions_count_stale": bool(cached_position_counts_stale),
+        "stale_position_counts_hint": stale_position_counts_hint,
         "inferred_strategy_positions": inferred_positions,
         "positions_inference": positions_inference,
         "errors": errors,
@@ -2161,12 +2189,15 @@ def _build_orders_fast_ibkr_account_snapshot_payload(
             "positions_source": positions_source,
             "positions_omitted": bool(open_orders_only),
             "positions_count_available": bool(cached_position_counts_available),
+            "positions_count_stale": bool(cached_position_counts_stale),
+            "stale_position_counts_hint": stale_position_counts_hint,
             "summary_source": summary_source,
             "summary_fetched_at": summary_fetched_at,
             "summary_cache_state": summary_cache_state,
             "summary_cache_age_s": summary_cache_age_s,
             "positions_fetched_at": positions_fetched_at,
             "positions_cache_age_s": positions_cache_age_s,
+            "positions_count_age_s": round(float(cached_position_counts_age_s), 1) if cached_position_counts_age_s is not None else None,
             "status_source": "fast_runtime_state",
             "skipped_account_data_fetch": True,
             "elapsed_ms": elapsed_ms,

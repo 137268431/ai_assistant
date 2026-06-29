@@ -325,7 +325,9 @@ class TradingServiceSupportMixin:
             order_flow_manager.on_market_tick(tick_data)
 
     def _market_date(self) -> str:
-        return datetime.now(_service_mod().ET).strftime("%Y-%m-%d")
+        from ibkr_compute.market.calendar import effective_market_date_for_now
+
+        return effective_market_date_for_now(datetime.now(_service_mod().ET)).isoformat()
 
     def _trade_result_metrics_enabled(self) -> bool:
         service_mod = _service_mod()

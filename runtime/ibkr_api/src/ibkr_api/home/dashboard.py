@@ -555,7 +555,51 @@ def _summarize_gateway_positions(payload: dict[str, Any], error: str = "") -> di
     freshness = _runtime_positions_freshness(payload, positions_omitted=positions_omitted)
     positions_stale = bool(freshness["positions_stale"])
 
+    stale_counts_hint = payload.get("stale_position_counts_hint") if isinstance(payload.get("stale_position_counts_hint"), dict) else {}
     count_values_present = any(key in counts for key in ("long_positions", "short_positions", "open_positions", "position_rows", "positions"))
+    if positions_omitted and positions_stale and (count_values_present or stale_counts_hint or inferred_count > 0):
+        stale_open_count = to_int(stale_counts_hint.get("open_positions"), to_int(counts.get("open_positions"), 0))
+        stale_long_count = to_int(stale_counts_hint.get("long_positions"), to_int(counts.get("long_positions"), 0))
+        stale_short_count = to_int(stale_counts_hint.get("short_positions"), to_int(counts.get("short_positions"), 0))
+        stale_flat_count = to_int(stale_counts_hint.get("flat_positions"), to_int(counts.get("flat_positions"), 0))
+        stale_position_rows = to_int(stale_counts_hint.get("position_rows"), to_int(counts.get("position_rows", counts.get("positions")), 0))
+        if inferred_count > 0:
+            long_count = inferred_long
+            short_count = inferred_short
+            if long_count + short_count == 0:
+                long_count = inferred_count
+        else:
+            long_count = 0
+            short_count = 0
+        summary.update(
+            {
+                "long": long_count,
+                "short": short_count,
+                "total": long_count + short_count,
+                "available": True,
+                "detail_available": False,
+                "count_available": bool(inferred_count > 0),
+                "empty_confirmed": False,
+                "flat_count": 0,
+                "position_rows": 0,
+                "account_id": to_text(payload.get("account_id") or payload.get("account")),
+                "source": "runtime_account_inferred_positions" if inferred_count > 0 else "runtime_account_stale_position_counts",
+                "positions_source": positions_source or "counts",
+                "positions_omitted": True,
+                "broker_open_positions": 0,
+                "inferred_open_positions": inferred_count,
+                "effective_open_positions": inferred_count,
+                "inferred": bool(inferred_count > 0),
+                "stale_open_positions_hint": stale_open_count,
+                "stale_long_positions_hint": stale_long_count,
+                "stale_short_positions_hint": stale_short_count,
+                "stale_flat_positions_hint": stale_flat_count,
+                "stale_position_rows_hint": stale_position_rows,
+                **freshness,
+            }
+        )
+        return _attach_runtime_account_meta(summary, payload)
+
     if positions_omitted:
         if count_values_present and payload.get("positions_count_available") is not False:
             long_count = to_int(counts.get("long_positions"), 0)

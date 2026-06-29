@@ -39,6 +39,11 @@ class TradingServiceAuthRecoveryMixin:
             "disconnect_reason_evidence": {},
             "lock_owner": "",
             "lock_expires_at": "",
+            "auto_repair_attempts": 0,
+            "auto_repair_last_at": "",
+            "auto_repair_last_reason": "",
+            "auto_repair_cooldown_until": "",
+            "auto_repair_blocked_reason": "",
             "updated_at": "",
         }
 
@@ -242,6 +247,125 @@ class TradingServiceAuthRecoveryMixin:
         payload = status if isinstance(status, dict) else {}
         code = int(status_code if status_code is not None else payload.get("status_code") or 0)
         return code in {502, 504} or payload.get("api_socket_listening") is False
+
+    def _auto_repair_cooldown_active(self, state: dict | None = None) -> bool:
+        service_mod = _service_mod()
+        until_dt = self._parse_iso_timestamp((state or self._auth_recovery_state).get("auto_repair_cooldown_until", ""))
+        return bool(until_dt and until_dt > datetime.now(service_mod.ET))
+
+    def _gateway_socket_auto_repair_candidate(self, gateway_status: dict | None, session_status: dict | None) -> tuple[bool, str]:
+        service_mod = _service_mod()
+        gateway = gateway_status if isinstance(gateway_status, dict) else {}
+        session = session_status if isinstance(session_status, dict) else {}
+        if bool(session.get("authenticated")):
+            return False, "session_authenticated"
+        running = bool(gateway.get("running") or gateway.get("gateway_running"))
+        if not running:
+            return False, "gateway_not_running"
+        code = int(gateway.get("status_code") or 0)
+        api_socket_listening = gateway.get("api_socket_listening")
+        unreachable = self._gateway_socket_unreachable(gateway, code)
+        if not unreachable:
+            return False, "gateway_socket_reachable"
+        uptime_s = int(gateway.get("uptime_s") or 0)
+        min_uptime_s = int(getattr(service_mod, "AUTH_2FA_AUTO_REPAIR_SOCKET_GRACE_SECONDS", 240) or 240)
+        if uptime_s and uptime_s < min_uptime_s:
+            return False, "gateway_socket_grace"
+        if api_socket_listening is False:
+            return True, "gateway_socket_not_listening"
+        if code in {502, 504}:
+            return True, "gateway_socket_unreachable"
+        return False, "gateway_socket_not_confirmed"
+
+    def maybe_auto_repair_gateway_socket(
+        self,
+        *,
+        gateway_status: dict | None = None,
+        session_status: dict | None = None,
+        market_data_session_conflict: dict | None = None,
+        source: str = "status_watchdog",
+    ) -> dict:
+        service_mod = _service_mod()
+        current = self._copy_auth_recovery_state()
+        if not bool(getattr(service_mod, "AUTH_2FA_AUTO_REPAIR_ENABLED", True)):
+            return current
+        if bool((market_data_session_conflict or {}).get("active")):
+            return self._set_auth_recovery_state(auto_repair_blocked_reason="market_data_session_conflict")
+        candidate, reason = self._gateway_socket_auto_repair_candidate(gateway_status, session_status)
+        if not candidate:
+            if reason not in {"gateway_socket_reachable", "session_authenticated"}:
+                return self._set_auth_recovery_state(auto_repair_blocked_reason=reason)
+            return current
+        if self._manual_takeover_active(current):
+            return self._set_auth_recovery_state(auto_repair_blocked_reason="manual_takeover")
+        phase = self._normalize_recovery_value(current.get("recovery_phase"))
+        lock_owner = self._normalize_recovery_value(current.get("lock_owner"))
+        if phase in {"panic_resetting", "starting_runtime"} or lock_owner in {"panic_reset", "runtime_start"}:
+            return self._set_auth_recovery_state(auto_repair_blocked_reason="repair_already_running")
+        if self._auth_restart_thread and self._auth_restart_thread.is_alive():
+            return self._set_auth_recovery_state(auto_repair_blocked_reason="restart_already_running")
+        if self._auto_repair_cooldown_active(current):
+            return self._set_auth_recovery_state(auto_repair_blocked_reason="cooldown")
+        max_attempts = int(getattr(service_mod, "AUTH_2FA_AUTO_REPAIR_MAX_ATTEMPTS", 2) or 0)
+        attempts = int(current.get("auto_repair_attempts") or 0)
+        if max_attempts <= 0 or attempts >= max_attempts:
+            return self._set_auth_recovery_state(auto_repair_blocked_reason="attempt_limit")
+
+        next_attempts = attempts + 1
+        cycle_id = current.get("cycle_id") or self._next_auth_cycle_id()
+        snapshot = self._set_auth_recovery_state(
+            cycle_id=cycle_id,
+            recovery_phase="panic_resetting",
+            recovery_reason="gateway_socket_unreachable_auto_repair",
+            interruption_kind="gateway_socket_unreachable",
+            manual_takeover_active=False,
+            probe_last_checked_at=self._now_iso(),
+            probe_result="auto_repair_scheduled",
+            auto_restart_scheduled=True,
+            last_gateway_status_code=int((gateway_status or {}).get("status_code") or 0),
+            last_recovery_source=source or "status_watchdog",
+            disconnect_reason_code="local_socket_unreachable",
+            disconnect_reason_label="本地 Gateway Socket 不可达",
+            disconnect_reason_confidence="high",
+            lock_owner="panic_reset",
+            lock_expires_at=self._future_iso(service_mod.AUTH_RECOVERY_LOCK_TTL_SECONDS),
+            auto_repair_attempts=next_attempts,
+            auto_repair_last_at=self._now_iso(),
+            auto_repair_last_reason=reason,
+            auto_repair_cooldown_until=self._future_iso(service_mod.AUTH_2FA_AUTO_REPAIR_COOLDOWN_SECONDS),
+            auto_repair_blocked_reason="",
+        )
+
+        def worker():
+            try:
+                service_mod.logger.warning(
+                    "Auto repairing IBKR Gateway socket by panic reset: reason=%s attempt=%s/%s",
+                    reason,
+                    next_attempts,
+                    max_attempts,
+                )
+                self.panic_reset_auth(
+                    restart_gateway=True,
+                    restart_runtime=True,
+                    trigger_login=True,
+                    reason="gateway_socket_unreachable_auto_repair",
+                    source=source or "status_watchdog",
+                )
+            except Exception as exc:
+                service_mod.logger.error("Gateway socket auto repair failed: %s", exc)
+                self._set_auth_recovery_state(
+                    recovery_phase="failed",
+                    recovery_reason="gateway_socket_unreachable_auto_repair",
+                    probe_result="auto_repair_failed",
+                    auto_restart_scheduled=False,
+                    last_recovery_source=source or "status_watchdog",
+                    lock_owner="",
+                    lock_expires_at="",
+                    auto_repair_blocked_reason=str(exc),
+                )
+
+        threading.Thread(target=worker, daemon=True, name="gateway-socket-auto-repair").start()
+        return snapshot
 
     def _wait_for_server_boot_resume_auth(
         self,

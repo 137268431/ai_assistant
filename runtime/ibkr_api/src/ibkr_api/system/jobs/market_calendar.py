@@ -5,6 +5,7 @@ import threading
 import time
 from datetime import datetime
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 from ibkr_api.modes import request_broker_mode, request_market_data_mode
 
@@ -20,6 +21,7 @@ from ibkr_compute.market.calendar import (
     IBKR_SCHEDULE_SOURCE,
     LOCAL_NYSE_FALLBACK_SOURCE,
     build_local_nyse_calendar_snapshot,
+    effective_market_date_for_now,
 )
 
 RequestJsonRequest = Callable[..., dict[str, Any]]
@@ -28,6 +30,7 @@ ConfigValue = Callable[[str, str, str], str]
 _MARKET_CALENDAR_CACHE_LOCK = threading.RLock()
 _MARKET_CALENDAR_CACHE: dict[tuple[str, str, str, str, str, str], dict[str, Any]] = {}
 _MARKET_CALENDAR_IN_FLIGHT: dict[tuple[str, str, str, str, str, str], threading.Event] = {}
+ET = ZoneInfo("America/New_York")
 
 
 def _to_text(value: Any) -> str:
@@ -150,7 +153,7 @@ def _market_calendar_ttl_seconds(payload: dict[str, Any], *, market_date: str, t
     kind = _to_text(market_session.get("kind") or payload.get("session_kind")).lower()
     if payload.get("is_closed") or payload.get("is_trading_day") is False or kind == "closed":
         return _cache_seconds("IBKR_MARKET_CALENDAR_CLOSED_TTL_SEC", 1800.0)
-    if kind == "afterhours":
+    if kind in {"afterhours", "overnight", "night"}:
         return _cache_seconds("IBKR_MARKET_CALENDAR_AFTERHOURS_TTL_SEC", 120.0)
     if kind in {"premarket", "regular", "close_transition"}:
         return _cache_seconds("IBKR_MARKET_CALENDAR_ACTIVE_TTL_SEC", 30.0)
@@ -405,7 +408,14 @@ def build_market_calendar_response(
 ) -> tuple[dict[str, Any], int]:
     data = _as_dict(payload)
     times = time_strings()
-    market_date = _to_text(data.get("date") or data.get("market_date") or times.get("date"))
+    now = datetime.now(ET)
+    requested_date = _to_text(data.get("date") or data.get("market_date") or times.get("date"))
+    effective_date = effective_market_date_for_now(now).isoformat()
+    current_date = now.strftime("%Y-%m-%d")
+    explicit_date = bool(_to_text(data.get("date") or data.get("market_date")))
+    market_date = requested_date
+    if (not explicit_date and effective_date) or (explicit_date and requested_date == current_date and effective_date != current_date):
+        market_date = effective_date
     if _parse_market_date(market_date) is None:
         return {"ok": False, "error": "invalid_market_date", "market_date": market_date, "source": "ibkr-api"}, 400
     broker_mode = request_broker_mode(data)
@@ -424,6 +434,9 @@ def build_market_calendar_response(
         )
         return {
             **snapshot,
+            "requested_date": requested_date,
+            "calendar_date": _to_text(snapshot.get("market_date") or market_date),
+            "effective_market_date": effective_date,
             "environment": broker_mode,
             "broker_mode": broker_mode,
             "market_data_mode": data_environment,
@@ -447,6 +460,9 @@ def build_market_calendar_response(
     )
     return {
         **payload_data,
+        "requested_date": requested_date,
+        "calendar_date": _to_text(payload_data.get("market_date") or market_date),
+        "effective_market_date": effective_date,
         "environment": broker_mode,
         "broker_mode": broker_mode,
         "market_data_mode": data_environment,

@@ -170,6 +170,18 @@ AUTH_PROBE_LATE_SESSION_SELF_HEAL_GRACE_SECONDS = max(
 )
 AUTH_MANUAL_TAKEOVER_TTL_SECONDS = max(60, int(os.environ.get("IBKR_AUTH_MANUAL_TAKEOVER_TTL_SECONDS", "600")))
 AUTH_RECOVERY_LOCK_TTL_SECONDS = max(30, int(os.environ.get("IBKR_AUTH_RECOVERY_LOCK_TTL_SECONDS", "120")))
+AUTH_2FA_AUTO_REPAIR_ENABLED = str(os.environ.get("IBKR_2FA_AUTO_REPAIR_ENABLED", "true")).strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+AUTH_2FA_AUTO_REPAIR_COOLDOWN_SECONDS = max(60, int(os.environ.get("IBKR_2FA_AUTO_REPAIR_COOLDOWN_SECONDS", "900")))
+AUTH_2FA_AUTO_REPAIR_MAX_ATTEMPTS = max(0, int(os.environ.get("IBKR_2FA_AUTO_REPAIR_MAX_ATTEMPTS", "2")))
+AUTH_2FA_AUTO_REPAIR_SOCKET_GRACE_SECONDS = max(
+    30,
+    int(os.environ.get("IBKR_2FA_AUTO_REPAIR_SOCKET_GRACE_SECONDS", "240")),
+)
 AUTH_RECOVERY_PB_FIELDS = (
     "cycle_id",
     "recovery_phase",
@@ -193,6 +205,11 @@ AUTH_RECOVERY_PB_FIELDS = (
     "disconnect_reason_evidence",
     "lock_owner",
     "lock_expires_at",
+    "auto_repair_attempts",
+    "auto_repair_last_at",
+    "auto_repair_last_reason",
+    "auto_repair_cooldown_until",
+    "auto_repair_blocked_reason",
 )
 WATCHLIST_SYMBOL_ROLE_TRADE = "trade"
 WATCHLIST_SYMBOL_ROLE_MARKET_MONITOR = "market_monitor"

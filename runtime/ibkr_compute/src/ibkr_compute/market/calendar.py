@@ -27,6 +27,7 @@ MARKET_SESSION_LABELS_ZH = {
     "afterhours": "盘后",
     "overnight": "夜盘",
 }
+OVERNIGHT_START_MINUTE = 20 * 60
 
 
 def _to_text(value: Any) -> str:
@@ -264,8 +265,12 @@ def _market_session_kind_from_windows(
     if is_closed:
         return "closed"
     et_now = now.astimezone(ET)
-    if market_date and et_now.date().isoformat() != market_date:
-        return "closed"
+    target_day = _parse_date(market_date)
+    if target_day and et_now.date() != target_day:
+        previous_day = target_day - timedelta(days=1)
+        previous_day_overnight = et_now.date() == previous_day and (et_now.hour * 60 + et_now.minute) >= OVERNIGHT_START_MINUTE
+        if not previous_day_overnight:
+            return "closed"
     if regular_open is None or regular_close is None:
         return "closed"
     extended_open = extended_open or regular_open
@@ -426,6 +431,17 @@ def _next_nyse_trading_day(day: date) -> date:
     return cursor
 
 
+def effective_market_date_for_now(now: datetime | None = None) -> date:
+    current = datetime.now(ET) if now is None else (now.replace(tzinfo=ET) if now.tzinfo is None else now.astimezone(ET))
+    day = current.date()
+    minutes = current.hour * 60 + current.minute
+    if is_nyse_trading_day(day):
+        return _next_nyse_trading_day(day) if minutes >= OVERNIGHT_START_MINUTE else day
+    if day.weekday() == 6 and minutes >= OVERNIGHT_START_MINUTE:
+        return _next_nyse_trading_day(day)
+    return day
+
+
 def build_local_nyse_calendar_snapshot(
     market_date: Any,
     *,
@@ -492,6 +508,7 @@ __all__ = [
     "IBKR_SCHEDULE_SOURCE",
     "LOCAL_NYSE_FALLBACK_SOURCE",
     "build_ibkr_calendar_snapshot",
+    "effective_market_date_for_now",
     "build_local_nyse_calendar_snapshot",
     "build_market_session_from_calendar",
     "parse_ibkr_trading_hours",

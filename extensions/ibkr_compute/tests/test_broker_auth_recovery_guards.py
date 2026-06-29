@@ -325,6 +325,7 @@ class _DummyStaleBrokerService(TradingServiceAuthRecoveryMixin):
         }
         self.restart_calls = []
         self.manual_2fa_calls = []
+        self.panic_reset_calls = []
         self.gateway_manager = SimpleNamespace(
             is_running=True,
             status=lambda: {"status_code": 401},
@@ -368,6 +369,10 @@ class _DummyStaleBrokerService(TradingServiceAuthRecoveryMixin):
         self.manual_2fa_calls.append({"reason": reason, "message": message})
         return True
 
+    def panic_reset_auth(self, **kwargs):
+        self.panic_reset_calls.append(dict(kwargs))
+        return {"ok": True}
+
 
 class StaleBrokerRecoveryTest(unittest.TestCase):
     def _service_mod(self, market_session_kind: str = "regular"):
@@ -386,6 +391,10 @@ class StaleBrokerRecoveryTest(unittest.TestCase):
             AUTH_PROBE_SELF_HEAL_GRACE_SECONDS=90,
             AUTH_PROBE_LATE_SESSION_SELF_HEAL_GRACE_SECONDS=300,
             AUTH_PROBE_INTERVAL_SECONDS=1,
+            AUTH_2FA_AUTO_REPAIR_ENABLED=True,
+            AUTH_2FA_AUTO_REPAIR_MAX_ATTEMPTS=2,
+            AUTH_2FA_AUTO_REPAIR_COOLDOWN_SECONDS=900,
+            AUTH_2FA_AUTO_REPAIR_SOCKET_GRACE_SECONDS=240,
             AUTH_RECOVERY_PB_FIELDS=(),
             classify_market_session_kind=lambda: market_session_kind,
         )
@@ -433,6 +442,55 @@ class StaleBrokerRecoveryTest(unittest.TestCase):
         ):
             self.assertEqual(service._auth_probe_window_seconds("session_expired"), 45)
             self.assertEqual(service._auth_probe_self_heal_grace_seconds("session_expired"), 90)
+
+    def test_gateway_socket_watchdog_schedules_panic_reset(self):
+        service = _DummyStaleBrokerService()
+
+        class ImmediateThread:
+            def __init__(self, target, **_kwargs):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        with mock.patch(
+            "ibkr_compute.orchestration.auth_recovery._service_mod",
+            return_value=self._service_mod(),
+        ):
+            with mock.patch("ibkr_compute.orchestration.auth_recovery.threading.Thread", ImmediateThread):
+                snapshot = service.maybe_auto_repair_gateway_socket(
+                    gateway_status={"running": True, "status_code": 502, "api_socket_listening": False, "uptime_s": 1000},
+                    session_status={"authenticated": False},
+                    market_data_session_conflict={"active": False},
+                    source="test_watchdog",
+                )
+
+        self.assertEqual(snapshot["probe_result"], "auto_repair_scheduled")
+        self.assertEqual(snapshot["auto_repair_attempts"], 1)
+        self.assertEqual(len(service.panic_reset_calls), 1)
+        self.assertTrue(service.panic_reset_calls[0]["restart_gateway"])
+        self.assertTrue(service.panic_reset_calls[0]["restart_runtime"])
+        self.assertTrue(service.panic_reset_calls[0]["trigger_login"])
+        self.assertEqual(service.panic_reset_calls[0]["reason"], "gateway_socket_unreachable_auto_repair")
+
+    def test_gateway_socket_watchdog_respects_cooldown(self):
+        service = _DummyStaleBrokerService()
+        service._auth_recovery_state["auto_repair_attempts"] = 1
+        service._auth_recovery_state["auto_repair_cooldown_until"] = "2999-01-01T00:00:00"
+
+        with mock.patch(
+            "ibkr_compute.orchestration.auth_recovery._service_mod",
+            return_value=self._service_mod(),
+        ):
+            snapshot = service.maybe_auto_repair_gateway_socket(
+                gateway_status={"running": True, "status_code": 502, "api_socket_listening": False, "uptime_s": 1000},
+                session_status={"authenticated": False},
+                market_data_session_conflict={"active": False},
+                source="test_watchdog",
+            )
+
+        self.assertEqual(snapshot["auto_repair_blocked_reason"], "cooldown")
+        self.assertEqual(service.panic_reset_calls, [])
 
 
 if __name__ == "__main__":

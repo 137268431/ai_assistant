@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ibkr_compute.core.broker_mode import configured_broker_mode, normalize_broker_mode, resolve_data_environment
 from ibkr_compute.core.time_utils import ET
 from ibkr_compute.observability.prometheus import record_signal_event
+from ibkr_compute.order.close_execution import infer_close_session
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +126,8 @@ class ReverseSignalHandler:
                 if self._is_cancelled_tv_close_self_heal_candidate(r):
                     result = self._self_heal_cancelled_tv_close(r)
                     if result:
-                        self._processed_ids.add(rid)
+                        if not self._is_retryable_result(result):
+                            self._processed_ids.add(rid)
                         try:
                             self._ack_reverse_signal(r, "close", result)
                         except Exception as e:
@@ -353,7 +355,16 @@ class ReverseSignalHandler:
             or result.get("trade_group_id")
             or ""
         ).strip()
-        return "order_submission_unconfirmed" in error, order_ids, order_ref
+        processing_warning = bool(
+            order_ids
+            and (
+                "order_submission_unconfirmed" in error
+                or "placeorder is now being processed" in error
+                or "order event warning" in error
+                or "code=2109" in error
+            )
+        )
+        return processing_warning, order_ids, order_ref
 
     @classmethod
     def _cancel_error_code(cls, result: Dict[str, Any]) -> str:
@@ -1499,6 +1510,13 @@ class ReverseSignalHandler:
             or self._signal_value(signal, "reason")
             or "reverse_signal_close"
         ).strip()
+        close_position_snapshot = self._close_position_snapshot_for_symbol(
+            symbol,
+            positions,
+            conid=int(conid or 0),
+            direction=direction,
+            quantity=close_qty,
+        )
         result = self.order_placer.place_market_close(
             conid,
             symbol,
@@ -1509,7 +1527,7 @@ class ReverseSignalHandler:
             signal_id=origin_signal_id,
             source="reverse_signal_close",
             close_reason=close_reason,
-            position_snapshot=self._position_snapshot_for_symbol(symbol, positions),
+            position_snapshot=close_position_snapshot,
             safety_action=close_before_cancel,
             safety_reason="tv_exit_close_before_cancel" if close_before_cancel else "",
             bypass_normal_symbol_queue=close_before_cancel,
@@ -1521,24 +1539,32 @@ class ReverseSignalHandler:
             and self._safety_market_close_enabled()
         ):
             detail["safety_market_close_fallback_attempted"] = True
-            result = self.order_placer.place_market_close(
-                conid,
-                symbol,
-                direction,
-                close_qty,
-                trade_group_id=self._related_trade_group_id(signal),
-                entry_order_unique_id=str(self._signal_value(signal, "entry_order_unique_id") or "").strip(),
-                signal_id=origin_signal_id,
-                source="reverse_signal_close",
-                close_reason=close_reason or "tv_exit_close_no_quote_market_fallback",
-                position_snapshot=self._position_snapshot_for_symbol(symbol, positions),
-                order_type="MKT",
-                allow_market=True,
-                safety_action=True,
-                safety_reason="tv_exit_no_quote_market_fallback",
-                bypass_normal_symbol_queue=True,
-            )
-            detail["safety_market_close_fallback_result"] = dict(result or {})
+            fallback_allowed, fallback_detail = self._safety_market_close_fallback_allowed()
+            detail["safety_market_close_fallback_session"] = fallback_detail
+            if fallback_allowed:
+                result = self.order_placer.place_market_close(
+                    conid,
+                    symbol,
+                    direction,
+                    close_qty,
+                    trade_group_id=self._related_trade_group_id(signal),
+                    entry_order_unique_id=str(self._signal_value(signal, "entry_order_unique_id") or "").strip(),
+                    signal_id=origin_signal_id,
+                    source="reverse_signal_close",
+                    close_reason=close_reason or "tv_exit_close_no_quote_market_fallback",
+                    position_snapshot=close_position_snapshot,
+                    order_type="MKT",
+                    allow_market=True,
+                    safety_action=True,
+                    safety_reason="tv_exit_no_quote_market_fallback",
+                    bypass_normal_symbol_queue=True,
+                )
+                detail["safety_market_close_fallback_result"] = dict(result or {})
+            else:
+                detail["safety_market_close_fallback_blocked"] = True
+                runtime_detail = detail.setdefault("reverse_runtime_detail", {})
+                runtime_detail["safety_market_close_fallback_blocked"] = True
+                runtime_detail["safety_market_close_fallback_session"] = fallback_detail
         detail["close_old_position"] = "submitted" if result.get("ok") else "failed"
         detail["close_result"] = dict(result or {})
         if not result.get("ok"):
@@ -1565,6 +1591,13 @@ class ReverseSignalHandler:
                 runtime_detail = detail.setdefault("reverse_runtime_detail", {})
                 runtime_detail["safe_blocked_no_quote"] = True
                 runtime_detail["close_quote_unavailable"] = True
+                if close_before_cancel and detail.get("safety_market_close_fallback_blocked"):
+                    return self._mark_retryable_blocked(
+                        detail,
+                        "close_limit_price_unavailable_retry",
+                        error=close_error,
+                        fallback_session=detail.get("safety_market_close_fallback_session"),
+                    )
                 self._mark_unprotected_close_alert(
                     signal,
                     symbol,
@@ -1919,6 +1952,22 @@ class ReverseSignalHandler:
     def _safety_market_close_enabled(self) -> bool:
         return self._safety_auto_execute_enabled() and self._config_bool("ibkr_safety_close_allow_market", True)
 
+    def _safety_market_close_fallback_allowed(self) -> Tuple[bool, Dict[str, Any]]:
+        session = infer_close_session()
+        detail = {
+            "session": session.name,
+            "outside_rth": session.outside_rth,
+            "include_overnight": session.include_overnight,
+            "reason": "",
+        }
+        if session.name == "regular":
+            return True, detail
+        if self._config_bool("ibkr_safety_close_allow_market_outside_rth", False):
+            detail["override"] = "ibkr_safety_close_allow_market_outside_rth"
+            return True, detail
+        detail["reason"] = "market_order_not_allowed_outside_regular_session"
+        return False, detail
+
     def _close_before_cancel(self, signal: dict) -> bool:
         return self._is_tv_exit_signal(signal) and self._safety_auto_execute_enabled()
 
@@ -1980,7 +2029,11 @@ class ReverseSignalHandler:
             return False
         if not self._is_tradingview_reverse_signal(signal):
             return False
-        return self._is_cancelled_flat_not_confirmed_tv_close_candidate(signal) or self._has_terminal_cancel_conflict_evidence(signal)
+        return (
+            self._is_cancelled_flat_not_confirmed_tv_close_candidate(signal)
+            or self._has_close_order_failed_retry_evidence(signal)
+            or self._has_terminal_cancel_conflict_evidence(signal)
+        )
 
     def _is_cancelled_flat_not_confirmed_tv_close_candidate(self, signal: dict) -> bool:
         extra = self._signal_extra(signal)
@@ -1998,6 +2051,40 @@ class ReverseSignalHandler:
             )
         )
         return "flat_not_confirmed" in text
+
+    def _has_close_order_failed_retry_evidence(self, signal: dict) -> bool:
+        extra = self._signal_extra(signal)
+        close_result = self._as_dict(extra.get("close_result"))
+        close_terminal = self._as_dict(extra.get("close_order_terminal"))
+        blocked = self._as_dict(extra.get("reentry_blocked"))
+        fallback_session = self._as_dict(extra.get("safety_market_close_fallback_session"))
+        order_ids = self._unique_nonempty(
+            self._signal_list(close_result, "order_ids", "submitted_order_ids", "broker_order_ids")
+            + self._signal_list(close_terminal, "order_ids", "submitted_order_ids", "broker_order_ids")
+        )
+        text = " ".join(
+            str(value or "").strip().lower()
+            for value in (
+                signal.get("reason"),
+                extra.get("result_status"),
+                extra.get("reverse_state"),
+                extra.get("close_old_position"),
+                blocked.get("reason"),
+                close_result.get("error"),
+                close_terminal.get("reason"),
+                fallback_session.get("reason"),
+            )
+        )
+        return bool(
+            order_ids
+            and (
+                "close_order_failed" in text
+                or "close_limit_price_unavailable" in text
+                or "previous_close_order_terminal" in text
+                or "order event warning" in text
+                or "code=2109" in text
+            )
+        )
 
     def _attempt_tv_async_self_heal(
         self,
@@ -2032,6 +2119,10 @@ class ReverseSignalHandler:
             )
         )
         if bool(extra.get("close_submission_unconfirmed")) or submission_unconfirmed:
+            return True
+        if self._signal_list(close_result, "order_ids", "submitted_order_ids", "broker_order_ids"):
+            return True
+        if self._signal_list(self._as_dict(extra.get("close_order_terminal")), "order_ids"):
             return True
         if pending_order_ids or pending_order_ref:
             return True
@@ -2102,6 +2193,8 @@ class ReverseSignalHandler:
             "source": (
                 "cancelled_terminal_during_cancel_tv_close"
                 if self._has_terminal_cancel_conflict_evidence(signal)
+                else "cancelled_close_order_failed_retry"
+                if self._has_close_order_failed_retry_evidence(signal)
                 else "cancelled_flat_not_confirmed_tv_close"
             ),
         }
@@ -2116,7 +2209,8 @@ class ReverseSignalHandler:
             signal,
             detail,
             "historical_flat_not_confirmed",
-            pending_on_unconfirmed=False,
+            pending_on_unconfirmed=self._has_close_order_failed_retry_evidence(signal),
+            resubmit_on_terminal_close=False,
         )
 
     def _self_heal_terminal_cancel_close(
@@ -2184,6 +2278,7 @@ class ReverseSignalHandler:
         reason: str,
         *,
         pending_on_unconfirmed: bool = True,
+        resubmit_on_terminal_close: bool = True,
     ) -> Optional[Dict[str, Any]]:
         extra = self._signal_extra(signal)
         for key in (
@@ -2220,17 +2315,85 @@ class ReverseSignalHandler:
         detail["flat_confirmation"] = flat_detail
         if not flat_confirmed:
             detail["close_old_position"] = detail.get("close_old_position") or extra.get("close_old_position") or "submitted"
+            terminal_detail = self._terminal_close_order_detail(signal, detail)
+            if terminal_detail:
+                detail["close_order_terminal"] = terminal_detail
+                detail["close_old_position"] = "terminal_inactive"
+                runtime_detail = detail.setdefault("reverse_runtime_detail", {})
+                runtime_detail["close_order_terminal"] = terminal_detail
+                if resubmit_on_terminal_close:
+                    return None
             if not pending_on_unconfirmed:
                 return None
             return self._mark_retryable_blocked(
                 detail,
-                str(reason or "flat_not_confirmed"),
+                "previous_close_order_terminal" if terminal_detail else str(reason or "flat_not_confirmed"),
                 position_qty=flat_detail.get("position_qty"),
                 attempts=flat_detail.get("attempts"),
+                terminal_close_order_ids=terminal_detail.get("order_ids") if terminal_detail else None,
+                terminal_close_order_statuses=terminal_detail.get("statuses") if terminal_detail else None,
             )
 
         detail["close_old_position"] = "confirmed"
         return self._start_cooldown_and_ready(signal, symbol, detail, "close_self_healed_flat_ready_reentry")
+
+    def _close_result_order_ids(self, signal: dict, detail: Dict[str, Any]) -> List[str]:
+        extra = self._signal_extra(signal)
+        values: List[str] = []
+        for payload in (
+            self._as_dict(detail.get("close_result")),
+            self._as_dict(extra.get("close_result")),
+            self._as_dict(detail.get("close_order_terminal")),
+            self._as_dict(extra.get("close_order_terminal")),
+            detail,
+            extra,
+        ):
+            values.extend(
+                self._signal_list(
+                    payload,
+                    "order_ids",
+                    "submitted_order_ids",
+                    "broker_order_ids",
+                    "submitted_broker_order_ids",
+                    "pending_close_order_ids",
+                )
+            )
+        return self._unique_nonempty(values)
+
+    def _terminal_close_order_detail(self, signal: dict, detail: Dict[str, Any]) -> Dict[str, Any]:
+        order_ids = self._close_result_order_ids(signal, detail)
+        if not order_ids:
+            return {}
+        environment = normalize_broker_mode(
+            self._signal_value(signal, "broker_mode") or self._signal_value(signal, "environment"),
+            self.environment,
+        )
+        rows = self._fetch_related_orders(trade_group_id="", order_ids=order_ids, environment=environment)
+        inspected = [
+            {
+                "order_id": self._order_id(row),
+                "status": self._order_status(row),
+                "status_key": self._order_status_key(row),
+            }
+            for row in rows or []
+        ]
+        active = [item for item in inspected if item.get("status_key") in REAL_ACTIVE_ORDER_STATUSES]
+        terminal = [
+            item
+            for item in inspected
+            if item.get("status_key")
+            and item.get("status_key") in INACTIVE_ORDER_STATUSES
+            and item.get("status_key") not in {"FILLED", "EXECUTED", "CLOSED"}
+        ]
+        if not inspected or active or not terminal:
+            return {}
+        return {
+            "reason": "previous_close_order_terminal",
+            "order_ids": order_ids,
+            "statuses": sorted({str(item.get("status_key") or "") for item in terminal}),
+            "orders": terminal[-5:],
+            "inspected_orders": inspected[-10:],
+        }
 
     def _cancel_self_heal_targets(self, signal: dict) -> Tuple[str, List[str]]:
         extra = self._signal_extra(signal)
@@ -4942,6 +5105,73 @@ class ReverseSignalHandler:
             pos_symbol = str(pos.get("ticker") or pos.get("symbol") or pos.get("contractDesc") or "").upper()
             if pos_symbol == target:
                 return dict(pos)
+        return {}
+
+    @staticmethod
+    def _snapshot_has_close_price(snapshot: Dict[str, Any], direction: str) -> bool:
+        if not isinstance(snapshot, dict):
+            return False
+        normalized_direction = str(direction or "").strip().lower()
+        if ReverseSignalHandler._coerce_float(snapshot.get("last_price", snapshot.get("market_price", snapshot.get("mktPrice"))), 0.0) > 0:
+            return True
+        if normalized_direction == "short":
+            return ReverseSignalHandler._coerce_float(snapshot.get("ask", snapshot.get("ask_price")), 0.0) > 0
+        if normalized_direction == "long":
+            return ReverseSignalHandler._coerce_float(snapshot.get("bid", snapshot.get("bid_price")), 0.0) > 0
+        return False
+
+    def _close_position_snapshot_for_symbol(
+        self,
+        symbol: str,
+        positions: List[Dict[str, Any]],
+        *,
+        conid: int,
+        direction: str,
+        quantity: int,
+    ) -> Dict[str, Any]:
+        snapshot = self._position_snapshot_for_symbol(symbol, positions)
+        if self._snapshot_has_close_price(snapshot, direction):
+            return snapshot
+        enricher = getattr(self.order_lifecycle, "_enrich_eod_position_snapshot", None)
+        if callable(enricher):
+            try:
+                seed = {
+                    **dict(snapshot or {}),
+                    "ticker": str(symbol or "").upper(),
+                    "symbol": str(symbol or "").upper(),
+                    "conid": int(conid or 0),
+                    "position": -abs(int(quantity or 0)) if str(direction).lower() == "short" else abs(int(quantity or 0)),
+                }
+                enriched = dict(enricher(seed, direction=direction) or {})
+                if enriched:
+                    return enriched
+            except Exception as exc:
+                logger.debug("Reverse close price enrichment failed for %s: %s", symbol, exc)
+        account_snapshot = self._account_snapshot_position_for_symbol(symbol)
+        if account_snapshot:
+            merged = {**dict(snapshot or {}), **account_snapshot}
+            if self._snapshot_has_close_price(merged, direction):
+                return merged
+        return snapshot
+
+    def _account_snapshot_position_for_symbol(self, symbol: str) -> Dict[str, Any]:
+        getter = getattr(self.order_lifecycle, "get_account_snapshot", None)
+        if not callable(getter):
+            return {}
+        try:
+            payload = dict(getter() or {})
+        except Exception as exc:
+            logger.debug("Reverse close account snapshot lookup failed for %s: %s", symbol, exc)
+            return {}
+        target = str(symbol or "").strip().upper()
+        for pos in payload.get("positions") or []:
+            if not isinstance(pos, dict):
+                continue
+            pos_symbol = str(pos.get("ticker") or pos.get("symbol") or pos.get("contractDesc") or "").strip().upper()
+            if pos_symbol == target:
+                snapshot = dict(pos)
+                snapshot.setdefault("reverse_price_source", "account_snapshot")
+                return snapshot
         return {}
 
     def _confirm_flat(self, symbol: str) -> Tuple[bool, Dict[str, Any]]:

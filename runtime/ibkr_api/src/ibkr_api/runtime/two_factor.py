@@ -27,6 +27,11 @@ RECOVERY_FIELDS = (
     "last_recovery_source",
     "lock_owner",
     "lock_expires_at",
+    "auto_repair_attempts",
+    "auto_repair_last_at",
+    "auto_repair_last_reason",
+    "auto_repair_cooldown_until",
+    "auto_repair_blocked_reason",
 )
 
 

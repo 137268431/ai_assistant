@@ -332,6 +332,7 @@ function formatPageContextClosedReason(reason) {
 
 function formatPageContextMarketDayLabel(calendar) {
   if (!calendar || typeof calendar !== 'object') return '';
+  if (isPageContextOvernightSession(calendar)) return '夜盘';
   if (calendar.is_closed) return formatPageContextClosedReason(calendar.closed_reason);
   if (calendar.is_trading_day) return '正常交易日';
   return '日历待确认';
@@ -365,6 +366,12 @@ function getPageContextMarketSession(calendar) {
   return { source, session };
 }
 
+function isPageContextOvernightSession(calendar) {
+  const { session } = getPageContextMarketSession(calendar);
+  const kind = String(session.kind || '').trim().toLowerCase();
+  return ['overnight', 'night'].includes(kind) && session.is_open !== false;
+}
+
 function formatPageContextMarketSessionLabel(calendar) {
   const { source, session } = getPageContextMarketSession(calendar);
   const kind = String(session.kind || source.session_kind || '').trim().toLowerCase();
@@ -396,7 +403,7 @@ function buildPageContextMarketSessionTitle(calendar, fallback = '') {
   if (!source || !Object.keys(source).length) return String(fallback || '');
   const lines = [
     `来源：${formatPageContextCalendarSource(session.source || source.source)}`,
-    `状态：${formatPageContextMarketDayLabel(source) || formatPageContextMarketSessionLabel(source) || '日历待确认'}`,
+    `状态：${formatPageContextMarketSessionLabel(source) || formatPageContextMarketDayLabel(source) || '日历待确认'}`,
   ];
   const sourceError = String(session.source_error || source.source_error || fallback || '').trim();
   if (session.us_time || session.cn_time) {
@@ -452,7 +459,7 @@ function buildPageContextTradingDateItem({ tradingDate, allowGlobal, brokerMode,
   return {
     ...item,
     value: `${safeDate} · ${dayLabel}`,
-    tone: calendar.is_closed ? 'warn' : 'ok',
+    tone: isPageContextOvernightSession(calendar) ? 'shared' : (calendar.is_closed ? 'warn' : 'ok'),
     title: buildPageContextMarketCalendarTitle(calendar),
   };
 }

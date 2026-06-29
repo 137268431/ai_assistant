@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from ibkr_compute.core.time_utils import ET
+from ibkr_compute.market.calendar import effective_market_date_for_now
 from ibkr_compute.market.timeframe_utils import ms_to_et
 
 
@@ -14,7 +15,7 @@ def _api_app():
 
 def current_market_date(now: datetime | None = None) -> str:
     et_now = now.astimezone(ET) if now else datetime.now(ET)
-    return et_now.strftime("%Y-%m-%d")
+    return effective_market_date_for_now(et_now).isoformat()
 
 
 def get_environment_time_window(environment: str, key: str, default: tuple[int, int]) -> tuple[int, int]:

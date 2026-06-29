@@ -32,6 +32,11 @@ def build_auth_recovery_summary(auth_recovery_payload: Any, *, as_dict: AsDict) 
         "probe_last_checked_at": auth_recovery.get("probe_last_checked_at") or "",
         "probe_attempts": int(auth_recovery.get("probe_attempts") or 0),
         "auto_restart_scheduled": bool(auth_recovery.get("auto_restart_scheduled")),
+        "auto_repair_attempts": int(auth_recovery.get("auto_repair_attempts") or 0),
+        "auto_repair_last_at": auth_recovery.get("auto_repair_last_at") or "",
+        "auto_repair_last_reason": str(auth_recovery.get("auto_repair_last_reason") or ""),
+        "auto_repair_cooldown_until": auth_recovery.get("auto_repair_cooldown_until") or "",
+        "auto_repair_blocked_reason": str(auth_recovery.get("auto_repair_blocked_reason") or ""),
         "manual_takeover_active": bool(auth_recovery.get("manual_takeover_active")),
         "lock_owner": str(auth_recovery.get("lock_owner") or ""),
     }

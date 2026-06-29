@@ -547,6 +547,8 @@ class HomeOverviewApiTest(unittest.TestCase):
                     "positions_detail_available": False,
                     "positions_count_available": True,
                     "positions_source": "omitted_open_orders_only",
+                    "positions_age_s": 30.0,
+                    "positions_max_stale_s": 300.0,
                     "orders_fast_diagnostics": {"positions_omitted": True},
                     "counts": {
                         "open_positions": 1,
@@ -588,11 +590,11 @@ class HomeOverviewApiTest(unittest.TestCase):
                     "positions_max_stale_s": 300.0,
                     "orders_fast_diagnostics": {"positions_omitted": True},
                     "counts": {
-                        "open_positions": 0,
-                        "long_positions": 0,
+                        "open_positions": 1,
+                        "long_positions": 1,
                         "short_positions": 0,
-                        "flat_positions": 0,
-                        "position_rows": 0,
+                        "flat_positions": 4,
+                        "position_rows": 5,
                         "open_orders": 0,
                     },
                 },
@@ -606,6 +608,10 @@ class HomeOverviewApiTest(unittest.TestCase):
         self.assertTrue(positions["positions_stale"])
         self.assertTrue(positions["positions_refresh_required"])
         self.assertFalse(positions["empty_confirmed"])
+        self.assertFalse(positions["count_available"])
+        self.assertEqual(0, positions["total"])
+        self.assertEqual(0, positions["effective_open_positions"])
+        self.assertEqual(1, positions["stale_open_positions_hint"])
         self.assertEqual("positions_snapshot_stale", positions["positions_refresh_block_reason"])
 
     def test_dashboard_accepts_nested_runtime_account_payload(self):

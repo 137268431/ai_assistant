@@ -164,6 +164,24 @@ def _build_minimal_runtime_status(service, error: Exception | None = None) -> di
         trade_subscription_limit = target_subscription_limit or total_subscription_limit
     trade_subscription_limit = max(0, int(trade_subscription_limit or 0))
     mode_payload = broker_mode_payload()
+    market_session = {}
+    runtime_market_session = getattr(service, "_runtime_market_session_snapshot", None)
+    if callable(runtime_market_session):
+        try:
+            from ibkr_compute.orchestration import trading_service as service_mod
+
+            market_session = runtime_market_session(service_mod, refresh_ibkr_calendar=False)
+        except Exception as exc:
+            logger.warning("IBKR service market session status failed: %s", exc, exc_info=True)
+            errors.append({"section": "_runtime_market_session_snapshot", "error": str(exc)})
+    market_date = str(getattr(service, "_current_market_date", "") or "")
+    if not market_date:
+        market_date_method = getattr(service, "_market_date", None)
+        if callable(market_date_method):
+            try:
+                market_date = str(market_date_method() or "")
+            except Exception:
+                market_date = ""
     status = {
         "gateway_control_available": True,
         "starting": starting,
@@ -171,6 +189,7 @@ def _build_minimal_runtime_status(service, error: Exception | None = None) -> di
         "runtime_phase": _safe_method_text(service, "_runtime_phase_label", errors),
         **mode_payload,
         "gateway": _safe_component_status(service, "gateway_manager", errors),
+        "market_session": market_session,
         "session": _safe_component_status(service, "session_keeper", errors),
         "websocket": websocket_status,
         "bar_aggregator": _safe_component_status(service, "bar_aggregator", errors),
@@ -187,7 +206,7 @@ def _build_minimal_runtime_status(service, error: Exception | None = None) -> di
         "signal_router": _safe_component_status(service, "signal_router", errors),
         "signal_processor": _safe_component_status(service, "signal_processor", errors),
         "market_universe": {
-            "market_date": str(getattr(service, "_current_market_date", "") or ""),
+            "market_date": market_date,
             "active_target_date": str(getattr(service, "_active_target_date", "") or ""),
             "watchlist_trade_count": len(watchlist_trade_symbols),
             "trade_universe_ready": bool(active_trade_symbol_set),
@@ -227,6 +246,18 @@ def _build_minimal_runtime_status(service, error: Exception | None = None) -> di
             ),
         },
     }
+    auto_repair = getattr(service, "maybe_auto_repair_gateway_socket", None)
+    if callable(auto_repair):
+        try:
+            status["auth_recovery"] = auto_repair(
+                gateway_status=status.get("gateway"),
+                session_status=status.get("session"),
+                market_data_session_conflict={"active": False},
+                source="runtime_lite_status_watchdog",
+            )
+        except Exception as exc:
+            logger.warning("IBKR service auth auto-repair status failed: %s", exc, exc_info=True)
+            errors.append({"section": "maybe_auto_repair_gateway_socket", "error": str(exc)})
     if error is not None:
         status["status_error"] = str(error)
         errors.insert(0, {"section": "service.status", "error": str(error)})

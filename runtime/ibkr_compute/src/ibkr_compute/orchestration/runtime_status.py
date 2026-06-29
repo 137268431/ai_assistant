@@ -151,7 +151,7 @@ class TradingServiceRuntimeStatusMixin:
         )
 
         now = datetime.now(service_mod.ET)
-        market_date = str(getattr(self, "_current_market_date", "") or now.strftime("%Y-%m-%d")).strip()
+        market_date = str(getattr(self, "_current_market_date", "") or self._market_date() or now.strftime("%Y-%m-%d")).strip()
         contract_args = self._market_calendar_contract_args(service_mod)
         fallback = service_mod.build_market_session_snapshot(now)
         cache = getattr(self, "_market_session_calendar_cache", None)
@@ -368,7 +368,6 @@ class TradingServiceRuntimeStatusMixin:
             service_mod,
             refresh_ibkr_calendar=bool(refresh_calendar),
         )
-        auth_recovery = self._copy_auth_recovery_state()
         official_5m = self._copy_official_5m_state()
         direct_history_topup = self._copy_direct_topup_state()
         data_writer_status = self.data_writer.status()
@@ -581,6 +580,13 @@ class TradingServiceRuntimeStatusMixin:
                 ),
             ),
         )
+        self.maybe_auto_repair_gateway_socket(
+            gateway_status=gateway_status,
+            session_status=session_status,
+            market_data_session_conflict=market_data_session_conflict,
+            source="runtime_status_watchdog",
+        )
+        auth_recovery = self._copy_auth_recovery_state()
         runtime_config_switches = self._runtime_config_switch_status(service_mod)
         broker_status = gateway_status.get("broker") if isinstance(gateway_status.get("broker"), dict) else {}
         account_data_circuit = (

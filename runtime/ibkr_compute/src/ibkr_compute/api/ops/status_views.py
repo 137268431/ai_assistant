@@ -94,6 +94,14 @@ def _lite_runtime_status_payload(app_mod, requested_environment: str) -> dict:
             payload["session"] = session_status()
         except Exception as exc:
             payload["session"] = {"authenticated": False, "error": str(exc)}
+    runtime_market_session = getattr(service, "_runtime_market_session_snapshot", None)
+    if callable(runtime_market_session):
+        try:
+            from ibkr_compute.orchestration import trading_service as service_mod
+
+            payload["market_session"] = runtime_market_session(service_mod, refresh_ibkr_calendar=False)
+        except Exception:
+            payload["market_session"] = {}
     return payload
 
 

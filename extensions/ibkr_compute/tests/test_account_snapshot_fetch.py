@@ -1158,9 +1158,19 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertFalse(fast["positions_refresh_required"])
 
     def test_orders_fast_open_only_marks_cached_position_counts_stale_after_threshold(self):
+        class _PositionLifecycle(_SnapshotLifecycle):
+            def get_account_snapshot(self, _account_id):
+                self.snapshot_calls += 1
+                return {
+                    "summary": {"AccountCode": {"value": "DU123"}, "NetLiquidation": {"value": "1000000"}},
+                    "positions": [
+                        {"symbol": "INTU", "conid": 270662, "quantity": 16, "mktPrice": 293.19, "avgCost": 307.33},
+                    ],
+                }
+
         app = _FakeApiApp()
         app.IBKR_ACCOUNT_SNAPSHOT_STALE_SECONDS = 7200.0
-        lifecycle = _SnapshotLifecycle()
+        lifecycle = _PositionLifecycle()
         service = _SnapshotService(lifecycle)
         service.order_tracker = _FastOrderTracker([])
 
@@ -1192,6 +1202,10 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertGreater(fast["positions_age_s"], 300.0)
         self.assertEqual(300.0, fast["positions_max_stale_s"])
         self.assertEqual("positions_snapshot_stale", fast["positions_refresh_block_reason"])
+        self.assertFalse(fast["positions_count_available"])
+        self.assertTrue(fast["positions_count_stale"])
+        self.assertEqual(0, fast["counts"]["open_positions"])
+        self.assertEqual(1, fast["stale_position_counts_hint"]["open_positions"])
 
     def test_orders_fast_snapshot_reuses_stale_full_summary(self):
         app = _FakeApiApp()

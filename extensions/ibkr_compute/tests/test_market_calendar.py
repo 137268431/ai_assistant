@@ -10,6 +10,7 @@ if str(SRC_ROOT) not in sys.path:
 from ibkr_compute.market.calendar import (  # noqa: E402
     build_ibkr_calendar_snapshot,
     build_local_nyse_calendar_snapshot,
+    effective_market_date_for_now,
     parse_ibkr_trading_hours,
 )
 from ibkr_compute.core.time_utils import ET  # noqa: E402
@@ -90,6 +91,26 @@ class MarketCalendarTest(unittest.TestCase):
                 self.assertEqual(snapshot["session"]["extended_close_us"], "2026-05-26 20:00:00")
                 self.assertEqual(snapshot["market_session"]["kind"], expected_kind)
                 self.assertEqual(snapshot["market_session"]["label_zh"], expected_label)
+
+    def test_sunday_evening_uses_next_trading_day_overnight(self):
+        now = datetime.strptime("2026-06-28 23:30:00", "%Y-%m-%d %H:%M:%S").replace(tzinfo=ET)
+
+        snapshot = build_local_nyse_calendar_snapshot("2026-06-29", now=now)
+
+        self.assertTrue(snapshot["is_trading_day"])
+        self.assertFalse(snapshot["is_closed"])
+        self.assertEqual(snapshot["market_session"]["kind"], "overnight")
+        self.assertEqual(snapshot["market_session"]["label_zh"], "夜盘")
+        self.assertEqual(effective_market_date_for_now(now).isoformat(), "2026-06-29")
+
+    def test_regular_weekend_stays_closed_before_overnight(self):
+        now = datetime.strptime("2026-06-28 10:00:00", "%Y-%m-%d %H:%M:%S").replace(tzinfo=ET)
+
+        snapshot = build_local_nyse_calendar_snapshot("2026-06-28", now=now)
+
+        self.assertTrue(snapshot["is_closed"])
+        self.assertEqual(snapshot["closed_reason"], "weekend")
+        self.assertEqual(snapshot["market_session"]["kind"], "closed")
 
 
 if __name__ == "__main__":

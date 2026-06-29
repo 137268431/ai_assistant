@@ -407,10 +407,12 @@ def classify_market_session_kind(
     bar_time_ms: int | None = None,
 ) -> str:
     dt = _coerce_et_datetime(now, us_time=us_time, bar_time_ms=bar_time_ms)
+    minutes = dt.hour * 60 + dt.minute
     if not is_nyse_trading_day(dt):
+        if dt.weekday() == 6 and minutes >= EXTENDED_CLOSE_MINUTE:
+            return "overnight"
         return "closed"
 
-    minutes = dt.hour * 60 + dt.minute
     regular_close = regular_close_minute_for_date(dt)
     extended_close = extended_close_minute_for_date(dt)
     if minutes < EXTENDED_OPEN_MINUTE:
