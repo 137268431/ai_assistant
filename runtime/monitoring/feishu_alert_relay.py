@@ -21,6 +21,7 @@ COUNTERS = {
 }
 
 DEFAULT_ALERT_CHAT_ID = ""
+DEFAULT_FEISHU_STARTUP_CHAT_ID = "oc_cc5d0a950797b1c2c010953e14bceeff"
 try:
     from ibkr_api.integrations.feishu import feishu_send_interactive  # type: ignore
     from ibkr_api.system.events import DEFAULT_FEISHU_ALERT_CHAT_ID  # type: ignore
@@ -200,6 +201,10 @@ _LABEL_ALIASES = {
     "alert_source": "source",
 }
 
+_STARTUP_ALERT_NAMES = {
+    "IBKRSystemdServiceRestarted",
+}
+
 
 def _label_line(labels: dict[str, str], keys: list[str], *, default: str = "") -> str:
     parts = []
@@ -252,6 +257,30 @@ def _dashboard_url(payload: dict[str, Any], alerts: list[dict[str, Any]]) -> str
             if value:
                 return value
     return _first_text(payload.get("externalURL"), os.environ.get("GRAFANA_PUBLIC_URL"), default="https://quant-monitor.lzw-glory.top")
+
+
+def _alert_names_for_payload(payload: dict[str, Any]) -> set[str]:
+    alerts = [item for item in (payload.get("alerts") or []) if isinstance(item, dict)]
+    names = set()
+    for alert in alerts:
+        labels = _labels_for_alert(alert)
+        name = _first_text(labels.get("alertname"))
+        if name:
+            names.add(name)
+    common_labels = _payload_common_labels(payload)
+    common_name = _first_text(common_labels.get("alertname"))
+    if common_name:
+        names.add(common_name)
+    return names
+
+
+def _route_chat_id(payload: dict[str, Any]) -> tuple[str, str]:
+    alert_names = _alert_names_for_payload(payload)
+    if alert_names.intersection(_STARTUP_ALERT_NAMES):
+        chat_id = _first_text(os.environ.get("FEISHU_STARTUP_CHAT_ID"), DEFAULT_FEISHU_STARTUP_CHAT_ID)
+        if chat_id:
+            return chat_id, "startup"
+    return _first_text(os.environ.get("FEISHU_ALERT_CHAT_ID"), DEFAULT_FEISHU_ALERT_CHAT_ID), "alert"
 
 
 def _alert_block(idx: int, alert: dict[str, Any], fallback_status: str) -> str:
@@ -365,18 +394,23 @@ def _send_via_ibkr_api(card: dict[str, Any], environment: str, title: str) -> di
         return {"success": False, "error": str(exc), "via": "ibkr-api"}
 
 
-def send_feishu(card: dict[str, Any], environment: str, title: str) -> dict[str, Any]:
+def send_feishu(card: dict[str, Any], environment: str, title: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     if os.environ.get("FEISHU_DRY_RUN", "0").strip().lower() in {"1", "true", "yes", "on"}:
         return {"success": True, "skipped": True, "dry_run": True}
-    chat_id = _first_text(os.environ.get("FEISHU_ALERT_CHAT_ID"), DEFAULT_FEISHU_ALERT_CHAT_ID)
+    chat_id, route = _route_chat_id(payload or {})
     if feishu_send_interactive is not None and chat_id:
         try:
-            return dict(feishu_send_interactive(card, chat_id, environment, normalize_environment=normalize_environment) or {})
+            result = dict(feishu_send_interactive(card, chat_id, environment, normalize_environment=normalize_environment) or {})
+            result.setdefault("route", route)
+            return result
         except Exception as exc:
             fallback = _send_via_ibkr_api(card, environment, title)
             fallback["direct_error"] = str(exc)
+            fallback["route"] = route
             return fallback
-    return _send_via_ibkr_api(card, environment, title)
+    result = _send_via_ibkr_api(card, environment, title)
+    result["route"] = route
+    return result
 
 
 def metrics_text() -> str:
@@ -417,7 +451,7 @@ class Handler(BaseHTTPRequestHandler):
             payload = _read_json(self)
             card, environment = _build_card(payload)
             title = str((card.get("header") or {}).get("title", {}).get("content") or "Grafana Alert")
-            result = send_feishu(card, environment, title)
+            result = send_feishu(card, environment, title, payload)
         except ValueError as exc:
             COUNTERS["bad_requests_total"] += 1
             _json_response(self, 400, {"ok": False, "error": str(exc)})
