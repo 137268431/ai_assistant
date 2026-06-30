@@ -731,6 +731,66 @@ class OrderTrackerIdentityTest(unittest.TestCase):
         self.assertEqual("long", upsert["position_side"])
         self.assertEqual(0.43, upsert["commission"])
 
+    def test_sync_precreated_eod_close_preserves_reason_from_existing_order(self):
+        pb_client = FakePBClient(
+            rows=[
+                {
+                    "id": "sgi-close",
+                    "unique_id": "close_SGI_20260629_160512",
+                    "symbol": "SGI",
+                    "environment": "paper",
+                    "role": "close",
+                    "status": "Submitted",
+                    "broker_order_id": "11577",
+                    "order_id": "11577",
+                    "trade_group_id": "BATS_SGI_long_20260629_0946_2_mr_sdLower",
+                    "entry_order_unique_id": "entry_BATS_SGI_long_20260629_0946_2_mr_sdLower",
+                    "signal_id": "BATS_SGI_long_20260629_0946_2_mr_sdLower",
+                    "direction": "short",
+                    "position_side": "short",
+                    "quantity": 64,
+                    "extra": {
+                        "source": "eod_force_close",
+                        "submitted_via": "market_close",
+                        "reason": "force_flat_eod",
+                        "close_reason": "force_flat_eod",
+                        "close_reason_code": "force_flat_eod",
+                        "close_reason_human": "EOD 平仓",
+                        "eod_close_request_id": "eod_close:paper:2026-06-29:SGI",
+                        "eod_close_guard_state": "submitted",
+                        "precreated_close_order": True,
+                    },
+                }
+            ]
+        )
+        tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="paper")
+
+        tracker._sync_to_pb(
+            {
+                "orderId": "11577",
+                "ticker": "SGI",
+                "side": "BUY",
+                "orderType": "LMT",
+                "totalSize": 64,
+                "filledQuantity": 64,
+                "avgPrice": 80.10,
+                "price": 80.50,
+                "status": "Filled",
+                "cOID": "close_SGI_20260629_160512",
+                "ib_callback_type": "execDetails",
+                "ib_exec_id": "exec-sgi",
+            }
+        )
+
+        self.assertEqual(1, len(pb_client.upserts))
+        upsert = pb_client.upserts[0]
+        self.assertEqual("force_flat_eod", upsert["extra"]["close_reason"])
+        self.assertEqual("force_flat_eod", upsert["extra"]["reason"])
+        self.assertEqual("EOD 平仓", upsert["extra"]["close_reason_human"])
+        self.assertEqual("eod_force_close", upsert["extra"]["source"])
+        self.assertEqual("precreated_order", upsert["extra"]["close_link_source"])
+        self.assertEqual("eod_close:paper:2026-06-29:SGI", upsert["extra"]["eod_close_request_id"])
+
     def test_sync_order_id_only_close_callback_preserves_existing_close_identity(self):
         pb_client = FakePBClient(
             rows=[

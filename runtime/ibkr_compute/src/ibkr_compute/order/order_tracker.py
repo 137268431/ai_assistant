@@ -2389,6 +2389,25 @@ class OrderTracker:
                 ):
                     if order.get(source_key) not in (None, ""):
                         extra[target_key] = order.get(source_key)
+                if role == "close" and existing_extra:
+                    for key in (
+                        "source",
+                        "submitted_via",
+                        "reason",
+                        "close_reason",
+                        "close_reason_code",
+                        "close_reason_human",
+                        "close_execution_plan",
+                        "market_close_result",
+                        "position_snapshot",
+                        "position_avg_cost",
+                        "entry_price_for_pnl",
+                        "eod_close_request_id",
+                        "eod_close_guard_state",
+                        "precreated_close_order",
+                    ):
+                        if existing_extra.get(key) not in (None, ""):
+                            extra[key] = existing_extra.get(key)
                 if coid:
                     extra["coid"] = coid
                 quantity_mismatch = self._partial_harvest_quantity_mismatch(
@@ -2411,7 +2430,11 @@ class OrderTracker:
                     extra.update(
                         {
                             "close_order": True,
-                            "close_link_source": "existing_order" if existing_order else ("symbol_side_quantity" if linked_close_entry else "client_order_id"),
+                            "close_link_source": (
+                                "precreated_order"
+                                if bool(existing_extra.get("precreated_close_order"))
+                                else ("existing_order" if existing_order else ("symbol_side_quantity" if linked_close_entry else "client_order_id"))
+                            ),
                             "linked_entry_order_unique_id": entry_order_unique_id,
                             "linked_trade_group_id": trade_group_id,
                             "close_side": normalized_side,

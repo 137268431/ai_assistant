@@ -2612,6 +2612,42 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
         self.assertEqual(103.0, close_row["extra"]["entry_price_for_pnl"])
         self.assertEqual(10.5, close_row["extra"]["position_snapshot"]["unrealized_pnl"])
 
+    def test_eod_close_prewrites_reason_before_broker_result(self):
+        pb_client = FakeOrderPBClient()
+        broker = FakeMarketCloseBroker()
+        placer = OrderPlacer(pb_client=pb_client, broker=broker, account_id="DU123", environment="paper")
+
+        result = placer.place_market_close(
+            conid=27059190,
+            symbol="SGI",
+            direction="short",
+            quantity=64,
+            order_type="marketable_limit",
+            limit_price=80.50,
+            trade_group_id="BATS_SGI_long_20260629_0946_2_mr_sdLower",
+            entry_order_unique_id="entry_BATS_SGI_long_20260629_0946_2_mr_sdLower",
+            signal_id="BATS_SGI_long_20260629_0946_2_mr_sdLower",
+            source="eod_force_close",
+            close_reason="force_flat_eod",
+            close_reason_human="EOD 平仓",
+            eod_close_request_id="eod_close:paper:2026-06-29:SGI",
+            position_snapshot={"position": -64, "avgCost": 78.28, "ask": 80.1},
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertGreaterEqual(len(pb_client.upserts), 2)
+        prewrite = pb_client.upserts[0]
+        self.assertEqual("Submitted", prewrite["status"])
+        self.assertEqual("", prewrite["broker_order_id"])
+        self.assertEqual("BATS_SGI_long_20260629_0946_2_mr_sdLower", prewrite["trade_group_id"])
+        self.assertEqual("entry_BATS_SGI_long_20260629_0946_2_mr_sdLower", prewrite["entry_order_unique_id"])
+        self.assertEqual("force_flat_eod", prewrite["extra"]["close_reason"])
+        self.assertEqual("force_flat_eod", prewrite["extra"]["reason"])
+        self.assertEqual("EOD 平仓", prewrite["extra"]["close_reason_human"])
+        self.assertEqual("eod_close:paper:2026-06-29:SGI", prewrite["extra"]["eod_close_request_id"])
+        self.assertEqual("submitted", prewrite["extra"]["eod_close_guard_state"])
+        self.assertTrue(prewrite["extra"]["precreated_close_order"])
+
     def test_unlinked_market_close_does_not_self_link_close_reference(self):
         pb_client = FakeOrderPBClient()
         broker = FakeMarketCloseBroker()
@@ -2712,8 +2748,9 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
         )
 
         self.assertFalse(result["ok"])
-        self.assertEqual(1, len(pb_client.upserts))
-        close_row = pb_client.upserts[0]
+        self.assertEqual(2, len(pb_client.upserts))
+        self.assertEqual("Submitted", pb_client.upserts[0]["status"])
+        close_row = pb_client.upserts[-1]
         self.assertEqual("close_BA_20260603_101500", close_row["unique_id"])
         self.assertEqual("157", close_row["broker_order_id"])
         self.assertEqual("close", close_row["role"])
@@ -2726,7 +2763,7 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
         self.assertTrue(close_row["extra"]["order_submission_unconfirmed"])
         self.assertEqual("order_submission_unconfirmed", close_row["extra"]["submission_error"])
 
-    def test_rejected_market_close_does_not_prewrite_active_close_mapping(self):
+    def test_rejected_market_close_marks_prewrite_terminal_not_active(self):
         pb_client = StrictNotifyOrderAndSignalPBClient(
             {
                 "id": "sig-ba-row",
@@ -2757,7 +2794,13 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
         )
 
         self.assertFalse(result["ok"])
-        self.assertEqual([], pb_client.upserts)
+        self.assertEqual(2, len(pb_client.upserts))
+        self.assertEqual("Submitted", pb_client.upserts[0]["status"])
+        close_row = pb_client.upserts[-1]
+        self.assertEqual("close_BA_20260603_101501", close_row["unique_id"])
+        self.assertEqual("Canceled", close_row["status"])
+        self.assertEqual("closed", close_row["relation_status"])
+        self.assertEqual("broker_rejected_order", close_row["extra"]["submission_error"])
         self.assertEqual(1, len(pb_client.system_events))
         self.assertEqual("平仓未执行：券商拒绝或提交失败", pb_client.system_events[0]["title"])
         self.assertEqual("ibkr_close_execution", pb_client.system_events[0]["event_type"])

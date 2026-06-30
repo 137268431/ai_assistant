@@ -793,6 +793,7 @@ def _notify_order_callback_ledger(status: str, order_row: dict[str, Any], option
         order_row,
         previous_order=data.get("previous_order") if isinstance(data.get("previous_order"), dict) else None,
         send_interactive=_feishu_send_interactive,
+        update_interactive=_feishu_update_interactive,
         trade_ledger_chat_id=_trade_ledger_chat_id(environment),
         console_base_url=_console_base_url(),
     )

@@ -705,6 +705,85 @@ class OrderLifecycleRiskLimitTests(unittest.TestCase):
         self.assertEqual("force_flat_eod", close["close_reason"])
         self.assertEqual([], pb.events)
 
+    def test_eod_close_waits_for_position_reconcile_after_recent_eod_fill(self):
+        now_ms = int(time.time() * 1000)
+        pb = _FakePB(
+            orders=[
+                {
+                    "id": "aapl-close",
+                    "unique_id": "close_AAPL_20260612_155500",
+                    "symbol": "AAPL",
+                    "environment": "paper",
+                    "role": "close",
+                    "status": "Filled",
+                    "filled_qty": 5,
+                    "direction": "long",
+                    "extra": {
+                        "source": "eod_force_close",
+                        "close_reason": "force_flat_eod",
+                        "close_side": "SELL",
+                        "filled_bar_time_ms": now_ms - 60_000,
+                        "eod_close_request_id": "eod_close:paper:2026-06-12:AAPL",
+                    },
+                }
+            ]
+        )
+        placer = _FakeOrderPlacer()
+        lifecycle = OrderLifecycle(
+            pb_client=pb,
+            order_placer=placer,
+            broker=_FakeBroker([{"ticker": "AAPL", "position": 5, "conid": 123}]),
+            environment="paper",
+            config=_FakeConfig({"eod_close_fill_reconcile_guard_sec": 300}),
+        )
+
+        result = lifecycle.eod_close_all(et_now=datetime(2026, 6, 12, 15, 56, tzinfo=ET))
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(1, result["pending"])
+        self.assertEqual([], placer.closes)
+        self.assertEqual("await_position_flat_reconcile", result["guarded_items"][0]["reason"])
+        self.assertEqual("eod_close:paper:2026-06-12:AAPL", result["guarded_items"][0]["request_id"])
+
+    def test_eod_close_submits_residual_after_reconcile_guard_expires(self):
+        now_ms = int(time.time() * 1000)
+        pb = _FakePB(
+            orders=[
+                {
+                    "id": "aapl-close",
+                    "unique_id": "close_AAPL_20260612_155500",
+                    "symbol": "AAPL",
+                    "environment": "paper",
+                    "role": "close",
+                    "status": "Filled",
+                    "filled_qty": 5,
+                    "direction": "long",
+                    "extra": {
+                        "source": "eod_force_close",
+                        "close_reason": "force_flat_eod",
+                        "close_side": "SELL",
+                        "filled_bar_time_ms": now_ms - 600_000,
+                        "eod_close_request_id": "eod_close:paper:2026-06-12:AAPL",
+                    },
+                }
+            ]
+        )
+        placer = _FakeOrderPlacer()
+        lifecycle = OrderLifecycle(
+            pb_client=pb,
+            order_placer=placer,
+            broker=_FakeBroker([{"ticker": "AAPL", "position": 5, "conid": 123}]),
+            environment="paper",
+            config=_FakeConfig({"eod_close_fill_reconcile_guard_sec": 300}),
+        )
+
+        result = lifecycle.eod_close_all(et_now=datetime(2026, 6, 12, 16, 6, tzinfo=ET))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(1, len(placer.closes))
+        self.assertEqual("force_flat_eod_residual", placer.closes[0]["close_reason"])
+        self.assertEqual("eod_close:paper:2026-06-12:AAPL", placer.closes[0]["eod_close_request_id"])
+
     def test_eod_close_alerts_when_close_submission_or_fill_fails(self):
         pb = _FakePB()
         modifier = _FakeOrderModifier()

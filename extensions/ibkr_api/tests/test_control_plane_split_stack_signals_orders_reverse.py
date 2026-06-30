@@ -1236,6 +1236,125 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
             pb.updated[0][2]["extra"]["feishu_trade_ledger_notified_keys"],
         )
 
+    def test_sync_order_callback_ledger_defers_recent_close_fill_without_reason(self):
+        class _LedgerPB:
+            def __init__(self):
+                self.updated = []
+
+            def update_record(self, collection, record_id, patch):
+                self.updated.append((collection, record_id, patch))
+                return dict(patch)
+
+        now_s = 1000.0
+        order = {
+            "id": "order-close",
+            "unique_id": "close_SGI_20260629_160512",
+            "order_type": "LMT",
+            "symbol": "SGI",
+            "environment": "paper",
+            "status": "Filled",
+            "role": "close",
+            "broker_order_id": "11577",
+            "order_id": "11577",
+            "trade_group_id": "close_SGI_20260629_160512",
+            "entry_order_unique_id": "close_SGI_20260629_160512",
+            "direction": "short",
+            "quantity": 64,
+            "filled_qty": 64,
+            "fill_price": 80.10,
+            "extra": {
+                "environment": "paper",
+                "broker_realtime_callback": True,
+                "ib_callback_type": "execDetails",
+                "ib_exec_id": "exec-sgi",
+                "broker_callback_received_at_ms": int(now_s * 1000) - 5000,
+            },
+        }
+        previous = {**order, "filled_qty": 0, "extra": {"environment": "paper"}}
+        send_calls = []
+
+        with mock.patch("ibkr_api.orders.notifications.time.time", return_value=now_s):
+            result = sync_order_callback_ledger_notification(
+                _LedgerPB(),
+                order,
+                previous_order=previous,
+                send_interactive=lambda card, chat_id, environment: send_calls.append((card, chat_id, environment))
+                or {"success": True, "message_id": "should-not-send"},
+                trade_ledger_chat_id="ledger-chat-test",
+            )
+
+        self.assertTrue(result["skipped"])
+        self.assertEqual("exit_reason_pending", result["reason"])
+        self.assertEqual([], send_calls)
+
+    def test_sync_order_callback_ledger_updates_missing_reason_card_when_eod_reason_arrives(self):
+        class _LedgerPB:
+            def __init__(self, order):
+                self.order = dict(order)
+                self.updated = []
+
+            def update_record(self, collection, record_id, patch):
+                self.updated.append((collection, record_id, patch))
+                self.order = {**self.order, **patch}
+                return dict(self.order)
+
+        notify_key = "trade_ledger_callback_v2:paper:11577:exec-sgi:fill"
+        order = {
+            "id": "order-close",
+            "unique_id": "close_SGI_20260629_160512",
+            "order_type": "LMT",
+            "symbol": "SGI",
+            "environment": "paper",
+            "status": "Filled",
+            "role": "close",
+            "broker_order_id": "11577",
+            "order_id": "11577",
+            "trade_group_id": "BATS_SGI_long_20260629_0946_2_mr_sdLower",
+            "entry_order_unique_id": "entry_BATS_SGI_long_20260629_0946_2_mr_sdLower",
+            "signal_id": "BATS_SGI_long_20260629_0946_2_mr_sdLower",
+            "direction": "short",
+            "quantity": 64,
+            "filled_qty": 64,
+            "fill_price": 80.10,
+            "extra": {
+                "environment": "paper",
+                "broker_realtime_callback": True,
+                "ib_callback_type": "commissionReport",
+                "ib_exec_id": "exec-sgi",
+                "close_reason": "force_flat_eod",
+                "reason": "force_flat_eod",
+                "feishu_trade_ledger_last_result": "success",
+                "feishu_trade_ledger_notify_key": notify_key,
+                "feishu_trade_ledger_notified_keys": [notify_key],
+                "feishu_trade_ledger_last_exec_id": "exec-sgi",
+                "feishu_trade_ledger_message_id": "ledger-msg-old",
+                "feishu_trade_ledger_exit_reason_missing": True,
+            },
+        }
+        previous = {**order, "status": "Submitted", "filled_qty": 0, "extra": {"environment": "paper"}}
+        pb = _LedgerPB(order)
+        update_calls = []
+
+        result = sync_order_callback_ledger_notification(
+            pb,
+            order,
+            previous_order=previous,
+            send_interactive=lambda card, chat_id, environment: {"success": True, "message_id": "should-not-send"},
+            update_interactive=lambda message_id, card, environment: update_calls.append((message_id, card, environment))
+            or {"success": True, "message_id": message_id},
+            trade_ledger_chat_id="ledger-chat-test",
+        )
+
+        self.assertEqual("exit_reason_corrected", result["reason"])
+        self.assertTrue(result["updated"])
+        self.assertEqual(1, len(update_calls))
+        self.assertEqual("ledger-msg-old", update_calls[0][0])
+        content = update_calls[0][1]["elements"][0]["content"]
+        self.assertIn("**平仓原因**: EOD 平仓（force_flat_eod）", content)
+        patch_extra = pb.updated[0][2]["extra"]
+        self.assertFalse(patch_extra["feishu_trade_ledger_exit_reason_missing"])
+        self.assertEqual("force_flat_eod", patch_extra["feishu_trade_ledger_exit_reason_code"])
+
     def test_sync_order_callback_ledger_skips_replayed_fill_with_same_exec_id(self):
         class _LedgerPB:
             def __init__(self):
@@ -1956,6 +2075,33 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
 
         self.assertIn("EOD 平仓", card["header"]["title"]["content"])
         self.assertIn("**平仓原因**: EOD 平仓（force_flat_eod）", content)
+
+    def test_order_callback_ledger_labels_eod_residual_close_as_eod(self):
+        order = {
+            "id": "order-close",
+            "unique_id": "close_AAPL_20260605_155900",
+            "order_type": "LMT",
+            "symbol": "AAPL",
+            "environment": "paper",
+            "status": "Filled",
+            "role": "close",
+            "broker_order_id": "302",
+            "direction": "long",
+            "quantity": 3,
+            "filled_qty": 3,
+            "fill_price": 190.0,
+            "extra": {
+                "environment": "paper",
+                "close_reason": "force_flat_eod_residual",
+                "ib_callback_type": "execDetails",
+            },
+        }
+
+        card = build_order_callback_ledger_card(order, {"event_type": "fill", "status": "Filled", "filled_qty": 3, "fill_delta": 3})
+        content = card["elements"][0]["content"]
+
+        self.assertIn("EOD 平仓", card["header"]["title"]["content"])
+        self.assertIn("**平仓原因**: EOD 平仓（force_flat_eod_residual）", content)
 
     def test_order_callback_ledger_uses_related_order_flow_reason_for_close(self):
         entry = {

@@ -350,6 +350,9 @@ class OrderLifecycle:
     def _eod_close_retry_interval_sec(self) -> float:
         return max(30.0, self._get_config_float("eod_close_retry_interval_sec", 120.0))
 
+    def _eod_close_fill_reconcile_guard_sec(self) -> float:
+        return max(0.0, self._get_config_float("eod_close_fill_reconcile_guard_sec", 300.0))
+
     def _eod_close_attempt_due(self, et_now: datetime) -> bool:
         market_date = self._eod_market_date(et_now)
         if self._last_eod_close_attempt_date != market_date:
@@ -1353,6 +1356,128 @@ class OrderLifecycle:
                 return True
         return False
 
+    def _eod_close_request_id(self, market_date: str, symbol: str) -> str:
+        return f"eod_close:{self.environment}:{str(market_date or '').strip()}:{str(symbol or '').strip().upper()}"
+
+    @staticmethod
+    def _close_action_for_direction(direction: str) -> str:
+        normalized = str(direction or "").strip().lower()
+        if normalized == "long":
+            return "SELL"
+        if normalized == "short":
+            return "BUY"
+        return ""
+
+    @staticmethod
+    def _row_close_action(row: dict | None) -> str:
+        extra = OrderLifecycle._order_extra(row)
+        raw = str(
+            extra.get("close_side")
+            or (row or {}).get("side")
+            or extra.get("side")
+            or extra.get("action")
+            or ""
+        ).strip().upper()
+        if raw in {"SLD", "SELL"}:
+            return "SELL"
+        if raw in {"BOT", "BUY"}:
+            return "BUY"
+        direction = str((row or {}).get("direction") or (row or {}).get("position_side") or extra.get("position_side") or "").strip().lower()
+        return OrderLifecycle._close_action_for_direction(direction)
+
+    @staticmethod
+    def _row_event_ms(row: dict | None) -> int:
+        extra = OrderLifecycle._order_extra(row)
+        for key in ("filled_bar_time_ms", "status_updated_bar_time_ms", "broker_callback_received_at_ms", "bar_time_ms", "created_bar_time_ms"):
+            try:
+                raw_value = extra.get(key)
+                if raw_value in (None, "", 0, "0"):
+                    raw_value = (row or {}).get(key)
+                value = int(float(raw_value or 0))
+            except Exception:
+                value = 0
+            if value > 0:
+                return value
+        return 0
+
+    def _eod_close_guard_model(
+        self,
+        *,
+        symbol: str,
+        direction: str,
+        rows: list[dict],
+        market_date: str,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        expected_action = self._close_action_for_direction(direction)
+        request_id = self._eod_close_request_id(market_date, symbol)
+        candidates: list[dict[str, Any]] = []
+        for row in rows or []:
+            if self._order_role(row) not in ACTIVE_CLOSE_ROLES:
+                continue
+            extra = self._order_extra(row)
+            reason_text = " ".join(
+                str(value or "").lower()
+                for value in (
+                    extra.get("eod_close_request_id"),
+                    extra.get("source"),
+                    extra.get("reason"),
+                    extra.get("close_reason"),
+                    extra.get("close_reason_code"),
+                    row.get("unique_id"),
+                )
+            )
+            is_eod = request_id.lower() in reason_text or "force_flat_eod" in reason_text or "eod_force_close" in reason_text
+            if not is_eod:
+                continue
+            close_action = self._row_close_action(row)
+            if expected_action and close_action and close_action != expected_action:
+                continue
+            event_ms = self._row_event_ms(row)
+            candidates.append({"row": row, "event_ms": event_ms, "age_s": (max(0, now_ms - event_ms) / 1000.0) if event_ms else 0.0})
+        if not candidates:
+            return {"active": False, "request_id": request_id}
+        candidates.sort(key=lambda item: int(item.get("event_ms") or 0), reverse=True)
+        latest = candidates[0]
+        latest_row = latest["row"]
+        status = str(latest_row.get("status") or "").strip().upper()
+        filled_qty = self._coerce_float(latest_row.get("filled_qty") or self._order_extra(latest_row).get("filled_qty"), 0.0)
+        guard_sec = self._eod_close_fill_reconcile_guard_sec()
+        if self._order_is_open(latest_row):
+            return {
+                "active": True,
+                "reason": "active_eod_close_order_exists",
+                "request_id": request_id,
+                "order_id": str(latest_row.get("broker_order_id") or latest_row.get("order_id") or ""),
+                "unique_id": str(latest_row.get("unique_id") or ""),
+                "age_s": latest.get("age_s", 0.0),
+            }
+        latest_event_ms = int(latest.get("event_ms") or 0)
+        if status in {"FILLED", "EXECUTED", "CLOSED"} and filled_qty > 0 and latest_event_ms > 0 and float(latest.get("age_s") or 0.0) <= guard_sec:
+            return {
+                "active": True,
+                "reason": "await_position_flat_reconcile",
+                "request_id": request_id,
+                "order_id": str(latest_row.get("broker_order_id") or latest_row.get("order_id") or ""),
+                "unique_id": str(latest_row.get("unique_id") or ""),
+                "filled_qty": filled_qty,
+                "age_s": latest.get("age_s", 0.0),
+                "guard_sec": guard_sec,
+            }
+        if status in {"FILLED", "EXECUTED", "CLOSED"} and filled_qty > 0 and latest_event_ms > 0:
+            return {
+                "active": False,
+                "residual": True,
+                "reason": "eod_close_reconcile_guard_expired",
+                "request_id": request_id,
+                "order_id": str(latest_row.get("broker_order_id") or latest_row.get("order_id") or ""),
+                "unique_id": str(latest_row.get("unique_id") or ""),
+                "filled_qty": filled_qty,
+                "age_s": latest.get("age_s", 0.0),
+                "guard_sec": guard_sec,
+            }
+        return {"active": False, "request_id": request_id}
+
     def _symbol_has_active_protection(self, rows: list[dict], broker_open_order_ids: set[str]) -> bool:
         for row in rows or []:
             if not self._protection_role_family(self._order_role(row)):
@@ -1486,6 +1611,8 @@ class OrderLifecycle:
         pending = 0
         error_items: list[dict[str, Any]] = []
         pending_items: list[dict[str, Any]] = []
+        guarded_items: list[dict[str, Any]] = []
+        reconcile_items: list[dict[str, Any]] = []
         protection_cancel_errors: list[dict[str, Any]] = []
         unprotected_symbols: list[str] = []
         closed_symbols: list[str] = []
@@ -1497,6 +1624,32 @@ class OrderLifecycle:
             direction = "long" if position_qty > 0 else "short"
             quantity = abs(int(round(position_qty)))
             rows = self._load_live_order_rows_for_symbol(symbol)
+            eod_guard = self._eod_close_guard_model(
+                symbol=symbol,
+                direction=direction,
+                rows=rows,
+                market_date=market_date,
+                now_ms=int(time.time() * 1000),
+            )
+            if eod_guard.get("active"):
+                pending += 1
+                item = {
+                    "symbol": symbol,
+                    "direction": direction,
+                    "quantity": quantity,
+                    "reason": str(eod_guard.get("reason") or "eod_close_guard_active"),
+                    "request_id": str(eod_guard.get("request_id") or ""),
+                    "order_id": str(eod_guard.get("order_id") or ""),
+                    "unique_id": str(eod_guard.get("unique_id") or ""),
+                    "age_s": round(float(eod_guard.get("age_s") or 0.0), 1),
+                    "guard_sec": eod_guard.get("guard_sec", 0),
+                }
+                pending_items.append(item)
+                guarded_items.append(item)
+                if eod_guard.get("reason") == "await_position_flat_reconcile":
+                    reconcile_items.append(item)
+                logger.info("EOD close guarded for %s: %s", symbol, item["reason"])
+                continue
             if self._symbol_has_active_close_order(symbol, rows, broker_open_orders):
                 pending += 1
                 pending_items.append(
@@ -1541,6 +1694,7 @@ class OrderLifecycle:
                     continue
 
             link_context = self._eod_close_link_context(symbol)
+            close_reason_code = "force_flat_eod_residual" if eod_guard.get("residual") else "force_flat_eod"
             try:
                 result = self._place_harvest_market_close(
                     conid=conid,
@@ -1553,11 +1707,12 @@ class OrderLifecycle:
                     source="eod_force_close",
                     order_type=order_type,
                     allow_market=allow_market,
-                    close_reason="force_flat_eod",
+                    close_reason=close_reason_code,
                     close_reason_human="EOD 平仓",
                     position_snapshot=position_snapshot,
                     wait_for_fill=True,
                     fill_timeout=max(1.0, self._get_config_float("eod_close_fill_timeout_sec", 5.0)),
+                    eod_close_request_id=str(eod_guard.get("request_id") or self._eod_close_request_id(market_date, symbol)),
                 )
             except Exception as exc:
                 logger.exception("EOD close failed for %s: unhandled close exception", symbol)
@@ -1623,6 +1778,8 @@ class OrderLifecycle:
             "kept_symbols": sorted(set(kept_symbols)),
             "error_items": error_items,
             "pending_items": pending_items,
+            "guarded_items": guarded_items,
+            "reconcile_items": reconcile_items,
             "protection_cancel_errors": protection_cancel_errors,
             "unprotected_symbols": sorted(set(unprotected_symbols)),
             "retry_after_s": 0 if ok else self._eod_close_retry_interval_sec(),
@@ -3673,6 +3830,7 @@ class OrderLifecycle:
         fill_timeout: float = 5.0,
         close_reason: str = "",
         close_reason_human: str = "",
+        eod_close_request_id: str = "",
     ) -> dict:
         if self.order_placer and hasattr(self.order_placer, "place_market_close"):
             return self.order_placer.place_market_close(
@@ -3696,6 +3854,7 @@ class OrderLifecycle:
                 safety_action=str(source or "").startswith("safety_"),
                 safety_reason=close_reason or source,
                 bypass_normal_symbol_queue=str(source or "").startswith("safety_"),
+                eod_close_request_id=eod_close_request_id,
             )
         return self.broker.place_market_close(
             conid=conid,

@@ -1245,6 +1245,7 @@ class OrderPlacer:
             "exchange",
             "source",
             "safety_reason",
+            "eod_close_request_id",
         ):
             if kwargs.get(name):
                 payload[name] = kwargs.get(name)
@@ -1289,6 +1290,7 @@ class OrderPlacer:
         safety_action: Any = False,
         safety_reason: str = "",
         bypass_normal_symbol_queue: Any = None,
+        eod_close_request_id: str = "",
     ) -> Dict[str, Any]:
         acct_id = self.get_active_account_id(use_paper)
         symbol = str(symbol or "").upper()
@@ -1381,6 +1383,34 @@ class OrderPlacer:
         }
         if getattr(self.broker, "uses_internal_gateway_write_lock", False):
             broker_kwargs["metric_environment"] = self.environment
+
+        self._log_close_order_to_pb(
+            symbol=symbol,
+            conid=int(conid or 0),
+            direction=direction,
+            quantity=int(quantity or 0),
+            close_coid=close_order_ref,
+            broker_order_id="",
+            trade_group_id=resolved_trade_group_id,
+            entry_order_unique_id=resolved_entry_order_unique_id,
+            signal_id=resolved_signal_id,
+            source=source,
+            account=acct_id,
+            order_type=order_type,
+            limit_price=limit_price,
+            close_execution_plan=close_plan,
+            position_snapshot=position_snapshot,
+            status="Submitted",
+            result={"precreated": True, "close_execution_plan": dict(close_plan)},
+            close_reason=close_reason,
+            close_reason_human=close_reason_human,
+            safety_action=safety_action_enabled,
+            safety_reason=safety_reason,
+            eod_close_request_id=eod_close_request_id,
+            eod_close_guard_state="submitted" if eod_close_request_id else "",
+            precreated_close_order=True,
+        )
+
         result = self.broker.place_market_close(**broker_kwargs)
         if isinstance(result, dict):
             result.setdefault("close_execution_plan", dict(close_plan))
@@ -1399,7 +1429,8 @@ class OrderPlacer:
         ).strip()
         submission_error = str(result.get("error") or "")
         submission_unconfirmed = bool(order_ids and close_coid and "order_submission_unconfirmed" in submission_error.lower())
-        if not (result.get("ok") or result.get("submitted") or submission_unconfirmed):
+        submitted_or_unconfirmed = bool(result.get("ok") or result.get("submitted") or submission_unconfirmed)
+        if not submitted_or_unconfirmed:
             self._notify_close_execution_event(
                 "平仓未执行：券商拒绝或提交失败",
                 {
@@ -1420,7 +1451,6 @@ class OrderPlacer:
                 level="error",
                 message_id=f"ibkr_close_submission_failed:{self.environment}:{symbol}:{submission_error or 'unknown'}",
             )
-        if result.get("ok") or result.get("submitted") or submission_unconfirmed:
             self._log_close_order_to_pb(
                 symbol=symbol,
                 conid=int(conid or 0),
@@ -1431,21 +1461,52 @@ class OrderPlacer:
                 trade_group_id=resolved_trade_group_id,
                 entry_order_unique_id=resolved_entry_order_unique_id,
                 signal_id=resolved_signal_id,
-            source=source,
-            account=acct_id,
-            order_type=str(result.get("order_type") or order_type or "LMT").upper(),
-            limit_price=float(result.get("limit_price") or limit_price or 0.0),
-            close_execution_plan=close_plan,
-            position_snapshot=position_snapshot,
-            status="Filled" if bool(result.get("filled")) else "Submitted",
-            result=result,
-            submission_unconfirmed=submission_unconfirmed,
-            submission_error=submission_error,
-            close_reason=close_reason,
-            close_reason_human=close_reason_human,
-            safety_action=safety_action_enabled,
-            safety_reason=safety_reason,
-        )
+                source=source,
+                account=acct_id,
+                order_type=str(result.get("order_type") or order_type or "LMT").upper(),
+                limit_price=float(result.get("limit_price") or limit_price or 0.0),
+                close_execution_plan=close_plan,
+                position_snapshot=position_snapshot,
+                status="Canceled",
+                relation_status="closed",
+                result=result,
+                submission_unconfirmed=False,
+                submission_error=submission_error or "broker_close_submission_failed",
+                close_reason=close_reason,
+                close_reason_human=close_reason_human,
+                safety_action=safety_action_enabled,
+                safety_reason=safety_reason,
+                eod_close_request_id=eod_close_request_id,
+                eod_close_guard_state="submission_failed" if eod_close_request_id else "",
+            )
+        if submitted_or_unconfirmed:
+            self._log_close_order_to_pb(
+                symbol=symbol,
+                conid=int(conid or 0),
+                direction=direction,
+                quantity=int(quantity or 0),
+                close_coid=close_coid or close_order_ref,
+                broker_order_id=order_ids[0] if order_ids else "",
+                trade_group_id=resolved_trade_group_id,
+                entry_order_unique_id=resolved_entry_order_unique_id,
+                signal_id=resolved_signal_id,
+                source=source,
+                account=acct_id,
+                order_type=str(result.get("order_type") or order_type or "LMT").upper(),
+                limit_price=float(result.get("limit_price") or limit_price or 0.0),
+                close_execution_plan=close_plan,
+                position_snapshot=position_snapshot,
+                status="Filled" if bool(result.get("filled")) else "Submitted",
+                result=result,
+                submission_unconfirmed=submission_unconfirmed,
+                submission_error=submission_error,
+                close_reason=close_reason,
+                close_reason_human=close_reason_human,
+                safety_action=safety_action_enabled,
+                safety_reason=safety_reason,
+                eod_close_request_id=eod_close_request_id,
+                eod_close_guard_state=("closed" if bool(result.get("filled")) else "submitted") if eod_close_request_id else "",
+            )
         return result
 
     def _log_close_order_to_pb(self, **kwargs):
@@ -1487,6 +1548,7 @@ class OrderPlacer:
                 "submitted_via": "market_close",
                 "harvest_managed": True,
                 "harvest_lot": "close",
+                "precreated_close_order": bool(kwargs.get("precreated_close_order")),
                 "submission_unconfirmed": submission_unconfirmed,
                 "order_submission_unconfirmed": submission_unconfirmed,
                 "submission_error": str(kwargs.get("submission_error") or ""),
@@ -1503,6 +1565,12 @@ class OrderPlacer:
                 extra["close_reason_code"] = close_reason
             if close_reason_human:
                 extra["close_reason_human"] = close_reason_human
+            eod_close_request_id = str(kwargs.get("eod_close_request_id") or "").strip()
+            if eod_close_request_id:
+                extra["eod_close_request_id"] = eod_close_request_id
+            eod_close_guard_state = str(kwargs.get("eod_close_guard_state") or "").strip()
+            if eod_close_guard_state:
+                extra["eod_close_guard_state"] = eod_close_guard_state
             if bool(kwargs.get("safety_action")):
                 safety_reason = str(kwargs.get("safety_reason") or close_reason or "safety_close").strip()
                 extra["safety_action"] = True
@@ -1532,9 +1600,11 @@ class OrderPlacer:
                 "parent_order_unique_id": entry_order_unique_id,
                 "sibling_order_unique_id": "",
                 "role": "close",
-                "relation_status": (
+                "relation_status": str(kwargs.get("relation_status") or "").strip()
+                or (
                     "closed"
-                    if str(kwargs.get("status") or "").strip().upper() in {"FILLED", "EXECUTED", "CLOSED"}
+                    if str(kwargs.get("status") or "").strip().upper()
+                    in {"FILLED", "EXECUTED", "CLOSED", "CANCELED", "CANCELLED", "REJECTED", "EXPIRED", "INACTIVE"}
                     else "active"
                 ),
                 "signal_id": str(kwargs.get("signal_id") or "").strip(),

@@ -66,6 +66,7 @@ EXIT_REASON_LABELS = {
     "closed_by_stop_loss": "止损",
     "runner_stop": "Runner 止损",
     "force_flat_eod": "EOD 平仓",
+    "force_flat_eod_residual": "EOD 平仓",
     "eod": "EOD 平仓",
     "eod_force_close": "EOD 平仓",
     "order_flow_adverse_delta_exit": "订单流提前平仓",
@@ -125,6 +126,7 @@ COMMISSION_FIELDS = ("commission", "actual_fill_commission", "ibkr_commission")
 PNL_EPSILON = 1e-9
 ORDER_FLOW_DEFAULT_EXIT_DELTA_RATIO = 0.18
 ORDER_FLOW_DEFAULT_PROFIT_EXIT_R = 0.15
+TRADE_LEDGER_CLOSE_REASON_PENDING_GRACE_MS = 10_000
 
 ORDER_GROUP_REASON_LABELS = {
     "order_flow_adverse_delta_exit": "订单流反向 Delta 过强，且利润未达到保护阈值，触发提前平仓",
@@ -1268,6 +1270,79 @@ def _exit_reason_model(
     return {"code": "", "label": UNKNOWN_CLOSE_LABEL, "source": "missing"}
 
 
+def _exit_reason_is_missing(exit_model: dict[str, Any] | None) -> bool:
+    if not exit_model:
+        return False
+    return to_text(exit_model.get("source")) == "missing" or to_text(exit_model.get("label")) == UNKNOWN_CLOSE_LABEL
+
+
+def _close_fill_missing_reason(
+    order_record: dict[str, Any],
+    event_model: dict[str, Any],
+    *,
+    related_rows: list[dict[str, Any]] | None = None,
+) -> bool:
+    if to_text(event_model.get("event_type")) != "fill":
+        return False
+    if not _is_close_order_role(order_record):
+        return False
+    return _exit_reason_is_missing(_exit_reason_model(order_record, related_rows=related_rows))
+
+
+def _event_callback_age_ms(order_record: dict[str, Any]) -> int | None:
+    event_ms = to_float(
+        _record_or_extra_value(
+            order_record,
+            "broker_callback_received_at_ms",
+            "status_updated_bar_time_ms",
+            "bar_time_ms",
+        )
+    )
+    if event_ms is None or event_ms <= 0:
+        return None
+    return max(0, int(time.time() * 1000) - int(event_ms))
+
+
+def _close_reason_pending_within_grace(order_record: dict[str, Any], event_model: dict[str, Any]) -> bool:
+    if to_text(event_model.get("event_type")) != "fill":
+        return False
+    age_ms = _event_callback_age_ms(order_record)
+    return age_ms is not None and age_ms <= TRADE_LEDGER_CLOSE_REASON_PENDING_GRACE_MS
+
+
+def _escape_filter_value(value: Any) -> str:
+    return to_text(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _latest_order_record_for_ledger(pb: Any, order_record: dict[str, Any]) -> dict[str, Any]:
+    getter = getattr(pb, "get_first_record", None)
+    if not callable(getter):
+        return order_record
+    record_id = to_text(order_record.get("id"))
+    unique_id = to_text(_record_or_extra_value(order_record, "unique_id"))
+    environment = to_text(_record_or_extra_value(order_record, "environment")) or "live"
+    filters = []
+    if record_id:
+        filters.append(f'id = "{_escape_filter_value(record_id)}"')
+    if unique_id:
+        filters.append(
+            f'unique_id = "{_escape_filter_value(unique_id)}" && environment = "{_escape_filter_value(environment)}"'
+        )
+    for filter_text in filters:
+        try:
+            latest = getter("orders", filter=filter_text)
+        except TypeError:
+            try:
+                latest = getter("orders", filter_text)
+            except Exception:
+                latest = None
+        except Exception:
+            latest = None
+        if isinstance(latest, dict) and latest:
+            return latest
+    return order_record
+
+
 def _reason_source_for_row(row: dict[str, Any]) -> dict[str, Any] | None:
     extra = _extra(row)
     candidates: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
@@ -2105,6 +2180,7 @@ def _trade_ledger_notification_patch(
     *,
     event_model: dict[str, Any],
     result: dict[str, Any],
+    exit_model: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     now_ms = int(time.time() * 1000)
     success = bool(result.get("success") or result.get("ok"))
@@ -2129,6 +2205,10 @@ def _trade_ledger_notification_patch(
     message_id = to_text(result.get("message_id"))
     if message_id:
         patch["feishu_trade_ledger_message_id"] = message_id
+    if exit_model is not None:
+        patch["feishu_trade_ledger_exit_reason_missing"] = _exit_reason_is_missing(exit_model)
+        patch["feishu_trade_ledger_exit_reason_code"] = to_text(exit_model.get("code"))
+        patch["feishu_trade_ledger_exit_reason_label"] = to_text(exit_model.get("label"))
     for source_key, target_key in (
         ("http_status", "feishu_trade_ledger_http_status"),
         ("api_code", "feishu_trade_ledger_api_code"),
@@ -2146,6 +2226,7 @@ def sync_order_callback_ledger_notification(
     *,
     previous_order: dict[str, Any] | None = None,
     send_interactive: Any = None,
+    update_interactive: Any = None,
     trade_ledger_chat_id: str = "",
     console_base_url: str = "",
 ) -> dict[str, Any]:
@@ -2154,13 +2235,140 @@ def sync_order_callback_ledger_notification(
 
     event_model = _trade_ledger_event_model(order_record, previous_order)
     if bool(event_model.get("skipped")):
-        return {"success": False, "skipped": True, **event_model}
+        current_extra_for_skip = ensure_object(order_record.get("extra"))
+        if (
+            to_text(event_model.get("reason")) == "full_fill_already_seen"
+            and bool(current_extra_for_skip.get("feishu_trade_ledger_exit_reason_missing"))
+            and _is_close_order_role(order_record)
+        ):
+            environment = to_text(_record_or_extra_value(order_record, "environment")) or "live"
+            status = to_text(_record_or_extra_value(order_record, "status", "order_status", "current_status"))
+            exec_id = _trade_ledger_exec_id(order_record)
+            broker_order_id = to_text(_record_or_extra_value(order_record, "broker_order_id", "order_id", "orderId"))
+            unique_id = to_text(_record_or_extra_value(order_record, "unique_id"))
+            event_model = {
+                "skipped": False,
+                "reason": "full_fill_status_confirmed",
+                "event_type": "fill",
+                "event_label": "已成交",
+                "environment": environment,
+                "status": status,
+                "previous_status": to_text(_record_or_extra_value(previous_order or {}, "status", "order_status", "current_status")),
+                "filled_qty": _trade_ledger_filled_qty(order_record),
+                "previous_filled_qty": _trade_ledger_filled_qty(previous_order or {}),
+                "fill_delta": 0.0,
+                "callback_type": _trade_ledger_callback_type(order_record),
+                "exec_id": exec_id,
+                "close_remaining_qty": 0.0,
+                "notify_key": _trade_ledger_fill_exec_notify_key(
+                    environment=environment,
+                    broker_order_id=broker_order_id,
+                    unique_id=unique_id,
+                    exec_id=exec_id,
+                    event_type="fill",
+                )
+                or to_text(current_extra_for_skip.get("feishu_trade_ledger_notify_key")),
+                "legacy_notify_key": "",
+            }
+        else:
+            return {"success": False, "skipped": True, **event_model}
+
+    related_rows = _trade_ledger_related_rows_for_pnl(pb, order_record, event_model)
+    exit_model = _exit_reason_model(order_record, related_rows=related_rows)
+    if _close_fill_missing_reason(order_record, event_model, related_rows=related_rows):
+        latest_order = _latest_order_record_for_ledger(pb, order_record)
+        if latest_order is not order_record:
+            latest_related_rows = _trade_ledger_related_rows_for_pnl(pb, latest_order, event_model)
+            latest_exit_model = _exit_reason_model(latest_order, related_rows=latest_related_rows)
+            if not _exit_reason_is_missing(latest_exit_model):
+                order_record = latest_order
+                related_rows = latest_related_rows
+                exit_model = latest_exit_model
 
     current_extra = ensure_object(order_record.get("extra"))
     notify_key = to_text(event_model.get("notify_key"))
     notified_keys = _trade_ledger_notified_keys(current_extra)
     last_result_success = current_extra.get("feishu_trade_ledger_last_result") == "success"
+    close_reason_missing = _close_fill_missing_reason(order_record, event_model, related_rows=related_rows)
+    if close_reason_missing and _close_reason_pending_within_grace(order_record, event_model):
+        return {
+            "success": False,
+            "skipped": True,
+            "reason": "exit_reason_pending",
+            "notify_key": notify_key,
+            "event_type": event_model.get("event_type"),
+            "exit_reason_missing": True,
+        }
+
+    reason_corrected = (
+        bool(current_extra.get("feishu_trade_ledger_exit_reason_missing"))
+        and not close_reason_missing
+        and _is_close_order_role(order_record)
+    )
+
+    def _update_or_resend_corrected_card(skip_reason: str) -> dict[str, Any] | None:
+        if not reason_corrected:
+            return None
+        current_message_id = to_text(current_extra.get("feishu_trade_ledger_message_id"))
+        card = build_order_callback_ledger_card(
+            order_record,
+            event_model,
+            console_base_url=console_base_url,
+            related_rows=related_rows,
+        )
+        update_result: dict[str, Any] = {}
+        if current_message_id and callable(update_interactive):
+            try:
+                update_result = dict(update_interactive(current_message_id, card, event_model.get("environment") or "live") or {})
+            except Exception as exc:
+                update_result = {"success": False, "message_id": current_message_id, "error": str(exc)}
+            if update_result.get("success") or update_result.get("ok"):
+                update_result.setdefault("message_id", current_message_id)
+                extra_patch = _trade_ledger_notification_patch(
+                    order_record,
+                    event_model=event_model,
+                    result=update_result,
+                    exit_model=exit_model,
+                )
+                _apply_order_notification_patch(pb, order_record, extra_patch)
+                return {
+                    **update_result,
+                    "message_id": to_text(update_result.get("message_id") or current_message_id),
+                    "notify_key": notify_key,
+                    "event_type": event_model.get("event_type"),
+                    "reason": "exit_reason_corrected",
+                    "previous_skip_reason": skip_reason,
+                    "updated": True,
+                    "extra_patch": extra_patch,
+                }
+        if callable(send_interactive) and trade_ledger_chat_id:
+            try:
+                resend_result = dict(send_interactive(card, trade_ledger_chat_id, event_model.get("environment") or "live") or {})
+            except Exception as exc:
+                resend_result = {"success": False, "message_id": current_message_id, "error": str(exc)}
+            extra_patch = _trade_ledger_notification_patch(
+                order_record,
+                event_model=event_model,
+                result=resend_result,
+                exit_model=exit_model,
+            )
+            _apply_order_notification_patch(pb, order_record, extra_patch)
+            return {
+                **resend_result,
+                "message_id": to_text(resend_result.get("message_id") or current_message_id),
+                "notify_key": notify_key,
+                "event_type": event_model.get("event_type"),
+                "reason": "exit_reason_corrected_resend",
+                "previous_skip_reason": skip_reason,
+                "updated": False,
+                "extra_patch": extra_patch,
+            }
+        return None
+
     if notify_key in notified_keys and last_result_success:
+        corrected = _update_or_resend_corrected_card("already_notified")
+        if corrected is not None:
+            return corrected
         return {"success": True, "skipped": True, "reason": "already_notified", "notify_key": notify_key}
     exec_id = to_text(event_model.get("exec_id"))
     if (
@@ -2169,11 +2377,13 @@ def sync_order_callback_ledger_notification(
         and last_result_success
         and to_text(current_extra.get("feishu_trade_ledger_last_exec_id")) == exec_id
     ):
+        corrected = _update_or_resend_corrected_card("already_notified_exec")
+        if corrected is not None:
+            return corrected
         return {"success": True, "skipped": True, "reason": "already_notified_exec", "notify_key": notify_key}
     if not callable(send_interactive) or not trade_ledger_chat_id:
         return {"success": False, "skipped": True, "reason": "missing_send_target", "notify_key": notify_key}
 
-    related_rows = _trade_ledger_related_rows_for_pnl(pb, order_record, event_model)
     card = build_order_callback_ledger_card(
         order_record,
         event_model,
@@ -2185,7 +2395,7 @@ def sync_order_callback_ledger_notification(
     except Exception as exc:
         result = {"success": False, "error": str(exc)}
 
-    extra_patch = _trade_ledger_notification_patch(order_record, event_model=event_model, result=result)
+    extra_patch = _trade_ledger_notification_patch(order_record, event_model=event_model, result=result, exit_model=exit_model)
     _apply_order_notification_patch(pb, order_record, extra_patch)
     return {
         **result,
