@@ -1,0 +1,54 @@
+//@version=6
+// @description Pure model selection helpers for Signal Strategy Core/Display[Glory].
+library("SSC_Lib_Model_Glory", overlay=true)
+
+export marketRegime(series bool dominantLong, series bool strongLong, series bool dominantShort, series bool strongShort, series bool dayRangeClear) =>
+    dominantLong or strongLong ? "trend_bull" : dominantShort or strongShort ? "trend_bear" : dayRangeClear ? "range" : "transition"
+
+export topCountertrendBlockReason(series bool trendBullPriority, series bool hasCountertrendEvidence, series bool shockDay, series bool attackCooling, series bool freshHighContinuationRisk, series bool reclaimOk) =>
+    string reason = "passed"
+    if trendBullPriority
+        if not hasCountertrendEvidence
+            reason := "dominant_bull_countertrend_block"
+        else if shockDay and not reclaimOk
+            reason := "shock_day_countertrend_block"
+        else if attackCooling and not reclaimOk
+            reason := "attack_volume_cooling_block"
+        else if freshHighContinuationRisk
+            reason := "fresh_high_continuation_risk"
+        else if not reclaimOk
+            reason := "countertrend_reclaim_missing"
+    reason
+
+export bottomCountertrendBlockReason(series bool trendBearPriority, series bool hasCountertrendEvidence, series bool shockDay, series bool attackCooling, series bool freshLowContinuationRisk, series bool reclaimOk) =>
+    string reason = "passed"
+    if trendBearPriority
+        if not hasCountertrendEvidence
+            reason := "dominant_bear_countertrend_block"
+        else if shockDay and not reclaimOk
+            reason := "shock_day_countertrend_block"
+        else if attackCooling and not reclaimOk
+            reason := "attack_volume_cooling_block"
+        else if freshLowContinuationRisk
+            reason := "fresh_low_continuation_risk"
+        else if not reclaimOk
+            reason := "countertrend_reclaim_missing"
+    reason
+
+export conflictNoClearEdge(series bool longActionable, series bool shortActionable, series int longScore, series int shortScore, series bool priorityTrendLong, series bool priorityTrendShort) =>
+    longActionable and shortActionable and longScore == shortScore and not priorityTrendLong and not priorityTrendShort
+
+export selectedLong(series bool priorityTrendLong, series bool longActionable, series bool conflict, series bool priorityTrendShort, series bool shortActionable, series int longScore, series int shortScore) =>
+    priorityTrendLong or (longActionable and not conflict and not priorityTrendShort and (not shortActionable or longScore > shortScore))
+
+export selectedShort(series bool priorityTrendShort, series bool shortActionable, series bool conflict, series bool priorityTrendLong, series bool longActionable, series int shortScore, series int longScore) =>
+    priorityTrendShort or (shortActionable and not conflict and not priorityTrendLong and (not longActionable or shortScore > longScore))
+
+export selectedSetup(series bool isSelectedLong, series bool isSelectedShort, series bool trendLongNow, series bool trendShortNow) =>
+    isSelectedLong ? (trendLongNow ? "trend_support_long" : "probe_2b_bottom_long") : isSelectedShort ? (trendShortNow ? "trend_resistance_short" : "probe_2b_top_short") : "none"
+
+export tradeFamily(series bool selectedTrendSupport, series bool selectedTrendResistance, series bool selectedTopProbe, series bool selectedBottomProbe, series string regime) =>
+    selectedTrendSupport or selectedTrendResistance ? "trend_continuation" : selectedTopProbe or selectedBottomProbe ? "mean_reversion" : regime == "transition" ? "transition_no_trade" : "none"
+
+export conflictReason(series bool conflictNoClearEdge) =>
+    conflictNoClearEdge ? "model_conflict_no_clear_edge" : "none"

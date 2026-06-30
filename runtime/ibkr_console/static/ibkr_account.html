@@ -18,19 +18,24 @@
         <div id="pageBridge"></div>
         <div id="pageTopSection"></div>
         <div class="account-meta-row">
-            <div class="refresh-info" id="refreshInfo">加载中...</div>
+            <div class="refresh-info" id="refreshInfo">未加载 · 请手动刷新</div>
         </div>
 
         <div class="ops-row">
-            <button class="ops-btn primary" id="refreshButton" type="button" onclick="loadAccountSnapshot(true)">
-                <div class="ops-kicker">Refresh</div>
-                <div class="ops-label">刷新账户</div>
-                <div class="ops-copy">立即拉取最新账户、持仓和挂单状态。</div>
+            <button class="ops-btn primary" id="refreshOrdersButton" type="button" onclick="refreshOrdersSnapshot(true)">
+                <div class="ops-kicker">Positions / Orders</div>
+                <div class="ops-label">刷新持仓/挂单</div>
+                <div class="ops-copy">更新当前持仓、实时挂单和账户页订单链。</div>
             </button>
             <button class="ops-btn primary" id="refreshBuyingPowerButton" type="button" onclick="refreshBuyingPower(true)">
                 <div class="ops-kicker">Buying Power</div>
                 <div class="ops-label">刷新购买力</div>
-                <div class="ops-copy">没有并发请求且未触发硬保护时，立即刷新 NetLiq / BuyingPower。</div>
+                <div class="ops-copy">只更新 NetLiq / BuyingPower / 账户资金摘要。</div>
+            </button>
+            <button class="ops-btn primary" id="refreshButton" type="button" onclick="loadAccountSnapshot(true)">
+                <div class="ops-kicker">Refresh All</div>
+                <div class="ops-label">刷新全部</div>
+                <div class="ops-copy">先刷新持仓/挂单，再刷新购买力；失败时保留成功数据。</div>
             </button>
             <button class="ops-btn trade" id="openTicketButton" type="button" onclick="openTicketDrawer()">
                 <div class="ops-kicker">Trade</div>
@@ -54,7 +59,7 @@
         <div class="summary-grid" id="summaryGrid"></div>
         <div class="meta-grid" id="metaGrid"></div>
 
-        <div class="section">
+        <div class="section" id="positionsSection">
             <div class="section-head">
                 <div>
                     <div class="section-kicker">Positions</div>
@@ -65,7 +70,7 @@
             <div class="card-list" id="positionsArea"></div>
         </div>
 
-        <div class="section">
+        <div class="section" id="ordersSection">
             <div class="section-head">
                 <div>
                     <div class="section-kicker">Orders</div>
@@ -77,7 +82,7 @@
             <div class="card-list section-scroll-body" id="ordersArea"></div>
         </div>
 
-        <div class="section">
+        <div class="section" id="historySection">
             <div class="section-head">
                 <div>
                     <div class="section-kicker">History</div>
@@ -163,12 +168,11 @@
 
     <script>
         let currentEnvironment = getCurrentBrokerMode();
-        let refreshTimer = null;
         let latestSnapshot = null;
+        let accountRefreshInFlight = false;
+        let ordersRefreshInFlight = false;
         let buyingPowerRefreshInFlight = false;
         let pnlRefreshInFlight = false;
-        let lastBuyingPowerAutoRefreshAt = 0;
-        let lastPnlAutoRefreshAt = 0;
         let actionBusy = false;
         let ticketDrawerOpen = false;
         const DEFAULT_TICKET_PRICE_STEP = 0.01;
@@ -216,7 +220,30 @@
             return headers;
         }
 
-        async function requestAccountJson(path, { method = 'GET', body = null, timeoutMs = 12000, timeoutLabel = '请求', force = false, cacheProfile = '', params = {} } = {}) {
+        function getAccountPayloadRetryAfter(payload = {}) {
+            return Number(payload?.retry_after_s || payload?.account_snapshot_health?.retry_after_s || payload?.account_data_pacing?.retry_after_s || 0);
+        }
+
+        function getAccountPayloadErrorMessage(payload = {}, status = 0) {
+            const errors = payload?.errors && typeof payload.errors === 'object' ? payload.errors : {};
+            const health = payload?.account_snapshot_health && typeof payload.account_snapshot_health === 'object' ? payload.account_snapshot_health : {};
+            const message = payload?.message
+                || payload?.error
+                || payload?.last_refresh_error
+                || payload?.refresh_error
+                || errors.refresh
+                || errors.summary
+                || errors.orders
+                || errors.positions
+                || health.reason
+                || health.state
+                || '';
+            const retryAfter = getAccountPayloadRetryAfter(payload);
+            if (message) return `${message}${retryAfter > 0 ? ` · ${Math.ceil(retryAfter)}s 后可重试` : ''}`;
+            return status && status !== 200 ? `Request failed (${status})` : '请求返回失败状态';
+        }
+
+        async function requestAccountJson(path, { method = 'GET', body = null, timeoutMs = 12000, timeoutLabel = '请求', force = false, cacheProfile = '', params = {}, useCache = true, allowErrorPayload = false } = {}) {
             const controller = typeof AbortController === 'function' ? new AbortController() : null;
             const timer = controller ? setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs) || 12000)) : null;
             const methodText = String(method || 'GET').toUpperCase();
@@ -228,7 +255,7 @@
             if (body) options.body = JSON.stringify(body);
             try {
                 const requestPath = buildPageUrl(path, params || {}, { environment: currentEnvironment });
-                if (methodText === 'GET' && typeof cachedPageJson === 'function') {
+                if (methodText === 'GET' && useCache && typeof cachedPageJson === 'function') {
                     return await cachedPageJson(requestPath, {
                         ...options,
                         retryAttempts: 3,
@@ -256,8 +283,9 @@
                 } catch (_) {
                     data = { ok: false, raw: text };
                 }
-                if (!response.ok) {
-                    const requestError = new Error(data.message || data.error || `Request failed (${response.status})`);
+                if (!response.ok || data?.ok === false) {
+                    if (allowErrorPayload && response.ok) return data;
+                    const requestError = new Error(getAccountPayloadErrorMessage(data, response.status));
                     requestError.status = response.status;
                     requestError.payload = data;
                     throw requestError;
@@ -656,6 +684,8 @@
             const retryAfter = Number(snapshot?.retry_after_s || snapshot?.account_snapshot_health?.retry_after_s || 0);
             const hardBlocked = Boolean(snapshot?.hard_blocked || snapshot?.in_flight_request);
             button.disabled = buyingPowerRefreshInFlight || (hardBlocked && retryAfter > 0);
+            button.classList.toggle('is-refreshing', Boolean(buyingPowerRefreshInFlight));
+            button.setAttribute('aria-busy', buyingPowerRefreshInFlight ? 'true' : 'false');
             const label = button.querySelector('.ops-label');
             const copy = button.querySelector('.ops-copy');
             if (label) label.textContent = buyingPowerRefreshInFlight ? '刷新中...' : hardBlocked && retryAfter > 0 ? `等待 ${formatNumber(retryAfter, 0)}s` : '刷新购买力';
@@ -804,6 +834,87 @@
         function renderAccountPageChrome(snapshot = latestSnapshot, orderMetrics = null) {
             document.getElementById('pageBridge').innerHTML = renderExecutionBridge('/ibkr_account.html');
             renderAccountTopSection(snapshot, orderMetrics);
+        }
+
+        function renderManualSnapshotPlaceholder(message = '') {
+            const copy = message || '尚未手动加载账户快照。点击“刷新账户”后再展示当前持仓、实时挂单和账户关联历史。';
+            const escapedCopy = escapeHtml(copy);
+            const refreshInfo = document.getElementById('refreshInfo');
+            if (refreshInfo) refreshInfo.textContent = '未加载 · 请手动刷新账户状态';
+            const summaryGrid = document.getElementById('summaryGrid');
+            if (summaryGrid) summaryGrid.innerHTML = '';
+            const metaGrid = document.getElementById('metaGrid');
+            if (metaGrid) metaGrid.innerHTML = '';
+            const positionsMeta = document.getElementById('positionsMeta');
+            if (positionsMeta) positionsMeta.textContent = '未加载 · manual refresh';
+            const positionsArea = document.getElementById('positionsArea');
+            if (positionsArea) positionsArea.innerHTML = `<div class="empty-state">${escapedCopy}</div>`;
+            const ordersMeta = document.getElementById('ordersMeta');
+            if (ordersMeta) ordersMeta.textContent = '未加载 · manual refresh';
+            const ordersSummary = document.getElementById('ordersSummary');
+            if (ordersSummary) ordersSummary.innerHTML = '';
+            const ordersArea = document.getElementById('ordersArea');
+            if (ordersArea) ordersArea.innerHTML = `<div class="empty-state">${escapedCopy}</div>`;
+            const historyMeta = document.getElementById('historyMeta');
+            if (historyMeta) historyMeta.textContent = '未加载 · manual refresh';
+            const historyArea = document.getElementById('historyArea');
+            if (historyArea) historyArea.innerHTML = `<div class="empty-state">${escapedCopy}</div>`;
+        }
+
+        function setRefreshButtonState(buttonId, active, loadingLabel, idleLabel) {
+            const button = document.getElementById(buttonId);
+            if (!button) return;
+            button.disabled = Boolean(active);
+            button.classList.toggle('is-refreshing', Boolean(active));
+            button.setAttribute('aria-busy', active ? 'true' : 'false');
+            const label = button.querySelector('.ops-label') || button.querySelector('.refresh-button-label');
+            if (label) label.textContent = active ? loadingLabel : idleLabel;
+        }
+
+        function setAccountSectionsRefreshing(sectionIds = [], active = false) {
+            sectionIds.forEach((sectionId) => {
+                const section = document.getElementById(sectionId);
+                if (section) section.classList.toggle('is-refreshing', Boolean(active));
+            });
+        }
+
+        function flashAccountSections(sectionIds = []) {
+            sectionIds.forEach((sectionId) => {
+                const section = document.getElementById(sectionId);
+                if (!section) return;
+                section.classList.remove('just-refreshed');
+                void section.offsetWidth;
+                section.classList.add('just-refreshed');
+                window.setTimeout(() => section.classList.remove('just-refreshed'), 950);
+            });
+        }
+
+        function mergeOrdersSnapshot(baseSnapshot, ordersSnapshot) {
+            const base = baseSnapshot && typeof baseSnapshot === 'object' ? { ...baseSnapshot } : {};
+            const incoming = ordersSnapshot && typeof ordersSnapshot === 'object' ? { ...ordersSnapshot } : {};
+            const merged = { ...base, ...incoming };
+            const incomingSummary = incoming.summary && typeof incoming.summary === 'object' ? incoming.summary : {};
+            const baseSummary = base.summary && typeof base.summary === 'object' ? base.summary : {};
+            if (Object.keys(baseSummary).length && !hasSummaryValue(incomingSummary, ['buying_power', 'remaining_buying_power', 'net_liquidation', 'available_funds'])) {
+                merged.summary = baseSummary;
+                ['summary_raw', 'pnl_raw', 'buying_power_guard', 'summary_source', 'summary_fetched_at', 'summary_cache_age_s', 'pnl_fetched_at', 'account_pnl_fetched_at', 'account_pnl_source'].forEach((key) => {
+                    if (base[key] !== undefined) merged[key] = base[key];
+                });
+            }
+            return merged;
+        }
+
+        function renderAccountSnapshotPayload(snapshot, options = {}) {
+            const renderOptions = options || {};
+            renderBlocker(snapshot);
+            if (renderOptions.includeSummary !== false) renderSummary(snapshot);
+            renderMeta(snapshot);
+            renderPositions(snapshot);
+            renderOrders(snapshot);
+            renderHistoryOrders(snapshot);
+            renderTicketPreview();
+            setPageRefreshTime(snapshot?.fetched_at || new Date());
+            if (Array.isArray(renderOptions.flashSections)) flashAccountSections(renderOptions.flashSections);
         }
 
         function firstDefined(...values) {
@@ -3351,22 +3462,29 @@
         async function refreshBuyingPower(force = false, options = {}) {
             if (!initAuth()) return null;
             if (buyingPowerRefreshInFlight) return null;
-            if (!force) lastBuyingPowerAutoRefreshAt = Date.now();
+            if (!force) return null;
+            const actionOptions = options || {};
+            const silent = Boolean(actionOptions.silent);
+            const updateInfo = actionOptions.updateInfo !== false;
             buyingPowerRefreshInFlight = true;
             updateBuyingPowerButton(latestSnapshot);
             const refreshInfo = document.getElementById('refreshInfo');
             const previousInfo = refreshInfo?.textContent || '';
-            if (force && refreshInfo) refreshInfo.textContent = '正在刷新购买力...';
+            if (updateInfo && refreshInfo) refreshInfo.textContent = '正在刷新购买力...';
             try {
                 const payload = await requestAccountJson('/api/custom/ibkr/account_snapshot', {
                     timeoutMs: 22000,
                     timeoutLabel: '购买力刷新',
                     force: true,
                     cacheProfile: 'runtimeStatus',
+                    useCache: false,
+                    allowErrorPayload: true,
                     params: {
                         refresh_scope: 'buying_power',
                         summary_refresh: '1',
-                        ...(force ? { force: '1', cache_bust: '1', prefer_live_on_force: '1' } : { prefer_stale: '1' }),
+                        force: '1',
+                        cache_bust: '1',
+                        prefer_live_on_force: '1',
                     },
                 });
                 latestSnapshot = mergeBuyingPowerSnapshot(latestSnapshot, payload);
@@ -3374,12 +3492,13 @@
                 renderSummary(latestSnapshot);
                 renderMeta(latestSnapshot);
                 renderTicketPreview();
-                if (refreshInfo) refreshInfo.textContent = buyingPowerStatusText(latestSnapshot);
-                if (force) showToast(payload?.hard_blocked ? buyingPowerStatusText(payload) : '购买力刷新已完成');
+                if (updateInfo && refreshInfo) refreshInfo.textContent = buyingPowerStatusText(latestSnapshot);
+                if (!silent) showToast(payload?.ok === false || payload?.hard_blocked ? buyingPowerStatusText(payload) : '购买力刷新已完成');
                 return payload;
             } catch (error) {
-                if (refreshInfo) refreshInfo.textContent = force ? `购买力刷新失败：${error.message || error}` : previousInfo;
-                if (force) showToast(`购买力刷新失败: ${error.message || error}`);
+                if (updateInfo && refreshInfo) refreshInfo.textContent = `购买力刷新失败：${error.message || error}`;
+                if (!updateInfo && refreshInfo) refreshInfo.textContent = previousInfo;
+                if (!silent) showToast(`购买力刷新失败: ${error.message || error}`);
                 return null;
             } finally {
                 buyingPowerRefreshInFlight = false;
@@ -3390,7 +3509,7 @@
         async function refreshAccountPnl(force = false, options = {}) {
             if (!initAuth()) return null;
             if (pnlRefreshInFlight) return null;
-            if (!force) lastPnlAutoRefreshAt = Date.now();
+            if (!force) return null;
             pnlRefreshInFlight = true;
             const refreshInfo = document.getElementById('refreshInfo');
             const previousInfo = refreshInfo?.textContent || '';
@@ -3401,11 +3520,15 @@
                     timeoutLabel: 'PNL 刷新',
                     force: true,
                     cacheProfile: 'runtimeStatus',
+                    useCache: false,
+                    allowErrorPayload: true,
                     params: {
                         refresh_scope: 'pnl',
                         account_pnl_refresh: '1',
                         include_pnl: '1',
-                        ...(force ? { force: '1', cache_bust: '1', prefer_live_on_force: '1' } : { prefer_stale: '1' }),
+                        force: '1',
+                        cache_bust: '1',
+                        prefer_live_on_force: '1',
                     },
                 });
                 latestSnapshot = mergePnlSnapshot(latestSnapshot, payload);
@@ -3425,76 +3548,132 @@
             }
         }
 
+        async function refreshOrdersSnapshot(force = false, options = {}) {
+            if (!initAuth()) return null;
+            if (ordersRefreshInFlight) return null;
+            if (!force) return null;
+            const actionOptions = options || {};
+            const silent = Boolean(actionOptions.silent);
+            const updateInfo = actionOptions.updateInfo !== false;
+            const flash = actionOptions.flash !== false;
+            const sectionIds = ['positionsSection', 'ordersSection', 'historySection'];
+            ordersRefreshInFlight = true;
+            setRefreshButtonState('refreshOrdersButton', true, '刷新中...', '刷新持仓/挂单');
+            setAccountSectionsRefreshing(sectionIds, true);
+            const refreshInfo = document.getElementById('refreshInfo');
+            const previousInfo = refreshInfo?.textContent || '';
+            if (updateInfo && refreshInfo) refreshInfo.textContent = '正在刷新持仓 / 挂单...';
+            try {
+                const payload = await requestAccountJson('/api/custom/ibkr/account_snapshot', {
+                    timeoutMs: 12000,
+                    timeoutLabel: '订单快照',
+                    force: true,
+                    cacheProfile: 'runtimeStatus',
+                    useCache: false,
+                    params: {
+                        snapshot_profile: 'orders_fast',
+                        orders_fast: '1',
+                        prefer_stale: '1',
+                        force: '1',
+                        cache_bust: '1',
+                    },
+                });
+                latestSnapshot = mergeOrdersSnapshot(latestSnapshot, payload);
+                renderAccountSnapshotPayload(latestSnapshot, {
+                    includeSummary: Boolean(latestSnapshot?.summary && Object.keys(latestSnapshot.summary || {}).length),
+                    flashSections: flash ? sectionIds : [],
+                });
+                const ordersFresh = formatFreshness(latestSnapshot, 'orders');
+                const positionsFresh = formatFreshness(latestSnapshot, 'positions');
+                if (updateInfo && refreshInfo) refreshInfo.textContent = `持仓/挂单已刷新 · 挂单 ${ordersFresh} · 持仓 ${positionsFresh}`;
+                if (!silent) showToast('持仓/挂单已刷新');
+                return payload;
+            } catch (error) {
+                if (!latestSnapshot) {
+                    renderManualSnapshotPlaceholder(`持仓/挂单刷新失败：${error.message || error}。请稍后手动刷新。`);
+                }
+                if (updateInfo && refreshInfo) refreshInfo.textContent = `持仓/挂单刷新失败：${error.message || error}`;
+                if (!updateInfo && refreshInfo) refreshInfo.textContent = previousInfo;
+                if (!silent) showToast(`持仓/挂单刷新失败: ${error.message || error}`);
+                return null;
+            } finally {
+                ordersRefreshInFlight = false;
+                setRefreshButtonState('refreshOrdersButton', false, '刷新中...', '刷新持仓/挂单');
+                setAccountSectionsRefreshing(sectionIds, false);
+            }
+        }
+
         async function loadAccountSnapshot(showFeedback = false) {
             if (!initAuth()) return;
+            if (!showFeedback) {
+                if (!latestSnapshot) renderManualSnapshotPlaceholder();
+                return null;
+            }
+            if (accountRefreshInFlight) return null;
+            accountRefreshInFlight = true;
             const refreshInfo = document.getElementById('refreshInfo');
-            refreshInfo.textContent = '刷新中...';
-            const fastSnapshot = !showFeedback;
-            const previousSnapshot = latestSnapshot;
-            try {
-                const snapshot = await requestAccountJson('/api/custom/ibkr/account_snapshot', {
-                    timeoutMs: fastSnapshot ? 8000 : 20000,
-                    timeoutLabel: fastSnapshot ? '账户快速快照' : '账户快照',
-                    force: showFeedback,
-                    cacheProfile: 'runtimeStatus',
-                    params: fastSnapshot
-                        ? {
-                            snapshot_profile: 'orders_fast',
-                            orders_fast: '1',
-                            prefer_stale: '1',
-                        }
-                        : {
-                            refresh_scope: 'account_snapshot',
-                            manual_refresh: '1',
-                            include_pnl: '1',
-                            force: '1',
-                            cache_bust: '1',
-                            prefer_live_on_force: '1',
-                        },
+            refreshInfo.textContent = '正在刷新账户...';
+            setRefreshButtonState('refreshButton', true, '刷新中...', '刷新全部');
+            if (typeof setPageLoading === 'function') {
+                setPageLoading(true, {
+                    title: '正在刷新账户',
+                    copy: '正在同步订单、持仓和购买力；部分刷新失败时会保留已成功的数据。',
                 });
-                const displaySnapshot = shouldPreserveSnapshotOnBlockedRefresh(snapshot, previousSnapshot)
-                    ? mergeBlockedRefreshStatus(previousSnapshot, snapshot)
-                    : snapshot;
-                latestSnapshot = displaySnapshot;
-                renderBlocker(displaySnapshot);
-                renderSummary(displaySnapshot);
-                renderMeta(displaySnapshot);
-                renderPositions(displaySnapshot);
-                renderOrders(displaySnapshot);
-                renderHistoryOrders(displaySnapshot);
-                renderTicketPreview();
-                setPageRefreshTime(displaySnapshot.fetched_at || new Date());
-                const positionsFresh = formatFreshness(displaySnapshot, 'positions');
-                const summaryFresh = formatFreshness(displaySnapshot, 'summary');
-                const blockedReason = displaySnapshot?.refresh_attempt?.error || displaySnapshot?.last_refresh_error || '';
-                refreshInfo.textContent = displaySnapshot?.refresh_attempt?.hard_blocked
-                    ? `账户刷新受保护：${blockedReason || 'account_data_request_blocked'} · 继续显示上次数据 · 持仓 ${positionsFresh}`
-                    : displaySnapshot?.summary_available === false
-                    ? buyingPowerStatusText(displaySnapshot)
-                    : (fastSnapshot || displaySnapshot?.orders_fast
-                        ? `账户状态已快速加载 · 持仓 ${positionsFresh}`
-                        : `账户状态已刷新 · 持仓 ${positionsFresh} · 账户 ${summaryFresh}`);
-                void loadAccountTargetSummary(Boolean(showFeedback));
-                if (displaySnapshot?.summary_available === false && !buyingPowerRefreshInFlight && (Date.now() - lastBuyingPowerAutoRefreshAt) > 60000) {
-                    void refreshBuyingPower(false, { silent: true });
+            }
+            let ordersPayload = null;
+            let buyingPowerPayload = null;
+            const failures = [];
+            try {
+                ordersPayload = await refreshOrdersSnapshot(true, {
+                    silent: true,
+                    updateInfo: false,
+                    flash: true,
+                });
+                if (!ordersPayload) failures.push('订单');
+
+                buyingPowerPayload = await refreshBuyingPower(true, {
+                    silent: true,
+                    updateInfo: false,
+                });
+                if (!buyingPowerPayload) {
+                    failures.push('购买力');
+                } else if (buyingPowerPayload?.ok === false || buyingPowerPayload?.hard_blocked) {
+                    failures.push(buyingPowerStatusText(buyingPowerPayload));
                 }
-                if (!displaySnapshot?.summary?.account_today_pnl?.ok && !pnlRefreshInFlight && (Date.now() - lastPnlAutoRefreshAt) > 60000) {
-                    void refreshAccountPnl(false, { silent: true });
+
+                void loadAccountTargetSummary(true);
+                if (ordersPayload || buyingPowerPayload) {
+                    const parts = [];
+                    if (ordersPayload) parts.push(`持仓/挂单 ${formatFreshness(latestSnapshot, 'orders')}`);
+                    if (buyingPowerPayload && buyingPowerPayload?.ok !== false && !buyingPowerPayload?.hard_blocked) parts.push('购买力已刷新');
+                    if (failures.length) parts.push(`部分失败：${failures.join(' / ')}`);
+                    refreshInfo.textContent = parts.join(' · ') || '账户刷新完成';
+                    showToast(failures.length ? '账户部分刷新完成' : '账户状态已刷新');
+                } else {
+                    renderBlocker({ errors: { summary: '账户刷新失败' } });
+                    if (!latestSnapshot) renderManualSnapshotPlaceholder('账户刷新失败。请稍后手动刷新。');
+                    refreshInfo.textContent = '账户刷新失败';
+                    showToast('账户刷新失败');
                 }
-                if (showFeedback) showToast(displaySnapshot?.refresh_attempt?.hard_blocked ? `刷新受保护：${blockedReason || '请稍后重试'}` : '账户状态已刷新');
+                return { orders: ordersPayload, buying_power: buyingPowerPayload, failures };
             } catch (error) {
                 renderBlocker({ errors: { summary: error.message } });
-                renderAccountTopSection(null);
-                void loadAccountTargetSummary(false);
-                document.getElementById('summaryGrid').innerHTML = '';
-                document.getElementById('metaGrid').innerHTML = '';
-                document.getElementById('positionsArea').innerHTML = `<div class="empty-state">加载失败：${escapeHtml(error.message || 'unknown error')}</div>`;
-                document.getElementById('ordersSummary').innerHTML = '';
-                document.getElementById('ordersArea').innerHTML = `<div class="empty-state">加载失败：${escapeHtml(error.message || 'unknown error')}</div>`;
-                document.getElementById('historyMeta').textContent = '--';
-                document.getElementById('historyArea').innerHTML = `<div class="empty-state">加载失败：${escapeHtml(error.message || 'unknown error')}</div>`;
+                renderAccountTopSection(latestSnapshot);
+                if (!latestSnapshot) {
+                    renderManualSnapshotPlaceholder(`加载失败：${error.message || 'unknown error'}。请稍后手动刷新。`);
+                }
                 refreshInfo.textContent = `刷新失败：${error.message || error}`;
-                if (showFeedback) showToast(`加载失败: ${error.message || error}`);
+                showToast(`加载失败: ${error.message || error}`);
+                return null;
+            } finally {
+                accountRefreshInFlight = false;
+                setRefreshButtonState('refreshButton', false, '刷新中...', '刷新全部');
+                if (typeof setPageLoading === 'function') {
+                    setPageLoading(false, {
+                        title: '正在刷新账户',
+                        copy: '正在同步订单、持仓和购买力；部分刷新失败时会保留已成功的数据。',
+                    });
+                }
             }
         }
 
@@ -3543,7 +3722,6 @@
                 }
                 if (isAccountRequestTimeout(error)) {
                     showToast(actionOptions.timeoutMessage || `${label} 请求已发出但等待确认超时，请刷新账户状态核对是否已提交`);
-                    setTimeout(() => loadAccountSnapshot(false), 1200);
                 } else {
                     const errorMessage = typeof actionOptions.errorMessage === 'function'
                         ? actionOptions.errorMessage(error)
@@ -3591,15 +3769,12 @@
             });
             if (!updates) return;
             const body = { order_id: orderId, ...updates };
-            const payload = await runAction(
+            await runAction(
                 '改单',
                 '/api/custom/ibkr/orders/modify',
                 body,
-                () => `订单 ${orderId} 改单请求已发送，正在刷新挂单状态`
+                () => `订单 ${orderId} 改单请求已发送，请手动刷新账户状态核对挂单`
             );
-            if (payload !== false) {
-                setTimeout(() => loadAccountSnapshot(false), 900);
-            }
         }
 
         async function closePosition(position) {
@@ -3678,8 +3853,7 @@
                     timeoutMs: 30000,
                     timeoutLabel: '本地交易组关闭',
                 });
-                showToast(`${position.symbol} 本地交易组已关闭`);
-                setTimeout(() => loadAccountSnapshot(false), 800);
+                showToast(`${position.symbol} 本地交易组已关闭，请手动刷新账户状态核对`);
             } catch (error) {
                 showToast(`${position.symbol} 平仓已提交，但本地交易组关闭失败: ${error.message || error}`);
             }
@@ -3823,6 +3997,7 @@
         window.modifyOrder = modifyOrder;
         window.closePosition = closePosition;
         window.loadAccountSnapshot = loadAccountSnapshot;
+        window.refreshOrdersSnapshot = refreshOrdersSnapshot;
         window.refreshBuyingPower = refreshBuyingPower;
         window.refreshAccountPnl = refreshAccountPnl;
         window.goRuntime = goRuntime;
@@ -3856,23 +4031,10 @@
                 subtitle: '真实账户 / 持仓 / 挂单 / 操作入口',
             });
             renderAccountPageChrome();
+            renderManualSnapshotPlaceholder();
             void loadAccountTargetSummary(false);
             toggleEntryPriceField();
             renderTicketPreview();
-            await withPageLoading(
-                () => loadAccountSnapshot(false),
-                {
-                    title: '账户页加载中',
-                    copy: '正在同步账户净值、持仓、实时挂单和操作入口状态。',
-                }
-            );
-            refreshTimer = setInterval(() => {
-                if (document.hidden) return;
-                loadAccountSnapshot(false);
-            }, 20000);
-            document.addEventListener('visibilitychange', () => {
-                if (!document.hidden) loadAccountSnapshot(false);
-            });
         });
 
         document.addEventListener('keydown', (event) => {

@@ -1,0 +1,75 @@
+//@version=6
+// @description Risk, stop, target, and scalp price helpers for Signal Strategy Core/Display[Glory].
+library("SSC_Lib_Risk_Glory", overlay=true)
+
+export riskPerShare(series float entryPrice, series float stopPrice) =>
+    math.abs(entryPrice - stopPrice)
+
+export riskDollars(series float entryPrice, series float stopPrice, series float qty) =>
+    not na(entryPrice) and not na(stopPrice) and not na(qty) and qty > 0.0 ? math.abs(entryPrice - stopPrice) * qty : na
+
+export riskSafetyBuffer(series float atrValue, series float bufferAtr, series float tickSize) =>
+    bufferAtr > 0.0 ? math.max(tickSize, atrValue * bufferAtr) : 0.0
+
+export stopBoundedEntry(series int direction, series float proposedEntry, series float stopPrice, series float atrValue, series float maxAtrMultiple, series float maxBps, series float tickSize) =>
+    if na(proposedEntry) or na(stopPrice) or stopPrice <= 0.0
+        proposedEntry
+    else
+        float maxAtrDistance = atrValue * maxAtrMultiple
+        float maxBpsDistance = stopPrice * maxBps / 10000.0
+        float maxDistance = math.max(tickSize, math.min(maxAtrDistance, maxBpsDistance))
+        float bounded = direction == -1 ? math.max(proposedEntry, stopPrice - maxDistance) : direction == 1 ? math.min(proposedEntry, stopPrice + maxDistance) : proposedEntry
+        direction == -1 ? math.min(bounded, stopPrice - tickSize) : direction == 1 ? math.max(bounded, stopPrice + tickSize) : bounded
+
+export stopDistanceAtr(series float entryPrice, series float stopPrice, series float atrValue) =>
+    atrValue > 0.0 ? riskPerShare(entryPrice, stopPrice) / atrValue : na
+
+export stopDistanceBps(series float entryPrice, series float stopPrice) =>
+    entryPrice > 0.0 ? riskPerShare(entryPrice, stopPrice) / entryPrice * 10000.0 : na
+
+export visualLegBps(series float legValue, series float basisPrice) =>
+    not na(legValue) and basisPrice > 0.0 ? math.max(0.0, legValue) / basisPrice * 10000.0 : na
+
+export visualLegRatio(series float numerator, series float denominator) =>
+    not na(numerator) and denominator > 0.0 ? math.max(0.0, numerator) / denominator : na
+
+export smallStopTrialAllowed(series int direction, series float entryPrice, series float stopPrice, series float atrValue, series float maxRiskDollars, series float maxAtrMultiple, series float maxBps) =>
+    float rps = riskPerShare(entryPrice, stopPrice)
+    float atrDistance = stopDistanceAtr(entryPrice, stopPrice, atrValue)
+    float bpsDistance = stopDistanceBps(entryPrice, stopPrice)
+    bool sideOk = direction == 1 ? stopPrice < entryPrice : direction == -1 ? stopPrice > entryPrice : false
+    sideOk and entryPrice > 0.0 and stopPrice > 0.0 and rps > 0.0 and rps <= maxRiskDollars and atrDistance <= maxAtrMultiple and bpsDistance <= maxBps
+
+export smallStopGateReason(series int direction, series float entryPrice, series float stopPrice, series float atrValue, series float maxRiskDollars, series float maxAtrMultiple, series float maxBps) =>
+    float rps = riskPerShare(entryPrice, stopPrice)
+    float atrDistance = stopDistanceAtr(entryPrice, stopPrice, atrValue)
+    float bpsDistance = stopDistanceBps(entryPrice, stopPrice)
+    bool sideOk = direction == 1 ? stopPrice < entryPrice : direction == -1 ? stopPrice > entryPrice : false
+    not sideOk ? (direction == -1 ? "short_stop_not_above_entry" : direction == 1 ? "long_stop_not_below_entry" : "invalid_stop_direction") : entryPrice <= 0.0 or stopPrice <= 0.0 ? "invalid_price" : rps <= 0.0 ? "invalid_stop" : rps > maxRiskDollars ? "one_share_risk_too_large" : atrDistance > maxAtrMultiple ? "stop_distance_atr_too_large" : bpsDistance > maxBps ? "stop_distance_bps_too_large" : "passed"
+
+export calcTrialQty(series float entryPrice, series float stopPrice, series float maxRiskDollars, series float atrValue, series float bufferAtr, series float safetyPct, series bool useCap, series float notionalCap, series float tickSize) =>
+    float rps = riskPerShare(entryPrice, stopPrice) + riskSafetyBuffer(atrValue, bufferAtr, tickSize)
+    float riskQty = rps > 0.0 ? math.floor(maxRiskDollars * safetyPct / rps) : 0.0
+    float notionalQty = useCap and entryPrice > 0.0 ? math.floor(notionalCap / entryPrice) : riskQty
+    math.max(0.0, math.min(notionalQty, riskQty))
+
+export calcTargetAtR(series float entryPrice, series float stopPrice, series int direction, series float rMultiple) =>
+    entryPrice + riskPerShare(entryPrice, stopPrice) * rMultiple * direction
+
+export scalpLimitEntry(series int direction, series float currentClose, series float anchorPrice, series float fallbackEntry, series float atrValue, series float offsetAtr, series float tickSize) =>
+    float offset = math.max(tickSize, atrValue * offsetAtr)
+    direction == 1 and not na(anchorPrice) ? math.min(currentClose - tickSize, anchorPrice + offset) : direction == -1 and not na(anchorPrice) ? math.max(currentClose + tickSize, anchorPrice - offset) : fallbackEntry
+
+export scalpEmaTarget(series int direction, series float emaPrice, series float atrValue, series float offsetAtr) =>
+    direction == 1 ? emaPrice - atrValue * offsetAtr : direction == -1 ? emaPrice + atrValue * offsetAtr : na
+
+export floatingStructureStop(series int direction, series float currentStop, series float pivotLowValue, series float pivotHighValue, series float currentClose, series float bufferValue) =>
+    float candidate = direction == 1 and not na(pivotLowValue) and pivotLowValue < currentClose ? pivotLowValue - bufferValue : direction == -1 and not na(pivotHighValue) and pivotHighValue > currentClose ? pivotHighValue + bufferValue : na
+    bool improves = not na(candidate) and not na(currentStop) and (direction == 1 ? candidate > currentStop : direction == -1 ? candidate < currentStop : false)
+    improves ? candidate : na
+
+export looserStop(series float rawStop, series float structureStop, series int direction) =>
+    na(structureStop) ? rawStop : direction == 1 ? math.min(rawStop, structureStop) : math.max(rawStop, structureStop)
+
+export priceChanged(series float oldPrice, series float newPrice, series float tickSize) =>
+    na(oldPrice) != na(newPrice) or (not na(oldPrice) and not na(newPrice) and math.abs(oldPrice - newPrice) > tickSize * 0.5)

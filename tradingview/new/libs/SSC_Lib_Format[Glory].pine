@@ -1,0 +1,132 @@
+//@version=6
+// @description Text/format helpers for Signal Strategy Core/Display[Glory].
+library("SSC_Lib_Format_Glory", overlay=true)
+
+export fmt(series float value) =>
+    str.tostring(value, "#.##")
+
+export fmtFull(series float value) =>
+    str.tostring(value, "#.########")
+
+export fmtPrice(series float value) =>
+    str.tostring(value, format.mintick)
+
+export moneyText(series float value) =>
+    na(value) ? "$--" : (value >= 0.0 ? "+$" : "-$") + str.tostring(math.abs(value), "#.##")
+
+export qtyText(series float qty) =>
+    na(qty) ? "--" : str.tostring(qty, "#")
+
+export setupDisplayName(series string setup) =>
+    setup == "trend_support_long" ? "多·强趋势回踩" : setup == "trend_resistance_short" ? "空·强趋势反弹" : setup == "probe_2b_top_short" ? "空·结构首顶/右肩" : setup == "probe_2b_bottom_long" ? "多·结构首底/右肩" : setup
+
+export reasonCn(series string reason) =>
+    string result = reason
+    if reason == "passed"
+        result := "通过"
+    else if reason == "no_candidate"
+        result := "无候选"
+    else if reason == "no_clear_structure"
+        result := "价格行为结构未成立"
+    else if reason == "confirm_signal_missing"
+        result := "确认信号不足"
+    else if reason == "trend_context_missing"
+        result := "趋势上下文不足"
+    else if reason == "day_range_not_formed"
+        result := "日内高低未形成"
+    else if reason == "day_range_too_small"
+        result := "日内振幅不够"
+    else if reason == "anchor_too_fresh"
+        result := "结构太新"
+    else if reason == "left_leg_too_small"
+        result := "左侧涨跌幅不够"
+    else if reason == "middle_leg_too_small" or reason == "middle_pullback_not_enough" or reason == "pullback_not_enough"
+        result := "大回落/反弹不足"
+    else if reason == "right_retest_too_small"
+        result := "二次回测不够"
+    else if reason == "retest_too_slow"
+        result := "二次回测太慢"
+    else if reason == "not_retest_zone" or reason == "retest_not_near_prior_high"
+        result := "未回到结构区"
+    else if reason == "volume_not_exhausted"
+        result := "量能未衰竭"
+    else if reason == "momentum_not_decayed"
+        result := "动能未衰减"
+    else if reason == "momentum_decay_not_continuous"
+        result := "动能衰减不连续"
+    else if reason == "no_weak_close_confirm"
+        result := "缺少弱收确认"
+    else if reason == "no_strong_close_confirm"
+        result := "缺少强收确认"
+    else if reason == "entry_too_far_from_anchor"
+        result := "离结构位太远"
+    else if reason == "probe_cycle_not_active"
+        result := "未重新触及结构位"
+    else if reason == "probe_cycle_consumed"
+        result := "本次结构周期已结束"
+    else if reason == "rsi_not_turning"
+        result := "RSI未转弱/转强"
+    else if reason == "micro_structure_too_close"
+        result := "同向信号太近"
+    else if reason == "signal_bars_too_close"
+        result := "信号bar间隔太近"
+    else if reason == "any_plan_too_close"
+        result := "距离上一计划太近"
+    else if reason == "daily_risk_cap_hit"
+        result := "日内风控触发"
+    else if reason == "ema_tp_too_close"
+        result := "EMA止盈空间不够"
+    else if reason == "expected_r_too_small"
+        result := "盈亏比不够"
+    else if reason == "tp_runner_gap_too_small"
+        result := "止盈离Runner太近"
+    else if reason == "outside_entry_session"
+        result := "不在入场时间"
+    else if reason == "weak_next_no_retest"
+        result := "下一根未再次触达结构位"
+    else if reason == "weak_next_no_break_watch"
+        result := "下一根未突破观察位"
+    else if reason == "weak_next_rsi_missing"
+        result := "下一根RSI未证明"
+    else if reason == "weak_next_distance_too_far"
+        result := "下一根离结构位太远"
+    else if reason == "weak_next_filtered"
+        result := "下一根最终过滤"
+    else if reason == "pending_limit_not_touched"
+        result := "限价未成交"
+    else if reason == "weak_next_no_confirmation"
+        result := "下一根未形成确认"
+    else if reason == "qty_too_small"
+        result := "数量不足"
+    else if reason == "short_stop_not_above_entry"
+        result := "空单止损不在入场上方"
+    else if reason == "long_stop_not_below_entry"
+        result := "多单止损不在入场下方"
+    else if reason == "invalid_stop_direction"
+        result := "止损方向无效"
+    else if reason == "main_flow_filter"
+        result := "主流程过滤"
+    else if reason == "blocked_by_dominant_bear_trend"
+        result := "强空趋势过滤逆势多"
+    else if reason == "blocked_by_dominant_bull_trend"
+        result := "强多趋势过滤逆势空"
+    else if reason == "dominant_bear_countertrend_block"
+        result := "强空趋势禁止逆势多"
+    else if reason == "dominant_bull_countertrend_block"
+        result := "强多趋势禁止逆势空"
+    else if reason == "countertrend_reclaim_missing"
+        result := "逆势缺少收回确认"
+    else if reason == "fresh_low_continuation_risk"
+        result := "新低延续风险"
+    else if reason == "fresh_high_continuation_risk"
+        result := "新高延续风险"
+    else if reason == "attack_volume_cooling_block"
+        result := "攻击量仍在冷却"
+    else if reason == "shock_day_countertrend_block"
+        result := "单边冲击日禁止逆势"
+    else if reason == "model_conflict_no_clear_edge"
+        result := "趋势/均值冲突无优势"
+    result
+
+export exitReasonShortName(series string reason) =>
+    reason == "take_profit" ? "TP" : reason == "runner_stop" ? "RUN" : reason == "no_follow_scalp_exit" ? "NFT" : reason == "exhaustion_take_profit" ? "XTP" : reason == "stop_loss" ? "SL" : reason == "force_flat_eod" ? "EOD" : reason == "strategy_closed" ? "CLS" : reason

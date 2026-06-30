@@ -1,0 +1,45 @@
+//@version=6
+// @description Level clustering helpers for Signal Strategy Core/Display[Glory].
+library("SSC_Lib_Levels_Glory", overlay=true)
+
+export levelNear(series float level, series float basis, series float tolerance) =>
+    not na(level) and not na(basis) and math.abs(level - basis) <= tolerance
+
+export nearestBelow(series float reference, series float a, series float b, series float c, series float d, series float e, series float f, series float g, series float h) =>
+    float result = na
+    result := not na(a) and a <= reference ? a : result
+    result := not na(b) and b <= reference and (na(result) or b > result) ? b : result
+    result := not na(c) and c <= reference and (na(result) or c > result) ? c : result
+    result := not na(d) and d <= reference and (na(result) or d > result) ? d : result
+    result := not na(e) and e <= reference and (na(result) or e > result) ? e : result
+    result := not na(f) and f <= reference and (na(result) or f > result) ? f : result
+    result := not na(g) and g <= reference and (na(result) or g > result) ? g : result
+    result := not na(h) and h <= reference and (na(result) or h > result) ? h : result
+    result
+
+export nearestAbove(series float reference, series float a, series float b, series float c, series float d, series float e, series float f, series float g, series float h) =>
+    float result = na
+    result := not na(a) and a >= reference ? a : result
+    result := not na(b) and b >= reference and (na(result) or b < result) ? b : result
+    result := not na(c) and c >= reference and (na(result) or c < result) ? c : result
+    result := not na(d) and d >= reference and (na(result) or d < result) ? d : result
+    result := not na(e) and e >= reference and (na(result) or e < result) ? e : result
+    result := not na(f) and f >= reference and (na(result) or f < result) ? f : result
+    result := not na(g) and g >= reference and (na(result) or g < result) ? g : result
+    result := not na(h) and h >= reference and (na(result) or h < result) ? h : result
+    result
+
+export addNearCount(series int current, series float level, series float basis, series float tolerance) =>
+    levelNear(level, basis, tolerance) ? current + 1 : current
+
+export minNear(series float current, series float level, series float basis, series float tolerance) =>
+    levelNear(level, basis, tolerance) ? (na(current) ? level : math.min(current, level)) : current
+
+export maxNear(series float current, series float level, series float basis, series float tolerance) =>
+    levelNear(level, basis, tolerance) ? (na(current) ? level : math.max(current, level)) : current
+
+export appendSource(series string current, series string source) =>
+    current == "" ? source : current + "," + source
+
+export appendNearSource(series string current, series float level, series float basis, series float tolerance, series string source) =>
+    levelNear(level, basis, tolerance) ? appendSource(current, source) : current

@@ -1,5 +1,9 @@
 //@version=6
 strategy(title="Signal Strategy Core[Glory]", overlay=true, pyramiding=0, initial_capital=100000, default_qty_type=strategy.fixed, default_qty_value=1, process_orders_on_close=true, calc_on_every_tick=false)
+import o8431/SSC_Lib_Format_Glory/1 as fmtlib
+import o8431/SSC_Lib_Risk_Glory/1 as risklib
+import o8431/SSC_Lib_Levels_Glory/1 as levellib
+import o8431/SSC_Lib_Model_Glory/1 as modellib
 
 // TV-primary strategy v4.
 // Quick EMA scalp model: structure first, RSI turn confirms momentum, limit orders only at good prices.
@@ -70,6 +74,15 @@ distributionDropMaxDistanceAtr = input.float(0.80, "Distribution max distance (x
 structureBreakAcceptBars = input.int(3, "Structure break accept bars", minval=1, maxval=10, group="01 Structure")
 structureBreakAcceptCloseAtr = input.float(0.15, "Structure break accept close (x ATR)", step=0.05, minval=0.0, maxval=2.0, group="01 Structure")
 planReplaceMinMoveAtr = input.float(0.60, "Plan replace min move (x ATR)", step=0.05, minval=0.05, maxval=5.0, group="01 Structure")
+enableRegimePriority = input.bool(true, "Enable regime priority", group="01 Structure")
+countertrendRequiresReclaim = input.bool(true, "Countertrend requires reclaim", group="01 Structure")
+countertrendReclaimCloseBars = input.int(2, "Countertrend reclaim close bars", minval=1, maxval=5, group="01 Structure")
+countertrendReclaimAtr = input.float(0.20, "Countertrend reclaim buffer (x ATR)", step=0.05, minval=0.0, maxval=2.0, group="01 Structure")
+trendPullbackBandAtr = input.float(0.35, "Trend pullback band (x ATR)", step=0.05, minval=0.05, maxval=3.0, group="01 Structure")
+trendRejectClosePosShortMax = input.float(0.45, "Trend short reject close position max", step=0.05, minval=0.05, maxval=0.95, group="01 Structure")
+trendRejectClosePosLongMin = input.float(0.55, "Trend long reject close position min", step=0.05, minval=0.05, maxval=0.95, group="01 Structure")
+freshExtremeBlockAtr = input.float(0.20, "Fresh extreme continuation block (x ATR)", step=0.05, minval=0.0, maxval=2.0, group="01 Structure")
+shockDayRangeAtr = input.float(5.00, "Shock day range block (x ATR)", step=0.25, minval=1.0, maxval=20.0, group="01 Structure")
 
 sdLength = input.int(128, "Regression length", minval=20, group="02 SD / DTP")
 sdBandMult = input.float(2.0, "SD band multiplier", step=0.25, minval=0.25, maxval=5.0, group="02 SD / DTP")
@@ -167,17 +180,11 @@ bool scalpFastBullDiv = scalpRsiWasLow and not na(scalpRsiDivPriceLow) and not n
 bool scalpRsiShortOk = scalpRsiWasHigh and (scalpRsiWeakening or scalpFastBearDiv)
 bool scalpRsiLongOk = scalpRsiWasLow and (scalpRsiStrengthening or scalpFastBullDiv)
 
-fmt(float value) =>
-    str.tostring(value, "#.########")
-
-fmtPrice(float value) =>
-    str.tostring(value, format.mintick)
-
 jsonStr(string key, string value) =>
     '"' + key + '":"' + str.replace_all(value, '"', "'") + '"'
 
 jsonNum(string key, float value) =>
-    '"' + key + '":' + (na(value) ? "null" : fmt(value))
+    '"' + key + '":' + (na(value) ? "null" : fmtlib.fmtFull(value))
 
 jsonInt(string key, int value) =>
     '"' + key + '":' + str.tostring(value)
@@ -197,116 +204,20 @@ dirText(int direction) =>
 orderIdForDirection(int direction) =>
     direction == 1 ? "TV-L" : "TV-S"
 
-riskPerShare(float entryPrice, float stopPrice) =>
-    math.abs(entryPrice - stopPrice)
-
 riskSafetyBuffer(float atrValue) =>
-    riskQtyBufferAtr > 0.0 ? math.max(syminfo.mintick, atrValue * riskQtyBufferAtr) : 0.0
+    risklib.riskSafetyBuffer(atrValue, riskQtyBufferAtr, syminfo.mintick)
 
 stopBoundedEntry(int direction, float proposedEntry, float stopPrice, float atrValue, float maxAtrMultiple, float maxBps) =>
-    if na(proposedEntry) or na(stopPrice) or stopPrice <= 0.0
-        proposedEntry
-    else
-        float maxAtrDistance = atrValue * maxAtrMultiple
-        float maxBpsDistance = stopPrice * maxBps / 10000.0
-        float maxDistance = math.max(syminfo.mintick, math.min(maxAtrDistance, maxBpsDistance))
-        float bounded = direction == -1 ? math.max(proposedEntry, stopPrice - maxDistance) : direction == 1 ? math.min(proposedEntry, stopPrice + maxDistance) : proposedEntry
-        direction == -1 ? math.min(bounded, stopPrice - syminfo.mintick) : direction == 1 ? math.max(bounded, stopPrice + syminfo.mintick) : bounded
-
-stopDistanceAtr(float entryPrice, float stopPrice, float atrValue) =>
-    atrValue > 0.0 ? riskPerShare(entryPrice, stopPrice) / atrValue : na
-
-stopDistanceBps(float entryPrice, float stopPrice) =>
-    entryPrice > 0.0 ? riskPerShare(entryPrice, stopPrice) / entryPrice * 10000.0 : na
-
-visualLegBps(float legValue, float basisPrice) =>
-    not na(legValue) and basisPrice > 0.0 ? math.max(0.0, legValue) / basisPrice * 10000.0 : na
-
-visualLegRatio(float numerator, float denominator) =>
-    not na(numerator) and denominator > 0.0 ? math.max(0.0, numerator) / denominator : na
-
-smallStopTrialAllowed(int direction, float entryPrice, float stopPrice, float atrValue, float maxRiskDollars, float maxAtrMultiple, float maxBps) =>
-    float rps = riskPerShare(entryPrice, stopPrice)
-    float atrDistance = stopDistanceAtr(entryPrice, stopPrice, atrValue)
-    float bpsDistance = stopDistanceBps(entryPrice, stopPrice)
-    bool sideOk = direction == 1 ? stopPrice < entryPrice : direction == -1 ? stopPrice > entryPrice : false
-    sideOk and entryPrice > 0.0 and stopPrice > 0.0 and rps > 0.0 and rps <= maxRiskDollars and atrDistance <= maxAtrMultiple and bpsDistance <= maxBps
-
-smallStopGateReason(int direction, float entryPrice, float stopPrice, float atrValue, float maxRiskDollars, float maxAtrMultiple, float maxBps) =>
-    float rps = riskPerShare(entryPrice, stopPrice)
-    float atrDistance = stopDistanceAtr(entryPrice, stopPrice, atrValue)
-    float bpsDistance = stopDistanceBps(entryPrice, stopPrice)
-    bool sideOk = direction == 1 ? stopPrice < entryPrice : direction == -1 ? stopPrice > entryPrice : false
-    not sideOk ? (direction == -1 ? "short_stop_not_above_entry" : direction == 1 ? "long_stop_not_below_entry" : "invalid_stop_direction") : entryPrice <= 0.0 or stopPrice <= 0.0 ? "invalid_price" : rps <= 0.0 ? "invalid_stop" : rps > maxRiskDollars ? "one_share_risk_too_large" : atrDistance > maxAtrMultiple ? "stop_distance_atr_too_large" : bpsDistance > maxBps ? "stop_distance_bps_too_large" : "passed"
+    risklib.stopBoundedEntry(direction, proposedEntry, stopPrice, atrValue, maxAtrMultiple, maxBps, syminfo.mintick)
 
 calcTrialQty(float entryPrice, float stopPrice, float maxRiskDollars) =>
-    float rps = riskPerShare(entryPrice, stopPrice) + riskSafetyBuffer(atr)
-    float riskQty = rps > 0.0 ? math.floor(maxRiskDollars * riskQtySafetyPct / rps) : 0.0
-    float notionalQty = useNotionalCap and entryPrice > 0.0 ? math.floor(positionAmount / entryPrice) : riskQty
-    math.max(0.0, math.min(notionalQty, riskQty))
-
-calcTargetAtR(float entryPrice, float stopPrice, int direction, float rMultiple) =>
-    entryPrice + riskPerShare(entryPrice, stopPrice) * rMultiple * direction
+    risklib.calcTrialQty(entryPrice, stopPrice, maxRiskDollars, atr, riskQtyBufferAtr, riskQtySafetyPct, useNotionalCap, positionAmount, syminfo.mintick)
 
 scalpLimitEntry(int direction, float currentClose, float anchorPrice, float fallbackEntry, float atrValue, float offsetAtr) =>
-    float offset = math.max(syminfo.mintick, atrValue * offsetAtr)
-    direction == 1 and not na(anchorPrice) ? math.min(currentClose - syminfo.mintick, anchorPrice + offset) : direction == -1 and not na(anchorPrice) ? math.max(currentClose + syminfo.mintick, anchorPrice - offset) : fallbackEntry
-
-scalpEmaTarget(int direction, float emaPrice, float atrValue, float offsetAtr) =>
-    direction == 1 ? emaPrice - atrValue * offsetAtr : direction == -1 ? emaPrice + atrValue * offsetAtr : na
-
-floatingStructureStop(int direction, float currentStop, float pivotLowValue, float pivotHighValue, float currentClose, float bufferValue) =>
-    float candidate = direction == 1 and not na(pivotLowValue) and pivotLowValue < currentClose ? pivotLowValue - bufferValue : direction == -1 and not na(pivotHighValue) and pivotHighValue > currentClose ? pivotHighValue + bufferValue : na
-    bool improves = not na(candidate) and not na(currentStop) and (direction == 1 ? candidate > currentStop : direction == -1 ? candidate < currentStop : false)
-    improves ? candidate : na
-
-looserStop(float rawStop, float structureStop, int direction) =>
-    na(structureStop) ? rawStop : direction == 1 ? math.min(rawStop, structureStop) : math.max(rawStop, structureStop)
-
-levelNear(float level, float basis, float tolerance) =>
-    not na(level) and not na(basis) and math.abs(level - basis) <= tolerance
-
-nearestBelow(float reference, float a, float b, float c, float d, float e, float f, float g, float h) =>
-    float result = na
-    result := not na(a) and a <= reference ? a : result
-    result := not na(b) and b <= reference and (na(result) or b > result) ? b : result
-    result := not na(c) and c <= reference and (na(result) or c > result) ? c : result
-    result := not na(d) and d <= reference and (na(result) or d > result) ? d : result
-    result := not na(e) and e <= reference and (na(result) or e > result) ? e : result
-    result := not na(f) and f <= reference and (na(result) or f > result) ? f : result
-    result := not na(g) and g <= reference and (na(result) or g > result) ? g : result
-    result := not na(h) and h <= reference and (na(result) or h > result) ? h : result
-    result
-
-nearestAbove(float reference, float a, float b, float c, float d, float e, float f, float g, float h) =>
-    float result = na
-    result := not na(a) and a >= reference ? a : result
-    result := not na(b) and b >= reference and (na(result) or b < result) ? b : result
-    result := not na(c) and c >= reference and (na(result) or c < result) ? c : result
-    result := not na(d) and d >= reference and (na(result) or d < result) ? d : result
-    result := not na(e) and e >= reference and (na(result) or e < result) ? e : result
-    result := not na(f) and f >= reference and (na(result) or f < result) ? f : result
-    result := not na(g) and g >= reference and (na(result) or g < result) ? g : result
-    result := not na(h) and h >= reference and (na(result) or h < result) ? h : result
-    result
-
-addNearCount(int current, float level, float basis, float tolerance) =>
-    levelNear(level, basis, tolerance) ? current + 1 : current
-
-minNear(float current, float level, float basis, float tolerance) =>
-    levelNear(level, basis, tolerance) ? (na(current) ? level : math.min(current, level)) : current
-
-maxNear(float current, float level, float basis, float tolerance) =>
-    levelNear(level, basis, tolerance) ? (na(current) ? level : math.max(current, level)) : current
-
-appendSource(string current, string source) =>
-    current == "" ? source : current + "," + source
-
-appendNearSource(string current, float level, float basis, float tolerance, string source) =>
-    levelNear(level, basis, tolerance) ? appendSource(current, source) : current
+    risklib.scalpLimitEntry(direction, currentClose, anchorPrice, fallbackEntry, atrValue, offsetAtr, syminfo.mintick)
 
 priceChanged(float oldPrice, float newPrice) =>
-    na(oldPrice) != na(newPrice) or (not na(oldPrice) and not na(newPrice) and math.abs(oldPrice - newPrice) > syminfo.mintick * 0.5)
+    risklib.priceChanged(oldPrice, newPrice, syminfo.mintick)
 
 // -----------------------------------------------------------------------------
 // Market structure
@@ -928,158 +839,175 @@ bool dominantTrendLong = dayRangeClear and dtpBull and close >= sdMid and close 
 bool dominantTrendShort = dayRangeClear and dtpBear and close <= sdMid and close <= dayRangeMid and (na(todayStructHighZoneHigh) or close < todayStructHighZoneHigh)
 bool trendLongContext = strongStructTrendLong or dominantTrendLong
 bool trendShortContext = strongStructTrendShort or dominantTrendShort
-bool topCounterTrendAllowed = not dominantTrendLong
-bool bottomCounterTrendAllowed = not dominantTrendShort
+string marketRegime = modellib.marketRegime(dominantTrendLong, strongStructTrendLong, dominantTrendShort, strongStructTrendShort, dayRangeClear)
+bool trendBullPriority = enableRegimePriority and marketRegime == "trend_bull"
+bool trendBearPriority = enableRegimePriority and marketRegime == "trend_bear"
+bool topCounterTrendAllowed = not (enableRegimePriority ? trendBullPriority : dominantTrendLong)
+bool bottomCounterTrendAllowed = not (enableRegimePriority ? trendBearPriority : dominantTrendShort)
 string trendRegime = dominantTrendLong ? "dominant_bull" : dominantTrendShort ? "dominant_bear" : strongStructTrendLong ? "strong_bull" : strongStructTrendShort ? "strong_bear" : "range"
 string dominantTrendSide = dominantTrendLong ? "long" : dominantTrendShort ? "short" : "none"
 float tolerance = atr * confluenceZoneAtr
+float trendPullbackBand = atr * trendPullbackBandAtr
+float trendClusterTolerance = math.max(tolerance, trendPullbackBand)
 
 // Support cluster.
-float supportBasis = nearestBelow(close, emaFast, emaMid, emaSlow, dtpAvg, sdMid, sdLower, recentLow, lastPivotLow)
+float supportBasis = levellib.nearestBelow(close, emaFast, emaMid, emaSlow, dtpAvg, sdMid, sdLower, recentLow, lastPivotLow)
 int supportCount = 0
-supportCount := addNearCount(supportCount, emaFast, supportBasis, tolerance)
-supportCount := addNearCount(supportCount, emaMid, supportBasis, tolerance)
-supportCount := addNearCount(supportCount, emaSlow, supportBasis, tolerance)
-supportCount := addNearCount(supportCount, dtpAvg, supportBasis, tolerance)
-supportCount := addNearCount(supportCount, sdMid, supportBasis, tolerance)
-supportCount := addNearCount(supportCount, sdLower, supportBasis, tolerance)
-supportCount := addNearCount(supportCount, recentLow, supportBasis, tolerance)
-supportCount := addNearCount(supportCount, lastPivotLow, supportBasis, tolerance)
+supportCount := levellib.addNearCount(supportCount, emaFast, supportBasis, tolerance)
+supportCount := levellib.addNearCount(supportCount, emaMid, supportBasis, tolerance)
+supportCount := levellib.addNearCount(supportCount, emaSlow, supportBasis, tolerance)
+supportCount := levellib.addNearCount(supportCount, dtpAvg, supportBasis, tolerance)
+supportCount := levellib.addNearCount(supportCount, sdMid, supportBasis, tolerance)
+supportCount := levellib.addNearCount(supportCount, sdLower, supportBasis, tolerance)
+supportCount := levellib.addNearCount(supportCount, recentLow, supportBasis, tolerance)
+supportCount := levellib.addNearCount(supportCount, lastPivotLow, supportBasis, tolerance)
 float supportZoneLow = na
-supportZoneLow := minNear(supportZoneLow, emaFast, supportBasis, tolerance)
-supportZoneLow := minNear(supportZoneLow, emaMid, supportBasis, tolerance)
-supportZoneLow := minNear(supportZoneLow, emaSlow, supportBasis, tolerance)
-supportZoneLow := minNear(supportZoneLow, dtpAvg, supportBasis, tolerance)
-supportZoneLow := minNear(supportZoneLow, sdMid, supportBasis, tolerance)
-supportZoneLow := minNear(supportZoneLow, sdLower, supportBasis, tolerance)
-supportZoneLow := minNear(supportZoneLow, recentLow, supportBasis, tolerance)
-supportZoneLow := minNear(supportZoneLow, lastPivotLow, supportBasis, tolerance)
+supportZoneLow := levellib.minNear(supportZoneLow, emaFast, supportBasis, tolerance)
+supportZoneLow := levellib.minNear(supportZoneLow, emaMid, supportBasis, tolerance)
+supportZoneLow := levellib.minNear(supportZoneLow, emaSlow, supportBasis, tolerance)
+supportZoneLow := levellib.minNear(supportZoneLow, dtpAvg, supportBasis, tolerance)
+supportZoneLow := levellib.minNear(supportZoneLow, sdMid, supportBasis, tolerance)
+supportZoneLow := levellib.minNear(supportZoneLow, sdLower, supportBasis, tolerance)
+supportZoneLow := levellib.minNear(supportZoneLow, recentLow, supportBasis, tolerance)
+supportZoneLow := levellib.minNear(supportZoneLow, lastPivotLow, supportBasis, tolerance)
 float supportZoneHigh = na
-supportZoneHigh := maxNear(supportZoneHigh, emaFast, supportBasis, tolerance)
-supportZoneHigh := maxNear(supportZoneHigh, emaMid, supportBasis, tolerance)
-supportZoneHigh := maxNear(supportZoneHigh, emaSlow, supportBasis, tolerance)
-supportZoneHigh := maxNear(supportZoneHigh, dtpAvg, supportBasis, tolerance)
-supportZoneHigh := maxNear(supportZoneHigh, sdMid, supportBasis, tolerance)
-supportZoneHigh := maxNear(supportZoneHigh, sdLower, supportBasis, tolerance)
-supportZoneHigh := maxNear(supportZoneHigh, recentLow, supportBasis, tolerance)
-supportZoneHigh := maxNear(supportZoneHigh, lastPivotLow, supportBasis, tolerance)
+supportZoneHigh := levellib.maxNear(supportZoneHigh, emaFast, supportBasis, tolerance)
+supportZoneHigh := levellib.maxNear(supportZoneHigh, emaMid, supportBasis, tolerance)
+supportZoneHigh := levellib.maxNear(supportZoneHigh, emaSlow, supportBasis, tolerance)
+supportZoneHigh := levellib.maxNear(supportZoneHigh, dtpAvg, supportBasis, tolerance)
+supportZoneHigh := levellib.maxNear(supportZoneHigh, sdMid, supportBasis, tolerance)
+supportZoneHigh := levellib.maxNear(supportZoneHigh, sdLower, supportBasis, tolerance)
+supportZoneHigh := levellib.maxNear(supportZoneHigh, recentLow, supportBasis, tolerance)
+supportZoneHigh := levellib.maxNear(supportZoneHigh, lastPivotLow, supportBasis, tolerance)
 string supportSources = ""
-supportSources := appendNearSource(supportSources, emaFast, supportBasis, tolerance, "ema20")
-supportSources := appendNearSource(supportSources, emaMid, supportBasis, tolerance, "ema50")
-supportSources := appendNearSource(supportSources, emaSlow, supportBasis, tolerance, "ema100")
-supportSources := appendNearSource(supportSources, dtpAvg, supportBasis, tolerance, "dtp_avg")
-supportSources := appendNearSource(supportSources, sdMid, supportBasis, tolerance, "sd_mid")
-supportSources := appendNearSource(supportSources, sdLower, supportBasis, tolerance, "sd_lower")
-supportSources := appendNearSource(supportSources, recentLow, supportBasis, tolerance, "recent_low")
-supportSources := appendNearSource(supportSources, lastPivotLow, supportBasis, tolerance, "pivot_low")
+supportSources := levellib.appendNearSource(supportSources, emaFast, supportBasis, tolerance, "ema20")
+supportSources := levellib.appendNearSource(supportSources, emaMid, supportBasis, tolerance, "ema50")
+supportSources := levellib.appendNearSource(supportSources, emaSlow, supportBasis, tolerance, "ema100")
+supportSources := levellib.appendNearSource(supportSources, dtpAvg, supportBasis, tolerance, "dtp_avg")
+supportSources := levellib.appendNearSource(supportSources, sdMid, supportBasis, tolerance, "sd_mid")
+supportSources := levellib.appendNearSource(supportSources, sdLower, supportBasis, tolerance, "sd_lower")
+supportSources := levellib.appendNearSource(supportSources, recentLow, supportBasis, tolerance, "recent_low")
+supportSources := levellib.appendNearSource(supportSources, lastPivotLow, supportBasis, tolerance, "pivot_low")
 bool strongSupport = supportCount >= minConfluenceCount and not na(supportZoneLow) and not na(supportZoneHigh)
 
 // Resistance cluster.
-float resistanceBasis = nearestAbove(close, emaFast, emaMid, emaSlow, dtpAvg, sdMid, sdUpper, recentHigh, lastPivotHigh)
+float resistanceBasis = levellib.nearestAbove(close, emaFast, emaMid, emaSlow, dtpAvg, sdMid, sdUpper, recentHigh, lastPivotHigh)
 int resistanceCount = 0
-resistanceCount := addNearCount(resistanceCount, emaFast, resistanceBasis, tolerance)
-resistanceCount := addNearCount(resistanceCount, emaMid, resistanceBasis, tolerance)
-resistanceCount := addNearCount(resistanceCount, emaSlow, resistanceBasis, tolerance)
-resistanceCount := addNearCount(resistanceCount, dtpAvg, resistanceBasis, tolerance)
-resistanceCount := addNearCount(resistanceCount, sdMid, resistanceBasis, tolerance)
-resistanceCount := addNearCount(resistanceCount, sdUpper, resistanceBasis, tolerance)
-resistanceCount := addNearCount(resistanceCount, recentHigh, resistanceBasis, tolerance)
-resistanceCount := addNearCount(resistanceCount, lastPivotHigh, resistanceBasis, tolerance)
+resistanceCount := levellib.addNearCount(resistanceCount, emaFast, resistanceBasis, tolerance)
+resistanceCount := levellib.addNearCount(resistanceCount, emaMid, resistanceBasis, tolerance)
+resistanceCount := levellib.addNearCount(resistanceCount, emaSlow, resistanceBasis, tolerance)
+resistanceCount := levellib.addNearCount(resistanceCount, dtpAvg, resistanceBasis, tolerance)
+resistanceCount := levellib.addNearCount(resistanceCount, sdMid, resistanceBasis, tolerance)
+resistanceCount := levellib.addNearCount(resistanceCount, sdUpper, resistanceBasis, tolerance)
+resistanceCount := levellib.addNearCount(resistanceCount, recentHigh, resistanceBasis, tolerance)
+resistanceCount := levellib.addNearCount(resistanceCount, lastPivotHigh, resistanceBasis, tolerance)
 float resistanceZoneLow = na
-resistanceZoneLow := minNear(resistanceZoneLow, emaFast, resistanceBasis, tolerance)
-resistanceZoneLow := minNear(resistanceZoneLow, emaMid, resistanceBasis, tolerance)
-resistanceZoneLow := minNear(resistanceZoneLow, emaSlow, resistanceBasis, tolerance)
-resistanceZoneLow := minNear(resistanceZoneLow, dtpAvg, resistanceBasis, tolerance)
-resistanceZoneLow := minNear(resistanceZoneLow, sdMid, resistanceBasis, tolerance)
-resistanceZoneLow := minNear(resistanceZoneLow, sdUpper, resistanceBasis, tolerance)
-resistanceZoneLow := minNear(resistanceZoneLow, recentHigh, resistanceBasis, tolerance)
-resistanceZoneLow := minNear(resistanceZoneLow, lastPivotHigh, resistanceBasis, tolerance)
+resistanceZoneLow := levellib.minNear(resistanceZoneLow, emaFast, resistanceBasis, tolerance)
+resistanceZoneLow := levellib.minNear(resistanceZoneLow, emaMid, resistanceBasis, tolerance)
+resistanceZoneLow := levellib.minNear(resistanceZoneLow, emaSlow, resistanceBasis, tolerance)
+resistanceZoneLow := levellib.minNear(resistanceZoneLow, dtpAvg, resistanceBasis, tolerance)
+resistanceZoneLow := levellib.minNear(resistanceZoneLow, sdMid, resistanceBasis, tolerance)
+resistanceZoneLow := levellib.minNear(resistanceZoneLow, sdUpper, resistanceBasis, tolerance)
+resistanceZoneLow := levellib.minNear(resistanceZoneLow, recentHigh, resistanceBasis, tolerance)
+resistanceZoneLow := levellib.minNear(resistanceZoneLow, lastPivotHigh, resistanceBasis, tolerance)
 float resistanceZoneHigh = na
-resistanceZoneHigh := maxNear(resistanceZoneHigh, emaFast, resistanceBasis, tolerance)
-resistanceZoneHigh := maxNear(resistanceZoneHigh, emaMid, resistanceBasis, tolerance)
-resistanceZoneHigh := maxNear(resistanceZoneHigh, emaSlow, resistanceBasis, tolerance)
-resistanceZoneHigh := maxNear(resistanceZoneHigh, dtpAvg, resistanceBasis, tolerance)
-resistanceZoneHigh := maxNear(resistanceZoneHigh, sdMid, resistanceBasis, tolerance)
-resistanceZoneHigh := maxNear(resistanceZoneHigh, sdUpper, resistanceBasis, tolerance)
-resistanceZoneHigh := maxNear(resistanceZoneHigh, recentHigh, resistanceBasis, tolerance)
-resistanceZoneHigh := maxNear(resistanceZoneHigh, lastPivotHigh, resistanceBasis, tolerance)
+resistanceZoneHigh := levellib.maxNear(resistanceZoneHigh, emaFast, resistanceBasis, tolerance)
+resistanceZoneHigh := levellib.maxNear(resistanceZoneHigh, emaMid, resistanceBasis, tolerance)
+resistanceZoneHigh := levellib.maxNear(resistanceZoneHigh, emaSlow, resistanceBasis, tolerance)
+resistanceZoneHigh := levellib.maxNear(resistanceZoneHigh, dtpAvg, resistanceBasis, tolerance)
+resistanceZoneHigh := levellib.maxNear(resistanceZoneHigh, sdMid, resistanceBasis, tolerance)
+resistanceZoneHigh := levellib.maxNear(resistanceZoneHigh, sdUpper, resistanceBasis, tolerance)
+resistanceZoneHigh := levellib.maxNear(resistanceZoneHigh, recentHigh, resistanceBasis, tolerance)
+resistanceZoneHigh := levellib.maxNear(resistanceZoneHigh, lastPivotHigh, resistanceBasis, tolerance)
 string resistanceSources = ""
-resistanceSources := appendNearSource(resistanceSources, emaFast, resistanceBasis, tolerance, "ema20")
-resistanceSources := appendNearSource(resistanceSources, emaMid, resistanceBasis, tolerance, "ema50")
-resistanceSources := appendNearSource(resistanceSources, emaSlow, resistanceBasis, tolerance, "ema100")
-resistanceSources := appendNearSource(resistanceSources, dtpAvg, resistanceBasis, tolerance, "dtp_avg")
-resistanceSources := appendNearSource(resistanceSources, sdMid, resistanceBasis, tolerance, "sd_mid")
-resistanceSources := appendNearSource(resistanceSources, sdUpper, resistanceBasis, tolerance, "sd_upper")
-resistanceSources := appendNearSource(resistanceSources, recentHigh, resistanceBasis, tolerance, "recent_high")
-resistanceSources := appendNearSource(resistanceSources, lastPivotHigh, resistanceBasis, tolerance, "pivot_high")
+resistanceSources := levellib.appendNearSource(resistanceSources, emaFast, resistanceBasis, tolerance, "ema20")
+resistanceSources := levellib.appendNearSource(resistanceSources, emaMid, resistanceBasis, tolerance, "ema50")
+resistanceSources := levellib.appendNearSource(resistanceSources, emaSlow, resistanceBasis, tolerance, "ema100")
+resistanceSources := levellib.appendNearSource(resistanceSources, dtpAvg, resistanceBasis, tolerance, "dtp_avg")
+resistanceSources := levellib.appendNearSource(resistanceSources, sdMid, resistanceBasis, tolerance, "sd_mid")
+resistanceSources := levellib.appendNearSource(resistanceSources, sdUpper, resistanceBasis, tolerance, "sd_upper")
+resistanceSources := levellib.appendNearSource(resistanceSources, recentHigh, resistanceBasis, tolerance, "recent_high")
+resistanceSources := levellib.appendNearSource(resistanceSources, lastPivotHigh, resistanceBasis, tolerance, "pivot_high")
 bool strongResistance = resistanceCount >= minConfluenceCount and not na(resistanceZoneLow) and not na(resistanceZoneHigh)
 
 // -----------------------------------------------------------------------------
 // Candidate plan generation
 // -----------------------------------------------------------------------------
-// Trend trades require a formed intraday HH/HL or LL/LH, then use the latest structural HL/LH as the invalidation anchor.
-float trendSupportBasis = trendLongContext ? todayStructLow : na
+// Trend trades can use either the latest intraday structure or an EMA/DTP/SD pullback in the dominant direction.
+float trendSupportStructureBasis = trendLongContext ? todayStructLow : na
+float trendSupportPullbackBasis = trendLongContext ? levellib.nearestBelow(close + trendPullbackBand, emaFast, emaMid, dtpAvg, sdMid, emaSlow, sdLower, recentLow, lastPivotLow) : na
+bool trendSupportPullbackTouch = trendLongContext and not na(trendSupportPullbackBasis) and low <= trendSupportPullbackBasis + trendPullbackBand and high >= trendSupportPullbackBasis - trendPullbackBand
+bool trendSupportPullbackReject = trendSupportPullbackTouch and close >= trendSupportPullbackBasis and closePosition >= trendRejectClosePosLongMin
+bool trendSupportUsesPullback = trendSupportPullbackReject
+float trendSupportBasis = trendSupportUsesPullback ? trendSupportPullbackBasis : trendSupportStructureBasis
+string trendSupportEntrySource = trendSupportUsesPullback ? (levellib.levelNear(emaFast, trendSupportBasis, trendClusterTolerance) ? "ema20" : levellib.levelNear(emaMid, trendSupportBasis, trendClusterTolerance) ? "ema50" : levellib.levelNear(dtpAvg, trendSupportBasis, trendClusterTolerance) ? "dtp" : levellib.levelNear(sdMid, trendSupportBasis, trendClusterTolerance) ? "sd_mid" : levellib.levelNear(emaSlow, trendSupportBasis, trendClusterTolerance) ? "ema100" : "pullback_cluster") : "structure_low"
 int trendSupportCount = not na(trendSupportBasis) ? 1 : 0
-trendSupportCount := addNearCount(trendSupportCount, emaFast, trendSupportBasis, tolerance)
-trendSupportCount := addNearCount(trendSupportCount, emaMid, trendSupportBasis, tolerance)
-trendSupportCount := addNearCount(trendSupportCount, emaSlow, trendSupportBasis, tolerance)
-trendSupportCount := addNearCount(trendSupportCount, dtpAvg, trendSupportBasis, tolerance)
-trendSupportCount := addNearCount(trendSupportCount, sdMid, trendSupportBasis, tolerance)
-trendSupportCount := addNearCount(trendSupportCount, sdLower, trendSupportBasis, tolerance)
+trendSupportCount := levellib.addNearCount(trendSupportCount, emaFast, trendSupportBasis, trendClusterTolerance)
+trendSupportCount := levellib.addNearCount(trendSupportCount, emaMid, trendSupportBasis, trendClusterTolerance)
+trendSupportCount := levellib.addNearCount(trendSupportCount, emaSlow, trendSupportBasis, trendClusterTolerance)
+trendSupportCount := levellib.addNearCount(trendSupportCount, dtpAvg, trendSupportBasis, trendClusterTolerance)
+trendSupportCount := levellib.addNearCount(trendSupportCount, sdMid, trendSupportBasis, trendClusterTolerance)
+trendSupportCount := levellib.addNearCount(trendSupportCount, sdLower, trendSupportBasis, trendClusterTolerance)
 float trendSupportZoneLow = trendSupportBasis
-trendSupportZoneLow := minNear(trendSupportZoneLow, emaFast, trendSupportBasis, tolerance)
-trendSupportZoneLow := minNear(trendSupportZoneLow, emaMid, trendSupportBasis, tolerance)
-trendSupportZoneLow := minNear(trendSupportZoneLow, emaSlow, trendSupportBasis, tolerance)
-trendSupportZoneLow := minNear(trendSupportZoneLow, dtpAvg, trendSupportBasis, tolerance)
-trendSupportZoneLow := minNear(trendSupportZoneLow, sdMid, trendSupportBasis, tolerance)
-trendSupportZoneLow := minNear(trendSupportZoneLow, sdLower, trendSupportBasis, tolerance)
+trendSupportZoneLow := levellib.minNear(trendSupportZoneLow, emaFast, trendSupportBasis, trendClusterTolerance)
+trendSupportZoneLow := levellib.minNear(trendSupportZoneLow, emaMid, trendSupportBasis, trendClusterTolerance)
+trendSupportZoneLow := levellib.minNear(trendSupportZoneLow, emaSlow, trendSupportBasis, trendClusterTolerance)
+trendSupportZoneLow := levellib.minNear(trendSupportZoneLow, dtpAvg, trendSupportBasis, trendClusterTolerance)
+trendSupportZoneLow := levellib.minNear(trendSupportZoneLow, sdMid, trendSupportBasis, trendClusterTolerance)
+trendSupportZoneLow := levellib.minNear(trendSupportZoneLow, sdLower, trendSupportBasis, trendClusterTolerance)
 float trendSupportZoneHigh = trendSupportBasis
-trendSupportZoneHigh := maxNear(trendSupportZoneHigh, emaFast, trendSupportBasis, tolerance)
-trendSupportZoneHigh := maxNear(trendSupportZoneHigh, emaMid, trendSupportBasis, tolerance)
-trendSupportZoneHigh := maxNear(trendSupportZoneHigh, emaSlow, trendSupportBasis, tolerance)
-trendSupportZoneHigh := maxNear(trendSupportZoneHigh, dtpAvg, trendSupportBasis, tolerance)
-trendSupportZoneHigh := maxNear(trendSupportZoneHigh, sdMid, trendSupportBasis, tolerance)
-trendSupportZoneHigh := maxNear(trendSupportZoneHigh, sdLower, trendSupportBasis, tolerance)
-string trendSupportSources = not na(trendSupportBasis) ? "today_HL" : ""
-trendSupportSources := appendNearSource(trendSupportSources, emaFast, trendSupportBasis, tolerance, "ema20")
-trendSupportSources := appendNearSource(trendSupportSources, emaMid, trendSupportBasis, tolerance, "ema50")
-trendSupportSources := appendNearSource(trendSupportSources, emaSlow, trendSupportBasis, tolerance, "ema100")
-trendSupportSources := appendNearSource(trendSupportSources, dtpAvg, trendSupportBasis, tolerance, "dtp_avg")
-trendSupportSources := appendNearSource(trendSupportSources, sdMid, trendSupportBasis, tolerance, "sd_mid")
-trendSupportSources := appendNearSource(trendSupportSources, sdLower, trendSupportBasis, tolerance, "sd_lower")
-int trendSupportAgeBars = not na(todayStructLowBar) ? bar_index - todayStructLowBar : 0
+trendSupportZoneHigh := levellib.maxNear(trendSupportZoneHigh, emaFast, trendSupportBasis, trendClusterTolerance)
+trendSupportZoneHigh := levellib.maxNear(trendSupportZoneHigh, emaMid, trendSupportBasis, trendClusterTolerance)
+trendSupportZoneHigh := levellib.maxNear(trendSupportZoneHigh, emaSlow, trendSupportBasis, trendClusterTolerance)
+trendSupportZoneHigh := levellib.maxNear(trendSupportZoneHigh, dtpAvg, trendSupportBasis, trendClusterTolerance)
+trendSupportZoneHigh := levellib.maxNear(trendSupportZoneHigh, sdMid, trendSupportBasis, trendClusterTolerance)
+trendSupportZoneHigh := levellib.maxNear(trendSupportZoneHigh, sdLower, trendSupportBasis, trendClusterTolerance)
+string trendSupportSources = trendSupportUsesPullback ? trendSupportEntrySource : not na(trendSupportBasis) ? "today_HL" : ""
+trendSupportSources := levellib.appendNearSource(trendSupportSources, emaFast, trendSupportBasis, trendClusterTolerance, "ema20")
+trendSupportSources := levellib.appendNearSource(trendSupportSources, emaMid, trendSupportBasis, trendClusterTolerance, "ema50")
+trendSupportSources := levellib.appendNearSource(trendSupportSources, emaSlow, trendSupportBasis, trendClusterTolerance, "ema100")
+trendSupportSources := levellib.appendNearSource(trendSupportSources, dtpAvg, trendSupportBasis, trendClusterTolerance, "dtp_avg")
+trendSupportSources := levellib.appendNearSource(trendSupportSources, sdMid, trendSupportBasis, trendClusterTolerance, "sd_mid")
+trendSupportSources := levellib.appendNearSource(trendSupportSources, sdLower, trendSupportBasis, trendClusterTolerance, "sd_lower")
+int trendSupportAgeBars = trendSupportUsesPullback ? minTrendSupportAgeBars : not na(todayStructLowBar) ? bar_index - todayStructLowBar : 0
 bool strongTrendSupport = trendLongContext and dayRangeClear and trendSupportAgeBars >= minTrendSupportAgeBars and not na(trendSupportZoneLow) and not na(trendSupportZoneHigh)
 
-float trendResistanceBasis = trendShortContext ? todayStructHigh : na
+float trendResistanceStructureBasis = trendShortContext ? todayStructHigh : na
+float trendResistancePullbackBasis = trendShortContext ? levellib.nearestAbove(close - trendPullbackBand, emaFast, emaMid, dtpAvg, sdMid, emaSlow, sdUpper, recentHigh, lastPivotHigh) : na
+bool trendResistancePullbackTouch = trendShortContext and not na(trendResistancePullbackBasis) and high >= trendResistancePullbackBasis - trendPullbackBand and low <= trendResistancePullbackBasis + trendPullbackBand
+bool trendResistancePullbackReject = trendResistancePullbackTouch and close <= trendResistancePullbackBasis and closePosition <= trendRejectClosePosShortMax
+bool trendResistanceUsesPullback = trendResistancePullbackReject
+float trendResistanceBasis = trendResistanceUsesPullback ? trendResistancePullbackBasis : trendResistanceStructureBasis
+string trendResistanceEntrySource = trendResistanceUsesPullback ? (levellib.levelNear(emaFast, trendResistanceBasis, trendClusterTolerance) ? "ema20" : levellib.levelNear(emaMid, trendResistanceBasis, trendClusterTolerance) ? "ema50" : levellib.levelNear(dtpAvg, trendResistanceBasis, trendClusterTolerance) ? "dtp" : levellib.levelNear(sdMid, trendResistanceBasis, trendClusterTolerance) ? "sd_mid" : levellib.levelNear(emaSlow, trendResistanceBasis, trendClusterTolerance) ? "ema100" : "pullback_cluster") : "structure_high"
 int trendResistanceCount = not na(trendResistanceBasis) ? 1 : 0
-trendResistanceCount := addNearCount(trendResistanceCount, emaFast, trendResistanceBasis, tolerance)
-trendResistanceCount := addNearCount(trendResistanceCount, emaMid, trendResistanceBasis, tolerance)
-trendResistanceCount := addNearCount(trendResistanceCount, emaSlow, trendResistanceBasis, tolerance)
-trendResistanceCount := addNearCount(trendResistanceCount, dtpAvg, trendResistanceBasis, tolerance)
-trendResistanceCount := addNearCount(trendResistanceCount, sdMid, trendResistanceBasis, tolerance)
-trendResistanceCount := addNearCount(trendResistanceCount, sdUpper, trendResistanceBasis, tolerance)
+trendResistanceCount := levellib.addNearCount(trendResistanceCount, emaFast, trendResistanceBasis, trendClusterTolerance)
+trendResistanceCount := levellib.addNearCount(trendResistanceCount, emaMid, trendResistanceBasis, trendClusterTolerance)
+trendResistanceCount := levellib.addNearCount(trendResistanceCount, emaSlow, trendResistanceBasis, trendClusterTolerance)
+trendResistanceCount := levellib.addNearCount(trendResistanceCount, dtpAvg, trendResistanceBasis, trendClusterTolerance)
+trendResistanceCount := levellib.addNearCount(trendResistanceCount, sdMid, trendResistanceBasis, trendClusterTolerance)
+trendResistanceCount := levellib.addNearCount(trendResistanceCount, sdUpper, trendResistanceBasis, trendClusterTolerance)
 float trendResistanceZoneLow = trendResistanceBasis
-trendResistanceZoneLow := minNear(trendResistanceZoneLow, emaFast, trendResistanceBasis, tolerance)
-trendResistanceZoneLow := minNear(trendResistanceZoneLow, emaMid, trendResistanceBasis, tolerance)
-trendResistanceZoneLow := minNear(trendResistanceZoneLow, emaSlow, trendResistanceBasis, tolerance)
-trendResistanceZoneLow := minNear(trendResistanceZoneLow, dtpAvg, trendResistanceBasis, tolerance)
-trendResistanceZoneLow := minNear(trendResistanceZoneLow, sdMid, trendResistanceBasis, tolerance)
-trendResistanceZoneLow := minNear(trendResistanceZoneLow, sdUpper, trendResistanceBasis, tolerance)
+trendResistanceZoneLow := levellib.minNear(trendResistanceZoneLow, emaFast, trendResistanceBasis, trendClusterTolerance)
+trendResistanceZoneLow := levellib.minNear(trendResistanceZoneLow, emaMid, trendResistanceBasis, trendClusterTolerance)
+trendResistanceZoneLow := levellib.minNear(trendResistanceZoneLow, emaSlow, trendResistanceBasis, trendClusterTolerance)
+trendResistanceZoneLow := levellib.minNear(trendResistanceZoneLow, dtpAvg, trendResistanceBasis, trendClusterTolerance)
+trendResistanceZoneLow := levellib.minNear(trendResistanceZoneLow, sdMid, trendResistanceBasis, trendClusterTolerance)
+trendResistanceZoneLow := levellib.minNear(trendResistanceZoneLow, sdUpper, trendResistanceBasis, trendClusterTolerance)
 float trendResistanceZoneHigh = trendResistanceBasis
-trendResistanceZoneHigh := maxNear(trendResistanceZoneHigh, emaFast, trendResistanceBasis, tolerance)
-trendResistanceZoneHigh := maxNear(trendResistanceZoneHigh, emaMid, trendResistanceBasis, tolerance)
-trendResistanceZoneHigh := maxNear(trendResistanceZoneHigh, emaSlow, trendResistanceBasis, tolerance)
-trendResistanceZoneHigh := maxNear(trendResistanceZoneHigh, dtpAvg, trendResistanceBasis, tolerance)
-trendResistanceZoneHigh := maxNear(trendResistanceZoneHigh, sdMid, trendResistanceBasis, tolerance)
-trendResistanceZoneHigh := maxNear(trendResistanceZoneHigh, sdUpper, trendResistanceBasis, tolerance)
-string trendResistanceSources = not na(trendResistanceBasis) ? "today_LH" : ""
-trendResistanceSources := appendNearSource(trendResistanceSources, emaFast, trendResistanceBasis, tolerance, "ema20")
-trendResistanceSources := appendNearSource(trendResistanceSources, emaMid, trendResistanceBasis, tolerance, "ema50")
-trendResistanceSources := appendNearSource(trendResistanceSources, emaSlow, trendResistanceBasis, tolerance, "ema100")
-trendResistanceSources := appendNearSource(trendResistanceSources, dtpAvg, trendResistanceBasis, tolerance, "dtp_avg")
-trendResistanceSources := appendNearSource(trendResistanceSources, sdMid, trendResistanceBasis, tolerance, "sd_mid")
-trendResistanceSources := appendNearSource(trendResistanceSources, sdUpper, trendResistanceBasis, tolerance, "sd_upper")
-int trendResistanceAgeBars = not na(todayStructHighBar) ? bar_index - todayStructHighBar : 0
+trendResistanceZoneHigh := levellib.maxNear(trendResistanceZoneHigh, emaFast, trendResistanceBasis, trendClusterTolerance)
+trendResistanceZoneHigh := levellib.maxNear(trendResistanceZoneHigh, emaMid, trendResistanceBasis, trendClusterTolerance)
+trendResistanceZoneHigh := levellib.maxNear(trendResistanceZoneHigh, emaSlow, trendResistanceBasis, trendClusterTolerance)
+trendResistanceZoneHigh := levellib.maxNear(trendResistanceZoneHigh, dtpAvg, trendResistanceBasis, trendClusterTolerance)
+trendResistanceZoneHigh := levellib.maxNear(trendResistanceZoneHigh, sdMid, trendResistanceBasis, trendClusterTolerance)
+trendResistanceZoneHigh := levellib.maxNear(trendResistanceZoneHigh, sdUpper, trendResistanceBasis, trendClusterTolerance)
+string trendResistanceSources = trendResistanceUsesPullback ? trendResistanceEntrySource : not na(trendResistanceBasis) ? "today_LH" : ""
+trendResistanceSources := levellib.appendNearSource(trendResistanceSources, emaFast, trendResistanceBasis, trendClusterTolerance, "ema20")
+trendResistanceSources := levellib.appendNearSource(trendResistanceSources, emaMid, trendResistanceBasis, trendClusterTolerance, "ema50")
+trendResistanceSources := levellib.appendNearSource(trendResistanceSources, emaSlow, trendResistanceBasis, trendClusterTolerance, "ema100")
+trendResistanceSources := levellib.appendNearSource(trendResistanceSources, dtpAvg, trendResistanceBasis, trendClusterTolerance, "dtp_avg")
+trendResistanceSources := levellib.appendNearSource(trendResistanceSources, sdMid, trendResistanceBasis, trendClusterTolerance, "sd_mid")
+trendResistanceSources := levellib.appendNearSource(trendResistanceSources, sdUpper, trendResistanceBasis, trendClusterTolerance, "sd_upper")
+int trendResistanceAgeBars = trendResistanceUsesPullback ? minTrendSupportAgeBars : not na(todayStructHighBar) ? bar_index - todayStructHighBar : 0
 bool strongTrendResistance = trendShortContext and dayRangeClear and trendResistanceAgeBars >= minTrendSupportAgeBars and not na(trendResistanceZoneLow) and not na(trendResistanceZoneHigh)
 
 float trendLongPredictStop = strongTrendSupport ? trendSupportZoneLow - invalidationBuffer : na
@@ -1088,11 +1016,11 @@ float trendLongConfirmStop = strongTrendSupport ? math.min(low, trendSupportZone
 float trendLongConfirmEntryRaw = strongTrendSupport ? math.min(close, trendSupportZoneHigh) : na
 float trendLongConfirmEntry = strongTrendSupport ? stopBoundedEntry(1, scalpLimitEntry(1, close, trendSupportBasis, trendLongConfirmEntryRaw, atr, scalpLimitOffsetAtr), trendLongConfirmStop, atr, confirmedMaxStopAtr, confirmedMaxStopBps) : na
 bool trendLongPredictContext = trendLongContext and strongTrendSupport and trendLongPredictEntry <= close and close - trendSupportZoneHigh <= atr * predictionArmDistanceAtr
-bool trendLongConfirmContext = trendLongContext and strongTrendSupport and low <= trendSupportZoneHigh and close > trendSupportZoneHigh and close > open
+bool trendLongConfirmContext = trendLongContext and strongTrendSupport and low <= trendSupportZoneHigh + trendPullbackBand and close > trendSupportBasis and closePosition >= trendRejectClosePosLongMin
 float trendLongPredictQty = calcTrialQty(trendLongPredictEntry, trendLongPredictStop, predictiveMaxRiskDollars)
 float trendLongConfirmQty = calcTrialQty(trendLongConfirmEntry, trendLongConfirmStop, confirmedMaxRiskDollars)
-bool trendLongPredictAllowed = trendLongPredictContext and smallStopTrialAllowed(1, trendLongPredictEntry, trendLongPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and trendLongPredictQty >= 1.0
-bool trendLongConfirmAllowed = trendLongConfirmContext and smallStopTrialAllowed(1, trendLongConfirmEntry, trendLongConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and trendLongConfirmQty >= 1.0
+bool trendLongPredictAllowed = trendLongPredictContext and risklib.smallStopTrialAllowed(1, trendLongPredictEntry, trendLongPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and trendLongPredictQty >= 1.0
+bool trendLongConfirmAllowed = trendLongConfirmContext and risklib.smallStopTrialAllowed(1, trendLongConfirmEntry, trendLongConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and trendLongConfirmQty >= 1.0
 
 float trendShortPredictStop = strongTrendResistance ? trendResistanceZoneHigh + invalidationBuffer : na
 float trendShortPredictEntry = strongTrendResistance ? stopBoundedEntry(-1, trendResistanceZoneHigh - atr * predictiveEntryOffsetAtr, trendShortPredictStop, atr, predictiveMaxStopAtr, predictiveMaxStopBps) : na
@@ -1100,11 +1028,11 @@ float trendShortConfirmStop = strongTrendResistance ? math.max(high, trendResist
 float trendShortConfirmEntryRaw = strongTrendResistance ? math.max(close, trendResistanceZoneLow) : na
 float trendShortConfirmEntry = strongTrendResistance ? stopBoundedEntry(-1, scalpLimitEntry(-1, close, trendResistanceBasis, trendShortConfirmEntryRaw, atr, scalpLimitOffsetAtr), trendShortConfirmStop, atr, confirmedMaxStopAtr, confirmedMaxStopBps) : na
 bool trendShortPredictContext = trendShortContext and strongTrendResistance and trendShortPredictEntry >= close and trendResistanceZoneLow - close <= atr * predictionArmDistanceAtr
-bool trendShortConfirmContext = trendShortContext and strongTrendResistance and high >= trendResistanceZoneLow and close < trendResistanceZoneLow and close < open
+bool trendShortConfirmContext = trendShortContext and strongTrendResistance and high >= trendResistanceZoneLow - trendPullbackBand and close < trendResistanceBasis and closePosition <= trendRejectClosePosShortMax
 float trendShortPredictQty = calcTrialQty(trendShortPredictEntry, trendShortPredictStop, predictiveMaxRiskDollars)
 float trendShortConfirmQty = calcTrialQty(trendShortConfirmEntry, trendShortConfirmStop, confirmedMaxRiskDollars)
-bool trendShortPredictAllowed = trendShortPredictContext and smallStopTrialAllowed(-1, trendShortPredictEntry, trendShortPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and trendShortPredictQty >= 1.0
-bool trendShortConfirmAllowed = trendShortConfirmContext and smallStopTrialAllowed(-1, trendShortConfirmEntry, trendShortConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and trendShortConfirmQty >= 1.0
+bool trendShortPredictAllowed = trendShortPredictContext and risklib.smallStopTrialAllowed(-1, trendShortPredictEntry, trendShortPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and trendShortPredictQty >= 1.0
+bool trendShortConfirmAllowed = trendShortConfirmContext and risklib.smallStopTrialAllowed(-1, trendShortConfirmEntry, trendShortConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and trendShortConfirmQty >= 1.0
 
 float topBasis = todayStructHigh
 float topZoneLow = na(todayStructHighZoneLow) ? todayStructHigh : todayStructHighZoneLow
@@ -1122,31 +1050,31 @@ if confirmed and topProbeCycleActive and topProbeCycleConsumed and not topStrict
     lastTopNoDemandHigh := na
     lastTopNoDemandLow := na
 int topCount = not na(todayStructHigh) ? 1 : 0
-topCount := addNearCount(topCount, sdUpper, topBasis, tolerance)
-topCount := addNearCount(topCount, resistanceZoneHigh, topBasis, tolerance)
-topCount := addNearCount(topCount, emaFast, topBasis, tolerance)
-topCount := addNearCount(topCount, emaMid, topBasis, tolerance)
-topCount := addNearCount(topCount, emaSlow, topBasis, tolerance)
-topCount := addNearCount(topCount, dtpAvg, topBasis, tolerance)
-topZoneLow := minNear(topZoneLow, sdUpper, topBasis, tolerance)
-topZoneLow := minNear(topZoneLow, resistanceZoneHigh, topBasis, tolerance)
-topZoneLow := minNear(topZoneLow, emaFast, topBasis, tolerance)
-topZoneLow := minNear(topZoneLow, emaMid, topBasis, tolerance)
-topZoneLow := minNear(topZoneLow, emaSlow, topBasis, tolerance)
-topZoneLow := minNear(topZoneLow, dtpAvg, topBasis, tolerance)
-topZoneHigh := maxNear(topZoneHigh, sdUpper, topBasis, tolerance)
-topZoneHigh := maxNear(topZoneHigh, resistanceZoneHigh, topBasis, tolerance)
-topZoneHigh := maxNear(topZoneHigh, emaFast, topBasis, tolerance)
-topZoneHigh := maxNear(topZoneHigh, emaMid, topBasis, tolerance)
-topZoneHigh := maxNear(topZoneHigh, emaSlow, topBasis, tolerance)
-topZoneHigh := maxNear(topZoneHigh, dtpAvg, topBasis, tolerance)
+topCount := levellib.addNearCount(topCount, sdUpper, topBasis, tolerance)
+topCount := levellib.addNearCount(topCount, resistanceZoneHigh, topBasis, tolerance)
+topCount := levellib.addNearCount(topCount, emaFast, topBasis, tolerance)
+topCount := levellib.addNearCount(topCount, emaMid, topBasis, tolerance)
+topCount := levellib.addNearCount(topCount, emaSlow, topBasis, tolerance)
+topCount := levellib.addNearCount(topCount, dtpAvg, topBasis, tolerance)
+topZoneLow := levellib.minNear(topZoneLow, sdUpper, topBasis, tolerance)
+topZoneLow := levellib.minNear(topZoneLow, resistanceZoneHigh, topBasis, tolerance)
+topZoneLow := levellib.minNear(topZoneLow, emaFast, topBasis, tolerance)
+topZoneLow := levellib.minNear(topZoneLow, emaMid, topBasis, tolerance)
+topZoneLow := levellib.minNear(topZoneLow, emaSlow, topBasis, tolerance)
+topZoneLow := levellib.minNear(topZoneLow, dtpAvg, topBasis, tolerance)
+topZoneHigh := levellib.maxNear(topZoneHigh, sdUpper, topBasis, tolerance)
+topZoneHigh := levellib.maxNear(topZoneHigh, resistanceZoneHigh, topBasis, tolerance)
+topZoneHigh := levellib.maxNear(topZoneHigh, emaFast, topBasis, tolerance)
+topZoneHigh := levellib.maxNear(topZoneHigh, emaMid, topBasis, tolerance)
+topZoneHigh := levellib.maxNear(topZoneHigh, emaSlow, topBasis, tolerance)
+topZoneHigh := levellib.maxNear(topZoneHigh, dtpAvg, topBasis, tolerance)
 string topSources = not na(todayStructHigh) ? "today_struct_high" : ""
-topSources := appendNearSource(topSources, sdUpper, topBasis, tolerance, "sd_upper")
-topSources := appendNearSource(topSources, resistanceZoneHigh, topBasis, tolerance, "resistance_cluster")
-topSources := appendNearSource(topSources, emaFast, topBasis, tolerance, "ema20")
-topSources := appendNearSource(topSources, emaMid, topBasis, tolerance, "ema50")
-topSources := appendNearSource(topSources, emaSlow, topBasis, tolerance, "ema100")
-topSources := appendNearSource(topSources, dtpAvg, topBasis, tolerance, "dtp_avg")
+topSources := levellib.appendNearSource(topSources, sdUpper, topBasis, tolerance, "sd_upper")
+topSources := levellib.appendNearSource(topSources, resistanceZoneHigh, topBasis, tolerance, "resistance_cluster")
+topSources := levellib.appendNearSource(topSources, emaFast, topBasis, tolerance, "ema20")
+topSources := levellib.appendNearSource(topSources, emaMid, topBasis, tolerance, "ema50")
+topSources := levellib.appendNearSource(topSources, emaSlow, topBasis, tolerance, "ema100")
+topSources := levellib.appendNearSource(topSources, dtpAvg, topBasis, tolerance, "dtp_avg")
 bool strongTopProbeZone = not na(todayStructHigh) and not na(topZoneLow) and not na(topZoneHigh)
 int topAnchorAgeBars = not na(todayStructHighBar) ? bar_index - todayStructHighBar : 0
 float topPullbackAtr = not na(todayStructHigh) and not na(lowSinceStructHigh) ? (todayStructHigh - lowSinceStructHigh) / atr : na
@@ -1154,12 +1082,12 @@ float topLeftLeg = not na(todayStructHigh) and not na(lowBeforeStructHigh) ? tod
 float topLocalLeftLeg = not na(todayStructHigh) and not na(localProbeLow) ? todayStructHigh - localProbeLow : na
 float topMiddleLeg = not na(todayStructHigh) and not na(lowSinceStructHigh) ? todayStructHigh - lowSinceStructHigh : na
 float topRightLeg = not na(lowSinceStructHigh) ? high - lowSinceStructHigh : na
-float topLeftLegBps = visualLegBps(topLeftLeg, todayStructHigh)
-float topLocalLeftLegBps = visualLegBps(topLocalLeftLeg, todayStructHigh)
-float topGlobalMiddleRetraceRatio = visualLegRatio(topMiddleLeg, topLeftLeg)
-float topLocalMiddleRetraceRatio = visualLegRatio(topMiddleLeg, topLocalLeftLeg)
+float topLeftLegBps = risklib.visualLegBps(topLeftLeg, todayStructHigh)
+float topLocalLeftLegBps = risklib.visualLegBps(topLocalLeftLeg, todayStructHigh)
+float topGlobalMiddleRetraceRatio = risklib.visualLegRatio(topMiddleLeg, topLeftLeg)
+float topLocalMiddleRetraceRatio = risklib.visualLegRatio(topMiddleLeg, topLocalLeftLeg)
 float topMiddleRetraceRatio = not na(topLocalMiddleRetraceRatio) ? topLocalMiddleRetraceRatio : topGlobalMiddleRetraceRatio
-float topRightRetestRatio = visualLegRatio(topRightLeg, topMiddleLeg)
+float topRightRetestRatio = risklib.visualLegRatio(topRightLeg, topMiddleLeg)
 float topMiddleBars = not na(lowSinceStructHighBar) and not na(todayStructHighBar) ? math.max((lowSinceStructHighBar - todayStructHighBar) * 1.0, 1.0) : na
 float topRightBars = not na(lowSinceStructHighBar) ? math.max((bar_index - lowSinceStructHighBar) * 1.0, 1.0) : na
 float topMiddleSpeed = not na(topMiddleLeg) and not na(topMiddleBars) ? topMiddleLeg / topMiddleBars : na
@@ -1394,17 +1322,24 @@ float retestCloseEntryOffset = math.max(syminfo.mintick, atr * predictiveEntryOf
 float topFailureRetestEntry = nz(lastTopFailureWatchClose, close) + retestCloseEntryOffset
 float topClimaxRetestEntry = nz(lastTopVolumeClimaxClose, close) + retestCloseEntryOffset
 float topConfirmEntryRaw = topConfirmedShort ? (topVolumeClimaxFailedBreakConfirmed ? topClimaxRetestEntry : topCloseLimitShort ? topFailureRetestEntry : math.max(close, topZoneLow - atr * predictiveEntryOffsetAtr)) : na
-float topFailureWatchStop = looserStop(math.max(nz(lastTopFailureWatchHigh, high), high) + invalidationBuffer, topPriorHighStop, -1)
-float topNoDemandStop = looserStop(math.max(nz(lastTopNoDemandHigh, high), high) + invalidationBuffer, topPriorHighStop, -1)
-float topClimaxStop = looserStop(math.max(nz(lastTopVolumeClimaxHigh, high), high) + invalidationBuffer, topPriorHighStop, -1)
-float topConfirmStop = topConfirmedShort ? (topVolumeClimaxFailedBreakConfirmed ? topClimaxStop : topNoDemandBreakConfirmed ? topNoDemandStop : topHighVolumeDropConfirmed or topImmediateReversalShort ? topFailureWatchStop : looserStop(math.max(high, topZoneHigh) + invalidationBuffer, topPriorHighStop, -1)) : na
+float topFailureWatchStop = risklib.looserStop(math.max(nz(lastTopFailureWatchHigh, high), high) + invalidationBuffer, topPriorHighStop, -1)
+float topNoDemandStop = risklib.looserStop(math.max(nz(lastTopNoDemandHigh, high), high) + invalidationBuffer, topPriorHighStop, -1)
+float topClimaxStop = risklib.looserStop(math.max(nz(lastTopVolumeClimaxHigh, high), high) + invalidationBuffer, topPriorHighStop, -1)
+float topConfirmStop = topConfirmedShort ? (topVolumeClimaxFailedBreakConfirmed ? topClimaxStop : topNoDemandBreakConfirmed ? topNoDemandStop : topHighVolumeDropConfirmed or topImmediateReversalShort ? topFailureWatchStop : risklib.looserStop(math.max(high, topZoneHigh) + invalidationBuffer, topPriorHighStop, -1)) : na
 float topConfirmEntry = topConfirmedShort ? stopBoundedEntry(-1, topCloseLimitShort ? topConfirmEntryRaw : scalpLimitEntry(-1, close, topBasis, topConfirmEntryRaw, atr, scalpLimitOffsetAtr), topConfirmStop, atr, confirmedMaxStopAtr, confirmedMaxStopBps) : na
+bool topCountertrendBreakdownClose = not na(topZoneLow) and close < topZoneLow - atr * countertrendReclaimAtr
+int topCountertrendBreakdownBars = nz(ta.barssince(not topCountertrendBreakdownClose), countertrendReclaimCloseBars)
+bool topCountertrendReclaimOk = not countertrendRequiresReclaim or (topCountertrendBreakdownClose and topCountertrendBreakdownBars >= countertrendReclaimCloseBars - 1)
+bool topFreshHighContinuationRisk = trendBullPriority and not na(todayStructHigh) and close >= todayStructHigh - atr * freshExtremeBlockAtr and not topCountertrendReclaimOk
+bool topHasCountertrendEvidence = upperExhaustionConfirmedShort or topWeakNewHighConfirmed or topDistributionDropConfirmed or topFailureRepeatShort
+string topCountertrendBlockReason = modellib.topCountertrendBlockReason(trendBullPriority, topHasCountertrendEvidence, dayRangeAtr >= shockDayRangeAtr, attackUpCooling, topFreshHighContinuationRisk, topCountertrendReclaimOk)
+bool topCountertrendOverrideOk = trendBullPriority and topCountertrendBlockReason == "passed"
 bool topPredictContext = (topFirstExhaustion or topRightShoulder) and topCounterTrendAllowed and topPredictEntry >= close and topPredictEntry - close <= atr * predictionArmDistanceAtr and topSignalGapOk and topPredictVolumeOk
-bool topConfirmContext = topConfirmedShort and (topCounterTrendAllowed or upperExhaustionConfirmedShort or topWeakNewHighConfirmed or topDistributionDropConfirmed or topFailureRepeatShort) and topConfirmGapOk and topConfirmVolumeOk
+bool topConfirmContext = topConfirmedShort and (topCounterTrendAllowed or topCountertrendOverrideOk) and topConfirmGapOk and topConfirmVolumeOk
 float topPredictQty = calcTrialQty(topPredictEntry, topPredictStop, predictiveMaxRiskDollars)
 float topConfirmQty = calcTrialQty(topConfirmEntry, topConfirmStop, confirmedMaxRiskDollars)
-bool topPredictAllowed = topPredictContext and smallStopTrialAllowed(-1, topPredictEntry, topPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and topPredictQty >= 1.0
-bool topConfirmAllowed = topConfirmContext and smallStopTrialAllowed(-1, topConfirmEntry, topConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and topConfirmQty >= 1.0
+bool topPredictAllowed = topPredictContext and risklib.smallStopTrialAllowed(-1, topPredictEntry, topPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and topPredictQty >= 1.0
+bool topConfirmAllowed = topConfirmContext and risklib.smallStopTrialAllowed(-1, topConfirmEntry, topConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and topConfirmQty >= 1.0
 string topProbeFilterReason = "passed"
 if na(todayStructHigh)
     topProbeFilterReason := "no_today_struct_high"
@@ -1424,8 +1359,8 @@ else if not topPullbackArmed
     topProbeFilterReason := "pullback_not_enough"
 else if not topRetestBand
     topProbeFilterReason := "not_retest_zone"
-else if dominantTrendLong and not upperExhaustionConfirmedShort and not topFailureRepeatShort
-    topProbeFilterReason := "blocked_by_dominant_bull_trend"
+else if topCountertrendBlockReason != "passed"
+    topProbeFilterReason := topCountertrendBlockReason
 else if not topConfirmGapOk
     topProbeFilterReason := not topSignalBarsOk ? "signal_bars_too_close" : "micro_structure_too_close"
 
@@ -1445,31 +1380,31 @@ if confirmed and bottomProbeCycleActive and bottomProbeCycleConsumed and not bot
     lastBottomNoSupplyHigh := na
     lastBottomNoSupplyLow := na
 int bottomCount = not na(todayStructLow) ? 1 : 0
-bottomCount := addNearCount(bottomCount, sdLower, bottomBasis, tolerance)
-bottomCount := addNearCount(bottomCount, supportZoneLow, bottomBasis, tolerance)
-bottomCount := addNearCount(bottomCount, emaFast, bottomBasis, tolerance)
-bottomCount := addNearCount(bottomCount, emaMid, bottomBasis, tolerance)
-bottomCount := addNearCount(bottomCount, emaSlow, bottomBasis, tolerance)
-bottomCount := addNearCount(bottomCount, dtpAvg, bottomBasis, tolerance)
-bottomZoneLow := minNear(bottomZoneLow, sdLower, bottomBasis, tolerance)
-bottomZoneLow := minNear(bottomZoneLow, supportZoneLow, bottomBasis, tolerance)
-bottomZoneLow := minNear(bottomZoneLow, emaFast, bottomBasis, tolerance)
-bottomZoneLow := minNear(bottomZoneLow, emaMid, bottomBasis, tolerance)
-bottomZoneLow := minNear(bottomZoneLow, emaSlow, bottomBasis, tolerance)
-bottomZoneLow := minNear(bottomZoneLow, dtpAvg, bottomBasis, tolerance)
-bottomZoneHigh := maxNear(bottomZoneHigh, sdLower, bottomBasis, tolerance)
-bottomZoneHigh := maxNear(bottomZoneHigh, supportZoneLow, bottomBasis, tolerance)
-bottomZoneHigh := maxNear(bottomZoneHigh, emaFast, bottomBasis, tolerance)
-bottomZoneHigh := maxNear(bottomZoneHigh, emaMid, bottomBasis, tolerance)
-bottomZoneHigh := maxNear(bottomZoneHigh, emaSlow, bottomBasis, tolerance)
-bottomZoneHigh := maxNear(bottomZoneHigh, dtpAvg, bottomBasis, tolerance)
+bottomCount := levellib.addNearCount(bottomCount, sdLower, bottomBasis, tolerance)
+bottomCount := levellib.addNearCount(bottomCount, supportZoneLow, bottomBasis, tolerance)
+bottomCount := levellib.addNearCount(bottomCount, emaFast, bottomBasis, tolerance)
+bottomCount := levellib.addNearCount(bottomCount, emaMid, bottomBasis, tolerance)
+bottomCount := levellib.addNearCount(bottomCount, emaSlow, bottomBasis, tolerance)
+bottomCount := levellib.addNearCount(bottomCount, dtpAvg, bottomBasis, tolerance)
+bottomZoneLow := levellib.minNear(bottomZoneLow, sdLower, bottomBasis, tolerance)
+bottomZoneLow := levellib.minNear(bottomZoneLow, supportZoneLow, bottomBasis, tolerance)
+bottomZoneLow := levellib.minNear(bottomZoneLow, emaFast, bottomBasis, tolerance)
+bottomZoneLow := levellib.minNear(bottomZoneLow, emaMid, bottomBasis, tolerance)
+bottomZoneLow := levellib.minNear(bottomZoneLow, emaSlow, bottomBasis, tolerance)
+bottomZoneLow := levellib.minNear(bottomZoneLow, dtpAvg, bottomBasis, tolerance)
+bottomZoneHigh := levellib.maxNear(bottomZoneHigh, sdLower, bottomBasis, tolerance)
+bottomZoneHigh := levellib.maxNear(bottomZoneHigh, supportZoneLow, bottomBasis, tolerance)
+bottomZoneHigh := levellib.maxNear(bottomZoneHigh, emaFast, bottomBasis, tolerance)
+bottomZoneHigh := levellib.maxNear(bottomZoneHigh, emaMid, bottomBasis, tolerance)
+bottomZoneHigh := levellib.maxNear(bottomZoneHigh, emaSlow, bottomBasis, tolerance)
+bottomZoneHigh := levellib.maxNear(bottomZoneHigh, dtpAvg, bottomBasis, tolerance)
 string bottomSources = not na(todayStructLow) ? "today_struct_low" : ""
-bottomSources := appendNearSource(bottomSources, sdLower, bottomBasis, tolerance, "sd_lower")
-bottomSources := appendNearSource(bottomSources, supportZoneLow, bottomBasis, tolerance, "support_cluster")
-bottomSources := appendNearSource(bottomSources, emaFast, bottomBasis, tolerance, "ema20")
-bottomSources := appendNearSource(bottomSources, emaMid, bottomBasis, tolerance, "ema50")
-bottomSources := appendNearSource(bottomSources, emaSlow, bottomBasis, tolerance, "ema100")
-bottomSources := appendNearSource(bottomSources, dtpAvg, bottomBasis, tolerance, "dtp_avg")
+bottomSources := levellib.appendNearSource(bottomSources, sdLower, bottomBasis, tolerance, "sd_lower")
+bottomSources := levellib.appendNearSource(bottomSources, supportZoneLow, bottomBasis, tolerance, "support_cluster")
+bottomSources := levellib.appendNearSource(bottomSources, emaFast, bottomBasis, tolerance, "ema20")
+bottomSources := levellib.appendNearSource(bottomSources, emaMid, bottomBasis, tolerance, "ema50")
+bottomSources := levellib.appendNearSource(bottomSources, emaSlow, bottomBasis, tolerance, "ema100")
+bottomSources := levellib.appendNearSource(bottomSources, dtpAvg, bottomBasis, tolerance, "dtp_avg")
 bool strongBottomProbeZone = not na(todayStructLow) and not na(bottomZoneLow) and not na(bottomZoneHigh)
 int bottomAnchorAgeBars = not na(todayStructLowBar) ? bar_index - todayStructLowBar : 0
 float bottomPullbackAtr = not na(todayStructLow) and not na(highSinceStructLow) ? (highSinceStructLow - todayStructLow) / atr : na
@@ -1477,12 +1412,12 @@ float bottomLeftLeg = not na(todayStructLow) and not na(highBeforeStructLow) ? h
 float bottomLocalLeftLeg = not na(todayStructLow) and not na(localProbeHigh) ? localProbeHigh - todayStructLow : na
 float bottomMiddleLeg = not na(todayStructLow) and not na(highSinceStructLow) ? highSinceStructLow - todayStructLow : na
 float bottomRightLeg = not na(highSinceStructLow) ? highSinceStructLow - low : na
-float bottomLeftLegBps = visualLegBps(bottomLeftLeg, todayStructLow)
-float bottomLocalLeftLegBps = visualLegBps(bottomLocalLeftLeg, todayStructLow)
-float bottomGlobalMiddleRetraceRatio = visualLegRatio(bottomMiddleLeg, bottomLeftLeg)
-float bottomLocalMiddleRetraceRatio = visualLegRatio(bottomMiddleLeg, bottomLocalLeftLeg)
+float bottomLeftLegBps = risklib.visualLegBps(bottomLeftLeg, todayStructLow)
+float bottomLocalLeftLegBps = risklib.visualLegBps(bottomLocalLeftLeg, todayStructLow)
+float bottomGlobalMiddleRetraceRatio = risklib.visualLegRatio(bottomMiddleLeg, bottomLeftLeg)
+float bottomLocalMiddleRetraceRatio = risklib.visualLegRatio(bottomMiddleLeg, bottomLocalLeftLeg)
 float bottomMiddleRetraceRatio = not na(bottomLocalMiddleRetraceRatio) ? bottomLocalMiddleRetraceRatio : bottomGlobalMiddleRetraceRatio
-float bottomRightRetestRatio = visualLegRatio(bottomRightLeg, bottomMiddleLeg)
+float bottomRightRetestRatio = risklib.visualLegRatio(bottomRightLeg, bottomMiddleLeg)
 float bottomMiddleBars = not na(highSinceStructLowBar) and not na(todayStructLowBar) ? math.max((highSinceStructLowBar - todayStructLowBar) * 1.0, 1.0) : na
 float bottomRightBars = not na(highSinceStructLowBar) ? math.max((bar_index - highSinceStructLowBar) * 1.0, 1.0) : na
 float bottomMiddleSpeed = not na(bottomMiddleLeg) and not na(bottomMiddleBars) ? bottomMiddleLeg / bottomMiddleBars : na
@@ -1677,16 +1612,23 @@ else if volumeQuietRetest
 bool bottomCloseLimitLong = bottomHighVolumeRiseConfirmed or bottomNoSupplyBreakConfirmed
 float bottomFailureRetestEntry = nz(lastBottomFailureWatchClose, close) - retestCloseEntryOffset
 float bottomConfirmEntryRaw = bottomConfirmedLong ? (bottomCloseLimitLong ? bottomFailureRetestEntry : math.min(close, bottomZoneHigh + atr * predictiveEntryOffsetAtr)) : na
-float bottomFailureWatchStop = looserStop(math.min(nz(lastBottomFailureWatchLow, low), low) - invalidationBuffer, bottomPriorLowStop, 1)
-float bottomNoSupplyStop = looserStop(math.min(nz(lastBottomNoSupplyLow, low), low) - invalidationBuffer, bottomPriorLowStop, 1)
-float bottomConfirmStop = bottomConfirmedLong ? (bottomNoSupplyBreakConfirmed ? bottomNoSupplyStop : bottomHighVolumeRiseConfirmed ? bottomFailureWatchStop : looserStop(math.min(low, bottomZoneLow) - invalidationBuffer, bottomPriorLowStop, 1)) : na
+float bottomFailureWatchStop = risklib.looserStop(math.min(nz(lastBottomFailureWatchLow, low), low) - invalidationBuffer, bottomPriorLowStop, 1)
+float bottomNoSupplyStop = risklib.looserStop(math.min(nz(lastBottomNoSupplyLow, low), low) - invalidationBuffer, bottomPriorLowStop, 1)
+float bottomConfirmStop = bottomConfirmedLong ? (bottomNoSupplyBreakConfirmed ? bottomNoSupplyStop : bottomHighVolumeRiseConfirmed ? bottomFailureWatchStop : risklib.looserStop(math.min(low, bottomZoneLow) - invalidationBuffer, bottomPriorLowStop, 1)) : na
 float bottomConfirmEntry = bottomConfirmedLong ? stopBoundedEntry(1, bottomCloseLimitLong ? bottomConfirmEntryRaw : scalpLimitEntry(1, close, bottomBasis, bottomConfirmEntryRaw, atr, scalpLimitOffsetAtr), bottomConfirmStop, atr, confirmedMaxStopAtr, confirmedMaxStopBps) : na
+bool bottomCountertrendReclaimClose = not na(bottomZoneHigh) and close > bottomZoneHigh + atr * countertrendReclaimAtr
+int bottomCountertrendReclaimBars = nz(ta.barssince(not bottomCountertrendReclaimClose), countertrendReclaimCloseBars)
+bool bottomCountertrendReclaimOk = not countertrendRequiresReclaim or (bottomCountertrendReclaimClose and bottomCountertrendReclaimBars >= countertrendReclaimCloseBars - 1)
+bool bottomFreshLowContinuationRisk = trendBearPriority and not na(todayStructLow) and close <= todayStructLow + atr * freshExtremeBlockAtr and not bottomCountertrendReclaimOk
+bool bottomHasCountertrendEvidence = lowerExhaustionConfirmedLong or bottomWeakNewLowConfirmed or bottomAccumulationRiseConfirmed or bottomHighVolumeRiseConfirmed or bottomNoSupplyBreakConfirmed
+string bottomCountertrendBlockReason = modellib.bottomCountertrendBlockReason(trendBearPriority, bottomHasCountertrendEvidence, dayRangeAtr >= shockDayRangeAtr, attackDownCooling, bottomFreshLowContinuationRisk, bottomCountertrendReclaimOk)
+bool bottomCountertrendOverrideOk = trendBearPriority and bottomCountertrendBlockReason == "passed"
 bool bottomPredictContext = (bottomFirstExhaustion or bottomRightShoulder) and bottomCounterTrendAllowed and bottomPredictEntry <= close and close - bottomPredictEntry <= atr * predictionArmDistanceAtr and bottomSignalGapOk and bottomPredictVolumeOk
-bool bottomConfirmContext = bottomConfirmedLong and (bottomCounterTrendAllowed or lowerExhaustionConfirmedLong or bottomWeakNewLowConfirmed or bottomAccumulationRiseConfirmed or bottomHighVolumeRiseConfirmed or bottomNoSupplyBreakConfirmed) and bottomSignalGapOk and bottomConfirmVolumeOk
+bool bottomConfirmContext = bottomConfirmedLong and (bottomCounterTrendAllowed or bottomCountertrendOverrideOk) and bottomSignalGapOk and bottomConfirmVolumeOk
 float bottomPredictQty = calcTrialQty(bottomPredictEntry, bottomPredictStop, predictiveMaxRiskDollars)
 float bottomConfirmQty = calcTrialQty(bottomConfirmEntry, bottomConfirmStop, confirmedMaxRiskDollars)
-bool bottomPredictAllowed = bottomPredictContext and smallStopTrialAllowed(1, bottomPredictEntry, bottomPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and bottomPredictQty >= 1.0
-bool bottomConfirmAllowed = bottomConfirmContext and smallStopTrialAllowed(1, bottomConfirmEntry, bottomConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and bottomConfirmQty >= 1.0
+bool bottomPredictAllowed = bottomPredictContext and risklib.smallStopTrialAllowed(1, bottomPredictEntry, bottomPredictStop, atr, predictiveMaxRiskDollars, predictiveMaxStopAtr, predictiveMaxStopBps) and bottomPredictQty >= 1.0
+bool bottomConfirmAllowed = bottomConfirmContext and risklib.smallStopTrialAllowed(1, bottomConfirmEntry, bottomConfirmStop, atr, confirmedMaxRiskDollars, confirmedMaxStopAtr, confirmedMaxStopBps) and bottomConfirmQty >= 1.0
 string bottomProbeFilterReason = "passed"
 if na(todayStructLow)
     bottomProbeFilterReason := "no_today_struct_low"
@@ -1706,8 +1648,8 @@ else if not bottomPullbackArmed
     bottomProbeFilterReason := "pullback_not_enough"
 else if not bottomRetestBand
     bottomProbeFilterReason := "not_retest_zone"
-else if dominantTrendShort and not lowerExhaustionConfirmedLong and not bottomHighVolumeRiseConfirmed and not bottomNoSupplyBreakConfirmed
-    bottomProbeFilterReason := "blocked_by_dominant_bear_trend"
+else if bottomCountertrendBlockReason != "passed"
+    bottomProbeFilterReason := bottomCountertrendBlockReason
 else if not bottomSignalBarsOk
     bottomProbeFilterReason := "signal_bars_too_close"
 else if not bottomSignalPriceGapOk
@@ -1723,11 +1665,14 @@ bool bottomWeakLongAllowed = bottomConfirmAllowed and (bottomWeakNewLowConfirmed
 bool topWeakShortAllowed = topConfirmAllowed and (topWeakNewHighConfirmed or topDistributionDropConfirmed or topFailureRepeatShort)
 int longScore = trendLongConfirmNow ? 160 + trendSupportCount : bottomConfirmAllowed ? (bottomWeakLongAllowed ? 145 : 140) + bottomCount : 0
 int shortScore = trendShortConfirmNow ? 160 + trendResistanceCount : topConfirmAllowed ? (topWeakShortAllowed ? 145 : 140) + topCount : 0
-bool conflict = longActionable and shortActionable and longScore == shortScore
-bool selectedLong = longActionable and not conflict and (not shortActionable or longScore > shortScore)
-bool selectedShort = shortActionable and not conflict and (not longActionable or shortScore > longScore)
+bool priorityTrendLong = trendBullPriority and trendLongConfirmNow
+bool priorityTrendShort = trendBearPriority and trendShortConfirmNow
+bool modelConflictNoClearEdge = modellib.conflictNoClearEdge(longActionable, shortActionable, longScore, shortScore, priorityTrendLong, priorityTrendShort)
+bool conflict = modelConflictNoClearEdge
+bool selectedLong = modellib.selectedLong(priorityTrendLong, longActionable, conflict, priorityTrendShort, shortActionable, longScore, shortScore)
+bool selectedShort = modellib.selectedShort(priorityTrendShort, shortActionable, conflict, priorityTrendLong, longActionable, shortScore, longScore)
 int selectedDirection = selectedLong ? 1 : selectedShort ? -1 : 0
-string selectedSetup = selectedLong ? (trendLongConfirmNow ? "trend_support_long" : "probe_2b_bottom_long") : selectedShort ? (trendShortConfirmNow ? "trend_resistance_short" : "probe_2b_top_short") : "none"
+string selectedSetup = modellib.selectedSetup(selectedLong, selectedShort, trendLongConfirmNow, trendShortConfirmNow)
 bool selectedTrendSupport = selectedSetup == "trend_support_long"
 bool selectedTrendResistance = selectedSetup == "trend_resistance_short"
 bool selectedTopProbe = selectedSetup == "probe_2b_top_short"
@@ -1745,18 +1690,18 @@ float selectedRiskBudget = selectedDirection != 0 ? confirmedMaxRiskDollars : na
 float selectedMaxStopAtr = selectedDirection != 0 ? confirmedMaxStopAtr : na
 float selectedMaxStopBps = selectedDirection != 0 ? confirmedMaxStopBps : na
 float selectedActivationR = selectedDirection != 0 ? scalpBreakevenR : na
-float selectedRunnerActivation = selectedDirection != 0 ? calcTargetAtR(selectedEntry, selectedStop, selectedDirection, selectedActivationR) : na
-float selectedTarget = selectedDirection != 0 ? scalpEmaTarget(selectedDirection, emaFast, atr, emaTargetOffsetAtr) : na
-float selectedStopDistanceAtr = stopDistanceAtr(selectedEntry, selectedStop, atr)
-float selectedStopDistanceBps = stopDistanceBps(selectedEntry, selectedStop)
+float selectedRunnerActivation = selectedDirection != 0 ? risklib.calcTargetAtR(selectedEntry, selectedStop, selectedDirection, selectedActivationR) : na
+float selectedTarget = selectedDirection != 0 ? risklib.scalpEmaTarget(selectedDirection, emaFast, atr, emaTargetOffsetAtr) : na
+float selectedStopDistanceAtr = risklib.stopDistanceAtr(selectedEntry, selectedStop, atr)
+float selectedStopDistanceBps = risklib.stopDistanceBps(selectedEntry, selectedStop)
 float selectedEmaProfitAtr = selectedDirection != 0 and atr > 0.0 ? math.abs(selectedTarget - selectedEntry) / atr : na
 bool selectedEmaTargetInProfit = selectedDirection == 1 ? selectedTarget > selectedEntry : selectedDirection == -1 ? selectedTarget < selectedEntry : false
-float selectedExpectedR = selectedDirection != 0 and riskPerShare(selectedEntry, selectedStop) > 0.0 ? math.abs(selectedTarget - selectedEntry) / riskPerShare(selectedEntry, selectedStop) : na
-float selectedTpRunnerGapR = selectedDirection != 0 and riskPerShare(selectedEntry, selectedStop) > 0.0 ? math.abs(selectedTarget - selectedRunnerActivation) / riskPerShare(selectedEntry, selectedStop) : na
+float selectedExpectedR = selectedDirection != 0 and risklib.riskPerShare(selectedEntry, selectedStop) > 0.0 ? math.abs(selectedTarget - selectedEntry) / risklib.riskPerShare(selectedEntry, selectedStop) : na
+float selectedTpRunnerGapR = selectedDirection != 0 and risklib.riskPerShare(selectedEntry, selectedStop) > 0.0 ? math.abs(selectedTarget - selectedRunnerActivation) / risklib.riskPerShare(selectedEntry, selectedStop) : na
 bool selectedExpectedRPassed = selectedDirection != 0 and selectedEmaTargetInProfit and selectedEmaProfitAtr >= minEmaProfitAtr and selectedExpectedR >= scalpMinExpectedR
 bool selectedTpRunnerGapPassed = selectedDirection != 0 and not na(selectedTpRunnerGapR) and selectedTpRunnerGapR >= minTpRunnerGapR
-bool selectedSmallStopGatePassed = selectedDirection != 0 and smallStopTrialAllowed(selectedDirection, selectedEntry, selectedStop, atr, selectedRiskBudget, selectedMaxStopAtr, selectedMaxStopBps)
-string selectedSmallStopGateReason = selectedDirection == 0 ? "no_candidate" : smallStopGateReason(selectedDirection, selectedEntry, selectedStop, atr, selectedRiskBudget, selectedMaxStopAtr, selectedMaxStopBps)
+bool selectedSmallStopGatePassed = selectedDirection != 0 and risklib.smallStopTrialAllowed(selectedDirection, selectedEntry, selectedStop, atr, selectedRiskBudget, selectedMaxStopAtr, selectedMaxStopBps)
+string selectedSmallStopGateReason = selectedDirection == 0 ? "no_candidate" : risklib.smallStopGateReason(selectedDirection, selectedEntry, selectedStop, atr, selectedRiskBudget, selectedMaxStopAtr, selectedMaxStopBps)
 float selectedStructureAnchor = selectedTrendSupport ? trendSupportBasis : selectedTrendResistance ? trendResistanceBasis : selectedTopProbe ? todayStructHigh : selectedBottomProbe ? todayStructLow : na
 float selectedEntryAnchorDistanceAtr = selectedDirection != 0 and not na(selectedStructureAnchor) and atr > 0.0 ? math.abs(selectedEntry - selectedStructureAnchor) / atr : na
 bool selectedProbeStrictTouchOk = selectedTopProbe ? topStrictRetestTouch : selectedBottomProbe ? bottomStrictRetestTouch : false
@@ -1798,6 +1743,12 @@ float selectedProbeAnchorPrice = selectedTopProbe ? todayStructHigh : selectedBo
 string trendStructDir = strongStructTrendLong ? "bull_HH_HL" : strongStructTrendShort ? "bear_LL_LH" : dominantTrendLong ? "dominant_bull" : dominantTrendShort ? "dominant_bear" : "none"
 string selectedTrendStructPattern = selectedTrendSupport ? "HH_HL" : selectedTrendResistance ? "LL_LH" : "none"
 string selectedTrendSources = selectedTrendSupport ? trendSupportSources : selectedTrendResistance ? trendResistanceSources : "none"
+string selectedTrendEntrySource = selectedTrendSupport ? trendSupportEntrySource : selectedTrendResistance ? trendResistanceEntrySource : "none"
+string selectedTradeFamily = modellib.tradeFamily(selectedTrendSupport, selectedTrendResistance, selectedTopProbe, selectedBottomProbe, marketRegime)
+bool selectedCountertrendReclaimOk = selectedTopProbe ? topCountertrendReclaimOk : selectedBottomProbe ? bottomCountertrendReclaimOk : true
+string selectedCountertrendBlockReason = selectedTopProbe ? topCountertrendBlockReason : selectedBottomProbe ? bottomCountertrendBlockReason : "passed"
+bool trendPlusReversionConfluence = (trendLongConfirmNow and bottomConfirmAllowed) or (trendShortConfirmNow and topConfirmAllowed)
+string modelConflictReason = modellib.conflictReason(modelConflictNoClearEdge)
 string selectedTopMainReason = "today_struct_high_probe_failed_breakout"
 if topVolumeClimaxFailedBreakConfirmed
     selectedTopMainReason := "new_high_volume_climax_failed"
@@ -1884,17 +1835,17 @@ fmtSignedRCore(float value) =>
     na(value) ? "--R" : (value >= 0.0 ? "+" : "-") + str.tostring(math.abs(value), "#.##") + "R"
 
 exitReasonDisplayNameCore(string reason) =>
-    reason == "take_profit" ? "TP" : reason == "runner_stop" ? "RUN" : reason == "no_follow_scalp_exit" ? "NFT" : reason == "exhaustion_take_profit" ? "XTP" : reason == "stop_loss" ? "SL" : reason == "force_flat_eod" ? "EOD" : reason == "strategy_closed" ? "CLS" : reason
+    fmtlib.exitReasonShortName(reason)
 
 entryOrderComment(int direction, float entryPrice, float qty, float stopPrice, float targetPrice, float runnerPrice) =>
-    float plannedRisk = riskPerShare(entryPrice, stopPrice) * qty
-    (direction == 1 ? "L " : "S ") + fmtPrice(entryPrice) + " Q" + str.tostring(qty, "#") + " SL " + fmtPrice(stopPrice) + " TP " + fmtPrice(targetPrice) + " R$" + str.tostring(plannedRisk, "#.##")
+    float plannedRisk = risklib.riskPerShare(entryPrice, stopPrice) * qty
+    (direction == 1 ? "L " : "S ") + fmtlib.fmtPrice(entryPrice) + " Q" + str.tostring(qty, "#") + " SL " + fmtlib.fmtPrice(stopPrice) + " TP " + fmtlib.fmtPrice(targetPrice) + " R$" + str.tostring(plannedRisk, "#.##")
 
 exitOrderComment(string reason, float exitPrice) =>
     float pnlPerShare = activeDirection == 1 ? exitPrice - activeEntry : activeEntry - exitPrice
     float pnlValue = pnlPerShare * activeQty
     float pnlR = activeInitialRisk > 0.0 ? pnlPerShare / activeInitialRisk : na
-    exitReasonDisplayNameCore(reason) + " " + fmtSignedMoneyCore(pnlValue) + " X" + fmtPrice(exitPrice)
+    exitReasonDisplayNameCore(reason) + " " + fmtSignedMoneyCore(pnlValue) + " X" + fmtlib.fmtPrice(exitPrice)
 
 // -----------------------------------------------------------------------------
 // Payload builders
@@ -1953,6 +1904,14 @@ buildEntryPayload(string eventIdValue, string signalIdValue, string tradeGroupId
      jsonStr("risk_model", RISK_MODEL) + "," +
      jsonStr("tp_sl_model", TP_SL_MODEL) + "," +
      jsonStr("trade_model", TRADE_MODEL) + "," +
+     jsonStr("market_regime", marketRegime) + "," +
+     jsonStr("trade_family", selectedTradeFamily) + "," +
+     jsonStr("trend_entry_source", selectedTrendEntrySource) + "," +
+     jsonBool("regime_priority_enabled", enableRegimePriority) + "," +
+     jsonBool("countertrend_reclaim_ok", selectedCountertrendReclaimOk) + "," +
+     jsonStr("countertrend_block_reason", selectedCountertrendBlockReason) + "," +
+     jsonBool("trend_plus_reversion_confluence", trendPlusReversionConfluence) + "," +
+     jsonStr("model_conflict_reason", modelConflictReason) + "," +
      jsonNum("ema_fast_price", emaFast) + "," +
      jsonNum("ema_target_price", selectedTarget) + "," +
      jsonNum("ema_profit_atr", selectedEmaProfitAtr) + "," +
@@ -1968,6 +1927,7 @@ buildEntryPayload(string eventIdValue, string signalIdValue, string tradeGroupId
      jsonStr("trend_struct_pattern", selectedTrendStructPattern) + "," +
      jsonNum("trend_anchor_price", selectedTrendSupport or selectedTrendResistance ? selectedStructureAnchor : na) + "," +
      jsonStr("trend_support_sources", selectedTrendSources) + "," +
+     jsonStr("trend_source", selectedTrendEntrySource) + "," +
      jsonStr("trend_regime", trendRegime) + "," +
      jsonStr("dominant_trend_side", dominantTrendSide) + "," +
      jsonBool("day_range_formed", dayRangeFormed) + "," +
@@ -2253,7 +2213,7 @@ bool selectedPlanValid = selectedDirection != 0 and selectedPlanQualityOk and se
 string selectedExpectedRBlockReason = not selectedEmaTargetInProfit or selectedEmaProfitAtr < minEmaProfitAtr ? "ema_tp_too_close" : "expected_r_too_small"
 string selectedBlockReason = "passed"
 if selectedDirection == 0
-    selectedBlockReason := "no_candidate"
+    selectedBlockReason := modelConflictNoClearEdge ? "model_conflict_no_clear_edge" : "no_candidate"
 else if not selectedStructureClear
     selectedBlockReason := "no_clear_structure"
 else if selectedProbeSetup and not selectedProbeCycleActive
@@ -2312,7 +2272,7 @@ if submitNewPlan
     activeRunnerActivation := selectedRunnerActivation
     activeActivationR := selectedActivationR
     activeQty := selectedQty
-    activeInitialRisk := riskPerShare(selectedEntry, selectedStop)
+    activeInitialRisk := risklib.riskPerShare(selectedEntry, selectedStop)
     activeStructureAnchor := selectedStructureAnchor
     activeProbeCycleId := selectedProbeSetup ? selectedProbeCycleId : na
     activeSignalBar := bar_index
@@ -2362,8 +2322,8 @@ if confirmed and activePosition and hasOpenStrategyPosition and activeRiskTiming
         riskReason := "runner_activation"
     if activeRunnerActive
         float rawTrailStop = activeDirection == 1 ? activeRunnerExtreme - atr * runnerTrailAtrMult : activeRunnerExtreme + atr * runnerTrailAtrMult
-        float structureTrailStop = floatingStructureStop(activeDirection, activeStop, lastPivotLow, lastPivotHigh, close, invalidationBuffer)
-        float trailStop = looserStop(rawTrailStop, structureTrailStop, activeDirection)
+        float structureTrailStop = risklib.floatingStructureStop(activeDirection, activeStop, lastPivotLow, lastPivotHigh, close, invalidationBuffer)
+        float trailStop = risklib.looserStop(rawTrailStop, structureTrailStop, activeDirection)
         float improvedStop = activeDirection == 1 ? math.max(activeStop, trailStop) : math.min(activeStop, trailStop)
         if priceChanged(activeStop, improvedStop)
             activeStop := improvedStop
@@ -2372,10 +2332,10 @@ if confirmed and activePosition and hasOpenStrategyPosition and activeRiskTiming
         activeManualExitReason := "no_follow_scalp_exit"
         strategy.close(orderIdForDirection(activeDirection), comment=exitOrderComment("no_follow_scalp_exit", close))
     else if not activeRunnerActive and barsInTrade >= noFollowThroughBars and activeMfeR < noFollowThroughMinMfeR
-        float structureCompressStop = floatingStructureStop(activeDirection, activeStop, lastPivotLow, lastPivotHigh, close, invalidationBuffer)
+        float structureCompressStop = risklib.floatingStructureStop(activeDirection, activeStop, lastPivotLow, lastPivotHigh, close, invalidationBuffer)
         if not na(structureCompressStop)
             float rawCompressedStop = activeEntry - activeInitialRisk * noFollowThroughCompressedStopR * activeDirection
-            float compressedStop = looserStop(rawCompressedStop, structureCompressStop, activeDirection)
+            float compressedStop = risklib.looserStop(rawCompressedStop, structureCompressStop, activeDirection)
             float improvedStop = activeDirection == 1 ? math.max(activeStop, compressedStop) : math.min(activeStop, compressedStop)
             if priceChanged(activeStop, improvedStop)
                 activeStop := improvedStop

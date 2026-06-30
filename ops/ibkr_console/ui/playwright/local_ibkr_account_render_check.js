@@ -455,6 +455,7 @@ common = common.replace(
 const safeCommon = common.replace(/<\/script/gi, '<\\/script');
 const injected = `<script>${safeCommon}</script><script>
 window.__MOCK_SNAPSHOT__ = ${JSON.stringify(mockSnapshot)};
+window.__ACCOUNT_SNAPSHOT_REQUESTS__ = [];
 window.getUsDate = function() { return '2026-04-10'; };
 window.buildPageUrl = function(path, params = {}, options = {}) {
   const search = new URLSearchParams();
@@ -468,6 +469,9 @@ window.buildPageUrl = function(path, params = {}, options = {}) {
 };
 window.fetchWithRetry = async function(input) {
   const url = String(input || '');
+  if (url.includes('/api/custom/ibkr/account_snapshot')) {
+    window.__ACCOUNT_SNAPSHOT_REQUESTS__.push(url);
+  }
   if (url.includes('/api/custom/ibkr/today-targets')) {
     const payload = {
       ok: true,
@@ -519,10 +523,23 @@ html = html.replace(/<link href="https:\/\/fonts\.googleapis\.com[^"]+" rel="sty
     await route.fulfill({ status: 200, contentType: 'text/plain', body: '' });
   });
   await page.goto('http://local.ibkr-account.test/ibkr_account.html?environment=live&broker_mode=paper', { waitUntil: 'load' });
+  await page.waitForFunction(() => {
+    const text = document.getElementById('ordersMeta')?.textContent || '';
+    return text.includes('manual refresh');
+  }, { timeout: 15000 });
+  const accountSnapshotRequestsBeforeClick = await page.evaluate(() => window.__ACCOUNT_SNAPSHOT_REQUESTS__.length);
+  await page.click('#refreshOrdersButton');
+  await page.waitForFunction(() => {
+    const text = document.getElementById('ordersMeta')?.textContent || '';
+    return text.includes('IBKR live') && text.includes('signals') && text.includes('brackets');
+  }, { timeout: 15000 });
+  const accountSnapshotRequestsAfterOrdersClick = await page.evaluate(() => window.__ACCOUNT_SNAPSHOT_REQUESTS__.length);
+  await page.click('#refreshButton');
   try {
     await page.waitForFunction(() => {
       const text = document.getElementById('ordersMeta')?.textContent || '';
-      return text.includes('IBKR live') && text.includes('signals') && text.includes('brackets');
+      const requests = window.__ACCOUNT_SNAPSHOT_REQUESTS__ || [];
+      return text.includes('IBKR live') && text.includes('signals') && text.includes('brackets') && requests.length >= 3;
     }, { timeout: 15000 });
   } catch (error) {
     const debug = await page.evaluate(() => ({
@@ -537,6 +554,11 @@ html = html.replace(/<link href="https:\/\/fonts\.googleapis\.com[^"]+" rel="sty
   }
 
   const result = await page.evaluate(() => ({
+    accountSnapshotRequestCount: window.__ACCOUNT_SNAPSHOT_REQUESTS__.length,
+    accountSnapshotRequests: window.__ACCOUNT_SNAPSHOT_REQUESTS__.slice(),
+    refreshOrdersButtonText: document.getElementById('refreshOrdersButton')?.innerText || '',
+    refreshAllButtonText: document.getElementById('refreshButton')?.innerText || '',
+    inlineOrdersRefreshButtonCount: document.querySelectorAll('#ordersSection #refreshOrdersButton').length,
     ordersMeta: document.getElementById('ordersMeta')?.textContent || '',
     positionsMeta: document.getElementById('positionsMeta')?.textContent || '',
     accountSummaryText: document.getElementById('summaryGrid')?.innerText || '',
@@ -560,6 +582,15 @@ html = html.replace(/<link href="https:\/\/fonts\.googleapis\.com[^"]+" rel="sty
   await browser.close();
 
   const passed = result.ordersMeta.includes('4 IBKR live')
+    && accountSnapshotRequestsBeforeClick === 0
+    && accountSnapshotRequestsAfterOrdersClick === 1
+    && result.accountSnapshotRequestCount === 3
+    && result.accountSnapshotRequests[0].includes('orders_fast=1')
+    && result.accountSnapshotRequests[1].includes('orders_fast=1')
+    && result.accountSnapshotRequests[2].includes('refresh_scope=buying_power')
+    && result.refreshOrdersButtonText.includes('刷新持仓/挂单')
+    && result.refreshAllButtonText.includes('刷新全部')
+    && result.inlineOrdersRefreshButtonCount === 0
     && result.ordersMeta.includes('signals 2')
     && result.ordersMeta.includes('brackets 3')
     && result.areaText.includes('Broker Only Live Signal Groups')
@@ -597,6 +628,8 @@ html = html.replace(/<link href="https:\/\/fonts\.googleapis\.com[^"]+" rel="sty
 
   const output = {
     passed,
+    accountSnapshotRequestsBeforeClick,
+    accountSnapshotRequestsAfterOrdersClick,
     ...result,
     pageErrors,
     consoleMessages,

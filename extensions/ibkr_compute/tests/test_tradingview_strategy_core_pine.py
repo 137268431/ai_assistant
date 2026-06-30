@@ -3,8 +3,14 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-CORE_PINE_PATH = REPO_ROOT / "tradingview" / "Signal_Strategy_Core[Glory].pine"
-DISPLAY_PINE_PATH = REPO_ROOT / "tradingview" / "Signal_Strategy_Display[Glory].pine"
+CORE_PINE_PATH = REPO_ROOT / "tradingview" / "new" / "Signal_Strategy_Core[Glory].pine"
+DISPLAY_PINE_PATH = REPO_ROOT / "tradingview" / "new" / "Signal_Strategy_Display[Glory].pine"
+COMMON_PINE_PATH = REPO_ROOT / "tradingview" / "new" / "Signal_Strategy_Common[Glory].pine"
+LIBS_DIR = REPO_ROOT / "tradingview" / "new" / "libs"
+FORMAT_PINE_PATH = LIBS_DIR / "SSC_Lib_Format[Glory].pine"
+RISK_PINE_PATH = LIBS_DIR / "SSC_Lib_Risk[Glory].pine"
+LEVELS_PINE_PATH = LIBS_DIR / "SSC_Lib_Levels[Glory].pine"
+MODEL_PINE_PATH = LIBS_DIR / "SSC_Lib_Model[Glory].pine"
 V1_CORE_PINE_PATH = REPO_ROOT / "tradingview" / "v1" / "Signal_Strategy_Core[Glory].pine"
 V1_DISPLAY_PINE_PATH = REPO_ROOT / "tradingview" / "v1" / "Signal_Strategy_Display[Glory].pine"
 
@@ -14,6 +20,10 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
     def setUpClass(cls):
         cls.source = CORE_PINE_PATH.read_text(encoding="utf-8")
         cls.display_source = DISPLAY_PINE_PATH.read_text(encoding="utf-8")
+        cls.format_source = FORMAT_PINE_PATH.read_text(encoding="utf-8")
+        cls.risk_source = RISK_PINE_PATH.read_text(encoding="utf-8")
+        cls.levels_source = LEVELS_PINE_PATH.read_text(encoding="utf-8")
+        cls.model_source = MODEL_PINE_PATH.read_text(encoding="utf-8")
 
     def test_core_and_display_scripts_have_separate_responsibilities(self):
         core = self.source
@@ -74,18 +84,103 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
             self.assertIn('confirmedMaxStopAtr = input.float(0.90, "Confirmed max stop distance (x ATR)"', text)
             self.assertIn('predictiveMaxStopBps = input.float(60.0, "Predictive max stop distance (bps)"', text)
             self.assertIn('confirmedMaxStopBps = input.float(80.0, "Confirmed max stop distance (bps)"', text)
-            self.assertIn('smallStopTrialAllowed(int direction, float entryPrice, float stopPrice, float atrValue, float maxRiskDollars, float maxAtrMultiple, float maxBps) =>', text)
-            self.assertIn('smallStopGateReason(int direction, float entryPrice, float stopPrice, float atrValue, float maxRiskDollars, float maxAtrMultiple, float maxBps) =>', text)
-            self.assertIn('bool sideOk = direction == 1 ? stopPrice < entryPrice : direction == -1 ? stopPrice > entryPrice : false', text)
             self.assertIn('stopBoundedEntry(int direction, float proposedEntry, float stopPrice, float atrValue, float maxAtrMultiple, float maxBps) =>', text)
-            self.assertIn('sideOk and entryPrice > 0.0 and stopPrice > 0.0 and rps > 0.0 and rps <= maxRiskDollars and atrDistance <= maxAtrMultiple and bpsDistance <= maxBps', text)
             self.assertIn('calcTrialQty(float entryPrice, float stopPrice, float maxRiskDollars) =>', text)
-            self.assertIn('riskQty = rps > 0.0 ? math.floor(maxRiskDollars * riskQtySafetyPct / rps) : 0.0', text)
-            self.assertIn('scalpMinExpectedR = input.float(1.00, "Scalp minimum expected reward (R)"', text)
+            self.assertIn('risklib.smallStopTrialAllowed(', text)
+            self.assertIn('risklib.smallStopGateReason(', text)
+            self.assertIn('risklib.stopBoundedEntry(direction, proposedEntry, stopPrice, atrValue, maxAtrMultiple, maxBps, syminfo.mintick)', text)
+            self.assertIn('risklib.calcTrialQty(entryPrice, stopPrice, maxRiskDollars, atr, riskQtyBufferAtr, riskQtySafetyPct, useNotionalCap, positionAmount, syminfo.mintick)', text)
+            self.assertIn('scalpMinExpectedR = input.float(1.50, "Scalp minimum expected reward (R)"', text)
+            self.assertIn('minTpRunnerGapR = input.float(0.50, "Minimum TP-runner gap (R)"', text)
+            self.assertIn('allowSameBarRunnerAfterFill = input.bool(false, "Allow same-bar runner after fill"', text)
             self.assertIn('minEmaProfitAtr = input.float(0.80, "Minimum EMA target room (x ATR)"', text)
             self.assertIn('rsiLen = input.int(14, "Scalp RSI length"', text)
             self.assertNotIn('minStopRiskFloorDollars', text)
             self.assertNotIn('Minimum stop breathing room', text)
+
+    def test_split_libraries_contain_shared_display_helpers(self):
+        core = self.source
+        display = self.display_source
+        format_lib = self.format_source
+        risk_lib = self.risk_source
+        levels_lib = self.levels_source
+        model_lib = self.model_source
+
+        self.assertFalse(COMMON_PINE_PATH.exists())
+        for path in (FORMAT_PINE_PATH, RISK_PINE_PATH, LEVELS_PINE_PATH, MODEL_PINE_PATH):
+            self.assertTrue(path.exists())
+        self.assertIn('library("SSC_Lib_Format_Glory", overlay=true)', format_lib)
+        self.assertIn('library("SSC_Lib_Risk_Glory", overlay=true)', risk_lib)
+        self.assertIn('library("SSC_Lib_Levels_Glory", overlay=true)', levels_lib)
+        self.assertIn('library("SSC_Lib_Model_Glory", overlay=true)', model_lib)
+        for text in (core, display):
+            self.assertIn('import o8431/SSC_Lib_Format_Glory/1 as fmtlib', text)
+            self.assertIn('import o8431/SSC_Lib_Risk_Glory/1 as risklib', text)
+            self.assertIn('import o8431/SSC_Lib_Levels_Glory/1 as levellib', text)
+            self.assertIn('import o8431/SSC_Lib_Model_Glory/1 as modellib', text)
+            self.assertNotIn('Signal_Strategy_Common_Glory', text)
+            self.assertNotIn('Signal_Strategy_Text_Glory', text)
+            self.assertNotIn('as text', text)
+            self.assertNotIn('text.', text)
+            self.assertNotIn('common.', text)
+        for export in (
+            "export fmt(",
+            "export moneyText(",
+            "export qtyText(",
+            "export setupDisplayName(",
+            "export reasonCn(",
+            "export exitReasonShortName(",
+        ):
+            self.assertIn(export, format_lib)
+        for export in (
+            "export riskPerShare(",
+            "export riskDollars(",
+            "export stopBoundedEntry(",
+            "export smallStopTrialAllowed(",
+            "export smallStopGateReason(",
+            "export calcTrialQty(",
+            "export scalpEmaTarget(",
+            "export floatingStructureStop(",
+        ):
+            self.assertIn(export, risk_lib)
+        for export in (
+            "export nearestBelow(",
+            "export nearestAbove(",
+            "export appendNearSource(",
+        ):
+            self.assertIn(export, levels_lib)
+        for export in (
+            "export marketRegime(",
+            "export topCountertrendBlockReason(",
+            "export bottomCountertrendBlockReason(",
+            "export conflictNoClearEdge(",
+            "export selectedLong(",
+            "export selectedShort(",
+            "export selectedSetup(",
+            "export tradeFamily(",
+        ):
+            self.assertIn(export, model_lib)
+        for reason in (
+            "tp_runner_gap_too_small",
+            "dominant_bear_countertrend_block",
+            "dominant_bull_countertrend_block",
+            "countertrend_reclaim_missing",
+            "fresh_low_continuation_risk",
+            "fresh_high_continuation_risk",
+            "attack_volume_cooling_block",
+            "shock_day_countertrend_block",
+            "model_conflict_no_clear_edge",
+        ):
+            self.assertIn(f'"{reason}"', format_lib + model_lib)
+
+    def test_countertrend_reclaim_uses_stable_barssince_series(self):
+        for text in (self.source, self.display_source):
+            self.assertIn("int topCountertrendBreakdownBars = nz(ta.barssince(not topCountertrendBreakdownClose), countertrendReclaimCloseBars)", text)
+            self.assertIn("int bottomCountertrendReclaimBars = nz(ta.barssince(not bottomCountertrendReclaimClose), countertrendReclaimCloseBars)", text)
+            self.assertIn("topCountertrendBreakdownClose and topCountertrendBreakdownBars >= countertrendReclaimCloseBars - 1", text)
+            self.assertIn("bottomCountertrendReclaimClose and bottomCountertrendReclaimBars >= countertrendReclaimCloseBars - 1", text)
+            self.assertNotIn("topCountertrendBreakdownClose and nz(ta.barssince", text)
+            self.assertNotIn("bottomCountertrendReclaimClose and nz(ta.barssince", text)
 
     def test_only_current_setup_families_are_used_in_current_files(self):
         for text in (self.source, self.display_source):
@@ -115,14 +210,28 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertIn('bool dominantTrendShort = dayRangeClear and dtpBear and close <= sdMid', source)
         self.assertIn('bool trendLongContext = strongStructTrendLong or dominantTrendLong', source)
         self.assertIn('bool trendShortContext = strongStructTrendShort or dominantTrendShort', source)
-        self.assertIn('float trendSupportBasis = trendLongContext ? todayStructLow : na', source)
-        self.assertIn('float trendResistanceBasis = trendShortContext ? todayStructHigh : na', source)
+        self.assertIn('enableRegimePriority = input.bool(true, "Enable regime priority"', source)
+        self.assertIn('trendPullbackBandAtr = input.float(0.35, "Trend pullback band (x ATR)"', source)
+        self.assertIn('trendRejectClosePosLongMin = input.float(0.55, "Trend long reject close position min"', source)
+        self.assertIn('trendRejectClosePosShortMax = input.float(0.45, "Trend short reject close position max"', source)
+        self.assertIn('float trendSupportStructureBasis = trendLongContext ? todayStructLow : na', source)
+        self.assertIn('float trendSupportPullbackBasis = trendLongContext ? levellib.nearestBelow(close + trendPullbackBand', source)
+        self.assertIn('bool trendSupportUsesPullback = trendSupportPullbackReject', source)
+        self.assertIn('float trendSupportBasis = trendSupportUsesPullback ? trendSupportPullbackBasis : trendSupportStructureBasis', source)
+        self.assertIn('string trendSupportEntrySource = trendSupportUsesPullback ?', source)
+        self.assertIn('float trendResistanceStructureBasis = trendShortContext ? todayStructHigh : na', source)
+        self.assertIn('float trendResistancePullbackBasis = trendShortContext ? levellib.nearestAbove(close - trendPullbackBand', source)
+        self.assertIn('bool trendResistanceUsesPullback = trendResistancePullbackReject', source)
+        self.assertIn('float trendResistanceBasis = trendResistanceUsesPullback ? trendResistancePullbackBasis : trendResistanceStructureBasis', source)
+        self.assertIn('string trendResistanceEntrySource = trendResistanceUsesPullback ?', source)
         self.assertIn('strongTrendSupport = trendLongContext and dayRangeClear and trendSupportAgeBars >= minTrendSupportAgeBars', source)
         self.assertIn('strongTrendResistance = trendShortContext and dayRangeClear and trendResistanceAgeBars >= minTrendSupportAgeBars', source)
         self.assertNotIn('strongTrendSupport = trendLongContext and dayRangeClear and trendSupportAgeBars >= minTrendSupportAgeBars and trendSupportCount >= minConfluenceCount', source)
         self.assertNotIn('strongTrendResistance = trendShortContext and dayRangeClear and trendResistanceAgeBars >= minTrendSupportAgeBars and trendResistanceCount >= minConfluenceCount', source)
         self.assertIn('bool trendLongPredictContext = trendLongContext and strongTrendSupport and trendLongPredictEntry', source)
+        self.assertIn('bool trendLongConfirmContext = trendLongContext and strongTrendSupport and low <= trendSupportZoneHigh + trendPullbackBand', source)
         self.assertIn('bool trendShortPredictContext = trendShortContext and strongTrendResistance and trendShortPredictEntry', source)
+        self.assertIn('bool trendShortConfirmContext = trendShortContext and strongTrendResistance and high >= trendResistanceZoneLow - trendPullbackBand', source)
         self.assertIn('trendLongPredictStop = strongTrendSupport ? trendSupportZoneLow - invalidationBuffer', source)
         self.assertIn('trendShortPredictStop = strongTrendResistance ? trendResistanceZoneHigh + invalidationBuffer', source)
 
@@ -221,8 +330,8 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
             self.assertIn('highBeforeStructLow', text)
             self.assertIn('lowSinceStructHighBar', text)
             self.assertIn('highSinceStructLowBar', text)
-            self.assertIn('visualLegBps(float legValue, float basisPrice) =>', text)
-            self.assertIn('visualLegRatio(float numerator, float denominator) =>', text)
+            self.assertIn('risklib.visualLegBps(', text)
+            self.assertIn('risklib.visualLegRatio(', text)
             self.assertIn('volumeRatio = not na(volumeMa) and volumeMa > 0.0 ? barVolume / volumeMa : 1.0', text)
             self.assertIn('volumeAttackUp = volumeExpanded and close > open and closePosition >= attackClosePosThreshold', text)
             self.assertIn('volumeAttackDown = volumeExpanded and close < open and closePosition <= 1.0 - attackClosePosThreshold', text)
@@ -263,8 +372,8 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
             self.assertNotIn('"volume_attack_up_no_short"', text)
             self.assertNotIn('"volume_attack_down_no_long"', text)
 
-        self.assertIn('topPredictAllowed = topPredictContext and smallStopTrialAllowed(-1', source)
-        self.assertIn('bottomPredictAllowed = bottomPredictContext and smallStopTrialAllowed(1', source)
+        self.assertIn('topPredictAllowed = topPredictContext and risklib.smallStopTrialAllowed(-1', source)
+        self.assertIn('bottomPredictAllowed = bottomPredictContext and risklib.smallStopTrialAllowed(1', source)
         self.assertIn('float topBasis = todayStructHigh', source)
         self.assertIn('float bottomBasis = todayStructLow', source)
         self.assertIn('strongTopProbeZone = not na(todayStructHigh) and not na(topZoneLow) and not na(topZoneHigh)', source)
@@ -325,11 +434,11 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertIn('bottomNoSupplyBreakDelayed = confirmed and bottomPullbackArmed and recentBottomNoSupplyWindow and bottomNoSupplyStreak >= 2', source)
         self.assertIn('bottomNoSupplyBreakConfirmed = bottomNoSupplyBreakImmediate or bottomNoSupplyBreakDelayed', source)
         self.assertIn('close >= lastBottomFailureWatchBase + atr * failedBreakCloseBackAtr', source)
-        self.assertIn('topLeftLegBps = visualLegBps(topLeftLeg, todayStructHigh)', source)
-        self.assertIn('topGlobalMiddleRetraceRatio = visualLegRatio(topMiddleLeg, topLeftLeg)', source)
-        self.assertIn('topLocalMiddleRetraceRatio = visualLegRatio(topMiddleLeg, topLocalLeftLeg)', source)
+        self.assertIn('topLeftLegBps = risklib.visualLegBps(topLeftLeg, todayStructHigh)', source)
+        self.assertIn('topGlobalMiddleRetraceRatio = risklib.visualLegRatio(topMiddleLeg, topLeftLeg)', source)
+        self.assertIn('topLocalMiddleRetraceRatio = risklib.visualLegRatio(topMiddleLeg, topLocalLeftLeg)', source)
         self.assertIn('topMiddleRetraceRatio = not na(topLocalMiddleRetraceRatio) ? topLocalMiddleRetraceRatio : topGlobalMiddleRetraceRatio', source)
-        self.assertIn('topRightRetestRatio = visualLegRatio(topRightLeg, topMiddleLeg)', source)
+        self.assertIn('topRightRetestRatio = risklib.visualLegRatio(topRightLeg, topMiddleLeg)', source)
         self.assertIn('topLargePullbackReady = not na(topMiddleLeg) and topMiddleLeg >= atr * minMiddleSwingAtr and topMiddleRetraceRatio >= minVisualMiddleRetraceRatio', source)
         self.assertIn('topPullbackArmedEvent = confirmed and dayRangeClear and strongTopProbeZone and topVisualLeftOk and topLargePullbackReady and not topPullbackArmed', source)
         self.assertIn('topPullbackArmed := true', source)
@@ -360,17 +469,20 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertIn('topConfirmGapOk = topSignalGapOk or topFailureRepeatShort', source)
         self.assertIn('topConfirmEntryRaw = topConfirmedShort ? (topVolumeClimaxFailedBreakConfirmed ? topClimaxRetestEntry : topCloseLimitShort ? topFailureRetestEntry', source)
         self.assertIn('topPriorHighStop = math.max(nz(topStructuralRetestLevel, high), nz(topZoneHigh, high)) + invalidationBuffer', source)
-        self.assertIn('topFailureWatchStop = looserStop(math.max(nz(lastTopFailureWatchHigh, high), high) + invalidationBuffer, topPriorHighStop, -1)', source)
+        self.assertIn('topFailureWatchStop = risklib.looserStop(math.max(nz(lastTopFailureWatchHigh, high), high) + invalidationBuffer, topPriorHighStop, -1)', source)
         self.assertIn('topConfirmEntry = topConfirmedShort ? stopBoundedEntry(-1, topCloseLimitShort ? topConfirmEntryRaw : scalpLimitEntry(-1, close, topBasis, topConfirmEntryRaw, atr, scalpLimitOffsetAtr), topConfirmStop', source)
         self.assertIn('topNoDemandBreakConfirmed ? topNoDemandStop', source)
         self.assertIn('topHighVolumeDropConfirmed or topImmediateReversalShort ? topFailureWatchStop', source)
         self.assertIn('topPredictContext = (topFirstExhaustion or topRightShoulder) and topCounterTrendAllowed and topPredictEntry >= close and topPredictEntry - close <= atr * predictionArmDistanceAtr and topSignalGapOk and topPredictVolumeOk', source)
-        self.assertIn('topConfirmContext = topConfirmedShort and (topCounterTrendAllowed or upperExhaustionConfirmedShort or topWeakNewHighConfirmed or topDistributionDropConfirmed or topFailureRepeatShort) and topConfirmGapOk and topConfirmVolumeOk', source)
-        self.assertIn('bottomLeftLegBps = visualLegBps(bottomLeftLeg, todayStructLow)', source)
-        self.assertIn('bottomGlobalMiddleRetraceRatio = visualLegRatio(bottomMiddleLeg, bottomLeftLeg)', source)
-        self.assertIn('bottomLocalMiddleRetraceRatio = visualLegRatio(bottomMiddleLeg, bottomLocalLeftLeg)', source)
+        self.assertIn('topHasCountertrendEvidence = upperExhaustionConfirmedShort or topWeakNewHighConfirmed or topDistributionDropConfirmed or topFailureRepeatShort', source)
+        self.assertIn('topCountertrendBlockReason = modellib.topCountertrendBlockReason(', source)
+        self.assertIn('topCountertrendOverrideOk = trendBullPriority and topCountertrendBlockReason == "passed"', source)
+        self.assertIn('topConfirmContext = topConfirmedShort and (topCounterTrendAllowed or topCountertrendOverrideOk) and topConfirmGapOk and topConfirmVolumeOk', source)
+        self.assertIn('bottomLeftLegBps = risklib.visualLegBps(bottomLeftLeg, todayStructLow)', source)
+        self.assertIn('bottomGlobalMiddleRetraceRatio = risklib.visualLegRatio(bottomMiddleLeg, bottomLeftLeg)', source)
+        self.assertIn('bottomLocalMiddleRetraceRatio = risklib.visualLegRatio(bottomMiddleLeg, bottomLocalLeftLeg)', source)
         self.assertIn('bottomMiddleRetraceRatio = not na(bottomLocalMiddleRetraceRatio) ? bottomLocalMiddleRetraceRatio : bottomGlobalMiddleRetraceRatio', source)
-        self.assertIn('bottomRightRetestRatio = visualLegRatio(bottomRightLeg, bottomMiddleLeg)', source)
+        self.assertIn('bottomRightRetestRatio = risklib.visualLegRatio(bottomRightLeg, bottomMiddleLeg)', source)
         self.assertIn('bottomLargePullbackReady = not na(bottomMiddleLeg) and bottomMiddleLeg >= atr * minMiddleSwingAtr and bottomMiddleRetraceRatio >= minVisualMiddleRetraceRatio', source)
         self.assertIn('bottomPullbackArmedEvent = confirmed and dayRangeClear and strongBottomProbeZone and bottomVisualLeftOk and bottomLargePullbackReady and not bottomPullbackArmed', source)
         self.assertIn('bottomPullbackArmed := true', source)
@@ -390,9 +502,12 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertIn('if bottomProbeCycleTouchNow and not bottomProbeCycleActive', source)
         self.assertIn('bottomConfirmVolumeOk = bottomSweepFailed or bottomHighVolumeRiseConfirmed or bottomNoSupplyBreakConfirmed or bottomHighVolumeFailedBreak or lowerExhaustionConfirmedLong or bottomWeakNewLowConfirmed or bottomAccumulationRiseConfirmed', source)
         self.assertIn('bottomPriorLowStop = math.min(nz(bottomStructuralRetestLevel, low), nz(bottomZoneLow, low)) - invalidationBuffer', source)
-        self.assertIn('bottomFailureWatchStop = looserStop(math.min(nz(lastBottomFailureWatchLow, low), low) - invalidationBuffer, bottomPriorLowStop, 1)', source)
+        self.assertIn('bottomFailureWatchStop = risklib.looserStop(math.min(nz(lastBottomFailureWatchLow, low), low) - invalidationBuffer, bottomPriorLowStop, 1)', source)
         self.assertIn('bottomPredictContext = (bottomFirstExhaustion or bottomRightShoulder) and bottomCounterTrendAllowed and bottomPredictEntry <= close and close - bottomPredictEntry <= atr * predictionArmDistanceAtr and bottomSignalGapOk and bottomPredictVolumeOk', source)
-        self.assertIn('bottomConfirmContext = bottomConfirmedLong and (bottomCounterTrendAllowed or lowerExhaustionConfirmedLong or bottomWeakNewLowConfirmed or bottomAccumulationRiseConfirmed or bottomHighVolumeRiseConfirmed or bottomNoSupplyBreakConfirmed) and bottomSignalGapOk and bottomConfirmVolumeOk', source)
+        self.assertIn('bottomHasCountertrendEvidence = lowerExhaustionConfirmedLong or bottomWeakNewLowConfirmed or bottomAccumulationRiseConfirmed or bottomHighVolumeRiseConfirmed or bottomNoSupplyBreakConfirmed', source)
+        self.assertIn('bottomCountertrendBlockReason = modellib.bottomCountertrendBlockReason(', source)
+        self.assertIn('bottomCountertrendOverrideOk = trendBearPriority and bottomCountertrendBlockReason == "passed"', source)
+        self.assertIn('bottomConfirmContext = bottomConfirmedLong and (bottomCounterTrendAllowed or bottomCountertrendOverrideOk) and bottomSignalGapOk and bottomConfirmVolumeOk', source)
         self.assertIn('lastVolumeAttackUpBar := bar_index', source)
         self.assertIn('lastAttackUpVolume := barVolume', source)
         self.assertIn('lastVolumeAttackDownBar := bar_index', source)
@@ -416,8 +531,8 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertIn('probeMinAnchorAgeBars = input.int(6, "Probe min anchor age bars"', source)
         self.assertIn('probeMinPullbackAtr = input.float(0.80, "Probe min pullback (x ATR)"', source)
         self.assertIn('probeRetestBandAtr = input.float(0.35, "Probe retest band (x ATR)"', source)
-        self.assertIn('topConfirmAllowed = topConfirmContext and smallStopTrialAllowed(-1', source)
-        self.assertIn('bottomConfirmAllowed = bottomConfirmContext and smallStopTrialAllowed(1', source)
+        self.assertIn('topConfirmAllowed = topConfirmContext and risklib.smallStopTrialAllowed(-1', source)
+        self.assertIn('bottomConfirmAllowed = bottomConfirmContext and risklib.smallStopTrialAllowed(1', source)
         self.assertIn('topSignalGapOk', source)
         self.assertIn('bottomSignalGapOk', source)
 
@@ -440,10 +555,21 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
             'jsonBool("structure_clear", selectedStructureClear)',
             'jsonNum("structure_anchor_price", selectedStructureAnchor)',
             'jsonNum("expected_r", selectedExpectedR)',
+            'jsonNum("tp_runner_gap_r", selectedTpRunnerGapR)',
+            'jsonNum("min_tp_runner_gap_r", minTpRunnerGapR)',
+            'jsonBool("same_bar_runner_allowed", allowSameBarRunnerAfterFill)',
             'jsonStr("trend_struct_dir", trendStructDir)',
             'jsonStr("trend_struct_pattern", selectedTrendStructPattern)',
             'jsonStr("trend_regime", trendRegime)',
+            'jsonStr("market_regime", marketRegime)',
             'jsonStr("dominant_trend_side", dominantTrendSide)',
+            'jsonStr("trade_family", selectedTradeFamily)',
+            'jsonStr("trend_entry_source", selectedTrendEntrySource)',
+            'jsonBool("regime_priority_enabled", enableRegimePriority)',
+            'jsonBool("countertrend_reclaim_ok", selectedCountertrendReclaimOk)',
+            'jsonStr("countertrend_block_reason", selectedCountertrendBlockReason)',
+            'jsonBool("trend_plus_reversion_confluence", trendPlusReversionConfluence)',
+            'jsonStr("model_conflict_reason", modelConflictReason)',
             'jsonBool("day_range_formed", dayRangeFormed)',
             'jsonNum("day_range_atr", dayRangeAtr)',
             'jsonStr("level_role", selectedLevelRole)',
@@ -519,10 +645,12 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
 
         self.assertIn('scalpLimitOffsetAtr = input.float(0.10, "Scalp limit offset (x ATR)"', source)
         self.assertIn('scalpMaxEntryAwayAtr = input.float(0.35, "Scalp max entry distance from anchor (x ATR)"', source)
-        self.assertIn('scalpBreakevenR = input.float(0.60, "Scalp breakeven trigger (R)"', source)
+        self.assertIn('scalpBreakevenR = input.float(1.00, "Scalp breakeven trigger (R)"', source)
+        self.assertIn('minTpRunnerGapR = input.float(0.50, "Minimum TP-runner gap (R)"', source)
+        self.assertIn('allowSameBarRunnerAfterFill = input.bool(false, "Allow same-bar runner after fill"', source)
         self.assertIn('scalpNoFollowBars = input.int(4, "Scalp no-follow bars"', source)
         self.assertIn('scalpLimitEntry(int direction, float currentClose, float anchorPrice, float fallbackEntry, float atrValue, float offsetAtr) =>', source)
-        self.assertIn('scalpEmaTarget(int direction, float emaPrice, float atrValue, float offsetAtr) =>', source)
+        self.assertIn('risklib.scalpEmaTarget(', source)
         self.assertIn('float scalpRsi = ta.rsi(close, rsiLen)', source)
         self.assertIn('float scalpRsiSmooth = ta.ema(scalpRsi, rsiSmoothLen)', source)
         self.assertIn('bool scalpFastBearDiv = scalpRsiWasHigh', source)
@@ -536,9 +664,10 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertIn('topConfirmEntry = topConfirmedShort ? stopBoundedEntry(-1, topCloseLimitShort ? topConfirmEntryRaw : scalpLimitEntry(-1, close, topBasis', source)
         self.assertIn('bottomFailureRetestEntry = nz(lastBottomFailureWatchClose, close) - retestCloseEntryOffset', source)
         self.assertIn('bottomConfirmEntry = bottomConfirmedLong ? stopBoundedEntry(1, bottomCloseLimitLong ? bottomConfirmEntryRaw : scalpLimitEntry(1, close, bottomBasis', source)
-        self.assertIn('selectedTarget = selectedDirection != 0 ? scalpEmaTarget(selectedDirection, emaFast, atr, emaTargetOffsetAtr)', source)
+        self.assertIn('selectedTarget = selectedDirection != 0 ? risklib.scalpEmaTarget(selectedDirection, emaFast, atr, emaTargetOffsetAtr)', source)
         self.assertIn('selectedEmaProfitAtr = selectedDirection != 0 and atr > 0.0 ? math.abs(selectedTarget - selectedEntry) / atr : na', source)
         self.assertIn('selectedExpectedRPassed = selectedDirection != 0 and selectedEmaTargetInProfit and selectedEmaProfitAtr >= minEmaProfitAtr and selectedExpectedR >= scalpMinExpectedR', source)
+        self.assertIn('selectedTpRunnerGapPassed = selectedDirection != 0 and not na(selectedTpRunnerGapR) and selectedTpRunnerGapR >= minTpRunnerGapR', source)
         self.assertIn('bool selectedRsiPassed = selectedDirection == 1 ? scalpRsiLongOk : selectedDirection == -1 ? scalpRsiShortOk : false', source)
         self.assertIn('selectedProbeStrictTouchOk = selectedTopProbe ? topStrictRetestTouch : selectedBottomProbe ? bottomStrictRetestTouch : false', source)
         self.assertIn('selectedFailureRetestLimit = selectedTopProbe and topCloseLimitShort or selectedBottomProbe and bottomCloseLimitLong', source)
@@ -546,7 +675,8 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertIn('selectedProbeCycleConsumed = selectedTopProbe ? topProbeCycleConsumed : selectedBottomProbe ? bottomProbeCycleConsumed : false', source)
         self.assertIn('selectedProbeCyclePassed = not selectedProbeSetup or (selectedProbeCycleActive and not selectedProbeCycleConsumed)', source)
         self.assertIn('selectedEntryNearAnchorOnly = selectedDirection == 0 or selectedProbeStrictTouchOk or selectedFailureRetestLimit or (not na(selectedEntryAnchorDistanceAtr) and selectedEntryAnchorDistanceAtr <= scalpMaxEntryAwayAtr)', source)
-        self.assertIn('selectedPlanQualityOk = selectedStructureClear and selectedEntryNearAnchorOnly and selectedProbeCyclePassed and selectedRsiPassed', source)
+        self.assertIn('selectedPlanQualityOk = selectedStructureClear and selectedEntryNearAnchorOnly and selectedProbeCyclePassed and selectedRsiPassed and selectedSmallStopGatePassed and selectedExpectedRPassed and selectedTpRunnerGapPassed', source)
+        self.assertIn('selectedBlockReason := "tp_runner_gap_too_small"', source)
         self.assertIn('"probe_cycle_not_active"', source)
         self.assertIn('"probe_cycle_consumed"', source)
         self.assertIn('pendingCancelConsumesProbeCycle = pendingCancelReason == "structure_break_accepted_cancel" or pendingCancelReason == "invalidation_price_breached" or pendingCancelReason == "opposite_confirmed_structure"', source)
@@ -620,13 +750,12 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertNotIn('label.style_circle', display)
         self.assertNotIn('label.style_xcross', display)
         self.assertIn('labelTextColor(string state, int direction) =>', display)
-        self.assertIn('riskDollars(float entryPrice, float stopPrice, float qty) =>', display)
         self.assertIn('pnlDollars(float entryPrice, float levelPrice, int direction, float qty) =>', display)
-        self.assertIn('moneyText(float value) =>', display)
-        self.assertIn('floatingStructureStop(int direction, float currentStop, float pivotLowValue, float pivotHighValue, float currentClose, float bufferValue) =>', display)
-        self.assertIn('selectedTarget = selectedDirection != 0 ? scalpEmaTarget(selectedDirection, emaFast, atr, emaTargetOffsetAtr)', display)
-        self.assertIn('structureTrailStop = floatingStructureStop(shadowDirection, shadowStop, lastPivotLow, lastPivotHigh, close, invalidationBuffer)', display)
-        self.assertIn('structureCompressStop = floatingStructureStop(shadowDirection, shadowStop, lastPivotLow, lastPivotHigh, close, invalidationBuffer)', display)
+        self.assertIn('fmtlib.moneyText(', display)
+        self.assertIn('risklib.floatingStructureStop(', display)
+        self.assertIn('selectedTarget = selectedDirection != 0 ? risklib.scalpEmaTarget(selectedDirection, emaFast, atr, emaTargetOffsetAtr)', display)
+        self.assertIn('structureTrailStop = risklib.floatingStructureStop(shadowDirection, shadowStop, lastPivotLow, lastPivotHigh, close, invalidationBuffer)', display)
+        self.assertIn('structureCompressStop = risklib.floatingStructureStop(shadowDirection, shadowStop, lastPivotLow, lastPivotHigh, close, invalidationBuffer)', display)
         for line in display.splitlines():
             if "label.new(" in line:
                 self.assertTrue("flowLabelText(" in line or "eventMarkerText(" in line)
@@ -653,9 +782,9 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertIn('"F" + str.tostring(currentFlowId) + " ②" + intentName(selectedEntryIntent)', display)
         self.assertIn('主因: " + selectedMainReason', display)
         self.assertIn('次因: " + (selectedSecondaryReason == "" ? "none" : selectedSecondaryReason)', display)
-        self.assertIn('结构锚点 " + fmt(selectedStructureAnchor)', display)
+        self.assertIn('结构锚点 " + fmtlib.fmt(selectedStructureAnchor)', display)
         self.assertIn('关联流: " + decisionRef + " -> F"', display)
-        self.assertIn('reasonCn(string reason) =>', display)
+        self.assertIn('fmtlib.reasonCn(', display)
         self.assertIn('volumeJudge = volumeAttackUp ? "放量上攻"', display)
         self.assertIn('showDiagnosticEventFlow = showSignalEventFlow and eventMarkerMode != "关闭"', display)
         self.assertIn('eventMarkersVisible = showSignalEventFlow and eventMarkerMode == "小点tooltip"', display)
@@ -694,7 +823,7 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertIn('selectedNakedReversalCandidate', display)
         self.assertIn('selectedVolumeReason', display)
         self.assertIn('selectedVolumeRatio', display)
-        self.assertIn('量能 vol/MA " + fmt(selectedVolumeRatio)', display)
+        self.assertIn('量能 vol/MA " + fmtlib.fmt(selectedVolumeRatio)', display)
         self.assertIn('selectedLevelRole', display)
         self.assertIn('selectedAttackVolumeCooling', display)
         self.assertIn('位置角色 " + selectedLevelRole', display)
@@ -744,7 +873,7 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertIn('cancelConsumesProbeCycle = pendingInvalidated', display)
         self.assertIn('确认但未新开', display)
         self.assertIn('mainPlanWillDraw = confirmed and showSignalEventFlow and selectedPlanValid and not visualSlotBusy', display)
-        self.assertIn('canEvaluateShadowExit = confirmed and shadowOpen and not na(shadowEntryBar) and bar_index > shadowEntryBar', display)
+        self.assertIn('canEvaluateShadowExit = confirmed and shadowOpen and not na(shadowEntryBar) and (allowSameBarRunnerAfterFill or bar_index > shadowEntryBar)', display)
         self.assertIn('shadowReleasedBar := bar_index', display)
         self.assertIn('mainPlanStatusText(bool childAllowed, bool selectedByMain, bool planCreatedNow, string childReason) =>', display)
         self.assertIn('planGateDetailText(bool childAllowed, bool selectedByMain, bool planCreatedNow, string childReason) =>', display)
@@ -800,7 +929,7 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertIn('"short fill 条件: high >= entry"', display)
         self.assertIn('"long fill 条件: low <= entry"', display)
         self.assertIn('"X " + dirName(direction) + "·弱信号未生效"', display)
-        self.assertIn('"\\n本根未触发: " + reasonCn(why)', display)
+        self.assertIn('"\\n本根未触发: " + fmtlib.reasonCn(why)', display)
         self.assertIn('"\\n触达结构: " + str.tostring(retestOk)', display)
         self.assertIn('"\\n破观察位: " + str.tostring(watchBreakOk)', display)
         self.assertIn('"\\nRSI证明: " + str.tostring(rsiOk)', display)
@@ -851,14 +980,14 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertIn('unconfirmedTopWatch', display)
         self.assertIn('未确认，不挂单', display)
         self.assertIn('只有 confirmed_limit 才会画 plan 并联动 Core/IBKR', display)
-        self.assertIn('连续衰减 " + fmt(topWatch ? topDecayStreak * 1.0 : bottomDecayStreak * 1.0)', display)
-        self.assertIn('"\\n三段结构 L" + fmt(selectedProbeLeftLegBps)', display)
+        self.assertIn('连续衰减 " + fmtlib.fmt(topWatch ? topDecayStreak * 1.0 : bottomDecayStreak * 1.0)', display)
+        self.assertIn('"\\n三段结构 L" + fmtlib.fmt(selectedProbeLeftLegBps)', display)
         self.assertIn('"\\n结构清晰: " + str.tostring(selectedStructureClear)', display)
         self.assertIn('"\\n价格行为条件: " + selectedStructureGateFlags', display)
         self.assertIn('"\\nclose已走远：只挂回抽限价，不追价"', display)
         self.assertIn('裸K反转已触发候选，但价格行为结构未通过，所以不挂单', display)
         self.assertIn('str.tostring(maxRetestAfterMiddleSwingBars)', display)
-        self.assertIn('同向距离 " + fmt(selectedSameSideSignalDistanceAtr)', display)
+        self.assertIn('同向距离 " + fmtlib.fmt(selectedSameSideSignalDistanceAtr)', display)
         self.assertIn('plotshape(showComponentMarkers and sdLowerHit, "SD lower hit"', display)
         self.assertIn('plotshape(showAnyFractalMarkers and fractalBull, "Fractal bull"', display)
         self.assertIn('showAnyEmaCrossMarkers = showEmaCrossMarkers or displayIndicatorMode or displayDebugMode', display)
@@ -893,7 +1022,7 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertNotIn('currentRunnerLabel := label.new(lineEnd, shadowRunner', display)
         self.assertNotIn('currentTargetLabel := label.new(lineEnd, shadowTarget', display)
         self.assertNotIn('label.set_text(currentStopLabel', display)
-        self.assertIn('moneyText(pnlDollars(selectedEntry, selectedStop, selectedDirection, selectedQty))', display)
+        self.assertIn('fmtlib.moneyText(pnlDollars(selectedEntry, selectedStop, selectedDirection, selectedQty))', display)
         self.assertNotIn('"金额"', display)
         self.assertNotIn('"黄/红/蓝/绿"', display)
         self.assertNotIn('"Entry / SL / 0.6R / EMA20TP"', display)
