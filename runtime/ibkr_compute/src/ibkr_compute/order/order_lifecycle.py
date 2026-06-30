@@ -32,7 +32,7 @@ from ibkr_compute.core.risk_management import (
     compute_exit_policy_target_update,
 )
 from ibkr_compute.market.timeframe_utils import is_nyse_trading_day
-from ibkr_compute.order.close_execution import quote_from_sources
+from ibkr_compute.order.close_execution import infer_close_session, quote_from_sources
 
 logger = logging.getLogger(__name__)
 
@@ -372,6 +372,27 @@ class OrderLifecycle:
             self._get_config_bool("eod_close_allow_market_fallback", default)
             or self._get_config_bool("ibkr_close_allow_market", False)
         )
+
+    def _eod_regular_market_enabled(self) -> bool:
+        return self._get_config_bool("eod_close_regular_mkt_enabled", self.environment == "paper")
+
+    def _eod_close_execution_policy(self, et_now: datetime) -> dict[str, Any]:
+        session = infer_close_session(et_now)
+        if session.name == "regular" and self._eod_regular_market_enabled():
+            return {
+                "order_type": "MKT",
+                "allow_market": True,
+                "session_override": "regular",
+                "requires_price": False,
+                "reason": "regular_eod_market_order",
+            }
+        return {
+            "order_type": "LMT",
+            "allow_market": self._eod_market_fallback_allowed() if session.name == "regular" else False,
+            "session_override": session.name,
+            "requires_price": True,
+            "reason": "session_marketable_limit",
+        }
 
     def _mark_eod_non_trading_day(self, et_now: datetime) -> dict[str, Any]:
         if et_now.tzinfo is None:
@@ -1663,10 +1684,16 @@ class OrderLifecycle:
                 logger.info("EOD close skipped for %s: active close order already exists", symbol)
                 continue
 
-            position_snapshot = self._enrich_eod_position_snapshot(pos, direction=direction)
-            has_price = self._eod_quote_has_close_price(position_snapshot, direction)
-            allow_market = self._eod_market_fallback_allowed()
-            order_type = "LMT"
+            execution_policy = self._eod_close_execution_policy(et_now)
+            order_type = str(execution_policy.get("order_type") or "LMT").upper()
+            allow_market = bool(execution_policy.get("allow_market"))
+            if bool(execution_policy.get("requires_price", True)):
+                position_snapshot = self._enrich_eod_position_snapshot(pos, direction=direction)
+                has_price = self._eod_quote_has_close_price(position_snapshot, direction)
+            else:
+                position_snapshot = dict(pos or {})
+                position_snapshot.setdefault("eod_price_source", str(execution_policy.get("reason") or "regular_eod_market_order"))
+                has_price = True
             if not has_price:
                 if allow_market:
                     order_type = "MKT"
@@ -1713,6 +1740,7 @@ class OrderLifecycle:
                     wait_for_fill=True,
                     fill_timeout=max(1.0, self._get_config_float("eod_close_fill_timeout_sec", 5.0)),
                     eod_close_request_id=str(eod_guard.get("request_id") or self._eod_close_request_id(market_date, symbol)),
+                    session_override=str(execution_policy.get("session_override") or ""),
                 )
             except Exception as exc:
                 logger.exception("EOD close failed for %s: unhandled close exception", symbol)
@@ -3831,6 +3859,7 @@ class OrderLifecycle:
         close_reason: str = "",
         close_reason_human: str = "",
         eod_close_request_id: str = "",
+        session_override: str = "",
     ) -> dict:
         if self.order_placer and hasattr(self.order_placer, "place_market_close"):
             return self.order_placer.place_market_close(
@@ -3855,6 +3884,7 @@ class OrderLifecycle:
                 safety_reason=close_reason or source,
                 bypass_normal_symbol_queue=str(source or "").startswith("safety_"),
                 eod_close_request_id=eod_close_request_id,
+                session_override=session_override,
             )
         return self.broker.place_market_close(
             conid=conid,

@@ -2716,6 +2716,27 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
         self.assertEqual(127.8, result["close_execution_plan"]["reference_price"])
         self.assertEqual("ask", result["close_execution_plan"]["reference_source"])
 
+    def test_market_close_with_market_allowed_skips_quote_lookup(self):
+        pb_client = FakeOrderPBClient()
+        broker = FakeQuoteMarketCloseBroker({"ok": False, "error": "snapshot_timeout"})
+        placer = OrderPlacer(pb_client=pb_client, broker=broker, account_id="DU123")
+
+        result = placer.place_market_close(
+            conid=272110,
+            symbol="MSTR",
+            direction="short",
+            quantity=39,
+            order_type="MKT",
+            allow_market=True,
+            session_override="regular",
+            position_snapshot={"market_price": 126.20},
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual([], broker.snapshots)
+        self.assertEqual("MKT", broker.calls[0]["order_type"])
+        self.assertEqual("MKT", result["close_execution_plan"]["order_type"])
+
     def test_unconfirmed_market_close_prewrites_pending_close_mapping(self):
         pb_client = StrictNotifyOrderAndSignalPBClient(
             {

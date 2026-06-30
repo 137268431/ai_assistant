@@ -674,16 +674,18 @@ class OrderLifecycleRiskLimitTests(unittest.TestCase):
         pb = _FakePB()
         modifier = _FakeOrderModifier()
         placer = _FakeOrderPlacer()
+        broker = _FakeBroker(
+            [
+                {"ticker": "AAPL", "position": 5, "conid": 123},
+                {"ticker": "BOXX", "position": 2, "conid": 456},
+            ],
+            market_snapshot={"bid": 100.0, "ask": 100.1},
+        )
         lifecycle = OrderLifecycle(
             pb_client=pb,
             order_modifier=modifier,
             order_placer=placer,
-            broker=_FakeBroker(
-                [
-                    {"ticker": "AAPL", "position": 5, "conid": 123},
-                    {"ticker": "BOXX", "position": 2, "conid": 456},
-                ]
-            ),
+            broker=broker,
             environment="paper",
             config=_FakeConfig({"eod_keep_symbols": "BOXX,IBKR"}),
         )
@@ -701,9 +703,55 @@ class OrderLifecycleRiskLimitTests(unittest.TestCase):
         self.assertEqual(5, close["quantity"])
         self.assertEqual("MKT", close["order_type"])
         self.assertTrue(close["allow_market"])
+        self.assertEqual("regular", close["session_override"])
+        self.assertEqual([], broker.market_snapshot_calls)
         self.assertEqual("eod_force_close", close["source"])
         self.assertEqual("force_flat_eod", close["close_reason"])
         self.assertEqual([], pb.events)
+
+    def test_eod_close_afterhours_uses_marketable_limit_with_quote(self):
+        pb = _FakePB()
+        placer = _FakeOrderPlacer()
+        broker = _FakeBroker(
+            [{"ticker": "AAPL", "position": 5, "conid": 123}],
+            market_snapshot={"bid": 100.0, "ask": 100.2, "source": "test_quote"},
+        )
+        lifecycle = OrderLifecycle(
+            pb_client=pb,
+            order_placer=placer,
+            broker=broker,
+            environment="paper",
+            config=_FakeConfig({}),
+        )
+
+        result = lifecycle.eod_close_all(et_now=datetime(2026, 6, 12, 16, 5, tzinfo=ET))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(1, len(placer.closes))
+        close = placer.closes[0]
+        self.assertEqual("LMT", close["order_type"])
+        self.assertFalse(close["allow_market"])
+        self.assertEqual("afterhours", close["session_override"])
+        self.assertEqual("test_quote", close["position_snapshot"]["eod_price_source"])
+        self.assertEqual(1, len(broker.market_snapshot_calls))
+
+    def test_eod_close_afterhours_without_quote_does_not_fallback_to_market(self):
+        pb = _FakePB()
+        placer = _FakeOrderPlacer()
+        lifecycle = OrderLifecycle(
+            pb_client=pb,
+            order_placer=placer,
+            broker=_FakeBroker([{"ticker": "AAPL", "position": 5, "conid": 123}]),
+            environment="paper",
+            config=_FakeConfig({}),
+        )
+
+        result = lifecycle.eod_close_all(et_now=datetime(2026, 6, 12, 16, 5, tzinfo=ET))
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(1, result["errors"])
+        self.assertEqual([], placer.closes)
+        self.assertEqual("close_limit_price_unavailable", result["error_items"][0]["error"])
 
     def test_eod_close_waits_for_position_reconcile_after_recent_eod_fill(self):
         now_ms = int(time.time() * 1000)
@@ -732,7 +780,10 @@ class OrderLifecycleRiskLimitTests(unittest.TestCase):
         lifecycle = OrderLifecycle(
             pb_client=pb,
             order_placer=placer,
-            broker=_FakeBroker([{"ticker": "AAPL", "position": 5, "conid": 123}]),
+            broker=_FakeBroker(
+                [{"ticker": "AAPL", "position": 5, "conid": 123}],
+                market_snapshot={"bid": 100.0, "ask": 100.2, "source": "test_quote"},
+            ),
             environment="paper",
             config=_FakeConfig({"eod_close_fill_reconcile_guard_sec": 300}),
         )
@@ -772,7 +823,10 @@ class OrderLifecycleRiskLimitTests(unittest.TestCase):
         lifecycle = OrderLifecycle(
             pb_client=pb,
             order_placer=placer,
-            broker=_FakeBroker([{"ticker": "AAPL", "position": 5, "conid": 123}]),
+            broker=_FakeBroker(
+                [{"ticker": "AAPL", "position": 5, "conid": 123}],
+                market_snapshot={"bid": 100.0, "ask": 100.2, "source": "test_quote"},
+            ),
             environment="paper",
             config=_FakeConfig({"eod_close_fill_reconcile_guard_sec": 300}),
         )

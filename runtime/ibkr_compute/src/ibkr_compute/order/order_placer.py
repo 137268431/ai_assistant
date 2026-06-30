@@ -318,16 +318,18 @@ class OrderPlacer:
         session = infer_close_session(session_override=session_override)
         resolved_quote = quote_from_sources(quote)
         explicit_limit = self._safe_float(limit_price, 0.0)
-        if explicit_limit <= 0 and not self._close_quote_has_side_price(resolved_quote, direction):
-            quote_result = self._request_close_quote(conid=conid, symbol=symbol, exchange="SMART")
-            resolved_quote = quote_from_sources(quote_result.get("quote"), quote_result, resolved_quote)
-        if explicit_limit <= 0:
-            resolved_quote = quote_from_sources(resolved_quote, position_snapshot)
-        selected_bps = self._close_limit_bps_for_session(session.name, limit_bps)
         resolved_allow_market = self._coerce_bool(
             allow_market,
             self._config_bool("ibkr_close_allow_market", False),
         )
+        requested_order_type = str(order_type or "").strip().upper()
+        market_order_requested = requested_order_type == "MKT" and resolved_allow_market
+        if explicit_limit <= 0 and not market_order_requested and not self._close_quote_has_side_price(resolved_quote, direction):
+            quote_result = self._request_close_quote(conid=conid, symbol=symbol, exchange="SMART")
+            resolved_quote = quote_from_sources(quote_result.get("quote"), quote_result, resolved_quote)
+        if explicit_limit <= 0 and not market_order_requested:
+            resolved_quote = quote_from_sources(resolved_quote, position_snapshot)
+        selected_bps = self._close_limit_bps_for_session(session.name, limit_bps)
         resolved_include_overnight = (
             include_overnight
             if include_overnight not in (None, "")
