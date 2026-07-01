@@ -1,0 +1,19 @@
+//@version=6
+// @description Core-only true execution labels for Signal Strategy Core[Glory].
+library("SSC_Core_Visual_Glory", overlay=true)
+
+export trueExitLabelText(series string exitComment, series float exitPrice) =>
+    string comment = na(exitComment) ? "" : exitComment
+    str.length(comment) > 0 ? comment : "EXIT X" + str.tostring(exitPrice, format.mintick)
+
+export trueExitLabelColor(series string exitComment, series int transparency) =>
+    string comment = str.lower(na(exitComment) ? "" : exitComment)
+    bool loss = str.contains(comment, "-$")
+    str.contains(comment, "run") ? color.new(color.blue, transparency) : str.contains(comment, "tp") ? color.new(color.green, transparency) : str.contains(comment, "sl") or loss ? color.new(color.red, transparency) : color.new(color.purple, transparency)
+
+export trueExitTextColor(series string textMode) =>
+    textMode == "black" ? color.black : color.white
+
+export drawTrueExitLabel(series int exitBar, series float exitPrice, series string exitComment, series int transparency, series string textMode) =>
+    if not na(exitBar) and not na(exitPrice)
+        label.new(exitBar, exitPrice, trueExitLabelText(exitComment, exitPrice), xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_left, color=trueExitLabelColor(exitComment, transparency), textcolor=trueExitTextColor(textMode), size=size.small, tooltip="Core true closed trade: bar " + str.tostring(exitBar) + " / price " + str.tostring(exitPrice, format.mintick))

@@ -1,0 +1,48 @@
+//@version=6
+// @description Core-only payload and order text helpers for Signal Strategy Core[Glory].
+library("SSC_Core_Payload_Glory", overlay=true)
+import o8431/SSC_Lib_Format_Glory/2 as fmtlib
+
+export jsonStr(series string key, series string value) =>
+    "\"" + key + "\":\"" + str.replace_all(value, "\"", "'") + "\""
+
+export jsonNum(series string key, series float value) =>
+    "\"" + key + "\":" + (na(value) ? "null" : fmtlib.fmtFull(value))
+
+export jsonInt(series string key, series int value) =>
+    "\"" + key + "\":" + (na(value) ? "null" : str.tostring(value))
+
+export jsonBool(series string key, series bool value) =>
+    "\"" + key + "\":" + (value ? "true" : "false")
+
+export jsonRequestedSides(series string requestedSides) =>
+    "\"requested_sides\":" + (requestedSides == "stop_loss" ? "[\"stop_loss\"]" : requestedSides == "take_profit" ? "[\"take_profit\"]" : requestedSides == "stop_loss,take_profit" ? "[\"stop_loss\",\"take_profit\"]" : "[]")
+
+export symbolKey(series string ticker) =>
+    str.replace_all(ticker, " ", "_")
+
+export dirText(series int direction) =>
+    direction == 1 ? "long" : direction == -1 ? "short" : "neutral"
+
+export orderIdForDirection(series int direction) =>
+    direction == 1 ? "TV-L" : "TV-S"
+
+export planId(series string ticker, series string direction, series int eventTimeMs, series string interval, series string setup, series string intent) =>
+    symbolKey(ticker) + "_" + direction + "_" + str.tostring(eventTimeMs) + "_" + interval + "_" + setup + "_" + intent
+
+export basePayload(series string eventType, series string eventIdValue, series string symbol, series string exchange, series string interval, series string scriptTag, series string strategyVersion, series string positionIdValue, series int barOpenMs, series int barCloseMs, series int pineEvalMs, series int barTimeMs, series int barIndex) =>
+    "{" +
+     jsonStr("source", "tradingview") + "," +
+     jsonStr("event_type", eventType) + "," +
+     jsonStr("event_id", eventIdValue) + "," +
+     jsonStr("symbol", symbol) + "," +
+     jsonStr("exchange", exchange) + "," +
+     jsonStr("interval", interval) + "," +
+     jsonStr("script_tag", scriptTag) + "," +
+     jsonStr("strategy_version", strategyVersion) + "," +
+     jsonStr("position_id", positionIdValue) + "," +
+     jsonInt("bar_open_ms", barOpenMs) + "," +
+     jsonInt("bar_close_ms", barCloseMs) + "," +
+     jsonInt("pine_eval_ms", pineEvalMs) + "," +
+     jsonInt("bar_time_ms", barTimeMs) + "," +
+     jsonInt("bar_index", barIndex)

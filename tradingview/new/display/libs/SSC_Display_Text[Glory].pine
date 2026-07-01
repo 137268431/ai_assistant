@@ -1,0 +1,20 @@
+//@version=6
+// @description Display-only text helpers for Signal Strategy Display[Glory].
+library("SSC_Display_Text_Glory", overlay=true)
+
+export weakNextReason(series bool retestOk, series bool watchBreakOk, series bool rsiOk, series bool distanceOk, series bool finalFiltered) =>
+    string result = "weak_next_no_confirmation"
+    if not retestOk
+        result := "weak_next_no_retest"
+    else if not watchBreakOk
+        result := "weak_next_no_break_watch"
+    else if not rsiOk
+        result := "weak_next_rsi_missing"
+    else if not distanceOk
+        result := "weak_next_distance_too_far"
+    else if finalFiltered
+        result := "weak_next_filtered"
+    result
+
+export shadowPrefix(series string labelText) =>
+    "SHADOW " + labelText

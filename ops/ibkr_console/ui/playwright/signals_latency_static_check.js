@@ -16,10 +16,23 @@ const repoRoot = findRepoRoot(__dirname);
 const signalsHtml = fs.readFileSync(path.join(repoRoot, 'runtime', 'ibkr_console', 'static', 'ibkr_signals.html'), 'utf8');
 const signalsCss = fs.readFileSync(path.join(repoRoot, 'runtime', 'ibkr_console', 'static', 'assets', 'css', 'pages', 'ibkr_signals', 'page.css'), 'utf8');
 const tradingviewRoot = path.join(repoRoot, 'tradingview');
-const strategyPine = fs.readFileSync(path.join(tradingviewRoot, 'Signal_Strategy_Core[Glory].pine'), 'utf8');
-const pinePayloadFiles = fs.readdirSync(tradingviewRoot)
-  .filter((name) => /^(Signal_Strategy_Core|Signal_Alert_Core|Indicator_Audit_).*\.pine$/.test(name))
-  .map((name) => path.join(tradingviewRoot, name));
+const currentCorePath = path.join(tradingviewRoot, 'new', 'core', 'Signal_Strategy_Core[Glory].pine');
+const currentCorePayloadLibPath = path.join(tradingviewRoot, 'new', 'core', 'libs', 'SSC_Core_Payload[Glory].pine');
+const legacyPayloadDirs = [
+  path.join(tradingviewRoot, 'old'),
+  path.join(tradingviewRoot, 'v1'),
+];
+const strategyPine = [
+  fs.readFileSync(currentCorePath, 'utf8'),
+  fs.readFileSync(currentCorePayloadLibPath, 'utf8'),
+].join('\n');
+const pinePayloadFiles = [
+  ...legacyPayloadDirs.flatMap((dir) => fs.existsSync(dir)
+    ? fs.readdirSync(dir)
+      .filter((name) => /^(Signal_Strategy_Core|Signal_Alert_Core|Indicator_Audit_).*\.pine$/.test(name))
+      .map((name) => path.join(dir, name))
+    : []),
+];
 
 const issues = [];
 let checkCount = 0;

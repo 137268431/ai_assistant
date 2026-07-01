@@ -1,0 +1,43 @@
+//@version=6
+// @description Display-only label style and drawing helpers for Signal Strategy Display[Glory].
+library("SSC_Display_Visual_Glory", overlay=true)
+
+export flowColor(series string state, series int direction, series int transparency) =>
+    state == "blocked" or state == "trend_blocked" ? color.new(color.gray, transparency) : state == "armed" ? color.new(color.yellow, transparency) : state == "entry_far_limit_wait" or state == "weak_next_x" ? color.new(color.orange, transparency) : state == "weak_structure_reversal" ? color.new(color.maroon, transparency) : state == "predictive" ? color.new(color.orange, transparency) : state == "confirmed" ? color.new(color.teal, transparency) : state == "exit" ? color.new(color.purple, transparency) : direction == 1 ? color.new(color.green, transparency) : color.new(color.red, transparency)
+
+export labelTextColor(series string state, series int direction, series string textMode) =>
+    bool darkAutoText = state == "predictive" or state == "blocked" or state == "weak_next_x" or direction == 0
+    textMode == "white" ? color.white : textMode == "black" ? color.black : darkAutoText ? color.black : color.white
+
+export flowLabelText(series string compactText, series string detailText, series string detailMode) =>
+    detailMode == "compact_tooltip" ? compactText : detailText
+
+export flowLabelTooltip(series string detailText, series string detailMode) =>
+    detailMode == "compact_tooltip" ? detailText : ""
+
+export labelStyleForSide(series bool above) =>
+    above ? label.style_label_down : label.style_label_up
+
+export labelYForSide(series bool above, series float barHigh, series float barLow, series float atrValue, series float offsetAtr) =>
+    above ? barHigh + atrValue * offsetAtr : barLow - atrValue * offsetAtr
+
+export labelAboveForDirection(series int direction) =>
+    direction == -1
+
+export eventFlowMinOffset(series string state, series float tipVerticalDistanceAtr) =>
+    state == "structure" ? math.max(1.20, tipVerticalDistanceAtr * 0.70) : state == "observe" or state == "watch" or state == "weak_next_x" ? math.max(1.40, tipVerticalDistanceAtr * 0.80) : state == "armed" or state == "candidate" or state == "confirmed" or state == "entry_far_limit_wait" or state == "weak_structure_reversal" or state == "trend_blocked" or state == "risk" ? math.max(1.60, tipVerticalDistanceAtr * 0.90) : tipVerticalDistanceAtr
+
+export eventFlowY(series int direction, series string state, series float offsetAtr, series float barHigh, series float barLow, series float atrValue, series float tipVerticalDistanceAtr) =>
+    labelYForSide(labelAboveForDirection(direction), barHigh, barLow, atrValue, math.max(offsetAtr, eventFlowMinOffset(state, tipVerticalDistanceAtr)))
+
+export profitY(series int direction, series float offsetAtr, series float barHigh, series float barLow, series float atrValue) =>
+    labelYForSide(direction == 1, barHigh, barLow, atrValue, offsetAtr)
+
+export drawFlowLabel(series int xBar, series float barHigh, series float barLow, series float atrValue, series int direction, series string offsetState, series string colorState, series string textState, series float offsetAtr, series string compactText, series string detailText, series int transparency, series float tipVerticalDistanceAtr, series string detailMode, series string textMode) =>
+    label.new(xBar, eventFlowY(direction, offsetState, offsetAtr, barHigh, barLow, atrValue, tipVerticalDistanceAtr), flowLabelText(compactText, detailText, detailMode), style=labelStyleForSide(labelAboveForDirection(direction)), color=flowColor(colorState, direction, transparency), textcolor=labelTextColor(textState, direction, textMode), size=size.small, tooltip=flowLabelTooltip(detailText, detailMode))
+
+export drawProfitLabel(series int xBar, series float barHigh, series float barLow, series float atrValue, series int direction, series string textState, series float offsetAtr, series string compactText, series string detailText, series color labelColor, series string detailMode, series string textMode) =>
+    label.new(xBar, profitY(direction, offsetAtr, barHigh, barLow, atrValue), flowLabelText(compactText, detailText, detailMode), style=labelStyleForSide(direction == 1), color=labelColor, textcolor=labelTextColor(textState, direction, textMode), size=size.small, tooltip=flowLabelTooltip(detailText, detailMode))
+
+export drawPriceLabel(series int xBar, series float price, series int direction, series string textState, series string compactText, series string detailText, series color labelColor, series string detailMode, series string textMode) =>
+    label.new(xBar, price, flowLabelText(compactText, detailText, detailMode), xloc=xloc.bar_index, yloc=yloc.price, style=labelStyleForSide(direction == 1), color=labelColor, textcolor=labelTextColor(textState, direction, textMode), size=size.small, tooltip=flowLabelTooltip(detailText, detailMode))
