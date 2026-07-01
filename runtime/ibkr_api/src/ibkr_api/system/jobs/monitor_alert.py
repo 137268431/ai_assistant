@@ -17,6 +17,7 @@ DEFAULT_MONITOR_ALERT_ERROR_COOLDOWN_MIN = 15
 DEFAULT_MONITOR_ALERT_WARNING_COOLDOWN_MIN = 60
 DEFAULT_ACCOUNT_SNAPSHOT_WARNING_CONSECUTIVE_COUNT = 2
 DEFAULT_MONITOR_SOURCE_WARNING_CONSECUTIVE_COUNT = 3
+DEFAULT_WS_SILENCE_WARNING_CONSECUTIVE_COUNT = 2
 MONITOR_ALERT_COOLDOWN_MS = DEFAULT_MONITOR_ALERT_ERROR_COOLDOWN_MIN * 60 * 1000
 ACCOUNT_SNAPSHOT_WARNING_CODES = {
     "account_snapshot_degraded",
@@ -26,6 +27,9 @@ ACCOUNT_SNAPSHOT_WARNING_CODES = {
 }
 MONITOR_SOURCE_WARNING_CODES = {
     "monitor_builder_compute_monitor",
+}
+WS_SILENCE_WARNING_CODES = {
+    "market_data_silent",
 }
 LEGACY_TARGET_FLAG_CODES = {"no_active_targets", "no_execution_eligible_targets"}
 IB_CLIENT_SERVICE_LABELS = (
@@ -270,6 +274,13 @@ def _is_monitor_source_warning(item: dict[str, Any]) -> bool:
     )
 
 
+def _is_ws_silence_warning(item: dict[str, Any]) -> bool:
+    return (
+        _to_text(item.get("severity")).lower() == "warning"
+        and _to_text(item.get("code")) in WS_SILENCE_WARNING_CODES
+    )
+
+
 def _account_snapshot_warning_streak(state: dict[str, Any], flags: list[dict[str, Any]]) -> int:
     if not any(_is_account_snapshot_warning(item) for item in flags):
         return 0
@@ -282,6 +293,12 @@ def _monitor_source_warning_streak(state: dict[str, Any], flags: list[dict[str, 
     return _to_int(state.get("monitor_source_warning_streak"), 0) + 1
 
 
+def _ws_silence_warning_streak(state: dict[str, Any], flags: list[dict[str, Any]]) -> int:
+    if not any(_is_ws_silence_warning(item) for item in flags):
+        return 0
+    return _to_int(state.get("ws_silence_warning_streak"), 0) + 1
+
+
 def _filter_alert_flags(
     flags: list[dict[str, Any]],
     *,
@@ -289,6 +306,8 @@ def _filter_alert_flags(
     account_snapshot_warning_consecutive_count: int,
     monitor_source_warning_streak: int,
     monitor_source_warning_consecutive_count: int,
+    ws_silence_warning_streak: int,
+    ws_silence_warning_consecutive_count: int,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     if any(_is_error_flag(item) for item in flags):
         return list(flags), []
@@ -305,6 +324,12 @@ def _filter_alert_flags(
             monitor_source_warning_consecutive_count > 1
             and _is_monitor_source_warning(item)
             and monitor_source_warning_streak < monitor_source_warning_consecutive_count
+        ):
+            suppressed_flags.append(item)
+        elif (
+            ws_silence_warning_consecutive_count > 1
+            and _is_ws_silence_warning(item)
+            and ws_silence_warning_streak < ws_silence_warning_consecutive_count
         ):
             suppressed_flags.append(item)
         else:
@@ -374,6 +399,7 @@ def _detail(
     *,
     timestamp_us: str,
     admission_preview: dict[str, Any] | None = None,
+    alert_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     service_monitor = _as_dict(monitor_payload.get("service_monitor"))
     counts = _as_dict(service_monitor.get("status_counts"))
@@ -428,6 +454,12 @@ def _detail(
                 ),
             }
         )
+    context = _as_dict(alert_context)
+    if any(_is_ws_silence_warning(item) for item in flags):
+        streak = _to_int(context.get("ws_silence_warning_streak"), 0)
+        required = _to_int(context.get("ws_silence_warning_consecutive_count"), 0)
+        if streak > 0 and required > 0:
+            detail["WS静默连续"] = f"{streak}/{required}"
     detail.update(_admission_preview_detail(admission_preview or {}))
     return detail
 
@@ -569,13 +601,22 @@ def build_system_monitor_alert_guard_response(
         environment,
         minimum=1,
     )
+    ws_silence_warning_consecutive_count = _config_int(
+        config_value,
+        "system_monitor_ws_message_age_regular_warning_consecutive_count",
+        DEFAULT_WS_SILENCE_WARNING_CONSECUTIVE_COUNT,
+        environment,
+        minimum=1,
+    )
     account_snapshot_warning_streak = _account_snapshot_warning_streak(state, flags)
     monitor_source_warning_streak = _monitor_source_warning_streak(state, flags)
+    ws_silence_warning_streak = _ws_silence_warning_streak(state, flags)
     next_state = {
         **state,
         "last_monitor_check_at": times["us"],
         "account_snapshot_warning_streak": account_snapshot_warning_streak,
         "monitor_source_warning_streak": monitor_source_warning_streak,
+        "ws_silence_warning_streak": ws_silence_warning_streak,
     }
 
     if not flags:
@@ -592,6 +633,7 @@ def build_system_monitor_alert_guard_response(
                 "last_monitor_alert_level": "",
                 "account_snapshot_warning_streak": 0,
                 "monitor_source_warning_streak": 0,
+                "ws_silence_warning_streak": 0,
             }
         )
         if had_alert:
@@ -642,6 +684,8 @@ def build_system_monitor_alert_guard_response(
         account_snapshot_warning_consecutive_count=account_snapshot_warning_consecutive_count,
         monitor_source_warning_streak=monitor_source_warning_streak,
         monitor_source_warning_consecutive_count=monitor_source_warning_consecutive_count,
+        ws_silence_warning_streak=ws_silence_warning_streak,
+        ws_silence_warning_consecutive_count=ws_silence_warning_consecutive_count,
     )
     if not alert_flags:
         upsert_state(MONITOR_ALERT_STATE_KEY, environment, next_state, times["date"])
@@ -655,6 +699,7 @@ def build_system_monitor_alert_guard_response(
             "suppressed_flag_codes": _flag_codes(suppressed_flags + legacy_suppressed_flags),
             "account_snapshot_warning_streak": account_snapshot_warning_streak,
             "monitor_source_warning_streak": monitor_source_warning_streak,
+            "ws_silence_warning_streak": ws_silence_warning_streak,
             "state": next_state,
             "source": "ibkr-api",
         }, 200
@@ -685,6 +730,10 @@ def build_system_monitor_alert_guard_response(
                 alert_flags,
                 timestamp_us=times["us"],
                 admission_preview=admission_preview,
+                alert_context={
+                    "ws_silence_warning_streak": ws_silence_warning_streak,
+                    "ws_silence_warning_consecutive_count": ws_silence_warning_consecutive_count,
+                },
             ),
             environment=environment,
         )
@@ -710,6 +759,7 @@ def build_system_monitor_alert_guard_response(
         "suppressed_flag_codes": _flag_codes(suppressed_flags + legacy_suppressed_flags),
         "account_snapshot_warning_streak": account_snapshot_warning_streak,
         "monitor_source_warning_streak": monitor_source_warning_streak,
+        "ws_silence_warning_streak": ws_silence_warning_streak,
         "admission_preview": admission_preview,
         "event": event,
         "state": next_state,

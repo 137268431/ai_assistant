@@ -213,6 +213,7 @@ MONITOR_CONFIG_KEYS = (
     "ibkr_watchlist_backfill_interval_min",
     "system_monitor_ws_message_age_regular_warn_sec",
     "system_monitor_ws_message_age_regular_critical_sec",
+    "system_monitor_ws_message_age_regular_warning_consecutive_count",
     "system_monitor_ws_message_age_late_session_warn_sec",
     "system_monitor_ws_message_age_late_session_critical_sec",
 )

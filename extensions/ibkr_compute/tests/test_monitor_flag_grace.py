@@ -133,12 +133,21 @@ class MonitorFlagGraceTest(unittest.TestCase):
         self.assertIn("session_unauthenticated", flag_codes)
 
     def test_market_data_silent_warns_in_regular_session(self):
-        flags = self._build_market_data_flags("regular", 61.0)
+        flags = self._build_market_data_flags("regular", 91.0)
 
         warning = next(item for item in flags if item["code"] == "market_data_silent")
         self.assertEqual(warning["severity"], "warning")
-        self.assertIn("warning=60s", warning["detail"])
+        self.assertIn("warning=90s", warning["detail"])
         self.assertIn("critical=180s", warning["detail"])
+        self.assertIn("active=2", warning["detail"])
+        self.assertIn("trade=2", warning["detail"])
+
+    def test_market_data_silent_does_not_warn_at_77s_in_regular_session(self):
+        flags = self._build_market_data_flags("regular", 77.1)
+
+        flag_codes = {item["code"] for item in flags}
+        self.assertNotIn("market_data_silent", flag_codes)
+        self.assertNotIn("market_data_silent_critical", flag_codes)
 
     def test_market_data_silent_critical_in_regular_session(self):
         flags = self._build_market_data_flags("regular", 181.0)
@@ -146,6 +155,27 @@ class MonitorFlagGraceTest(unittest.TestCase):
         critical = next(item for item in flags if item["code"] == "market_data_silent_critical")
         self.assertEqual(critical["severity"], "error")
         self.assertIn("session=regular", critical["detail"])
+
+    def test_market_monitor_only_regular_session_uses_wider_warning_threshold(self):
+        flags = _build_monitor_flags(
+            {
+                "gateway": {"running": True, "reachable": True},
+                "market_session": {"kind": "regular"},
+                "session": {"authenticated": True},
+                "websocket": {"connected": True, "ready": True},
+            },
+            {
+                "active_subscription_count": 1,
+                "pending_subscription_count": 0,
+                "last_message_age_s": 120.0,
+            },
+            {},
+            {"active_subscriptions": [{"symbol": "VIX", "role": "market_monitor"}]},
+        )
+
+        flag_codes = {item["code"] for item in flags}
+        self.assertNotIn("market_data_silent", flag_codes)
+        self.assertNotIn("market_data_silent_critical", flag_codes)
 
     def test_market_data_session_conflict_suppresses_ws_silence_for_10197(self):
         flags = _build_monitor_flags(

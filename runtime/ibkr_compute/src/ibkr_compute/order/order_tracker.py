@@ -417,6 +417,38 @@ class OrderTracker:
     def _looks_like_close_order_ref(cls, value: Any) -> bool:
         return cls._normalize_text(value).lower().startswith(("close_", "manual_close_", "market_close_"))
 
+    def _eod_close_time_tuple(self) -> tuple[int, int]:
+        raw = "15:55"
+        getter = getattr(self.config, "get_for_environment", None)
+        if callable(getter):
+            try:
+                raw = str(getter("eod_close_time", self.environment, raw) or raw)
+            except Exception:
+                raw = "15:55"
+        try:
+            hour_text, minute_text = raw.strip().split(":", 1)
+            hour = int(hour_text)
+            minute = int(minute_text)
+            if 0 <= hour <= 23 and 0 <= minute <= 59:
+                return hour, minute
+        except Exception:
+            pass
+        return (15, 55)
+
+    def _looks_like_eod_close_ref(self, value: Any) -> bool:
+        text = self._normalize_text(value)
+        match = re.match(r"^close_[A-Z0-9.]+_\d{8}_(\d{6})$", text, flags=re.IGNORECASE)
+        if not match:
+            return False
+        time_text = match.group(1)
+        try:
+            order_hour = int(time_text[:2])
+            order_minute = int(time_text[2:4])
+        except Exception:
+            return False
+        eod_hour, eod_minute = self._eod_close_time_tuple()
+        return (order_hour, order_minute) >= (eod_hour, eod_minute)
+
     @classmethod
     def _normalize_pb_order_role(cls, value: Any) -> str:
         normalized = cls._normalize_text(value).lower()
@@ -2154,7 +2186,12 @@ class OrderTracker:
                     role = "take_profit"
                 if role == "stop_loss" and limit_price <= 0 and stop_trigger_price > 0:
                     limit_price = stop_trigger_price
-                relation_status = "closed" if str(status).upper() in ("FILLED", "EXECUTED", "CANCELLED", "CANCELED") else "active"
+                relation_status = (
+                    "closed"
+                    if str(status).upper()
+                    in ("FILLED", "EXECUTED", "CANCELLED", "CANCELED", "API_CANCELLED", "INACTIVE", "REJECTED", "EXPIRED", "CLOSED")
+                    else "active"
+                )
                 mapped_status = {
                     "PRESUBMITTED": "Submitted",
                     "SUBMITTED": "Submitted",
@@ -2440,6 +2477,14 @@ class OrderTracker:
                             "close_side": normalized_side,
                         }
                     )
+                    if (
+                        not any(extra.get(key) not in (None, "") for key in ("reason", "close_reason", "close_reason_code"))
+                        and self._looks_like_eod_close_ref(coid or canonical_unique_id)
+                    ):
+                        extra["reason"] = "force_flat_eod"
+                        extra["close_reason"] = "force_flat_eod"
+                        extra["close_reason_code"] = "force_flat_eod"
+                        extra["close_reason_human"] = "EOD 平仓"
                 if commission:
                     extra.update(
                         {

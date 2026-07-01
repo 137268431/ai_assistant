@@ -11,8 +11,9 @@ from ibkr_compute.api.support.market_data_session import (
 
 SESSION_UNAUTHENTICATED_GRACE_SECONDS = 300
 SESSION_UNAUTHENTICATED_LATE_SESSION_GRACE_SECONDS = 480
-WS_SILENCE_REGULAR_WARN_SEC = 60
+WS_SILENCE_REGULAR_WARN_SEC = 90
 WS_SILENCE_REGULAR_CRITICAL_SEC = 180
+WS_SILENCE_MONITOR_ONLY_REGULAR_WARN_SEC = 180
 WS_SILENCE_LATE_SESSION_WARN_SEC = 600
 WS_SILENCE_LATE_SESSION_CRITICAL_SEC = 1200
 WS_SILENCE_REGULAR_WARN_CONFIG_KEY = "system_monitor_ws_message_age_regular_warn_sec"
@@ -88,6 +89,61 @@ def _append_monitor_flag(flags: list[dict], severity: str, code: str, title: str
             "detail": detail,
         }
     )
+
+
+def _non_negative_int(value, default: int = 0) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return max(0, int(default))
+
+
+def _resolve_subscription_counts(api_utilization: dict, sample_payload: dict) -> dict[str, int]:
+    active_subscriptions = sample_payload.get("active_subscriptions") or []
+    if not isinstance(active_subscriptions, list):
+        active_subscriptions = []
+
+    sample_trade_count = 0
+    sample_monitor_count = 0
+    for item in active_subscriptions:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").strip().lower()
+        if role == "market_monitor":
+            sample_monitor_count += 1
+        else:
+            sample_trade_count += 1
+    sample_total = sample_trade_count + sample_monitor_count
+
+    active_subscription_count = _non_negative_int(api_utilization.get("active_subscription_count"), sample_total)
+    if sample_total > active_subscription_count:
+        active_subscription_count = sample_total
+
+    api_trade_count = api_utilization.get("active_trade_symbol_count")
+    api_monitor_count = api_utilization.get("active_monitor_symbol_count")
+    if api_trade_count is not None:
+        active_trade_symbol_count = _non_negative_int(api_trade_count, 0)
+    elif sample_total > 0:
+        active_trade_symbol_count = sample_trade_count
+    elif api_monitor_count is not None:
+        active_trade_symbol_count = max(0, active_subscription_count - _non_negative_int(api_monitor_count, 0))
+    else:
+        active_trade_symbol_count = active_subscription_count
+
+    if api_monitor_count is not None:
+        active_monitor_symbol_count = _non_negative_int(api_monitor_count, 0)
+    elif sample_total > 0:
+        active_monitor_symbol_count = sample_monitor_count
+    else:
+        active_monitor_symbol_count = max(0, active_subscription_count - active_trade_symbol_count)
+    if active_trade_symbol_count + active_monitor_symbol_count > active_subscription_count:
+        active_subscription_count = active_trade_symbol_count + active_monitor_symbol_count
+
+    return {
+        "active_subscription_count": active_subscription_count,
+        "active_trade_symbol_count": active_trade_symbol_count,
+        "active_monitor_symbol_count": active_monitor_symbol_count,
+    }
 
 
 def _format_conflict_status_detail(runtime_status: dict) -> str:
@@ -322,16 +378,36 @@ def _build_ws_silence_policy(
     }
 
 
-def _format_ws_silence_detail(last_message_age_s, runtime_status: dict, ws_silence_policy: dict) -> str:
+def _format_ws_silence_detail(
+    last_message_age_s,
+    runtime_status: dict,
+    ws_silence_policy: dict,
+    subscription_counts: dict[str, int] | None = None,
+) -> str:
     market_session = runtime_status.get("market_session") or {}
     market_session_kind = str(market_session.get("kind") or "").strip().lower() or "unknown"
     warn_seconds = int(ws_silence_policy.get("ws_silence_warn_sec", 0) or 0)
     critical_seconds = int(ws_silence_policy.get("ws_silence_critical_sec", 0) or 0)
-    if warn_seconds <= 0 or critical_seconds <= warn_seconds:
+    if warn_seconds <= 0 or critical_seconds <= 0:
         return f"最近一条 WebSocket 消息已经过去 {last_message_age_s}s。"
+    context_parts = [
+        f"session={market_session_kind}",
+        f"warning={warn_seconds}s",
+        f"critical={critical_seconds}s",
+    ]
+    if subscription_counts:
+        context_parts.extend(
+            [
+                f"active={int(subscription_counts.get('active_subscription_count', 0) or 0)}",
+                f"trade={int(subscription_counts.get('active_trade_symbol_count', 0) or 0)}",
+                f"monitor={int(subscription_counts.get('active_monitor_symbol_count', 0) or 0)}",
+            ]
+        )
+        if bool(subscription_counts.get("monitor_only_regular")):
+            context_parts.append("monitor_only=true")
     return (
         f"最近一条 WebSocket 消息已经过去 {last_message_age_s}s"
-        f"（session={market_session_kind}，warning={warn_seconds}s，critical={critical_seconds}s）。"
+        f"（{'，'.join(context_parts)}）。"
     )
 
 
@@ -466,17 +542,10 @@ def _build_monitor_flags(runtime_status: dict, api_utilization: dict, host_snaps
         or api_utilization.get("subscription_limit", 0)
         or 0
     )
-    active_subscription_count = int(api_utilization.get("active_subscription_count", 0) or 0)
-    active_trade_symbol_count = int(
-        api_utilization.get("active_trade_symbol_count")
-        if api_utilization.get("active_trade_symbol_count") is not None
-        else active_subscription_count
-    )
-    active_monitor_symbol_count = int(
-        api_utilization.get("active_monitor_symbol_count")
-        or max(0, active_subscription_count - active_trade_symbol_count)
-        or 0
-    )
+    subscription_counts = _resolve_subscription_counts(api_utilization, sample_payload)
+    active_subscription_count = subscription_counts["active_subscription_count"]
+    active_trade_symbol_count = subscription_counts["active_trade_symbol_count"]
+    active_monitor_symbol_count = subscription_counts["active_monitor_symbol_count"]
     if trade_utilization_pct is not None and trade_subscription_limit > 0:
         detail_suffix = (
             f" 另有固定 market monitor {active_monitor_symbol_count} 个。"
@@ -632,7 +701,6 @@ def _build_monitor_flags(runtime_status: dict, api_utilization: dict, host_snaps
         )
 
     last_message_age_s = api_utilization.get("last_message_age_s")
-    active_subscription_count = int(api_utilization.get("active_subscription_count", 0) or 0)
     ws_silence_policy = _build_ws_silence_policy(runtime_status, api_utilization=api_utilization)
     if (
         bool(session.get("authenticated"))
@@ -643,7 +711,22 @@ def _build_monitor_flags(runtime_status: dict, api_utilization: dict, host_snaps
     ):
         critical_seconds = int(ws_silence_policy.get("ws_silence_critical_sec", 0) or 0)
         warn_seconds = int(ws_silence_policy.get("ws_silence_warn_sec", 0) or 0)
-        detail = _format_ws_silence_detail(last_message_age_s, runtime_status, ws_silence_policy)
+        detail_counts = dict(subscription_counts)
+        if (
+            str(ws_silence_policy.get("ws_silence_policy") or "").strip().lower() == "regular"
+            and active_trade_symbol_count <= 0
+            and active_monitor_symbol_count > 0
+            and critical_seconds > 0
+        ):
+            warn_seconds = max(warn_seconds, min(WS_SILENCE_MONITOR_ONLY_REGULAR_WARN_SEC, critical_seconds))
+            ws_silence_policy = {**ws_silence_policy, "ws_silence_warn_sec": warn_seconds}
+            detail_counts["monitor_only_regular"] = 1
+        detail = _format_ws_silence_detail(
+            last_message_age_s,
+            runtime_status,
+            ws_silence_policy,
+            detail_counts,
+        )
         if float(last_message_age_s) > critical_seconds:
             _append_monitor_flag(
                 flags,

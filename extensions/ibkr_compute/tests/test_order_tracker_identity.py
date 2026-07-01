@@ -1011,6 +1011,50 @@ class OrderTrackerIdentityTest(unittest.TestCase):
         self.assertFalse(extra["broker_realtime_callback"])
         self.assertEqual("poll", extra["broker_update_source"])
 
+    def test_eod_close_callback_only_order_inherits_eod_reason_and_closes_terminal_relation(self):
+        pb_client = FakePBClient(
+            rows=[
+                {
+                    "id": "close-row",
+                    "unique_id": "close_CMCSA_20260630_160028",
+                    "symbol": "CMCSA",
+                    "environment": "paper",
+                    "broker_order_id": "11594",
+                    "order_id": "11594",
+                    "role": "close",
+                    "status": "Submitted",
+                    "quantity": 206,
+                    "extra": {},
+                }
+            ]
+        )
+        tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="paper")
+
+        tracker._handle_live_order_payload(
+            {
+                "orderId": "11594",
+                "ticker": "CMCSA",
+                "side": "SELL",
+                "orderType": "MKT",
+                "totalSize": 206,
+                "filledQuantity": 0,
+                "avgPrice": 0,
+                "price": 0,
+                "status": "Canceled",
+                "cOID": "close_CMCSA_20260630_160028",
+                "broker_realtime_callback": True,
+                "ib_callback_type": "orderStatus",
+            },
+            source="broker",
+        )
+
+        self.assertEqual(1, len(pb_client.upserts))
+        upsert = pb_client.upserts[0]
+        self.assertEqual("closed", upsert["relation_status"])
+        self.assertEqual("force_flat_eod", upsert["extra"]["close_reason"])
+        self.assertEqual("force_flat_eod", upsert["extra"]["close_reason_code"])
+        self.assertEqual("EOD 平仓", upsert["extra"]["close_reason_human"])
+
     def test_live_order_merge_keeps_filled_quantity_and_terminal_status_monotonic(self):
         pb_client = FakePBClient()
         tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="live")

@@ -377,8 +377,9 @@ const configData = [
   cfg('system_monitor_alert_error_cooldown_min', '15', '15', 'Monitor 严重冷却分钟', '系统通知', 945.1, 'IBKR Monitor error 级别同一 fingerprint 重复通知的最短间隔分钟数'),
   cfg('system_monitor_alert_warning_cooldown_min', '60', '60', 'Monitor 告警冷却分钟', '系统通知', 945.2, 'IBKR Monitor warning 级别同一 fingerprint 重复通知的最短间隔分钟数'),
   cfg('system_monitor_account_snapshot_warning_consecutive_count', '2', '2', '账户快照连续告警次数', '系统通知', 945.3, 'Account snapshot 探针类 warning 连续命中达到该次数后才发送 IBKR Monitor 告警'),
-  cfg('system_monitor_ws_message_age_regular_warn_sec', '60', '60', 'WS 盘中告警秒数', '系统通知', 946, 'regular session 下最近一条 WebSocket 消息超过多少秒后触发 warning'),
+  cfg('system_monitor_ws_message_age_regular_warn_sec', '90', '90', 'WS 盘中告警秒数', '系统通知', 946, 'regular session 下最近一条 WebSocket 消息超过多少秒后触发 warning'),
   cfg('system_monitor_ws_message_age_regular_critical_sec', '180', '180', 'WS 盘中严重秒数', '系统通知', 947, 'regular session 下最近一条 WebSocket 消息超过多少秒后触发 critical；必须大于盘中告警秒数'),
+  cfg('system_monitor_ws_message_age_regular_warning_consecutive_count', '2', '2', 'WS 盘中连续告警次数', '系统通知', 947.1, 'regular session 下 market_data_silent warning 连续命中达到该次数后才发送 IBKR Monitor 告警；critical 仍立即发送'),
   cfg('system_monitor_ws_message_age_late_session_warn_sec', '600', '600', 'WS 盘后告警秒数', '系统通知', 948, 'close_transition / afterhours 下最近一条 WebSocket 消息超过多少秒后触发 warning'),
   cfg('system_monitor_ws_message_age_late_session_critical_sec', '1200', '1200', 'WS 盘后严重秒数', '系统通知', 949, 'close_transition / afterhours 下最近一条 WebSocket 消息超过多少秒后触发 critical；必须大于盘后告警秒数'),
 

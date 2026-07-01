@@ -394,6 +394,262 @@ class OrderLifecycle:
             "reason": "session_marketable_limit",
         }
 
+    def _eod_afterhours_policy(self) -> str:
+        return (
+            self._get_config_value("eod_close_afterhours_policy", "confirmed_residual_only")
+            .strip()
+            .lower()
+            or "confirmed_residual_only"
+        )
+
+    def _eod_residual_confirm_reads(self) -> int:
+        return max(1, self._get_config_int("eod_close_residual_confirm_reads", 2))
+
+    def _eod_corrective_once_enabled(self) -> bool:
+        return self._get_config_bool("eod_close_corrective_once", True)
+
+    @staticmethod
+    def _eod_position_account(pos: dict | None, fallback: str = "") -> str:
+        return str((pos or {}).get("account") or (pos or {}).get("acctNumber") or fallback or "").strip()
+
+    def _eod_intent_key(self, *, market_date: str, pos: dict | None = None, account: str = "", conid: int = 0) -> str:
+        resolved_account = str(account or self._eod_position_account(pos, self.account_id) or "-").strip() or "-"
+        resolved_conid = int(conid or ((pos or {}).get("conid", 0) or 0))
+        return f"{self.environment}:{market_date}:{resolved_account}:{resolved_conid}"
+
+    def _eod_close_intents_from_state(self, state: dict | None) -> dict[str, dict[str, Any]]:
+        intents = self._ensure_dict((state or {}).get("intents"))
+        return {str(key): self._ensure_dict(value) for key, value in intents.items() if str(key or "").strip()}
+
+    @staticmethod
+    def _eod_close_order_ids_from_result(result: dict | None) -> list[str]:
+        order_ids: list[str] = []
+        for key in ("order_id", "order_ids", "submitted_order_ids", "broker_order_ids", "submitted_broker_order_ids"):
+            value = (result or {}).get(key)
+            values = value if isinstance(value, (list, tuple, set)) else ([value] if value not in (None, "") else [])
+            for item in values:
+                text = str(item or "").strip()
+                if text and text not in order_ids:
+                    order_ids.append(text)
+        return order_ids
+
+    @staticmethod
+    def _eod_close_refs_from_result(result: dict | None) -> list[str]:
+        refs: list[str] = []
+        for key in ("entry_coid", "bracket_group", "order_ref", "orderRef"):
+            text = str((result or {}).get(key) or "").strip()
+            if text and text not in refs:
+                refs.append(text)
+        return refs
+
+    def _new_eod_intent(
+        self,
+        *,
+        key: str,
+        market_date: str,
+        pos: dict,
+        direction: str,
+        quantity: int,
+        now_ms: int,
+        request_id: str,
+    ) -> dict[str, Any]:
+        symbol = self._eod_position_symbol(pos)
+        return {
+            "key": key,
+            "state": "planned",
+            "environment": self.environment,
+            "market_date": market_date,
+            "account": self._eod_position_account(pos, self.account_id),
+            "conid": int((pos or {}).get("conid", 0) or 0),
+            "symbol": symbol,
+            "original_direction": str(direction or ""),
+            "original_quantity": int(quantity or 0),
+            "request_id": request_id,
+            "created_at_ms": int(now_ms),
+            "updated_at_ms": int(now_ms),
+            "observations": [],
+            "submitted_order_ids": [],
+            "close_refs": [],
+            "corrective_count": 0,
+        }
+
+    def _append_eod_position_observation(
+        self,
+        intent: dict[str, Any],
+        *,
+        pos: dict,
+        direction: str,
+        quantity: int,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        updated = dict(intent or {})
+        observations = [
+            dict(item)
+            for item in (updated.get("observations") or [])
+            if isinstance(item, dict)
+        ]
+        observation = {
+            "at_ms": int(now_ms),
+            "direction": str(direction or ""),
+            "quantity": int(quantity or 0),
+            "position": self._eod_position_quantity(pos),
+            "source": "broker_positions",
+        }
+        if not observations or (
+            observations[-1].get("direction") != observation["direction"]
+            or int(observations[-1].get("quantity") or 0) != observation["quantity"]
+            or int(now_ms) - int(observations[-1].get("at_ms") or 0) > 1_000
+        ):
+            observations.append(observation)
+        updated["observations"] = observations[-6:]
+        updated["last_position_observation"] = observation
+        updated["updated_at_ms"] = int(now_ms)
+        return updated
+
+    def _eod_confirmed_position_reads(self, intent: dict[str, Any], *, direction: str, quantity: int) -> int:
+        expected_direction = str(direction or "")
+        expected_quantity = int(quantity or 0)
+        count = 0
+        for item in reversed(list((intent or {}).get("observations") or [])):
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("direction") or "") == expected_direction and int(item.get("quantity") or 0) == expected_quantity:
+                count += 1
+                continue
+            break
+        return count
+
+    def _eod_intent_row_matches(self, row: dict | None, intent: dict[str, Any]) -> bool:
+        if not row or not intent:
+            return False
+        extra = self._order_extra(row)
+        request_id = str(intent.get("request_id") or "").strip()
+        if request_id and str(extra.get("eod_close_request_id") or "").strip() == request_id:
+            return True
+        broker_id = self._order_broker_id(row)
+        if broker_id and broker_id in {str(item) for item in (intent.get("submitted_order_ids") or [])}:
+            return True
+        unique_id = str(row.get("unique_id") or "").strip()
+        return bool(unique_id and unique_id in {str(item) for item in (intent.get("close_refs") or [])})
+
+    def _eod_intent_has_active_order(
+        self,
+        intent: dict[str, Any],
+        *,
+        rows: list[dict],
+        broker_open_order_ids: set[str],
+    ) -> str:
+        for row in rows or []:
+            if not self._eod_intent_row_matches(row, intent):
+                continue
+            broker_id = self._order_broker_id(row)
+            if self._order_is_open(row) or (broker_id and broker_id in broker_open_order_ids):
+                return broker_id or str(row.get("unique_id") or "")
+        for order_id in intent.get("submitted_order_ids") or []:
+            if str(order_id or "").strip() in broker_open_order_ids:
+                return str(order_id or "").strip()
+        return ""
+
+    def _eod_intent_guard_model(
+        self,
+        intent: dict[str, Any],
+        *,
+        pos: dict,
+        direction: str,
+        quantity: int,
+        rows: list[dict],
+        broker_open_order_ids: set[str],
+        now_ms: int,
+        et_now: datetime,
+    ) -> dict[str, Any]:
+        if not intent:
+            return {"active": False}
+        active_order_id = self._eod_intent_has_active_order(
+            intent,
+            rows=rows,
+            broker_open_order_ids=broker_open_order_ids,
+        )
+        if active_order_id:
+            return {
+                "active": True,
+                "reason": "active_eod_close_order_exists",
+                "order_id": active_order_id,
+                "request_id": str(intent.get("request_id") or ""),
+            }
+
+        submitted_at_ms = int(intent.get("submitted_at_ms") or intent.get("created_at_ms") or 0)
+        dirty_until_ms = int(intent.get("dirty_until_ms") or 0)
+        if not dirty_until_ms and submitted_at_ms > 0:
+            dirty_until_ms = submitted_at_ms + int(self._eod_close_fill_reconcile_guard_sec() * 1000)
+        if dirty_until_ms > int(now_ms):
+            return {
+                "active": True,
+                "reason": "await_position_flat_reconcile",
+                "request_id": str(intent.get("request_id") or ""),
+                "age_s": round(max(0, int(now_ms) - submitted_at_ms) / 1000.0, 1) if submitted_at_ms else 0.0,
+                "guard_sec": self._eod_close_fill_reconcile_guard_sec(),
+            }
+
+        original_direction = str(intent.get("original_direction") or direction or "")
+        is_over_close = bool(original_direction and direction and direction != original_direction)
+        if is_over_close and self._eod_corrective_once_enabled() and int(intent.get("corrective_count") or 0) >= 1:
+            return {
+                "active": True,
+                "reason": "over_close_corrective_already_used",
+                "request_id": str(intent.get("request_id") or ""),
+            }
+
+        after_regular = (et_now.hour, et_now.minute) >= (16, 0)
+        confirmed_reads = self._eod_confirmed_position_reads(intent, direction=direction, quantity=quantity)
+        required_reads = self._eod_residual_confirm_reads()
+        if after_regular and self._eod_afterhours_policy() == "confirmed_residual_only" and confirmed_reads < required_reads:
+            return {
+                "active": True,
+                "reason": "await_confirmed_residual_position",
+                "request_id": str(intent.get("request_id") or ""),
+                "confirmed_reads": confirmed_reads,
+                "required_reads": required_reads,
+            }
+
+        return {
+            "active": False,
+            "residual": bool(submitted_at_ms),
+            "corrective": is_over_close,
+            "confirmed_reads": confirmed_reads,
+            "required_reads": required_reads,
+            "request_id": str(intent.get("request_id") or ""),
+        }
+
+    def _eod_intent_after_submission(
+        self,
+        intent: dict[str, Any],
+        *,
+        result: dict[str, Any],
+        now_ms: int,
+        quantity: int,
+        direction: str,
+        corrective: bool = False,
+    ) -> dict[str, Any]:
+        updated = dict(intent or {})
+        order_ids = self._eod_close_order_ids_from_result(result)
+        refs = self._eod_close_refs_from_result(result)
+        updated["submitted_order_ids"] = list(dict.fromkeys([*(updated.get("submitted_order_ids") or []), *order_ids]))
+        updated["close_refs"] = list(dict.fromkeys([*(updated.get("close_refs") or []), *refs]))
+        updated["submitted_quantity"] = int(quantity or 0)
+        updated["submitted_direction"] = str(direction or "")
+        updated["submitted_at_ms"] = int(now_ms)
+        updated["updated_at_ms"] = int(now_ms)
+        updated["last_submit_result"] = dict(result or {})
+        if corrective:
+            updated["corrective_count"] = int(updated.get("corrective_count") or 0) + 1
+            updated["state"] = "over_close_corrective_submitted"
+        elif result.get("ok") and result.get("filled"):
+            updated["state"] = "flat_confirmed"
+        else:
+            updated["state"] = "submitted_pending_reconcile"
+            updated["dirty_until_ms"] = int(now_ms) + int(self._eod_close_fill_reconcile_guard_sec() * 1000)
+        return updated
+
     def _mark_eod_non_trading_day(self, et_now: datetime) -> dict[str, Any]:
         if et_now.tzinfo is None:
             et_now = et_now.replace(tzinfo=ET)
@@ -1095,6 +1351,7 @@ class OrderLifecycle:
             "EXECUTED",
             "CANCELLED",
             "CANCELED",
+            "CLOSED",
             "INACTIVE",
             "REJECTED",
             "EXPIRED",
@@ -1594,19 +1851,39 @@ class OrderLifecycle:
             return result_payload
 
         positions = list(position_result.get("positions") or [])
+        persisted_eod_state = self._read_persisted_eod_close_state(market_date=market_date)
+        eod_intents = self._eod_close_intents_from_state(persisted_eod_state)
         candidates: list[dict] = []
         kept_symbols: list[str] = []
+        current_intent_keys: set[str] = set()
         for pos in positions:
             symbol = self._eod_position_symbol(pos)
             position_qty = self._eod_position_quantity(pos)
             conid = int(pos.get("conid", 0) or 0)
             if not position_qty or not conid:
                 continue
+            current_intent_keys.add(self._eod_intent_key(market_date=market_date, pos=pos))
             if symbol in self._keep_symbols():
                 kept_symbols.append(symbol)
                 logger.info("Keeping EOD position: %s", symbol)
                 continue
             candidates.append(dict(pos))
+
+        now_ms = int(time.time() * 1000)
+        for key, intent in list(eod_intents.items()):
+            if key in current_intent_keys:
+                continue
+            if str(intent.get("state") or "") in {
+                "submitted_pending_reconcile",
+                "over_close_corrective_submitted",
+                "residual_confirmed",
+                "over_close_detected",
+            }:
+                updated_intent = dict(intent)
+                updated_intent["state"] = "flat_confirmed"
+                updated_intent["flat_confirmed_at_ms"] = now_ms
+                updated_intent["updated_at_ms"] = now_ms
+                eod_intents[key] = updated_intent
 
         if not candidates:
             payload = {
@@ -1620,6 +1897,7 @@ class OrderLifecycle:
                 "kept_symbols": sorted(set(kept_symbols)),
                 "reason": "no_eod_positions",
                 "eod_close_time": f"{eod_close_hour:02d}:{eod_close_minute:02d}",
+                "intents": eod_intents,
             }
             logger.info("EOD close complete: no non-exempt positions")
             return self._set_eod_close_result(payload, market_date=market_date, eod_closed_today=True)
@@ -1645,12 +1923,57 @@ class OrderLifecycle:
             direction = "long" if position_qty > 0 else "short"
             quantity = abs(int(round(position_qty)))
             rows = self._load_live_order_rows_for_symbol(symbol)
+            intent_key = self._eod_intent_key(market_date=market_date, pos=pos)
+            intent = dict(eod_intents.get(intent_key) or {})
+            if intent:
+                intent = self._append_eod_position_observation(
+                    intent,
+                    pos=pos,
+                    direction=direction,
+                    quantity=quantity,
+                    now_ms=now_ms,
+                )
+                eod_intents[intent_key] = intent
+                intent_guard = self._eod_intent_guard_model(
+                    intent,
+                    pos=pos,
+                    direction=direction,
+                    quantity=quantity,
+                    rows=rows,
+                    broker_open_order_ids=broker_open_order_ids,
+                    now_ms=now_ms,
+                    et_now=et_now,
+                )
+                if intent_guard.get("active"):
+                    pending += 1
+                    item = {
+                        "symbol": symbol,
+                        "direction": direction,
+                        "quantity": quantity,
+                        "reason": str(intent_guard.get("reason") or "eod_close_intent_guard_active"),
+                        "request_id": str(intent_guard.get("request_id") or intent.get("request_id") or ""),
+                        "order_id": str(intent_guard.get("order_id") or ""),
+                        "unique_id": str(intent_guard.get("unique_id") or ""),
+                        "age_s": round(float(intent_guard.get("age_s") or 0.0), 1),
+                        "guard_sec": intent_guard.get("guard_sec", 0),
+                        "confirmed_reads": intent_guard.get("confirmed_reads", 0),
+                        "required_reads": intent_guard.get("required_reads", 0),
+                    }
+                    pending_items.append(item)
+                    guarded_items.append(item)
+                    if item["reason"] in {"await_position_flat_reconcile", "await_confirmed_residual_position"}:
+                        reconcile_items.append(item)
+                    logger.info("EOD close intent guarded for %s: %s", symbol, item["reason"])
+                    continue
+            else:
+                intent_guard = {"active": False}
+
             eod_guard = self._eod_close_guard_model(
                 symbol=symbol,
                 direction=direction,
                 rows=rows,
                 market_date=market_date,
-                now_ms=int(time.time() * 1000),
+                now_ms=now_ms,
             )
             if eod_guard.get("active"):
                 pending += 1
@@ -1721,7 +2044,35 @@ class OrderLifecycle:
                     continue
 
             link_context = self._eod_close_link_context(symbol)
-            close_reason_code = "force_flat_eod_residual" if eod_guard.get("residual") else "force_flat_eod"
+            corrective_close = bool(intent_guard.get("corrective"))
+            residual_close = bool(intent_guard.get("residual") or eod_guard.get("residual"))
+            if not intent:
+                request_id = str(eod_guard.get("request_id") or self._eod_close_request_id(market_date, symbol))
+                intent = self._new_eod_intent(
+                    key=intent_key,
+                    market_date=market_date,
+                    pos=pos,
+                    direction=direction,
+                    quantity=quantity,
+                    now_ms=now_ms,
+                    request_id=request_id,
+                )
+                intent = self._append_eod_position_observation(
+                    intent,
+                    pos=pos,
+                    direction=direction,
+                    quantity=quantity,
+                    now_ms=now_ms,
+                )
+                eod_intents[intent_key] = intent
+            if corrective_close:
+                close_reason_code = "force_flat_eod_corrective"
+                intent["state"] = "over_close_detected"
+            elif residual_close:
+                close_reason_code = "force_flat_eod_residual"
+                intent["state"] = "residual_confirmed"
+            else:
+                close_reason_code = "force_flat_eod"
             try:
                 result = self._place_harvest_market_close(
                     conid=conid,
@@ -1739,7 +2090,7 @@ class OrderLifecycle:
                     position_snapshot=position_snapshot,
                     wait_for_fill=True,
                     fill_timeout=max(1.0, self._get_config_float("eod_close_fill_timeout_sec", 5.0)),
-                    eod_close_request_id=str(eod_guard.get("request_id") or self._eod_close_request_id(market_date, symbol)),
+                    eod_close_request_id=str(intent.get("request_id") or eod_guard.get("request_id") or self._eod_close_request_id(market_date, symbol)),
                     session_override=str(execution_policy.get("session_override") or ""),
                 )
             except Exception as exc:
@@ -1759,12 +2110,21 @@ class OrderLifecycle:
                 or result.get("broker_order_ids")
                 or result.get("submitted_broker_order_ids")
             )
-            if result.get("ok"):
+            if submitted:
+                eod_intents[intent_key] = self._eod_intent_after_submission(
+                    intent,
+                    result=result,
+                    now_ms=now_ms,
+                    quantity=quantity,
+                    direction=direction,
+                    corrective=corrective_close,
+                )
+            if result.get("ok") and bool(result.get("filled", True)):
                 closed += 1
                 closed_symbols.append(symbol)
                 protection_cancel_errors.extend(self._cancel_eod_protection_after_close(symbol, rows))
                 logger.info("EOD close: %s %s %s shares", symbol, direction, abs(position_qty))
-            elif submitted:
+            elif submitted or result.get("ok"):
                 pending += 1
                 pending_items.append(
                     {
@@ -1772,6 +2132,7 @@ class OrderLifecycle:
                         "direction": direction,
                         "quantity": quantity,
                         "error": str(result.get("error") or "close_submitted_pending_fill"),
+                        "request_id": str(intent.get("request_id") or ""),
                         "result": dict(result or {}),
                     }
                 )
@@ -1810,6 +2171,7 @@ class OrderLifecycle:
             "reconcile_items": reconcile_items,
             "protection_cancel_errors": protection_cancel_errors,
             "unprotected_symbols": sorted(set(unprotected_symbols)),
+            "intents": eod_intents,
             "retry_after_s": 0 if ok else self._eod_close_retry_interval_sec(),
             "reason": "ok" if ok else "eod_close_incomplete",
             "eod_close_time": f"{eod_close_hour:02d}:{eod_close_minute:02d}",
@@ -1958,6 +2320,7 @@ class OrderLifecycle:
             "EXECUTED",
             "CANCELED",
             "CANCELLED",
+            "API_CANCELLED",
             "CLOSED",
             "INACTIVE",
             "REJECTED",

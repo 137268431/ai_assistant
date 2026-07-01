@@ -1,6 +1,6 @@
 //@version=6
 strategy(title="Signal Strategy Core[Glory]", overlay=true, pyramiding=0, initial_capital=100000, default_qty_type=strategy.fixed, default_qty_value=1, process_orders_on_close=true, calc_on_every_tick=false)
-import o8431/SSC_Lib_Format_Glory/1 as fmtlib
+import o8431/SSC_Lib_Format_Glory/2 as fmtlib
 import o8431/SSC_Lib_Risk_Glory/1 as risklib
 import o8431/SSC_Lib_Levels_Glory/1 as levellib
 import o8431/SSC_Lib_Model_Glory/1 as modellib
@@ -117,6 +117,9 @@ minEmaProfitAtr = input.float(0.80, "Minimum EMA target room (x ATR)", step=0.05
 emaTargetOffsetAtr = input.float(0.10, "EMA target offset (x ATR)", step=0.01, minval=0.0, maxval=2.0, group="03 Small Stop Risk")
 scalpBreakevenR = input.float(1.00, "Scalp breakeven trigger (R)", step=0.05, minval=0.10, maxval=5.0, group="03 Small Stop Risk")
 minTpRunnerGapR = input.float(0.50, "Minimum TP-runner gap (R)", step=0.05, minval=0.0, maxval=10.0, group="03 Small Stop Risk")
+allowSameBarWeakConfirm = input.bool(false, "Allow same-bar weak confirm", group="03 Small Stop Risk")
+minInitialStopClearanceR = input.float(0.15, "Minimum initial stop clearance (R)", step=0.05, minval=0.0, maxval=2.0, group="03 Small Stop Risk")
+backtestDelayInitialRiskUntilNextBar = input.bool(true, "Backtest: delay initial risk until next bar", group="03 Small Stop Risk")
 allowSameBarRunnerAfterFill = input.bool(false, "Allow same-bar runner after fill", group="03 Small Stop Risk")
 scalpNoFollowBars = input.int(4, "Scalp no-follow bars", minval=1, maxval=20, group="03 Small Stop Risk")
 rsiLen = input.int(14, "Scalp RSI length", minval=2, maxval=100, group="03 Small Stop Risk")
@@ -1106,8 +1109,8 @@ bool topRightRetestReady = topMiddleSwingReady and topRightRetestRatio >= minVis
 bool topRetestFastEnough = topRightRetestReady and bar_index > lowSinceStructHighBar and bar_index - lowSinceStructHighBar <= maxRetestAfterMiddleSwingBars
 bool topAnchorReady = dayRangeClear and topAnchorAgeBars >= probeMinAnchorAgeBars and topPullbackArmed
 bool topRetestBand = not na(topZoneLow) and not na(topZoneHigh) and high >= topZoneLow - atr * probeRetestBandAtr and low <= topZoneHigh + atr * probeRetestBandAtr
-bool topImmediatePullbackShort = topPullbackArmedEvent and topRetestBand and topStrictRetestTouch and close < open and (closePosition <= distributionDropClosePosMax or close < topZoneLow)
-if topImmediatePullbackShort
+bool topImmediatePullbackWatch = topPullbackArmedEvent and topRetestBand and topStrictRetestTouch and close < open and (closePosition <= distributionDropClosePosMax or close < topZoneLow)
+if topImmediatePullbackWatch
     lastTopFailureWatchBar := bar_index
     lastTopFailureWatchHigh := high
     lastTopFailureWatchLow := low
@@ -1115,6 +1118,7 @@ if topImmediatePullbackShort
     lastTopFailureWatchBodyMid := (open + close) * 0.5
     lastTopFailureWatchClose := close
     lastTopFailureWatchVolumeProbe := volumeAttackUp or (volumeRatio >= highAttackVolumeMult and close >= open)
+bool topImmediatePullbackShort = allowSameBarWeakConfirm and topImmediatePullbackWatch
 bool topFirstExhaustion = strongTopProbeZone and not topExhaustionUsed and topAnchorReady and topRetestBand and close < topZoneLow
 bool topRightShoulder = strongTopProbeZone and topAnchorReady and topRetestBand
 string topProbePattern = topRightShoulder ? "retest_2b_top" : topFirstExhaustion ? "extension_exhaustion_top" : "none"
@@ -1229,7 +1233,8 @@ bool recentTopNoDemandWindow = not na(barsSinceTopNoDemand) and barsSinceTopNoDe
 float topNoDemandDistanceAtr = not na(lastTopFailureWatchBase) and atr > 0.0 ? math.abs(close - lastTopFailureWatchBase) / atr : na
 bool topNoDemandRsiProof = scalpRsiShortOk or scalpFastBearDiv
 bool topNoDemandWeakClose = close < open and (closePosition <= distributionDropClosePosMax or topPressureWick >= topPressureBody or not na(lastTopFailureWatchBodyMid) and close <= lastTopFailureWatchBodyMid)
-bool topNoDemandBreakImmediate = topNoDemandWatch and topNoDemandRsiProof and topNoDemandWeakClose and not na(topNoDemandDistanceAtr) and topNoDemandDistanceAtr <= distributionDropMaxDistanceAtr
+bool topNoDemandBreakImmediateRaw = topNoDemandWatch and topNoDemandRsiProof and topNoDemandWeakClose and not na(topNoDemandDistanceAtr) and topNoDemandDistanceAtr <= distributionDropMaxDistanceAtr
+bool topNoDemandBreakImmediate = allowSameBarWeakConfirm and topNoDemandBreakImmediateRaw
 bool topNoDemandBreakDelayed = confirmed and topPullbackArmed and recentTopNoDemandWindow and topNoDemandStreak >= 2 and topNoDemandRsiProof and close < open and not na(lastTopNoDemandLow) and close < lastTopNoDemandLow and not na(topNoDemandDistanceAtr) and topNoDemandDistanceAtr <= distributionDropMaxDistanceAtr
 bool topNoDemandBreakConfirmed = topNoDemandBreakImmediate or topNoDemandBreakDelayed
 bool topFailureRepeatShort = topVolumeClimaxFailedBreakConfirmed or topHighVolumeDropConfirmed or topNoDemandBreakConfirmed or topImmediateReversalShort
@@ -1263,7 +1268,7 @@ else if not topMomentumDecayReady
 else if not upperWeakClose
     topExhaustionReason := "no_weak_close_confirm"
 bool topConfirmedShort = topSweepFailed or upperExhaustionConfirmedShort or topWeakNewHighConfirmed or topDistributionDropConfirmed or topVolumeClimaxFailedBreakConfirmed or topHighVolumeDropConfirmed or topNoDemandBreakConfirmed or topImmediateReversalShort
-bool topProbeCycleTouchNow = topImmediatePullbackShort or topSweptStructure or topNakedTouchEvent or topVolumeClimaxAttackEvent or topWeakNewHighEvent or topHighVolumeProbeWatch or topNoDemandWatch or upperExhaustionZone
+bool topProbeCycleTouchNow = topImmediatePullbackWatch or topSweptStructure or topNakedTouchEvent or topVolumeClimaxAttackEvent or topWeakNewHighEvent or topHighVolumeProbeWatch or topNoDemandWatch or upperExhaustionZone
 if topProbeCycleTouchNow and not topProbeCycleActive
     topProbeCycleId += 1
     topProbeCycleActive := true
@@ -1359,6 +1364,8 @@ else if not topPullbackArmed
     topProbeFilterReason := "pullback_not_enough"
 else if not topRetestBand
     topProbeFilterReason := "not_retest_zone"
+else if not allowSameBarWeakConfirm and (topImmediatePullbackWatch or topNoDemandBreakImmediateRaw)
+    topProbeFilterReason := "same_bar_weak_confirm_disabled"
 else if topCountertrendBlockReason != "passed"
     topProbeFilterReason := topCountertrendBlockReason
 else if not topConfirmGapOk
@@ -1531,7 +1538,8 @@ bool recentBottomNoSupplyWindow = not na(barsSinceBottomNoSupply) and barsSinceB
 float bottomNoSupplyDistanceAtr = not na(lastBottomFailureWatchBase) and atr > 0.0 ? math.abs(close - lastBottomFailureWatchBase) / atr : na
 bool bottomNoSupplyRsiProof = scalpRsiLongOk or scalpFastBullDiv
 bool bottomNoSupplyStrongClose = close > open and (closePosition >= 1.0 - distributionDropClosePosMax or bottomPressureWick >= bottomPressureBody or not na(lastBottomFailureWatchBodyMid) and close >= lastBottomFailureWatchBodyMid)
-bool bottomNoSupplyBreakImmediate = bottomNoSupplyWatch and bottomNoSupplyRsiProof and bottomNoSupplyStrongClose and not na(bottomNoSupplyDistanceAtr) and bottomNoSupplyDistanceAtr <= distributionDropMaxDistanceAtr
+bool bottomNoSupplyBreakImmediateRaw = bottomNoSupplyWatch and bottomNoSupplyRsiProof and bottomNoSupplyStrongClose and not na(bottomNoSupplyDistanceAtr) and bottomNoSupplyDistanceAtr <= distributionDropMaxDistanceAtr
+bool bottomNoSupplyBreakImmediate = allowSameBarWeakConfirm and bottomNoSupplyBreakImmediateRaw
 bool bottomNoSupplyBreakDelayed = confirmed and bottomPullbackArmed and recentBottomNoSupplyWindow and bottomNoSupplyStreak >= 2 and bottomNoSupplyRsiProof and close > open and not na(lastBottomNoSupplyHigh) and close > lastBottomNoSupplyHigh and not na(bottomNoSupplyDistanceAtr) and bottomNoSupplyDistanceAtr <= distributionDropMaxDistanceAtr
 bool bottomNoSupplyBreakConfirmed = bottomNoSupplyBreakImmediate or bottomNoSupplyBreakDelayed
 bool bottomDirectSweepFailed = confirmed and bottomSweptStructure and close > bottomZoneLow + atr * failedBreakCloseBackAtr
@@ -1648,6 +1656,8 @@ else if not bottomPullbackArmed
     bottomProbeFilterReason := "pullback_not_enough"
 else if not bottomRetestBand
     bottomProbeFilterReason := "not_retest_zone"
+else if not allowSameBarWeakConfirm and bottomNoSupplyBreakImmediateRaw
+    bottomProbeFilterReason := "same_bar_weak_confirm_disabled"
 else if bottomCountertrendBlockReason != "passed"
     bottomProbeFilterReason := bottomCountertrendBlockReason
 else if not bottomSignalBarsOk
@@ -1692,16 +1702,19 @@ float selectedMaxStopBps = selectedDirection != 0 ? confirmedMaxStopBps : na
 float selectedActivationR = selectedDirection != 0 ? scalpBreakevenR : na
 float selectedRunnerActivation = selectedDirection != 0 ? risklib.calcTargetAtR(selectedEntry, selectedStop, selectedDirection, selectedActivationR) : na
 float selectedTarget = selectedDirection != 0 ? risklib.scalpEmaTarget(selectedDirection, emaFast, atr, emaTargetOffsetAtr) : na
+float selectedRiskPerShare = risklib.riskPerShare(selectedEntry, selectedStop)
 float selectedStopDistanceAtr = risklib.stopDistanceAtr(selectedEntry, selectedStop, atr)
 float selectedStopDistanceBps = risklib.stopDistanceBps(selectedEntry, selectedStop)
 float selectedEmaProfitAtr = selectedDirection != 0 and atr > 0.0 ? math.abs(selectedTarget - selectedEntry) / atr : na
 bool selectedEmaTargetInProfit = selectedDirection == 1 ? selectedTarget > selectedEntry : selectedDirection == -1 ? selectedTarget < selectedEntry : false
-float selectedExpectedR = selectedDirection != 0 and risklib.riskPerShare(selectedEntry, selectedStop) > 0.0 ? math.abs(selectedTarget - selectedEntry) / risklib.riskPerShare(selectedEntry, selectedStop) : na
-float selectedTpRunnerGapR = selectedDirection != 0 and risklib.riskPerShare(selectedEntry, selectedStop) > 0.0 ? math.abs(selectedTarget - selectedRunnerActivation) / risklib.riskPerShare(selectedEntry, selectedStop) : na
+float selectedExpectedR = selectedDirection != 0 and selectedRiskPerShare > 0.0 ? math.abs(selectedTarget - selectedEntry) / selectedRiskPerShare : na
+float selectedTpRunnerGapR = selectedDirection != 0 and selectedRiskPerShare > 0.0 ? math.abs(selectedTarget - selectedRunnerActivation) / selectedRiskPerShare : na
+float selectedInitialStopClearanceR = selectedDirection == 1 and selectedRiskPerShare > 0.0 ? (low - selectedStop) / selectedRiskPerShare : selectedDirection == -1 and selectedRiskPerShare > 0.0 ? (selectedStop - high) / selectedRiskPerShare : na
 bool selectedExpectedRPassed = selectedDirection != 0 and selectedEmaTargetInProfit and selectedEmaProfitAtr >= minEmaProfitAtr and selectedExpectedR >= scalpMinExpectedR
 bool selectedTpRunnerGapPassed = selectedDirection != 0 and not na(selectedTpRunnerGapR) and selectedTpRunnerGapR >= minTpRunnerGapR
 bool selectedSmallStopGatePassed = selectedDirection != 0 and risklib.smallStopTrialAllowed(selectedDirection, selectedEntry, selectedStop, atr, selectedRiskBudget, selectedMaxStopAtr, selectedMaxStopBps)
 string selectedSmallStopGateReason = selectedDirection == 0 ? "no_candidate" : risklib.smallStopGateReason(selectedDirection, selectedEntry, selectedStop, atr, selectedRiskBudget, selectedMaxStopAtr, selectedMaxStopBps)
+bool selectedInitialStopClearanceOk = selectedDirection == 0 or (not na(selectedInitialStopClearanceR) and selectedInitialStopClearanceR >= minInitialStopClearanceR)
 float selectedStructureAnchor = selectedTrendSupport ? trendSupportBasis : selectedTrendResistance ? trendResistanceBasis : selectedTopProbe ? todayStructHigh : selectedBottomProbe ? todayStructLow : na
 float selectedEntryAnchorDistanceAtr = selectedDirection != 0 and not na(selectedStructureAnchor) and atr > 0.0 ? math.abs(selectedEntry - selectedStructureAnchor) / atr : na
 bool selectedProbeStrictTouchOk = selectedTopProbe ? topStrictRetestTouch : selectedBottomProbe ? bottomStrictRetestTouch : false
@@ -1923,6 +1936,9 @@ buildEntryPayload(string eventIdValue, string signalIdValue, string tradeGroupId
      jsonBool("structure_clear", selectedStructureClear) + "," +
      jsonNum("structure_anchor_price", selectedStructureAnchor) + "," +
      jsonNum("expected_r", selectedExpectedR) + "," +
+     jsonNum("initial_stop_clearance_r", selectedInitialStopClearanceR) + "," +
+     jsonNum("min_initial_stop_clearance_r", minInitialStopClearanceR) + "," +
+     jsonBool("initial_stop_clearance_ok", selectedInitialStopClearanceOk) + "," +
      jsonStr("trend_struct_dir", trendStructDir) + "," +
      jsonStr("trend_struct_pattern", selectedTrendStructPattern) + "," +
      jsonNum("trend_anchor_price", selectedTrendSupport or selectedTrendResistance ? selectedStructureAnchor : na) + "," +
@@ -2206,7 +2222,7 @@ bool selectedFailureReentry = selectedTopProbe and topFailureRepeatShort
 bool selectedSameSideSignalFarEnough = selectedDirection == 0 or selectedPendingUpgrade or selectedFailureReentry or na(selectedSameSideSignalDistanceAtr) or selectedSameSideSignalDistanceAtr >= minSameSideSignalSeparationAtr
 bool selectedAnyPlanFarEnough = selectedDirection == 0 or selectedPendingUpgrade or selectedFailureReentry or na(selectedAnyPlanGapBars) or (selectedAnyPlanGapBars >= minAnyPlanGapBars and selectedAnyPlanDistanceAtr >= minAnyPlanDistanceAtr)
 bool selectedDailyRiskOk = selectedDirection == 0 or (dailyTotalTrades < maxDailyTotalTrades and dailyPnlDollars > -maxDailyLossDollars and (selectedDirection == 1 ? dailyLongTrades < maxDailySameSideTrades and dailyLongLosses < maxSameSideLosses : dailyShortTrades < maxDailySameSideTrades and dailyShortLosses < maxSameSideLosses))
-bool selectedPlanQualityOk = selectedStructureClear and selectedEntryNearAnchorOnly and selectedProbeCyclePassed and selectedRsiPassed and selectedSmallStopGatePassed and selectedExpectedRPassed and selectedTpRunnerGapPassed
+bool selectedPlanQualityOk = selectedStructureClear and selectedEntryNearAnchorOnly and selectedProbeCyclePassed and selectedRsiPassed and selectedSmallStopGatePassed and selectedInitialStopClearanceOk and selectedExpectedRPassed and selectedTpRunnerGapPassed
 bool selectedPlanSpacingOk = selectedSameSideSignalFarEnough and selectedAnyPlanFarEnough
 bool selectedPlanSessionOk = not eodTimeReached and inTradingSession and inEntryWindow
 bool selectedPlanValid = selectedDirection != 0 and selectedPlanQualityOk and selectedPlanSpacingOk and selectedDailyRiskOk and selectedQty >= 1.0 and selectedPlanSessionOk
@@ -2232,6 +2248,8 @@ else if not selectedDailyRiskOk
     selectedBlockReason := "daily_risk_cap_hit"
 else if not selectedSmallStopGatePassed
     selectedBlockReason := selectedSmallStopGateReason
+else if not selectedInitialStopClearanceOk
+    selectedBlockReason := "entry_stop_clearance_too_small"
 else if selectedQty < 1.0
     selectedBlockReason := "qty_too_small"
 else if not selectedExpectedRPassed
@@ -2286,10 +2304,12 @@ if submitNewPlan
     activeManualExitReason := ""
     if selectedDirection == 1
         strategy.entry("TV-L", strategy.long, qty=selectedQty, limit=selectedEntry, comment=entryOrderComment(selectedDirection, selectedEntry, selectedQty, selectedStop, selectedTarget, selectedRunnerActivation))
-        strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment_profit=exitOrderComment("take_profit", activeTarget), comment_loss=exitOrderComment("stop_loss", activeStop))
+        if not backtestDelayInitialRiskUntilNextBar
+            strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment_profit=exitOrderComment("take_profit", activeTarget), comment_loss=exitOrderComment("stop_loss", activeStop))
     if selectedDirection == -1
         strategy.entry("TV-S", strategy.short, qty=selectedQty, limit=selectedEntry, comment=entryOrderComment(selectedDirection, selectedEntry, selectedQty, selectedStop, selectedTarget, selectedRunnerActivation))
-        strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment_profit=exitOrderComment("take_profit", activeTarget), comment_loss=exitOrderComment("stop_loss", activeStop))
+        if not backtestDelayInitialRiskUntilNextBar
+            strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment_profit=exitOrderComment("take_profit", activeTarget), comment_loss=exitOrderComment("stop_loss", activeStop))
     if enableAlerts
         string reason = "quick_ema_scalp_trial"
         alert(buildEntryPayload(eventPlanId, signalId, tradeGroupId, positionId, selectedDirection, selectedSetup, reason, selectedQty, selectedEntry, selectedStop, selectedTarget, selectedRunnerActivation, selectedActivationR, selectedEntryIntent, selectedTrialRiskMode, submitReplacementPlan, replaceOriginSignalId, submitReplacementPlan ? "same_direction_plan_replaced" : "none"), alert.freq_all)

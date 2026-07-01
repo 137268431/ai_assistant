@@ -94,6 +94,9 @@ CANCEL_ALL_CONFIRM_TIMEOUT_SECONDS = 12.0
 CANCEL_ALL_PENDING_ON_UNCONFIRMED_ENABLED = True
 CANCEL_ALL_RECONCILE_TIMEOUT_SECONDS = 180.0
 CANCEL_ALL_RECONCILE_POLL_INTERVAL_SECONDS = 1.0
+AWAIT_FILL_POSITION_CHECK_ENABLED = str(
+    os.environ.get("IBKR_AWAIT_FILL_POSITION_CHECK_ENABLED", "false") or "false"
+).strip().lower() in {"1", "true", "yes", "on"}
 ACCOUNT_DATA_REQUEST_KINDS = {
     "account_pnl",
     "account_summary",
@@ -4643,7 +4646,7 @@ class BrokerAdapter:
                     "order": snapshot,
                 }
 
-            if normalized_symbol:
+            if normalized_symbol and AWAIT_FILL_POSITION_CHECK_ENABLED:
                 request_positions = getattr(self.client, "request_positions", None)
                 if callable(request_positions):
                     try:

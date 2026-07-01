@@ -67,6 +67,7 @@ EXIT_REASON_LABELS = {
     "runner_stop": "Runner 止损",
     "force_flat_eod": "EOD 平仓",
     "force_flat_eod_residual": "EOD 平仓",
+    "force_flat_eod_corrective": "EOD 翻仓纠偏",
     "eod": "EOD 平仓",
     "eod_force_close": "EOD 平仓",
     "order_flow_adverse_delta_exit": "订单流提前平仓",
@@ -2136,9 +2137,20 @@ def build_order_callback_ledger_card(
     )
     if event_model.get("reason") == "close_order_cancelled_incomplete":
         close_remaining_qty = to_float(event_model.get("close_remaining_qty")) or 0.0
+        exit_code_for_cancel = to_text((exit_model or {}).get("code")).lower()
+        if "eod" in exit_code_for_cancel or "force_flat" in exit_code_for_cancel:
+            incomplete_text = (
+                f"**⚠️ 平仓未完成**: EOD 平仓单已取消但未完全成交，剩余 {_format_quantity(close_remaining_qty)} "
+                "需要先等待系统核对 Broker 持仓；确认仍是残仓后才会补单，避免重复平仓。"
+            )
+        else:
+            incomplete_text = (
+                f"**⚠️ 平仓未完成**: 平仓单已取消但未完全成交，剩余 {_format_quantity(close_remaining_qty)} "
+                "可能仍是持仓，请重新提交限价平仓或改到更容易成交的价格。"
+            )
         body_lines.insert(
             0,
-            f"**⚠️ 平仓未完成**: 平仓单已取消但未完全成交，剩余 {_format_quantity(close_remaining_qty)} 可能仍是持仓，请重新提交限价平仓或改到更容易成交的价格。",
+            incomplete_text,
         )
     if exit_model:
         exit_code = to_text(exit_model.get("code"))

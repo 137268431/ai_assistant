@@ -132,17 +132,18 @@ curl -X POST "https://pb.lzw-glory.top/api/collections/config/records" \
 
 ---
 
-### system_monitor_alert_* / system_monitor_account_snapshot_warning_consecutive_count
+### system_monitor_alert_* / system_monitor_*_warning_consecutive_count
 
-IBKR Monitor 告警重复冷却与 account snapshot 探针降噪：
+IBKR Monitor 告警重复冷却与 warning 降噪：
 
 | key | 默认值 | 行为 |
 |-----|--------|------|
 | `system_monitor_alert_error_cooldown_min` | `"15"` | error 级别同一 fingerprint 重复通知间隔 |
 | `system_monitor_alert_warning_cooldown_min` | `"60"` | warning 级别同一 fingerprint 重复通知间隔 |
 | `system_monitor_account_snapshot_warning_consecutive_count` | `"2"` | account snapshot warning 连续命中达到该次数后才发送 |
+| `system_monitor_ws_message_age_regular_warning_consecutive_count` | `"2"` | 盘中 `market_data_silent` warning 连续命中达到该次数后才发送 |
 
-> 仅延迟 account snapshot 探针类 warning；Session / WebSocket / 服务 down 等非 account snapshot 告警仍按原逻辑即时发送。
+> 仅延迟 account snapshot 探针类 warning 与盘中 `market_data_silent` warning；`market_data_silent_critical`、Session / 服务 down 等 error 仍按原逻辑即时发送。
 
 ---
 
@@ -150,7 +151,8 @@ IBKR Monitor 告警重复冷却与 account snapshot 探针降噪：
 
 WebSocket 最近一条消息静默阈值，按交易时段区分：
 
-- `regular`：默认 `warning=60s`、`critical=180s`
+- `regular`：默认 `warning=90s`、`critical=180s`
+- `regular` 只有 `market_monitor` 订阅且没有 trade/control 订阅时：warning 阈值会放宽到最多 `180s`，critical 仍为 `180s`
 - `close_transition / afterhours`：默认 `warning=600s`、`critical=1200s`
 - `closed`：不触发 `market_data_silent*`
 
@@ -165,8 +167,9 @@ curl -X POST "https://pb.lzw-glory.top/api/collections/config/records" \
 
 | key | 默认值 | 行为 |
 |-----|--------|------|
-| `system_monitor_ws_message_age_regular_warn_sec` | `"60"` | 盘中超过多少秒触发 `market_data_silent` |
+| `system_monitor_ws_message_age_regular_warn_sec` | `"90"` | 盘中超过多少秒触发 `market_data_silent` |
 | `system_monitor_ws_message_age_regular_critical_sec` | `"180"` | 盘中超过多少秒触发 `market_data_silent_critical` |
+| `system_monitor_ws_message_age_regular_warning_consecutive_count` | `"2"` | 盘中 `market_data_silent` warning 连续命中多少次后发送；critical 不等待 |
 | `system_monitor_ws_message_age_late_session_warn_sec` | `"600"` | 收盘过渡 / 盘后超过多少秒触发 `market_data_silent` |
 | `system_monitor_ws_message_age_late_session_critical_sec` | `"1200"` | 收盘过渡 / 盘后超过多少秒触发 `market_data_silent_critical` |
 
@@ -249,8 +252,9 @@ curl -X DELETE "https://pb.lzw-glory.top/api/collections/config/records/CONFIG_I
 | `system_monitor_alert_error_cooldown_min` | `"15"` | Monitor error 重复冷却分钟 |
 | `system_monitor_alert_warning_cooldown_min` | `"60"` | Monitor warning 重复冷却分钟 |
 | `system_monitor_account_snapshot_warning_consecutive_count` | `"2"` | 账户快照 warning 连续命中告警阈值 |
-| `system_monitor_ws_message_age_regular_warn_sec` | `"60"` | WebSocket 盘中 warning 阈值（秒） |
+| `system_monitor_ws_message_age_regular_warn_sec` | `"90"` | WebSocket 盘中 warning 阈值（秒） |
 | `system_monitor_ws_message_age_regular_critical_sec` | `"180"` | WebSocket 盘中 critical 阈值（秒） |
+| `system_monitor_ws_message_age_regular_warning_consecutive_count` | `"2"` | WebSocket 盘中 warning 连续命中告警阈值 |
 | `system_monitor_ws_message_age_late_session_warn_sec` | `"600"` | WebSocket 盘后 warning 阈值（秒） |
 | `system_monitor_ws_message_age_late_session_critical_sec` | `"1200"` | WebSocket 盘后 critical 阈值（秒） |
 

@@ -2102,6 +2102,65 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertEqual([], payload["suppressed_flag_codes"])
         self.assertEqual(1, len(events))
 
+    def test_system_monitor_alert_suppresses_first_ws_silence_warning(self):
+        flag = {
+            "code": "market_data_silent",
+            "severity": "warning",
+            "title": "Market data slowed",
+            "detail": "recent WebSocket message age 91s",
+        }
+
+        payload, status_code, states, events = self._run_monitor_alert_guard(flags=[flag])
+
+        self.assertEqual(status_code, 200)
+        self.assertFalse(payload["triggered"])
+        self.assertEqual([], events)
+        self.assertEqual(["market_data_silent"], payload["flag_codes"])
+        self.assertEqual([], payload["alert_flag_codes"])
+        self.assertEqual(["market_data_silent"], payload["suppressed_flag_codes"])
+        self.assertEqual(1, payload["ws_silence_warning_streak"])
+        self.assertEqual(1, states[("system_monitor_alert", "live")]["ws_silence_warning_streak"])
+
+    def test_system_monitor_alert_emits_on_second_ws_silence_warning(self):
+        flag = {
+            "code": "market_data_silent",
+            "severity": "warning",
+            "title": "Market data slowed",
+            "detail": "recent WebSocket message age 91s",
+        }
+        states = {}
+        events = []
+
+        self._run_monitor_alert_guard(states=states, events=events, flags=[flag])
+        payload, status_code, _, events = self._run_monitor_alert_guard(states=states, events=events, flags=[flag])
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["triggered"])
+        self.assertEqual(["market_data_silent"], payload["alert_flag_codes"])
+        self.assertEqual([], payload["suppressed_flag_codes"])
+        self.assertEqual(2, payload["ws_silence_warning_streak"])
+        self.assertEqual(1, len(events))
+        self.assertEqual("IBKR Monitor 告警（1项）", events[0]["title"])
+        self.assertEqual("2/2", events[0]["detail"]["WS静默连续"])
+
+    def test_system_monitor_alert_emits_ws_silence_critical_immediately(self):
+        flag = {
+            "code": "market_data_silent_critical",
+            "severity": "error",
+            "title": "Market data silent",
+            "detail": "recent WebSocket message age 181s",
+        }
+
+        payload, status_code, _, events = self._run_monitor_alert_guard(flags=[flag], status="error")
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["triggered"])
+        self.assertEqual(["market_data_silent_critical"], payload["alert_flag_codes"])
+        self.assertEqual([], payload["suppressed_flag_codes"])
+        self.assertEqual(0, payload["ws_silence_warning_streak"])
+        self.assertEqual(1, len(events))
+        self.assertEqual("IBKR Monitor 严重告警（1项）", events[0]["title"])
+
     def test_system_monitor_alert_emits_recovery_when_flags_clear(self):
         flag = {"code": "websocket_not_ready", "severity": "warning", "title": "WS", "detail": "offline"}
         states = {}
