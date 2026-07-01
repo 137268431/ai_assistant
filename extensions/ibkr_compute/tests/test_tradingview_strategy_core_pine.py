@@ -115,6 +115,51 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
             self.assertNotIn('minStopRiskFloorDollars', text)
             self.assertNotIn('Minimum stop breathing room', text)
 
+    def test_breathing_stop_and_min_r_target_are_explicit(self):
+        source = self.source
+        display = self.display_source
+
+        for text in (source, display):
+            self.assertIn('stopCloseClearanceAtr = input.float(0.20, "Stop close clearance (x ATR)"', text)
+            self.assertIn('stopCloseClearanceBps = input.float(12.0, "Stop close clearance (bps)"', text)
+            self.assertIn('stopCloseClearanceTicks = input.int(4, "Stop close clearance (ticks)"', text)
+            self.assertIn('minStopCloseClearance(float referenceClose) =>', text)
+            self.assertIn('breathingStop(int direction, float rawStop, float referenceClose) =>', text)
+            self.assertIn('direction == -1 and not na(rawStop) ? math.max(rawStop, referenceClose + clearance)', text)
+            self.assertIn('direction == 1 and not na(rawStop) ? math.min(rawStop, referenceClose - clearance)', text)
+            self.assertIn('targetWithMinR(int direction, float entryPrice, float stopPrice, float emaTarget, float minR) =>', text)
+            self.assertIn('targetSource(int direction, float entryPrice, float stopPrice, float emaTarget, float minR) =>', text)
+            self.assertIn('float trendLongConfirmRawStop = strongTrendSupport ? math.min(low, trendSupportZoneLow) - invalidationBuffer : na', text)
+            self.assertIn('float trendLongConfirmStop = strongTrendSupport ? breathingStop(1, trendLongConfirmRawStop, close) : na', text)
+            self.assertIn('float trendShortConfirmRawStop = strongTrendResistance ? math.max(high, trendResistanceZoneHigh) + invalidationBuffer : na', text)
+            self.assertIn('float trendShortConfirmStop = strongTrendResistance ? breathingStop(-1, trendShortConfirmRawStop, close) : na', text)
+            self.assertIn('float topConfirmRawStop = topConfirmedShort ? (topVolumeClimaxFailedBreakConfirmed ? topClimaxRawStop', text)
+            self.assertIn('float topConfirmStop = topConfirmedShort ? breathingStop(-1, topConfirmRawStop, close) : na', text)
+            self.assertIn('float bottomConfirmRawStop = bottomConfirmedLong ? (bottomNoSupplyBreakConfirmed ? bottomNoSupplyRawStop', text)
+            self.assertIn('float bottomConfirmStop = bottomConfirmedLong ? breathingStop(1, bottomConfirmRawStop, close) : na', text)
+            self.assertIn('float selectedRawStructureStop = selectedLong ? (trendLongConfirmNow ? trendLongConfirmRawStop : bottomConfirmRawStop)', text)
+            self.assertIn('float selectedStopBreathingAdded = stopBreathingAdded(selectedDirection, selectedRawStructureStop, selectedStop)', text)
+            self.assertIn('float selectedStopCloseClearance = stopCloseClearanceValue(selectedDirection, selectedStop, close)', text)
+            self.assertIn('float selectedCloseExtremeGap = selectedDirection == -1 ? high - close : selectedDirection == 1 ? close - low : na', text)
+            self.assertIn('float selectedEmaTarget = selectedDirection != 0 ? risklib.scalpEmaTarget(selectedDirection, emaFast, atr, emaTargetOffsetAtr) : na', text)
+            self.assertIn('float selectedMinRTarget = selectedDirection != 0 ? risklib.calcTargetAtR(selectedEntry, selectedStop, selectedDirection, scalpMinExpectedR) : na', text)
+            self.assertIn('float selectedTarget = selectedDirection != 0 ? targetWithMinR(selectedDirection, selectedEntry, selectedStop, selectedEmaTarget, scalpMinExpectedR) : na', text)
+            self.assertIn('string selectedTargetSource = selectedDirection != 0 ? targetSource(selectedDirection, selectedEntry, selectedStop, selectedEmaTarget, scalpMinExpectedR) : "none"', text)
+            self.assertIn('bool selectedExpectedRPassed = selectedDirection != 0 and selectedEmaTargetInProfit and selectedExpectedR >= scalpMinExpectedR', text)
+            self.assertIn('string selectedExpectedRBlockReason = not selectedEmaTargetInProfit ? "ema_tp_wrong_side" : "expected_r_too_small"', text)
+
+        for field in (
+            'jsonNum("ema_target_price", selectedEmaTarget)',
+            'jsonNum("min_r_target_price", selectedMinRTarget)',
+            'jsonStr("target_source", selectedTargetSource)',
+            'jsonNum("raw_structure_stop_loss", selectedRawStructureStop)',
+            'jsonNum("stop_breathing_added", selectedStopBreathingAdded)',
+            'jsonNum("stop_close_clearance", selectedStopCloseClearance)',
+            'jsonNum("stop_close_clearance_atr", selectedStopCloseClearanceAtr)',
+            'jsonNum("close_extreme_gap", selectedCloseExtremeGap)',
+        ):
+            self.assertIn(field, source)
+
     def test_split_libraries_contain_shared_display_helpers(self):
         core = self.source
         display = self.display_source
@@ -148,17 +193,17 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertIn('library("SSC_Display_Text_Glory", overlay=true)', display_text_lib)
         for text in (core, display):
             self.assertIn('import o8431/SSC_Lib_Format_Glory/2 as fmtlib', text)
-            self.assertIn('import o8431/SSC_Lib_Risk_Glory/1 as risklib', text)
-            self.assertIn('import o8431/SSC_Lib_Levels_Glory/1 as levellib', text)
-            self.assertIn('import o8431/SSC_Lib_Model_Glory/1 as modellib', text)
+            self.assertIn('import o8431/SSC_Lib_Risk_Glory/2 as risklib', text)
+            self.assertIn('import o8431/SSC_Lib_Levels_Glory/2 as levellib', text)
+            self.assertIn('import o8431/SSC_Lib_Model_Glory/2 as modellib', text)
             self.assertNotIn('Signal_Strategy_Common_Glory', text)
             self.assertNotIn('Signal_Strategy_Text_Glory', text)
             self.assertNotIn('as text', text)
             self.assertNotIn('common.', text)
-        self.assertIn('import o8431/SSC_Core_Payload_Glory/1 as corepayload', core)
-        self.assertIn('import o8431/SSC_Core_Visual_Glory/1 as corevisual', core)
-        self.assertIn('import o8431/SSC_Display_Visual_Glory/1 as displayvisual', display)
-        self.assertIn('import o8431/SSC_Display_Text_Glory/1 as displaytext', display)
+        self.assertIn('import o8431/SSC_Core_Payload_Glory/2 as corepayload', core)
+        self.assertIn('import o8431/SSC_Core_Visual_Glory/2 as corevisual', core)
+        self.assertIn('import o8431/SSC_Display_Visual_Glory/2 as displayvisual', display)
+        self.assertIn('import o8431/SSC_Display_Text_Glory/2 as displaytext', display)
         self.assertIn('corepayload.basePayload(', core)
         self.assertIn('corepayload.planId(', core)
         self.assertIn('corevisual.drawTrueExitLabel(', core)
@@ -206,6 +251,7 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
             self.assertIn(export, model_lib)
         for reason in (
             "tp_runner_gap_too_small",
+            "ema_tp_wrong_side",
             "dominant_bear_countertrend_block",
             "dominant_bull_countertrend_block",
             "countertrend_reclaim_missing",
@@ -216,6 +262,7 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
             "model_conflict_no_clear_edge",
         ):
             self.assertIn(f'"{reason}"', format_lib + model_lib)
+        self.assertNotIn('"ema_tp_' + 'too_close"', core + display + format_lib)
         for export in (
             "export jsonStr(",
             "export jsonNum(",

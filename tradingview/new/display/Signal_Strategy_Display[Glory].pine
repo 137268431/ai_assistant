@@ -1,6 +1,6 @@
 //@version=6
 indicator(title="Signal Strategy Display[Glory]", overlay=true, max_labels_count=500, max_lines_count=500)
-import o8431/SSC_Lib_Format_Glory/2 as fmtlib
+import o8431/SSC_Lib_Format_Glory/3 as fmtlib
 import o8431/SSC_Lib_Risk_Glory/1 as risklib
 import o8431/SSC_Lib_Levels_Glory/1 as levellib
 import o8431/SSC_Lib_Model_Glory/1 as modellib

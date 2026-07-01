@@ -51,7 +51,7 @@
                                     <span class="short" id="todaySignalsShort">-</span>
                                 </div>
                             </div>
-                            <div class="home-stat-label">今日信号</div>
+                            <div class="home-stat-label">今日信号（数据环境）</div>
                             <div class="home-stat-subline home-stat-detail" id="todaySignalsStatusSummary">待确认 - / 待执行 - / 挂单 -</div>
                             <div class="home-stat-foot" id="todaySignalsFoot">成交保护 - / 已平仓 - / 已取消 - / 终止合计 -</div>
                         </a>
@@ -73,10 +73,10 @@
                                     <span class="short" id="todayOrdersShort">-</span>
                                 </div>
                             </div>
-                            <div class="home-stat-label">今日订单</div>
+                            <div class="home-stat-label">今日交易组 / Entry开仓单</div>
                             <div class="home-stat-subline home-stat-detail" id="todayOrdersStatusSummary">Entry: 已成交 - / 挂单 - / 已取消 -</div>
                             <div class="home-stat-subline home-stat-detail" id="todayOrdersGroupSummary">已平仓组 - / 交易组(去重) - / Entry单(开仓) -</div>
-                            <div class="home-stat-foot" id="todayOrdersFoot">当前挂单组 - · 可取消组 - · 可改单组 -</div>
+                            <div class="home-stat-foot" id="todayOrdersFoot">当前挂单组 - · 订单腿 - · 可取消组 - · 可改单组 -</div>
                         </a>
 
                         <a id="positionsLink" href="/ibkr_account.html" class="home-stat-card" data-tone="neutral">
@@ -87,7 +87,7 @@
                                     <span class="short" id="activePositionsShort">-</span>
                                 </div>
                             </div>
-                            <div class="home-stat-label" id="positionsStateLabel">当前持仓</div>
+                            <div class="home-stat-label" id="positionsStateLabel">账户持仓（Gateway）</div>
                             <div class="home-stat-subline home-stat-detail" id="positionsLiveOrdersSummary">当前挂单组 -</div>
                             <div class="home-stat-foot" id="positionsFoot">Gateway snapshot</div>
                         </a>
@@ -1175,6 +1175,10 @@
             const positionTotal = Number(positions.effective_open_positions ?? positions.total ?? 0) || 0;
             const brokerOpenPositions = Number(positions.broker_open_positions ?? positions.open_positions ?? positions.total ?? 0) || 0;
             const inferredOpenPositions = Number(positions.inferred_open_positions ?? 0) || 0;
+            const brokerLongPositionCount = Number(positions.broker_long_positions ?? positions.long ?? 0) || 0;
+            const brokerShortPositionCount = Number(positions.broker_short_positions ?? positions.short ?? 0) || 0;
+            const inferredLongPositionCount = Number(positions.inferred_long_positions ?? 0) || 0;
+            const inferredShortPositionCount = Number(positions.inferred_short_positions ?? 0) || 0;
             const positionsInferred = positions.inferred === true || (inferredOpenPositions > 0 && brokerOpenPositions === 0);
             const positionsDetailAvailable = positions.detail_available === true;
             const positionsCountAvailable = positions.count_available === true || positions.available === true;
@@ -1206,6 +1210,19 @@
             };
             const count = (source, key) => Number(source?.[key] || 0);
             const countAny = (source, keys) => keys.reduce((total, key) => total + count(source, key), 0);
+            const liveOrderLegSummary = () => `订单腿 ${formatNumber(liveOrderLegCount, 0)}: Entry ${formatNumber(liveOrders.entry || 0, 0)} / TP ${formatNumber(liveOrders.take_profit || 0, 0)} / SL ${formatNumber(liveOrders.stop_loss || 0, 0)} / Close ${formatNumber(liveOrders.close || 0, 0)}`;
+            const liveOrderGroupSummary = () => `当前挂单组 ${formatNumber(liveOrderGroupCount, 0)} · ${liveOrderLegSummary()}`;
+            const positionBridgeSummary = () => {
+                if (!positionsCountsUsable) return '';
+                const segments = [];
+                if (inferredLongPositionCount + inferredShortPositionCount > 0) {
+                    segments.push(`策略保护持仓 ${formatNumber(inferredLongPositionCount, 0)}/${formatNumber(inferredShortPositionCount, 0)}`);
+                }
+                if (brokerLongPositionCount + brokerShortPositionCount > 0) {
+                    segments.push(`账户总持仓 ${formatNumber(brokerLongPositionCount, 0)}/${formatNumber(brokerShortPositionCount, 0)}`);
+                }
+                return segments.join(' · ');
+            };
 
             document.getElementById('todaySignalsLong').textContent = formatNumber(signals.long || 0, 0);
             document.getElementById('todaySignalsShort').textContent = formatNumber(signals.short || 0, 0);
@@ -1243,11 +1260,11 @@
             setText(
                 'todayOrdersFoot',
                 liveOrdersAvailable
-                    ? `当前挂单组 ${formatNumber(liveOrderGroupCount, 0)} · 订单腿 Entry ${formatNumber(liveOrders.entry || 0, 0)} / TP ${formatNumber(liveOrders.take_profit || 0, 0)} / SL ${formatNumber(liveOrders.stop_loss || 0, 0)} · 可取消组 ${formatNumber(liveOrderCancelableGroupCount, 0)} · 可改单组 ${formatNumber(liveOrderEditableGroupCount, 0)}${snapshotSuffix(liveOrders)}`
+                    ? `${liveOrderGroupSummary()} · 可取消组 ${formatNumber(liveOrderCancelableGroupCount, 0)} · 可改单组 ${formatNumber(liveOrderEditableGroupCount, 0)}${snapshotSuffix(liveOrders)}`
                     : `当前挂单组接口不可用${liveOrders.error ? ` · ${liveOrders.error}` : ''}`
             );
             document.getElementById('ordersLink').title = liveOrdersAvailable
-                ? `做多交易组 ${formatNumber(orders.long || 0, 0)}，做空交易组 ${formatNumber(orders.short || 0, 0)}；交易组=按信号/Trade Group 去重的交易链，Entry开仓单=实际开仓订单行，两者不冲突。Gateway 当前挂单组 ${formatNumber(liveOrderGroupCount, 0)}；订单腿 ${formatNumber(liveOrderLegCount, 0)}: Entry ${formatNumber(liveOrders.entry || 0, 0)} / TP ${formatNumber(liveOrders.take_profit || 0, 0)} / SL ${formatNumber(liveOrders.stop_loss || 0, 0)} / Close ${formatNumber(liveOrders.close || 0, 0)}`
+                ? `做多交易组 ${formatNumber(orders.long || 0, 0)}，做空交易组 ${formatNumber(orders.short || 0, 0)}；交易组=按信号/Trade Group 去重的交易链，Entry开仓单=实际开仓订单行，两者不冲突。Gateway ${liveOrderGroupSummary()}`
                 : `Gateway 当前挂单组暂不可用${liveOrders.error ? `: ${liveOrders.error}` : ''}`;
             document.getElementById('activePositionsLong').textContent = positionsCountsUsable ? formatNumber(positions.long || 0, 0) : '--';
             document.getElementById('activePositionsShort').textContent = positionsCountsUsable ? formatNumber(positions.short || 0, 0) : '--';
@@ -1256,14 +1273,16 @@
                 positionsSnapshotStale
                     ? '持仓未确认'
                     : positionsCountsUsable
-                    ? (positionTotal > 0 ? (positionsInferred ? '推断持仓' : '当前持仓') : (positionsEmptyConfirmed ? '无实际持仓' : '持仓未确认'))
+                    ? (positionTotal > 0 ? (positionsInferred ? '策略推断持仓' : '账户持仓（Gateway）') : (positionsEmptyConfirmed ? '无实际持仓' : '持仓未确认'))
                     : (positionsOmitted || positionsSnapshotStale ? '持仓未确认' : '持仓接口不可用')
             );
+            const positionsLiveOrderText = liveOrdersAvailable
+                ? `${liveOrderGroupSummary()}${snapshotSuffix(liveOrders)}`
+                : `当前挂单组接口不可用${liveOrders.error ? ` · ${liveOrders.error}` : ''}`;
+            const positionsBridgeText = positionBridgeSummary();
             setText(
                 'positionsLiveOrdersSummary',
-                liveOrdersAvailable
-                    ? `当前挂单组 ${formatNumber(liveOrderGroupCount, 0)} · 订单腿 Entry ${formatNumber(liveOrders.entry || 0, 0)} / TP ${formatNumber(liveOrders.take_profit || 0, 0)} / SL ${formatNumber(liveOrders.stop_loss || 0, 0)}${snapshotSuffix(liveOrders)}`
-                    : `当前挂单组接口不可用${liveOrders.error ? ` · ${liveOrders.error}` : ''}`
+                positionsBridgeText ? `${positionsBridgeText} · ${positionsLiveOrderText}` : positionsLiveOrderText
             );
             setText(
                 'positionsFoot',
@@ -1274,7 +1293,7 @@
                     : `Gateway 持仓未确认${positions.error ? ` · ${positions.error}` : ''}`
             );
             document.getElementById('positionsLink').title = positionsAvailable
-                ? `${positionsSnapshotStale ? 'Gateway 持仓快照过期，不能确认当前仓位' : positionsCountAvailable ? (positionTotal > 0 ? (positionsInferred ? 'Gateway positions 为空，按订单推断有持仓' : 'Gateway 持仓计数显示有仓位') : (positionsEmptyConfirmed ? 'Gateway 已确认无实际持仓' : 'Gateway 持仓未确认')) : 'Gateway 持仓未确认'}；当前挂单组 ${liveOrdersAvailable ? formatNumber(liveOrderGroupCount, 0) : '不可用'}；订单腿 ${liveOrdersAvailable ? formatNumber(liveOrderLegCount, 0) : '不可用'}`
+                ? `${positionsSnapshotStale ? 'Gateway 持仓快照过期，不能确认当前仓位' : positionsCountAvailable ? (positionTotal > 0 ? (positionsInferred ? 'Gateway positions 为空，按订单推断有持仓' : 'Gateway 持仓计数显示有仓位') : (positionsEmptyConfirmed ? 'Gateway 已确认无实际持仓' : 'Gateway 持仓未确认')) : 'Gateway 持仓未确认'}${positionsBridgeText ? `；${positionsBridgeText}` : ''}；当前挂单组 ${liveOrdersAvailable ? formatNumber(liveOrderGroupCount, 0) : '不可用'}；订单腿 ${liveOrdersAvailable ? formatNumber(liveOrderLegCount, 0) : '不可用'}`
                 : `Gateway 持仓暂不可用${positions.error ? `: ${positions.error}` : ''}`;
 
             const pnlEl = document.getElementById('todayPnL');

@@ -241,7 +241,7 @@ assert(indexHtml.includes('id="actionConfigLink"'), 'home_missing_config_entry')
 assert(indexHtml.includes('/ibkr_config.html'), 'home_config_entry_missing_href');
 assert(includesAll(indexHtml, ["services['ibkr-backtest']", "name: 'Backtest'"]), 'home_stack_missing_backtest_service_row');
 assert(includesAll(indexHtml, ['id="reverseSignalsBreakdown"', 'pending_by_action', "status: 'pending'"]), 'home_actions_missing_pending_breakdown');
-assert(includesAll(indexHtml, ['id="todaySignalsStatusSummary"', 'status_counts', 'terminal_count', 'id="todayOrdersFoot"', 'summary.live_orders', 'id="positionsLiveOrdersSummary"', 'id="positionsStateLabel"', 'execution_active_count', '目标ACTIVE', '交易组(去重)', 'Entry单(开仓)', '订单腿 Entry', '已取消', 'signalCancelledCount', 'cancelled', 'canceled', 'entry_missed_limit_cap']), 'home_missing_trade_detail_rows');
+assert(includesAll(indexHtml, ['id="todaySignalsStatusSummary"', 'status_counts', 'terminal_count', 'id="todayOrdersFoot"', 'summary.live_orders', 'id="positionsLiveOrdersSummary"', 'id="positionsStateLabel"', 'execution_active_count', '目标ACTIVE', '交易组(去重)', 'Entry单(开仓)', '订单腿', 'Close', '策略保护持仓', '账户总持仓', '已取消', 'signalCancelledCount', 'cancelled', 'canceled', 'entry_missed_limit_cap']), 'home_missing_trade_detail_rows');
 
 const executionActionsHtml = readStatic('ibkr_execution_actions.html');
 const executionActionsCss = readStatic('assets/css/pages/ibkr_reverse_signals/page.css');

@@ -510,6 +510,10 @@ def _summarize_gateway_positions(payload: dict[str, Any], error: str = "") -> di
         "long": 0,
         "short": 0,
         "total": 0,
+        "broker_long_positions": 0,
+        "broker_short_positions": 0,
+        "inferred_long_positions": 0,
+        "inferred_short_positions": 0,
         "available": False,
         "detail_available": False,
         "count_available": False,
@@ -544,6 +548,10 @@ def _summarize_gateway_positions(payload: dict[str, Any], error: str = "") -> di
         to_int(counts.get("inferred_strategy_positions"), 0),
         inferred_long + inferred_short,
     )
+    inferred_long_count = inferred_long
+    inferred_short_count = inferred_short
+    if inferred_count > 0 and inferred_long_count + inferred_short_count == 0:
+        inferred_long_count = inferred_count
     detail_available = payload.get("positions_detail_available")
     fast_diagnostics = payload.get("orders_fast_diagnostics") if isinstance(payload.get("orders_fast_diagnostics"), dict) else {}
     positions_source = to_text(payload.get("positions_source") or fast_diagnostics.get("positions_source"))
@@ -587,7 +595,11 @@ def _summarize_gateway_positions(payload: dict[str, Any], error: str = "") -> di
                 "positions_source": positions_source or "counts",
                 "positions_omitted": True,
                 "broker_open_positions": 0,
+                "broker_long_positions": stale_long_count,
+                "broker_short_positions": stale_short_count,
                 "inferred_open_positions": inferred_count,
+                "inferred_long_positions": inferred_long_count,
+                "inferred_short_positions": inferred_short_count,
                 "effective_open_positions": inferred_count,
                 "inferred": bool(inferred_count > 0),
                 "stale_open_positions_hint": stale_open_count,
@@ -632,7 +644,11 @@ def _summarize_gateway_positions(payload: dict[str, Any], error: str = "") -> di
                     "positions_source": positions_source or "counts",
                     "positions_omitted": True,
                     "broker_open_positions": to_int(counts.get("open_positions"), 0),
+                    "broker_long_positions": long_count,
+                    "broker_short_positions": short_count,
                     "inferred_open_positions": inferred_count,
+                    "inferred_long_positions": inferred_long_count,
+                    "inferred_short_positions": inferred_short_count,
                     "effective_open_positions": effective_open_count,
                     "inferred": bool(inferred_count > 0 and to_int(counts.get("open_positions"), 0) == 0),
                     **freshness,
@@ -650,14 +666,18 @@ def _summarize_gateway_positions(payload: dict[str, Any], error: str = "") -> di
         return _attach_runtime_account_meta(summary, payload)
 
     flat_count = 0
+    broker_long_count = 0
+    broker_short_count = 0
     for position in positions:
         if not isinstance(position, dict):
             continue
         quantity = to_float(position.get("quantity") if position.get("quantity") not in (None, "") else position.get("position")) or 0.0
         if quantity > 0:
             summary["long"] += 1
+            broker_long_count += 1
         elif quantity < 0:
             summary["short"] += 1
+            broker_short_count += 1
         else:
             flat_count += 1
 
@@ -680,7 +700,11 @@ def _summarize_gateway_positions(payload: dict[str, Any], error: str = "") -> di
     summary["position_rows"] = len(positions)
     summary["account_id"] = to_text(payload.get("account_id") or payload.get("account"))
     summary["broker_open_positions"] = to_int(counts.get("open_positions"), summary["total"] if not summary.get("inferred") else 0)
+    summary["broker_long_positions"] = broker_long_count
+    summary["broker_short_positions"] = broker_short_count
     summary["inferred_open_positions"] = inferred_count
+    summary["inferred_long_positions"] = inferred_long_count
+    summary["inferred_short_positions"] = inferred_short_count
     summary["effective_open_positions"] = max(to_int(counts.get("effective_open_positions"), summary["total"]), summary["total"], inferred_count)
     summary.update(freshness)
     return _attach_runtime_account_meta(summary, payload)

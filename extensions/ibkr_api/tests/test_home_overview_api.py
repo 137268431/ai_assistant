@@ -413,6 +413,10 @@ class HomeOverviewApiTest(unittest.TestCase):
             "long": 1,
             "short": 1,
             "total": 2,
+            "broker_long_positions": 1,
+            "broker_short_positions": 1,
+            "inferred_long_positions": 0,
+            "inferred_short_positions": 0,
             "available": True,
             "detail_available": True,
             "count_available": True,
@@ -572,7 +576,55 @@ class HomeOverviewApiTest(unittest.TestCase):
         self.assertEqual(1, positions["long"])
         self.assertEqual(0, positions["short"])
         self.assertEqual(1, positions["total"])
+        self.assertEqual(1, positions["broker_long_positions"])
+        self.assertEqual(0, positions["broker_short_positions"])
+        self.assertEqual(0, positions["inferred_long_positions"])
+        self.assertEqual(0, positions["inferred_short_positions"])
         self.assertEqual(5, positions["position_rows"])
+
+    def test_dashboard_exposes_broker_and_inferred_position_direction_counts(self):
+        payload, status = build_home_dashboard_response(
+            _HomePB({"ibkr_signals": [], "ibkr_reverse_signals": [], "orders": [], "ibkr_execution_fills": []}),
+            payload={"broker_mode": "paper", "market_data_mode": "live", "market_date": "2026-04-23"},
+            time_strings=lambda: {"date": "2026-04-23"},
+            request_json_request=_runtime_account_request(
+                positions=[],
+                live_open_orders=[],
+                payload_extra={
+                    "positions_detail_available": False,
+                    "positions_count_available": True,
+                    "positions_source": "omitted_open_orders_only",
+                    "positions_age_s": 30.0,
+                    "positions_max_stale_s": 300.0,
+                    "inferred_strategy_positions": [
+                        {"symbol": "NKE", "quantity": 121},
+                        {"symbol": "ARES", "quantity": -44},
+                        {"symbol": "NTAP", "quantity": -31},
+                    ],
+                    "orders_fast_diagnostics": {"positions_omitted": True},
+                    "counts": {
+                        "open_positions": 5,
+                        "long_positions": 2,
+                        "short_positions": 3,
+                        "flat_positions": 1,
+                        "position_rows": 6,
+                        "inferred_open_positions": 3,
+                        "inferred_strategy_positions": 3,
+                    },
+                },
+            ),
+            runtime_base_url="http://runtime.local",
+        )
+
+        self.assertEqual(status, 200)
+        positions = payload["summary"]["positions"]
+        self.assertEqual(2, positions["long"])
+        self.assertEqual(3, positions["short"])
+        self.assertEqual(2, positions["broker_long_positions"])
+        self.assertEqual(3, positions["broker_short_positions"])
+        self.assertEqual(1, positions["inferred_long_positions"])
+        self.assertEqual(2, positions["inferred_short_positions"])
+        self.assertEqual(5, positions["effective_open_positions"])
 
     def test_dashboard_marks_stale_position_counts_not_confirmed_flat(self):
         payload, status = build_home_dashboard_response(
@@ -822,6 +874,9 @@ class HomeOverviewApiTest(unittest.TestCase):
         self.assertIn("summary.live_orders", index_html)
         self.assertIn("当前挂单组", index_html)
         self.assertIn("订单腿", index_html)
+        self.assertIn("Close", index_html)
+        self.assertIn("账户持仓", index_html)
+        self.assertIn("策略保护持仓", index_html)
         self.assertIn("IBKR commissionReport", index_html)
         self.assertNotIn("getFullList", index_html)
         self.assertNotIn("pocketbase.umd.min.js", index_html)
