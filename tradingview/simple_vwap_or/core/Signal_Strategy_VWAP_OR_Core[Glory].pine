@@ -1,11 +1,11 @@
 //@version=6
-strategy(title="Signal Strategy VWAP OR Core[Glory]", overlay=true, pyramiding=0, initial_capital=100000, default_qty_type=strategy.fixed, default_qty_value=1, process_orders_on_close=false, calc_on_every_tick=false, dynamic_requests=true, max_labels_count=500, max_lines_count=100)
-import o8431/SSVOR_Lib_Format_Glory/1 as fmtlib
+strategy(title="Signal Strategy VWAP OR Markers[Glory]", overlay=true, pyramiding=0, initial_capital=100000, default_qty_type=strategy.fixed, default_qty_value=1, process_orders_on_close=false, calc_on_every_tick=false, dynamic_requests=true, max_labels_count=500, max_lines_count=100)
+import o8431/SSVOR_Lib_Format_Glory/2 as fmtlib
 import o8431/SSVOR_Lib_SymbolMeta_Glory/1 as metalib
-import o8431/SSVOR_Core_Payload_Glory/1 as payloadlib
+import o8431/SSVOR_Core_Payload_Glory/2 as payloadlib
 
 // VWAP/OR bare-K volume strategy. VWAP/OR is the map; volume-backed price action is the trigger.
-string STRATEGY_VERSION = "SSVOR_v1_20260702_bare_k_volume"
+string STRATEGY_VERSION = "SSVOR_v1_20260702_regular_vwap_debug_flow"
 string SCRIPT_TAG = "Signal_Strategy_VWAP_OR_Core[Glory]"
 string TRADE_MODEL = "vwap_or_bare_k_volume_v1"
 string RISK_MODEL = "structure_atr_buffer_risk_qty_notional_cap_v1"
@@ -60,8 +60,52 @@ minMorningScore = input.int(6, "Morning min score", minval=1, maxval=7, group="0
 minAfternoonScore = input.int(7, "Afternoon min score", minval=1, maxval=7, group="05 Alerts/Display")
 enableAlerts = input.bool(true, "Emit TV-primary alert payloads", group="05 Alerts/Display")
 enableFillConfirmAlerts = input.bool(false, "Alert on strategy fill confirmation", group="05 Alerts/Display")
-showLabels = input.bool(true, "Show stage/entry labels", group="05 Alerts/Display")
-showStatusTable = input.bool(true, "Show status table", group="05 Alerts/Display")
+displayProfile = input.string("PC", "Display profile", options=["PC", "Mobile", "Minimal"], group="05 Alerts/Display")
+showRthVwapLine = input.bool(true, "Show RTH VWAP line", group="05 Alerts/Display")
+showMapLevelTags = input.bool(true, "Show VWAP/OR price tags", group="05 Alerts/Display")
+showDiagnosticEventFlow = input.bool(true, "Show old-style diagnostic event flow", group="05 Alerts/Display")
+showStageMarkers = input.bool(true, "Show stage markers", group="05 Alerts/Display")
+showBlockedMarkers = input.bool(true, "Show blocked candidate markers", group="05 Alerts/Display")
+showOrderCaseLabels = input.bool(true, "Show order case labels", group="05 Alerts/Display")
+showManagementMarkers = input.bool(true, "Show TP/SL management markers", group="05 Alerts/Display")
+
+isMobileProfile() =>
+    displayProfile == "Mobile"
+
+isMinimalProfile() =>
+    displayProfile == "Minimal"
+
+markerSize() =>
+    isMobileProfile() ? size.normal : isMinimalProfile() ? size.tiny : size.small
+
+orderMarkerSize() =>
+    isMobileProfile() ? size.large : isMinimalProfile() ? size.normal : size.small
+
+dollarText(series float value) =>
+    na(value) ? "$--" : "$" + str.tostring(value, "#.##")
+
+blockedMarkerTooltip(int direction, string reason, float entryPrice, float stopPrice, float qty, float stopPct, int score) =>
+    string side = direction == 1 ? "long" : "short"
+    "blocked " + side + " candidate" + "\nreason: " + reason + " / " + fmtlib.reasonCn(reason) + "\nentry: " + fmtlib.fmtPrice(entryPrice) + "\nstop: " + fmtlib.fmtPrice(stopPrice) + "\nrisk/share: " + fmtlib.fmtPrice(math.abs(entryPrice - stopPrice)) + "\nstop pct: " + fmtlib.fmt(stopPct) + "%\nqty: " + fmtlib.qtyText(qty) + "\nscore: " + str.tostring(score) + "/7"
+
+orderCaseText(int direction, float entryPrice, float stopPrice, float target1, float target2, float qty, int score) =>
+    string side = direction == 1 ? "BUY next" : "SELL next"
+    float riskPerShare = math.abs(entryPrice - stopPrice)
+    float notional = entryPrice * qty
+    isMinimalProfile() ? side + "\nQ " + fmtlib.qtyText(qty) : isMobileProfile() ? side + "\nE " + fmtlib.fmtPrice(entryPrice) + "\nSL " + fmtlib.fmtPrice(stopPrice) + "\nQ " + fmtlib.qtyText(qty) + "\nTP2 " + fmtlib.fmtPrice(target2) : side + " (L3)" + "\nEntry " + fmtlib.fmtPrice(entryPrice) + "\nStop " + fmtlib.fmtPrice(stopPrice) + "\nRisk/sh " + fmtlib.fmtPrice(riskPerShare) + "\nQty " + fmtlib.qtyText(qty) + " Notional " + dollarText(notional) + "\nTP1 " + fmtlib.fmtPrice(target1) + "\nTP2 " + fmtlib.fmtPrice(target2) + "\nScore " + str.tostring(score) + "/7"
+
+orderCaseTooltip(int direction, float entryPrice, float stopPrice, float target1, float target2, float qty, float riskQty, float notionalQty, int score) =>
+    string side = direction == 1 ? "long" : "short"
+    float riskPerShare = math.abs(entryPrice - stopPrice)
+    float notional = entryPrice * qty
+    "real strategy order: " + side + "\nentry intent: market_next_bar" + "\nentry: " + fmtlib.fmtPrice(entryPrice) + "\nstop: " + fmtlib.fmtPrice(stopPrice) + "\nrisk/share: " + fmtlib.fmtPrice(riskPerShare) + "\nqty: " + fmtlib.qtyText(qty) + "\nnotional: " + dollarText(notional) + "\nrisk qty: " + fmtlib.qtyText(riskQty) + "\nnotional qty cap: " + fmtlib.qtyText(notionalQty) + "\nTP1: " + fmtlib.fmtPrice(target1) + "\nTP2: " + fmtlib.fmtPrice(target2) + "\nscore: " + str.tostring(score) + "/7"
+
+fillMarkerText(int direction, float fillPrice, float qty) =>
+    string code = direction == 1 ? "FILL L" : "FILL S"
+    isMinimalProfile() ? code : code + "\n" + fmtlib.fmtPrice(fillPrice) + " Q" + fmtlib.qtyText(qty)
+
+managementMarkerText(string code, string reason, float priceValue, float pnlR) =>
+    isMinimalProfile() ? code : isMobileProfile() ? code + "\n" + fmtlib.fmtPrice(priceValue) : code + "\n" + fmtlib.reasonCn(reason) + "\n" + fmtlib.fmtPrice(priceValue) + "\n" + fmtlib.fmt(pnlR) + "R"
 
 // -----------------------------------------------------------------------------
 // Session helpers
@@ -71,7 +115,7 @@ is2m = timeframe.period == "2"
 etMinutes = hour(time, "America/New_York") * 60 + minute(time, "America/New_York")
 etCloseMinutes = hour(time_close, "America/New_York") * 60 + minute(time_close, "America/New_York")
 inRth = not na(time(timeframe.period, rthSession))
-rthStarted = inRth and not inRth[1]
+rthStarted = inRth and (not (inRth[1] == true) or timeframe.change("D"))
 newDay = timeframe.change("D") or rthStarted
 inOpeningRange = inRth and etMinutes >= 9 * 60 + 30 and etMinutes < 9 * 60 + 45
 orComplete = inRth and etMinutes >= 9 * 60 + 45
@@ -83,7 +127,8 @@ forceFlatNow = inRth and etCloseMinutes >= forceFlatHour * 60 + forceFlatMinute
 
 rthVwap(series float src) =>
     bool sess = not na(time(timeframe.period, rthSession))
-    bool start = sess and not sess[1]
+    bool wasSess = sess[1] == true
+    bool start = sess and (not wasSess or timeframe.change("D"))
     var float cumPv = na
     var float cumVol = na
     if start
@@ -99,7 +144,8 @@ rthVwap(series float src) =>
 
 rthOpenPrice() =>
     bool sess = not na(time(timeframe.period, rthSession))
-    bool start = sess and not sess[1]
+    bool wasSess = sess[1] == true
+    bool start = sess and (not wasSess or timeframe.change("D"))
     var float sessionOpen = na
     if start
         sessionOpen := open
@@ -239,6 +285,45 @@ baseBlockReason(int direction) =>
         reason := "too_far_from_map"
     reason
 
+dirName(int direction) =>
+    direction == 1 ? "LONG" : direction == -1 ? "SHORT" : "FLAT"
+
+eventMarkerColor(string markerKind, int direction) =>
+    markerKind == "confirmed" ? color.new(direction == 1 ? color.lime : color.red, 0) : markerKind == "stage" ? color.new(color.aqua, 0) : markerKind == "blocked" ? color.new(color.purple, 0) : markerKind == "watch" ? color.new(direction == 1 ? color.lime : color.red, 0) : color.new(color.orange, 0)
+
+eventMarkerLane(string markerKind) =>
+    markerKind == "confirmed" ? 0.52 : markerKind == "blocked" ? 0.64 : markerKind == "stage" ? 0.30 : markerKind == "watch" ? 0.42 : 0.20
+
+eventMarkerY(int direction, string markerKind, float offsetAtr) =>
+    float distance = math.max(offsetAtr + eventMarkerLane(markerKind), 0.20)
+    direction == 1 ? low - atr * distance : high + atr * distance
+
+eventMarkerSize(string markerKind) =>
+    isMobileProfile() ? size.small : markerKind == "confirmed" ? size.small : size.tiny
+
+drawEventMarker(int direction, string markerKind, string markerText, string detailText, float offsetAtr) =>
+    if showDiagnosticEventFlow
+        label.new(bar_index, eventMarkerY(direction, markerKind, offsetAtr), markerText, style=label.style_none, color=color.new(color.white, 100), textcolor=eventMarkerColor(markerKind, direction), size=eventMarkerSize(markerKind), tooltip=detailText)
+
+gateDetail(int direction, string stageText, string triggerText, string reason) =>
+    bool marketOk = direction == 1 ? marketLongOk : marketShortOk
+    bool sectorOk = direction == 1 ? sectorLongOk : sectorShortOk
+    bool relativeOk = direction == 1 ? relativeLongOk : relativeShortOk
+    bool priceSideOk = direction == 1 ? priceLongSide : priceShortSide
+    bool mapNearOk = direction == 1 ? longMapNear : shortMapNear
+    float mapDistance = direction == 1 ? longMapDistanceAtr : shortMapDistanceAtr
+    int score = direction == 1 ? scoreFor(marketLongOk, sectorLongOk, relativeLongOk, priceLongSide, longMapNear, volumeExpanded, true) : scoreFor(marketShortOk, sectorShortOk, relativeShortOk, priceShortSide, shortMapNear, volumeExpanded, true)
+    string result = stageText + " " + dirName(direction) + " / " + triggerText
+    result := result + "\nreason: " + fmtlib.reasonCn(reason) + " / " + reason
+    result := result + "\nscore now: " + str.tostring(score) + "/7"
+    result := result + "\nmarket/sector/RS: " + str.tostring(marketOk) + " / " + str.tostring(sectorOk) + " / " + str.tostring(relativeOk)
+    result := result + "\nprice side/map near: " + str.tostring(priceSideOk) + " / " + str.tostring(mapNearOk) + " / dist " + fmtlib.fmt(mapDistance) + " ATR"
+    result := result + "\nRVOL: " + fmtlib.fmt(rvol) + " / min " + fmtlib.fmt(rvolMin) + " / expanded " + str.tostring(volumeExpanded)
+    result := result + "\nVWAP " + fmtlib.fmtPrice(vwap) + " / ORH " + fmtlib.fmtPrice(orHigh) + " / ORL " + fmtlib.fmtPrice(orLow)
+    result := result + "\nRS stock-market/sector: " + fmtlib.bpsText(stockVsMarketBps) + " / " + fmtlib.bpsText(stockVsSectorBps)
+    result := result + "\nsector vs market: " + fmtlib.bpsText(sectorVsMarketBps) + " / ETF " + sectorEtf
+    result
+
 // -----------------------------------------------------------------------------
 // Three-stage bare-K/volume pattern
 // -----------------------------------------------------------------------------
@@ -280,12 +365,33 @@ string longBaseBlock = baseBlockReason(1)
 string shortBaseBlock = baseBlockReason(-1)
 bool longBaseOk = longBaseBlock == "passed"
 bool shortBaseOk = shortBaseBlock == "passed"
+bool entryWindowOpenedNow = confirmed and entryWindowOpen and not (entryWindowOpen[1] == true)
+if entryWindowOpenedNow
+    string detail = "Entry window state"
+    detail := detail + "\nLong base: " + fmtlib.reasonCn(longBaseBlock) + " / " + longBaseBlock + " / score " + str.tostring(scoreFor(marketLongOk, sectorLongOk, relativeLongOk, priceLongSide, longMapNear, volumeExpanded, true)) + "/7"
+    detail := detail + "\nShort base: " + fmtlib.reasonCn(shortBaseBlock) + " / " + shortBaseBlock + " / score " + str.tostring(scoreFor(marketShortOk, sectorShortOk, relativeShortOk, priceShortSide, shortMapNear, volumeExpanded, true)) + "/7"
+    detail := detail + "\nVWAP " + fmtlib.fmtPrice(vwap) + " / ORH " + fmtlib.fmtPrice(orHigh) + " / ORL " + fmtlib.fmtPrice(orLow)
+    detail := detail + "\nRVOL " + fmtlib.fmt(rvol) + " / RS " + fmtlib.bpsText(stockVsMarketBps) + " / " + fmtlib.bpsText(stockVsSectorBps)
+    detail := detail + "\nIf no L1/L2/L3 follows, no valid VWAP/OR price-action sequence formed."
+    drawEventMarker(priceLongSide ? 1 : -1, "watch", "WIN", detail, 0.10)
 bool breakOrh = not na(orHigh) and close > orHigh and close[1] <= orHigh
 bool reclaimVwap = close > vwap and close[1] <= vwap
 bool breakOrl = not na(orLow) and close < orLow and close[1] >= orLow
 bool rejectVwap = close < vwap and close[1] >= vwap
-bool longImpulse = confirmed and slotOpen and orComplete and longBaseOk and volumeExpanded and not badLongWick and (breakOrh or reclaimVwap)
-bool shortImpulse = confirmed and slotOpen and orComplete and shortBaseOk and volumeExpanded and not badShortWick and (breakOrl or rejectVwap)
+bool longImpulseAttempt = confirmed and slotOpen and orComplete and (breakOrh or reclaimVwap)
+bool shortImpulseAttempt = confirmed and slotOpen and orComplete and (breakOrl or rejectVwap)
+string longImpulseBlock = not longBaseOk ? longBaseBlock : not volumeExpanded ? "volume_missing" : badLongWick ? "bad_wick" : "passed"
+string shortImpulseBlock = not shortBaseOk ? shortBaseBlock : not volumeExpanded ? "volume_missing" : badShortWick ? "bad_wick" : "passed"
+bool longImpulse = longImpulseAttempt and longImpulseBlock == "passed"
+bool shortImpulse = shortImpulseAttempt and shortImpulseBlock == "passed"
+
+if showBlockedMarkers and longImpulseAttempt and longImpulseBlock != "passed"
+    string trigger = breakOrh ? "ORH breakout attempt" : "VWAP reclaim attempt"
+    drawEventMarker(1, "blocked", "xL1", gateDetail(1, "L1 blocked", trigger, longImpulseBlock), 0.36)
+
+if showBlockedMarkers and shortImpulseAttempt and shortImpulseBlock != "passed"
+    string trigger = breakOrl ? "ORL breakdown attempt" : "VWAP reject attempt"
+    drawEventMarker(-1, "blocked", "xS1", gateDetail(-1, "S1 blocked", trigger, shortImpulseBlock), 0.36)
 
 if longImpulse
     longStage := 1
@@ -294,8 +400,8 @@ if longImpulse
     longImpulseVolume := barVolume
     longPatternReason := breakOrh ? "impulse_breakout_orh" : "impulse_reclaim_vwap"
     shortStage := 0
-    if showLabels
-        label.new(bar_index, low - atr * 0.6, "L1 放量突破", style=label.style_label_up, color=color.new(color.green, 35), textcolor=color.white, size=size.tiny, tooltip=longPatternReason)
+    if showStageMarkers and not isMinimalProfile()
+        drawEventMarker(1, "stage", "L1", gateDetail(1, "L1 passed", longPatternReason, "passed"), 0.12)
 
 if shortImpulse
     shortStage := 1
@@ -304,8 +410,8 @@ if shortImpulse
     shortImpulseVolume := barVolume
     shortPatternReason := breakOrl ? "impulse_breakdown_orl" : "impulse_reject_vwap"
     longStage := 0
-    if showLabels
-        label.new(bar_index, high + atr * 0.6, "S1 放量跌破", style=label.style_label_down, color=color.new(color.red, 35), textcolor=color.white, size=size.tiny, tooltip=shortPatternReason)
+    if showStageMarkers and not isMinimalProfile()
+        drawEventMarker(-1, "stage", "S1", gateDetail(-1, "S1 passed", shortPatternReason, "passed"), 0.12)
 
 bool longStageExpired = longStage > 0 and not na(longStageBar) and bar_index - longStageBar > patternTtlBars
 bool shortStageExpired = shortStage > 0 and not na(shortStageBar) and bar_index - shortStageBar > patternTtlBars
@@ -322,6 +428,16 @@ bool longPullback = confirmed and slotOpen and longBaseOk and longPullbackVolume
 bool shortRetestVolumeDry = shortStage == 1 and barVolume <= nz(shortImpulseVolume, barVolume) * pullbackVolumeMaxImpulseRatio and (na(volumeMa) or barVolume <= volumeMa * pullbackVolumeMaxMaRatio)
 bool shortRetestHolds = shortStage == 1 and not na(shortMapLevel) and high <= shortMapLevel + atr * 0.05 and close <= shortMapLevel
 bool shortRetest = confirmed and slotOpen and shortBaseOk and shortRetestVolumeDry and shortRetestHolds
+bool longPullbackAttempt = confirmed and slotOpen and longStage == 1 and not na(longMapLevel) and (low <= longMapLevel + atr * 0.25 or close < longMapLevel - atr * 0.05)
+bool shortRetestAttempt = confirmed and slotOpen and shortStage == 1 and not na(shortMapLevel) and (high >= shortMapLevel - atr * 0.25 or close > shortMapLevel + atr * 0.05)
+string longPullbackBlock = not longBaseOk ? longBaseBlock : not longPullbackVolumeDry ? "pullback_volume_not_dry" : not longPullbackHolds ? "pullback_broke_map" : "passed"
+string shortRetestBlock = not shortBaseOk ? shortBaseBlock : not shortRetestVolumeDry ? "pullback_volume_not_dry" : not shortRetestHolds ? "retest_broke_map" : "passed"
+
+if showBlockedMarkers and longPullbackAttempt and not longPullback and longPullbackBlock != "passed"
+    drawEventMarker(1, "blocked", "xL2", gateDetail(1, "L2 blocked", "pullback near VWAP/OR", longPullbackBlock), 0.38)
+
+if showBlockedMarkers and shortRetestAttempt and not shortRetest and shortRetestBlock != "passed"
+    drawEventMarker(-1, "blocked", "xS2", gateDetail(-1, "S2 blocked", "retest near VWAP/OR", shortRetestBlock), 0.38)
 
 if longStage == 1 and confirmed and close < nz(longMapLevel, close) - atr * 0.05
     longStage := 0
@@ -336,8 +452,8 @@ if longPullback
     longPullbackLow := low
     longReconfirmLevel := high
     longPatternReason := "low_volume_pullback_hold"
-    if showLabels
-        label.new(bar_index, low - atr * 0.8, "L2 缩量回踩", style=label.style_label_up, color=color.new(color.teal, 35), textcolor=color.white, size=size.tiny, tooltip=longPatternReason)
+    if showStageMarkers and not isMinimalProfile()
+        drawEventMarker(1, "stage", "L2", gateDetail(1, "L2 passed", longPatternReason, "passed"), 0.18)
 
 if shortRetest
     shortStage := 2
@@ -345,8 +461,8 @@ if shortRetest
     shortRetestHigh := high
     shortReconfirmLevel := low
     shortPatternReason := "low_volume_retest_hold"
-    if showLabels
-        label.new(bar_index, high + atr * 0.8, "S2 缩量反抽", style=label.style_label_down, color=color.new(color.orange, 25), textcolor=color.white, size=size.tiny, tooltip=shortPatternReason)
+    if showStageMarkers and not isMinimalProfile()
+        drawEventMarker(-1, "stage", "S2", gateDetail(-1, "S2 passed", shortPatternReason, "passed"), 0.18)
 
 // -----------------------------------------------------------------------------
 // Candidate build, validation, and order submission
@@ -398,13 +514,23 @@ string selectedPatternStage = "none"
 string selectedPatternReason = "none"
 int selectedScore = 0
 
-bool longReconfirmRaw = confirmed and slotOpen and longStage == 2 and longBaseOk and volumeExpanded and close > nz(longReconfirmLevel, high) and not badLongWick
-bool shortReconfirmRaw = confirmed and slotOpen and shortStage == 2 and shortBaseOk and volumeExpanded and close < nz(shortReconfirmLevel, low) and not badShortWick
+bool longReconfirmAttempt = confirmed and slotOpen and longStage == 2 and close > nz(longReconfirmLevel, high)
+bool shortReconfirmAttempt = confirmed and slotOpen and shortStage == 2 and close < nz(shortReconfirmLevel, low)
+string longReconfirmBlock = not longBaseOk ? longBaseBlock : not volumeExpanded ? "reconfirm_volume_missing" : badLongWick ? "bad_wick" : "passed"
+string shortReconfirmBlock = not shortBaseOk ? shortBaseBlock : not volumeExpanded ? "reconfirm_volume_missing" : badShortWick ? "bad_wick" : "passed"
+bool longReconfirmRaw = longReconfirmAttempt and longReconfirmBlock == "passed"
+bool shortReconfirmRaw = shortReconfirmAttempt and shortReconfirmBlock == "passed"
 int longScore = scoreFor(marketLongOk, sectorLongOk, relativeLongOk, priceLongSide, longMapNear, volumeExpanded, true)
 int shortScore = scoreFor(marketShortOk, sectorShortOk, relativeShortOk, priceShortSide, shortMapNear, volumeExpanded, true)
 int minScoreNow = inAfternoonEntry ? minAfternoonScore : minMorningScore
 bool longScoreOk = longScore >= minScoreNow
 bool shortScoreOk = shortScore >= minScoreNow
+
+if showBlockedMarkers and longReconfirmAttempt and not longReconfirmRaw and longReconfirmBlock != "passed"
+    drawEventMarker(1, "blocked", "xL3", gateDetail(1, "L3 blocked", "2m reconfirm breakout", longReconfirmBlock), 0.40)
+
+if showBlockedMarkers and shortReconfirmAttempt and not shortReconfirmRaw and shortReconfirmBlock != "passed"
+    drawEventMarker(-1, "blocked", "xS3", gateDetail(-1, "S3 blocked", "2m reconfirm breakdown", shortReconfirmBlock), 0.40)
 
 if longReconfirmRaw
     selectedSetup := "vwap_or_volume_retest_long"
@@ -442,6 +568,10 @@ else if shortReconfirmRaw
     selectedBlockReason := not shortScoreOk ? "score_too_low" : selectedStop <= nz(shortMapLevel, selectedEntry) ? "invalid_stop_structure" : selectedStopPct < minStopPct ? "stop_too_tight" : selectedStopPct > maxStopPct ? "stop_too_wide" : selectedQty < minQty ? "qty_too_small" : "passed"
 else
     selectedBlockReason := longBaseBlock != "passed" ? longBaseBlock : shortBaseBlock != "passed" ? shortBaseBlock : "no_candidate"
+
+bool blockedCandidate = confirmed and showBlockedMarkers and selectedDirection != 0 and selectedBlockReason != "passed" and (longReconfirmRaw or shortReconfirmRaw)
+if blockedCandidate
+    drawEventMarker(selectedDirection, "blocked", selectedDirection == 1 ? "xL3" : "xS3", blockedMarkerTooltip(selectedDirection, selectedBlockReason, selectedEntry, selectedStop, selectedQty, selectedStopPct, selectedScore), 0.44)
 
 // -----------------------------------------------------------------------------
 // Order state shared by payload builders and lifecycle.
@@ -521,8 +651,8 @@ if submitNewPlan
     shortStage := 0
     if enableAlerts
         alert(buildEntryPayload(eventPlanId, signalId, tradeGroupId, positionId), alert.freq_all)
-    if showLabels
-        label.new(bar_index, selectedDirection == 1 ? low - atr : high + atr, (selectedDirection == 1 ? "BUY next" : "SELL next") + "\nQ " + fmtlib.qtyText(selectedQty), style=selectedDirection == 1 ? label.style_label_up : label.style_label_down, color=color.new(selectedDirection == 1 ? color.lime : color.red, 0), textcolor=color.black, size=size.small, tooltip="entry " + fmtlib.fmtPrice(selectedEntry) + " stop " + fmtlib.fmtPrice(selectedStop) + " 2R " + fmtlib.fmtPrice(selectedTarget2))
+    if showOrderCaseLabels
+        label.new(bar_index, selectedDirection == 1 ? low - atr : high + atr, orderCaseText(selectedDirection, selectedEntry, selectedStop, selectedTarget1, selectedTarget2, selectedQty, selectedScore), style=selectedDirection == 1 ? label.style_label_up : label.style_label_down, color=color.new(selectedDirection == 1 ? color.lime : color.red, 0), textcolor=selectedDirection == 1 ? color.black : color.white, size=orderMarkerSize(), tooltip=orderCaseTooltip(selectedDirection, selectedEntry, selectedStop, selectedTarget1, selectedTarget2, selectedQty, selectedRiskQty, selectedNotionalQty, selectedScore))
 
 bool positionOpenedNow = pendingEntry and strategy.position_size != 0 and strategy.position_size[1] == 0
 if confirmed and positionOpenedNow
@@ -535,6 +665,8 @@ if confirmed and positionOpenedNow
     activeTarget2 := activeEntry + activeInitialRisk * activeDirection * 2.0
     if enableFillConfirmAlerts and enableAlerts
         alert(buildEntryFillPayload(planId("entry_fill", activeSetup, "market_next_bar"), activePositionId, strategy.position_avg_price), alert.freq_all)
+    if showOrderCaseLabels
+        label.new(bar_index, activeDirection == 1 ? low - atr * 0.5 : high + atr * 0.5, fillMarkerText(activeDirection, strategy.position_avg_price, activeQty), style=activeDirection == 1 ? label.style_label_up : label.style_label_down, color=color.new(color.blue, 0), textcolor=color.white, size=markerSize(), tooltip="actual strategy fill\nentry: " + fmtlib.fmtPrice(strategy.position_avg_price) + "\nqty: " + fmtlib.qtyText(activeQty))
 
 bool pendingEntryStale = confirmed and pendingEntry and not hasPosition and not na(activeSignalBar) and bar_index > activeSignalBar + 2
 if pendingEntryStale
@@ -557,6 +689,8 @@ if confirmed and activePosition and hasPosition
         activeRiskUpdateSeq += 1
         if enableAlerts
             alert(buildRiskUpdatePayload(planId("risk_update", activeSetup, "market_next_bar"), activePositionId, "runner_activation", previousStop, activeStop), alert.freq_all)
+        if showManagementMarkers
+            label.new(bar_index, activeTarget1, managementMarkerText("TP1/BE", "runner_activation", activeTarget1, 1.0), style=activeDirection == 1 ? label.style_label_down : label.style_label_up, color=color.new(color.blue, 0), textcolor=color.white, size=markerSize(), tooltip="1R touched; stop moved from " + fmtlib.fmtPrice(previousStop) + " to " + fmtlib.fmtPrice(activeStop))
     bool timeStopNow = not activeBreakevenDone and barsInTrade >= timeStopBars and activeMfeR < timeStopMinMfeR
     if timeStopNow and activeManualExitReason == ""
         activeManualExitReason := "time_stop"
@@ -590,6 +724,11 @@ if confirmed and positionClosedNow
         consecutiveLosses := 0
     if enableAlerts
         alert(buildExitPayload(planId("exit", activeSetup, "market_next_bar"), activePositionId, exitReason, exitPrice, pnlPerShare), alert.freq_all)
+    float pnlR = activeInitialRisk > 0.0 ? pnlPerShare / activeInitialRisk : na
+    string exitCode = exitReason == "take_profit_2r" ? "TP2" : exitReason == "stop_loss" ? "SL" : exitReason == "breakeven_stop" ? "BE" : exitReason == "time_stop" ? "TIME" : exitReason == "force_flat_eod" ? "EOD" : "EXIT"
+    color exitColor = exitReason == "take_profit_2r" ? color.lime : exitReason == "stop_loss" ? color.red : exitReason == "breakeven_stop" ? color.gray : color.orange
+    if showManagementMarkers
+        label.new(bar_index, exitPrice, managementMarkerText(exitCode, exitReason, exitPrice, pnlR), style=activeDirection == 1 ? label.style_label_down : label.style_label_up, color=color.new(exitColor, 0), textcolor=exitReason == "take_profit_2r" ? color.black : color.white, size=markerSize(), tooltip="exit reason: " + exitReason + "\nexit: " + fmtlib.fmtPrice(exitPrice) + "\npnl/share: " + fmtlib.fmtPrice(pnlPerShare) + "\npnl R: " + fmtlib.fmt(pnlR))
     activePosition := false
     activeDirection := 0
     activeSetup := ""
@@ -612,32 +751,41 @@ if confirmed and positionClosedNow
 // -----------------------------------------------------------------------------
 // Visuals
 // -----------------------------------------------------------------------------
-plot(vwap, "RTH VWAP", color=color.new(color.yellow, 0), linewidth=2)
+plot(showRthVwapLine ? vwap : na, "RTH VWAP", color=color.new(color.yellow, 0), linewidth=3, style=plot.style_linebr, trackprice=true)
 plot(orComplete ? orHigh : na, "ORH", color=color.new(color.lime, 0), linewidth=2, style=plot.style_linebr)
 plot(orComplete ? orLow : na, "ORL", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
 plot(activePosition ? activeStop : na, "Active Stop", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
 plot(activePosition ? activeTarget1 : na, "1R", color=color.new(color.blue, 0), linewidth=1, style=plot.style_linebr)
 plot(activePosition ? activeTarget2 : na, "2R", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
-plotshape(submitNewPlan and selectedDirection == 1, title="VOR long", style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, 0), size=size.small, text="VOR L")
-plotshape(submitNewPlan and selectedDirection == -1, title="VOR short", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.small, text="VOR S")
+plotshape(submitNewPlan and selectedDirection == 1, title="VOR long entry", style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, 0), size=size.small, text="BUY")
+plotshape(submitNewPlan and selectedDirection == -1, title="VOR short entry", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.small, text="SELL")
+plotshape(blockedCandidate and selectedDirection == 1, title="VOR long blocked", style=shape.xcross, location=location.abovebar, color=color.new(color.orange, 0), size=size.tiny, text="NO")
+plotshape(blockedCandidate and selectedDirection == -1, title="VOR short blocked", style=shape.xcross, location=location.belowbar, color=color.new(color.orange, 0), size=size.tiny, text="NO")
 
-var table statusTable = table.new(position.top_right, 2, 9, border_width=1)
-if confirmed and showStatusTable
-    table.cell(statusTable, 0, 0, "SSVOR", bgcolor=color.new(color.black, 0), text_color=color.white)
-    table.cell(statusTable, 1, 0, STRATEGY_VERSION, bgcolor=color.new(color.black, 0), text_color=color.white)
-    table.cell(statusTable, 0, 1, "meta", text_color=color.white)
-    table.cell(statusTable, 1, 1, (metadataOk ? sectorEtf + " " + sectorGroup : "missing"), text_color=metadataOk ? color.lime : color.red)
-    table.cell(statusTable, 0, 2, "OR", text_color=color.white)
-    table.cell(statusTable, 1, 2, fmtlib.fmtPrice(orHigh) + " / " + fmtlib.fmtPrice(orLow), text_color=color.white)
-    table.cell(statusTable, 0, 3, "RVOL", text_color=color.white)
-    table.cell(statusTable, 1, 3, fmtlib.fmt(rvol), text_color=volumeExpanded ? color.lime : color.gray)
-    table.cell(statusTable, 0, 4, "RS", text_color=color.white)
-    table.cell(statusTable, 1, 4, fmtlib.bpsText(stockVsMarketBps) + " / " + fmtlib.bpsText(stockVsSectorBps), text_color=relativeLongOk ? color.lime : relativeShortOk ? color.red : color.gray)
-    table.cell(statusTable, 0, 5, "stage", text_color=color.white)
-    table.cell(statusTable, 1, 5, "L" + str.tostring(longStage) + " S" + str.tostring(shortStage), text_color=color.white)
-    table.cell(statusTable, 0, 6, "block", text_color=color.white)
-    table.cell(statusTable, 1, 6, fmtlib.reasonCn(selectedBlockReason), text_color=selectedBlockReason == "passed" ? color.lime : color.orange)
-    table.cell(statusTable, 0, 7, "daily", text_color=color.white)
-    table.cell(statusTable, 1, 7, str.tostring(dailyTrades) + "/" + str.tostring(maxDailyTrades) + " " + fmtlib.moneyText(dailyPnl), text_color=dailyRiskOk ? color.white : color.red)
-    table.cell(statusTable, 0, 8, "tf/window", text_color=color.white)
-    table.cell(statusTable, 1, 8, (is2m ? "2m" : "wrong") + " " + (entryWindowOpen ? "entry" : manageOnly ? "manage" : "off"), text_color=is2m and entryWindowOpen ? color.lime : color.gray)
+var label vwapTag = na
+var label orhTag = na
+var label orlTag = na
+
+if confirmed and newDay
+    if not na(vwapTag)
+        label.delete(vwapTag)
+        vwapTag := na
+    if not na(orhTag)
+        label.delete(orhTag)
+        orhTag := na
+    if not na(orlTag)
+        label.delete(orlTag)
+        orlTag := na
+
+if confirmed and showMapLevelTags and inRth and not na(vwap)
+    if not na(vwapTag)
+        label.delete(vwapTag)
+    vwapTag := label.new(bar_index, vwap, "VWAP " + fmtlib.fmtPrice(vwap), style=label.style_label_left, color=color.new(color.yellow, 0), textcolor=color.black, size=markerSize(), tooltip="RTH-only VWAP. It resets at 09:30 New York time and does not use extended-hours data.")
+
+if confirmed and showMapLevelTags and orComplete and not na(orHigh) and not na(orLow)
+    if not na(orhTag)
+        label.delete(orhTag)
+    if not na(orlTag)
+        label.delete(orlTag)
+    orhTag := label.new(bar_index, orHigh, "ORH " + fmtlib.fmtPrice(orHigh), style=label.style_label_left, color=color.new(color.lime, 0), textcolor=color.black, size=markerSize(), tooltip="Opening range high from 09:30-09:45 New York time.")
+    orlTag := label.new(bar_index, orLow, "ORL " + fmtlib.fmtPrice(orLow), style=label.style_label_left, color=color.new(color.red, 0), textcolor=color.white, size=markerSize(), tooltip="Opening range low from 09:30-09:45 New York time.")

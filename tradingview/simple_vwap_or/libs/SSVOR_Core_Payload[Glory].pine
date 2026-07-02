@@ -1,7 +1,7 @@
 //@version=6
 // @description Payload helpers for Signal Strategy VWAP/OR Core[Glory].
 library("SSVOR_Core_Payload_Glory", overlay=true)
-import o8431/SSVOR_Lib_Format_Glory/1 as fmtlib
+import o8431/SSVOR_Lib_Format_Glory/2 as fmtlib
 
 export jsonStr(series string key, series string value) =>
     "\"" + key + "\":\"" + str.replace_all(value, "\"", "'") + "\""

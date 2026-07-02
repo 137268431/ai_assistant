@@ -8,6 +8,7 @@ Core-only TradingView strategy for the simplified intraday model:
 - Bare K + volume three-stage structure is the only entry trigger.
 - Position sizing follows the prior `$5000` notional-cap style with risk quantity safety.
 - Alerts keep the TV-primary `entry`, `entry_fill`, `risk_update`, `exit`, and `cancel` payload shape.
+- No status table is used. The chart shows an RTH-only VWAP line, ORH/ORL lines, stage markers, blocked-candidate markers, real order labels, and TP/SL management labels.
 
 ## Trading Rules
 
@@ -22,12 +23,56 @@ Short structure is the inverse through ORL/VWAP.
 
 The script only trades on 2m RTH charts. 09:30-09:45 only builds ORH/ORL; 09:45-11:30 is the primary window; 14:00-15:30 is strict continuation only; 15:45 forces flat.
 
+## Chart Markers
+
+Use `Display profile` to switch label density:
+
+- `PC`: full marker text plus detailed tooltip.
+- `Mobile`: larger, shorter labels for phone review.
+- `Minimal`: only key entry/block/management marks.
+
+Marker legend:
+
+- `RTH VWAP`: yellow RTH-only VWAP. It resets at 09:30 New York time and does not use extended-hours data.
+- `VWAP`, `ORH`, `ORL` price tags: latest map levels, shown directly on the chart.
+- `WIN`: entry-window state marker. Tooltip shows long/short base gate, score, VWAP/OR, RVOL, and RS.
+- `L1` / `S1`: volume breakout or breakdown through OR/VWAP.
+- `L2` / `S2`: lower-volume pullback or retest holding OR/VWAP.
+- `xL1` / `xS1`: breakout/reclaim attempt appeared, but environment, RVOL, wick, or timing blocked stage 1.
+- `xL2` / `xS2`: pullback/retest appeared, but volume did not dry up or the map level failed.
+- `xL3` / `xS3`: 2m reconfirm appeared, but volume, score, stop, or qty gate blocked the actual order.
+- `NO`: compact plot marker for a blocked L3 candidate; use the nearby `xL3` / `xS3` tooltip for details.
+- `BUY next` / `SELL next`: real strategy order submitted for the next 2m bar.
+- `FILL L` / `FILL S`: strategy position opened, using TradingView fill price.
+- `TP1/BE`: 1R touched and stop moved toward breakeven.
+- `TP2`, `SL`, `BE`, `TIME`, `EOD`: final exit reason.
+
+Blocked markers are diagnostics only. They do not call `strategy.entry()` and do not emit entry alerts.
+
+On Regular-only TradingView charts the script resets VWAP and the RTH open by date as well as by session start. This keeps the VWAP visible and prevents the prior day from leaking into the current RTH calculation.
+
+## Order Case Example
+
+Example using the default `$5000` notional cap:
+
+- Entry: `$100.00`
+- Stop: `$99.20`
+- Risk per share: `$0.80`
+- Max planned risk: `$75`
+- Risk-based qty: `floor(75 * 0.95 / 0.80) = 89` shares before ATR safety buffer
+- Notional-cap qty: `floor(5000 / 100.00) = 50` shares
+- Final order qty: `50` shares because the `$5000` cap is smaller
+- TP1: `$100.80`
+- TP2: `$101.60`
+
+On a real signal the chart label shows the same fields: entry, stop, risk/share, qty, notional, TP1, TP2, and score. This is a calculation example only; the strategy does not create fake orders or relax filters to force examples.
+
 ## Publish Order
 
-1. Publish `libs/SSVOR_Lib_Format[Glory].pine`.
-2. Publish `libs/SSVOR_Lib_SymbolMeta[Glory].pine`.
-3. Publish `libs/SSVOR_Core_Payload[Glory].pine`.
-4. Publish `core/Signal_Strategy_VWAP_OR_Core[Glory].pine`.
+1. Publish `libs/SSVOR_Lib_Format[Glory].pine` as version `2`.
+2. Keep `libs/SSVOR_Lib_SymbolMeta[Glory].pine` at version `1` unless metadata changed.
+3. Publish `libs/SSVOR_Core_Payload[Glory].pine` as version `2`; it imports `SSVOR_Lib_Format_Glory/2`.
+4. Publish `core/Signal_Strategy_VWAP_OR_Core[Glory].pine`; it imports `SSVOR_Lib_Format_Glory/2`, `SSVOR_Lib_SymbolMeta_Glory/1`, and `SSVOR_Core_Payload_Glory/2`.
 
 If a library version changes, update the `import o8431/.../<version>` lines in dependent scripts.
 
