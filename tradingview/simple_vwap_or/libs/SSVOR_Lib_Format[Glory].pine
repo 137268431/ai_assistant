@@ -1,0 +1,88 @@
+//@version=6
+// @description Minimal formatting helpers for Signal Strategy VWAP/OR[Glory].
+library("SSVOR_Lib_Format_Glory", overlay=true)
+
+export fmt(series float value) =>
+    na(value) ? "--" : str.tostring(value, "#.##")
+
+export fmtFull(series float value) =>
+    na(value) ? "null" : str.tostring(value, "#.########")
+
+export fmtPrice(series float value) =>
+    na(value) ? "--" : str.tostring(value, format.mintick)
+
+export moneyText(series float value) =>
+    na(value) ? "$--" : (value >= 0.0 ? "+$" : "-$") + str.tostring(math.abs(value), "#.##")
+
+export qtyText(series float qty) =>
+    na(qty) ? "--" : str.tostring(qty, "#")
+
+export bpsText(series float value) =>
+    na(value) ? "--bps" : str.tostring(value, "#.##") + "bps"
+
+export setupDisplayName(series string setup) =>
+    setup == "vwap_or_volume_retest_long" ? "多 VWAP/OR 放量回踩再确认" : setup == "vwap_or_volume_retest_short" ? "空 VWAP/OR 放量反抽再确认" : setup
+
+export reasonCn(series string reason) =>
+    string result = reason
+    if reason == "passed"
+        result := "通过"
+    else if reason == "metadata_missing"
+        result := "标的信息缺失"
+    else if reason == "trade_not_allowed_symbol"
+        result := "该标的仅监控不交易"
+    else if reason == "wrong_timeframe"
+        result := "不是2分钟图"
+    else if reason == "outside_entry_session"
+        result := "不在开仓时间"
+    else if reason == "market_not_aligned"
+        result := "大盘方向不一致"
+    else if reason == "sector_not_aligned"
+        result := "板块方向不一致"
+    else if reason == "relative_strength_missing"
+        result := "相对强弱不足"
+    else if reason == "price_wrong_side_vwap"
+        result := "价格不在VWAP正确侧"
+    else if reason == "too_far_from_map"
+        result := "离VWAP/OR太远"
+    else if reason == "vwap_choppy"
+        result := "VWAP附近反复穿越"
+    else if reason == "volume_missing"
+        result := "成交量不足"
+    else if reason == "pullback_volume_not_dry"
+        result := "回踩/反抽未缩量"
+    else if reason == "reconfirm_volume_missing"
+        result := "再确认未放量"
+    else if reason == "bad_wick"
+        result := "影线形态不佳"
+    else if reason == "invalid_stop_structure"
+        result := "止损结构无效"
+    else if reason == "stop_too_tight"
+        result := "止损太近"
+    else if reason == "stop_too_wide"
+        result := "止损太远"
+    else if reason == "qty_too_small"
+        result := "仓位不足"
+    else if reason == "score_too_low"
+        result := "评分不足"
+    else if reason == "daily_risk_stop"
+        result := "日内风控停止"
+    else if reason == "manual_event_block"
+        result := "手动事件过滤"
+    else if reason == "entry_signal"
+        result := "入场信号"
+    else if reason == "runner_activation"
+        result := "1R推保本"
+    else if reason == "take_profit_2r"
+        result := "2R止盈"
+    else if reason == "stop_loss"
+        result := "止损"
+    else if reason == "time_stop"
+        result := "时间止损"
+    else if reason == "force_flat_eod"
+        result := "尾盘清仓"
+    else if reason == "breakeven_stop"
+        result := "保本止损"
+    else if reason == "strategy_closed"
+        result := "策略关闭"
+    result

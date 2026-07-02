@@ -1,0 +1,643 @@
+//@version=6
+strategy(title="Signal Strategy VWAP OR Core[Glory]", overlay=true, pyramiding=0, initial_capital=100000, default_qty_type=strategy.fixed, default_qty_value=1, process_orders_on_close=false, calc_on_every_tick=false, dynamic_requests=true, max_labels_count=500, max_lines_count=100)
+import o8431/SSVOR_Lib_Format_Glory/1 as fmtlib
+import o8431/SSVOR_Lib_SymbolMeta_Glory/1 as metalib
+import o8431/SSVOR_Core_Payload_Glory/1 as payloadlib
+
+// VWAP/OR bare-K volume strategy. VWAP/OR is the map; volume-backed price action is the trigger.
+string STRATEGY_VERSION = "SSVOR_v1_20260702_bare_k_volume"
+string SCRIPT_TAG = "Signal_Strategy_VWAP_OR_Core[Glory]"
+string TRADE_MODEL = "vwap_or_bare_k_volume_v1"
+string RISK_MODEL = "structure_atr_buffer_risk_qty_notional_cap_v1"
+string TP_SL_MODEL = "fixed_1r_2r_breakeven_v1"
+
+// -----------------------------------------------------------------------------
+// Inputs
+// -----------------------------------------------------------------------------
+rthSession = input.session("0930-1600", "RTH session", group="01 Time")
+marketSymbol = input.symbol("NASDAQ:QQQ", "Primary market ETF", group="01 Time")
+confirmMarketSymbol = input.symbol("AMEX:SPY", "Confirm market ETF", group="01 Time")
+manualEventBlock = input.bool(false, "Manual event block", group="01 Time")
+enableAfternoonWindow = input.bool(true, "Enable strict 14:00-15:30 window", group="01 Time")
+forceFlatHour = input.int(15, "Force flat hour ET", minval=0, maxval=23, group="01 Time")
+forceFlatMinute = input.int(45, "Force flat minute ET", minval=0, maxval=59, group="01 Time")
+
+allowMetadataFallback = input.bool(false, "Allow metadata fallback ETF", group="02 Metadata")
+fallbackSectorSymbol = input.symbol("NASDAQ:SMH", "Fallback sector ETF", group="02 Metadata")
+fallbackSectorEtfName = input.string("SMH", "Fallback sector ETF name", group="02 Metadata")
+
+relativeStrengthMinBps = input.float(20.0, "Relative strength min bps", step=5.0, minval=0.0, group="03 Filters")
+sectorVsMarketMinBps = input.float(0.0, "Sector vs QQQ min bps", step=5.0, group="03 Filters")
+volumeMaLen = input.int(20, "RVOL MA length", minval=1, maxval=200, group="03 Filters")
+rvolMin = input.float(1.30, "RVOL breakout min", step=0.05, minval=0.5, maxval=10.0, group="03 Filters")
+strongRvolMin = input.float(1.50, "RVOL strong min", step=0.05, minval=0.5, maxval=10.0, group="03 Filters")
+pullbackVolumeMaxImpulseRatio = input.float(0.75, "Pullback volume max vs impulse", step=0.05, minval=0.1, maxval=2.0, group="03 Filters")
+pullbackVolumeMaxMaRatio = input.float(1.10, "Pullback volume max vs MA", step=0.05, minval=0.1, maxval=3.0, group="03 Filters")
+maxMapDistanceAtr = input.float(0.80, "Max distance to VWAP/OR (ATR)", step=0.05, minval=0.05, maxval=5.0, group="03 Filters")
+vwapChopAtr = input.float(0.12, "VWAP chop band (ATR)", step=0.01, minval=0.01, maxval=1.0, group="03 Filters")
+maxBadWickRatio = input.float(0.45, "Max wrong-side wick ratio", step=0.05, minval=0.1, maxval=0.9, group="03 Filters")
+patternTtlBars = input.int(8, "Pattern TTL bars", minval=2, maxval=30, group="03 Filters")
+
+atrLen = input.int(14, "ATR length", minval=1, group="04 Position/Risk")
+atrBufferMult = input.float(0.15, "Stop ATR buffer", step=0.01, minval=0.0, maxval=2.0, group="04 Position/Risk")
+minStopPct = input.float(0.12, "Min stop distance pct", step=0.01, minval=0.0, maxval=10.0, group="04 Position/Risk")
+maxStopPct = input.float(1.20, "Max stop distance pct", step=0.05, minval=0.01, maxval=20.0, group="04 Position/Risk")
+positionAmount = input.float(5000.0, "Notional cap per trade ($)", step=500.0, minval=100.0, group="04 Position/Risk")
+maxRiskDollars = input.float(75.0, "Max planned risk ($)", step=5.0, minval=1.0, group="04 Position/Risk")
+riskQtySafetyPct = input.float(0.95, "Risk qty safety pct", step=0.01, minval=0.5, maxval=1.0, group="04 Position/Risk")
+riskQtyBufferAtr = input.float(0.03, "Risk qty safety buffer (ATR)", step=0.01, minval=0.0, maxval=1.0, group="04 Position/Risk")
+useNotionalCap = input.bool(true, "Apply $5000 notional cap", group="04 Position/Risk")
+minQty = input.float(1.0, "Minimum shares", step=1.0, minval=1.0, group="04 Position/Risk")
+breakevenOffsetR = input.float(0.05, "Breakeven offset R", step=0.01, minval=0.0, maxval=1.0, group="04 Position/Risk")
+timeStopBars = input.int(10, "Time stop bars", minval=1, maxval=60, group="04 Position/Risk")
+timeStopMinMfeR = input.float(0.50, "Time stop min MFE R", step=0.05, minval=0.0, maxval=5.0, group="04 Position/Risk")
+maxDailyTrades = input.int(5, "Max trades per day", minval=1, maxval=20, group="04 Position/Risk")
+maxConsecutiveLosses = input.int(3, "Max consecutive losses", minval=1, maxval=10, group="04 Position/Risk")
+reduceAfterLosses = input.int(2, "Half size after consecutive losses", minval=1, maxval=10, group="04 Position/Risk")
+maxDailyLossDollars = input.float(150.0, "Max daily planned loss ($)", step=10.0, minval=1.0, group="04 Position/Risk")
+
+minMorningScore = input.int(6, "Morning min score", minval=1, maxval=7, group="05 Alerts/Display")
+minAfternoonScore = input.int(7, "Afternoon min score", minval=1, maxval=7, group="05 Alerts/Display")
+enableAlerts = input.bool(true, "Emit TV-primary alert payloads", group="05 Alerts/Display")
+enableFillConfirmAlerts = input.bool(false, "Alert on strategy fill confirmation", group="05 Alerts/Display")
+showLabels = input.bool(true, "Show stage/entry labels", group="05 Alerts/Display")
+showStatusTable = input.bool(true, "Show status table", group="05 Alerts/Display")
+
+// -----------------------------------------------------------------------------
+// Session helpers
+// -----------------------------------------------------------------------------
+confirmed = barstate.isconfirmed
+is2m = timeframe.period == "2"
+etMinutes = hour(time, "America/New_York") * 60 + minute(time, "America/New_York")
+etCloseMinutes = hour(time_close, "America/New_York") * 60 + minute(time_close, "America/New_York")
+inRth = not na(time(timeframe.period, rthSession))
+rthStarted = inRth and not inRth[1]
+newDay = timeframe.change("D") or rthStarted
+inOpeningRange = inRth and etMinutes >= 9 * 60 + 30 and etMinutes < 9 * 60 + 45
+orComplete = inRth and etMinutes >= 9 * 60 + 45
+inMorningEntry = inRth and etMinutes >= 9 * 60 + 45 and etMinutes < 11 * 60 + 30
+inAfternoonEntry = enableAfternoonWindow and inRth and etMinutes >= 14 * 60 and etMinutes < 15 * 60 + 30
+entryWindowOpen = inMorningEntry or inAfternoonEntry
+manageOnly = inRth and etMinutes >= 15 * 60 + 30 and etMinutes < 15 * 60 + 45
+forceFlatNow = inRth and etCloseMinutes >= forceFlatHour * 60 + forceFlatMinute
+
+rthVwap(series float src) =>
+    bool sess = not na(time(timeframe.period, rthSession))
+    bool start = sess and not sess[1]
+    var float cumPv = na
+    var float cumVol = na
+    if start
+        cumPv := src * volume
+        cumVol := volume
+    else if sess
+        cumPv := nz(cumPv, 0.0) + src * volume
+        cumVol := nz(cumVol, 0.0) + volume
+    else
+        cumPv := na
+        cumVol := na
+    not na(cumVol) and cumVol > 0.0 ? cumPv / cumVol : na
+
+rthOpenPrice() =>
+    bool sess = not na(time(timeframe.period, rthSession))
+    bool start = sess and not sess[1]
+    var float sessionOpen = na
+    if start
+        sessionOpen := open
+    else if not sess
+        sessionOpen := na
+    sessionOpen
+
+rthChangeBps() =>
+    float sessionOpen = rthOpenPrice()
+    not na(sessionOpen) and sessionOpen > 0.0 ? (close - sessionOpen) / sessionOpen * 10000.0 : na
+
+trendDir15() =>
+    float e = ta.ema(close, 20)
+    close >= e and e >= e[1] ? 1 : close <= e and e <= e[1] ? -1 : 0
+
+// -----------------------------------------------------------------------------
+// Market data and map levels
+// -----------------------------------------------------------------------------
+float atrRaw = ta.atr(atrLen)
+float atr = math.max(nz(atrRaw, syminfo.mintick), syminfo.mintick)
+float vwap = rthVwap(hlc3)
+float volumeMa = ta.sma(volume, volumeMaLen)
+float barVolume = na(volume) ? nz(volumeMa, 0.0) : volume
+float rvol = not na(volumeMa) and volumeMa > 0.0 ? barVolume / volumeMa : 0.0
+bool volumeExpanded = rvol >= rvolMin
+bool volumeStrong = rvol >= strongRvolMin
+float barRange = math.max(high - low, syminfo.mintick)
+float upperWickRatio = (high - math.max(open, close)) / barRange
+float lowerWickRatio = (math.min(open, close) - low) / barRange
+bool badLongWick = upperWickRatio > maxBadWickRatio
+bool badShortWick = lowerWickRatio > maxBadWickRatio
+
+var float orHigh = na
+var float orLow = na
+if confirmed and newDay
+    orHigh := na
+    orLow := na
+if confirmed and inOpeningRange
+    orHigh := na(orHigh) ? high : math.max(orHigh, high)
+    orLow := na(orLow) ? low : math.min(orLow, low)
+
+string rawSectorEtf = metalib.sectorEtf(syminfo.ticker)
+string rawSectorTvSymbol = metalib.sectorTvSymbol(syminfo.ticker)
+bool rawMetadataOk = metalib.hasMetadata(syminfo.ticker)
+bool metadataFallbackActive = not rawMetadataOk and allowMetadataFallback
+string sectorEtf = rawMetadataOk ? rawSectorEtf : metadataFallbackActive ? fallbackSectorEtfName : ""
+string sectorTvSymbol = rawMetadataOk ? rawSectorTvSymbol : metadataFallbackActive ? fallbackSectorSymbol : marketSymbol
+string sectorGroup = rawMetadataOk ? metalib.sectorGroup(syminfo.ticker) : metadataFallbackActive ? "fallback" : "unknown"
+string industryTag = rawMetadataOk ? metalib.industryTag(syminfo.ticker) : metadataFallbackActive ? "fallback" : "unknown"
+bool metadataOk = rawMetadataOk or metadataFallbackActive
+bool tradeAllowedByMeta = metadataFallbackActive ? true : metalib.tradeAllowed(syminfo.ticker)
+
+float qqqClose = request.security(marketSymbol, timeframe.period, close)
+float qqqVwap = request.security(marketSymbol, timeframe.period, rthVwap(hlc3))
+float qqqChangeBps = request.security(marketSymbol, timeframe.period, rthChangeBps())
+int qqqTrend15 = request.security(marketSymbol, "15", trendDir15())
+float spyClose = request.security(confirmMarketSymbol, timeframe.period, close)
+float spyVwap = request.security(confirmMarketSymbol, timeframe.period, rthVwap(hlc3))
+float spyChangeBps = request.security(confirmMarketSymbol, timeframe.period, rthChangeBps())
+float sectorClose = request.security(sectorTvSymbol, timeframe.period, close)
+float sectorVwap = request.security(sectorTvSymbol, timeframe.period, rthVwap(hlc3))
+float sectorChangeBps = request.security(sectorTvSymbol, timeframe.period, rthChangeBps())
+float stockChangeBps = rthChangeBps()
+
+float stockVsMarketBps = stockChangeBps - qqqChangeBps
+float stockVsSectorBps = stockChangeBps - sectorChangeBps
+float sectorVsMarketBps = sectorChangeBps - qqqChangeBps
+
+bool qqqLong = qqqClose > qqqVwap and qqqTrend15 >= 0
+bool qqqShort = qqqClose < qqqVwap and qqqTrend15 <= 0
+bool spyLongOk = spyClose >= spyVwap or spyChangeBps >= 0.0
+bool spyShortOk = spyClose <= spyVwap or spyChangeBps <= 0.0
+bool marketLongOk = qqqLong and spyLongOk
+bool marketShortOk = qqqShort and spyShortOk
+bool sectorLongOk = metadataOk and sectorClose >= sectorVwap and sectorVsMarketBps >= sectorVsMarketMinBps
+bool sectorShortOk = metadataOk and sectorClose <= sectorVwap and sectorVsMarketBps <= -sectorVsMarketMinBps
+bool relativeLongOk = stockVsMarketBps >= relativeStrengthMinBps and stockVsSectorBps >= relativeStrengthMinBps
+bool relativeShortOk = stockVsMarketBps <= -relativeStrengthMinBps and stockVsSectorBps <= -relativeStrengthMinBps
+
+bool vwapCross0 = ta.cross(close, vwap)
+bool vwapCross1 = ta.cross(close[1], vwap[1])
+bool vwapCross2 = ta.cross(close[2], vwap[2])
+bool vwapCross3 = ta.cross(close[3], vwap[3])
+bool vwapCross4 = ta.cross(close[4], vwap[4])
+int vwapCrossCount = (vwapCross0 ? 1 : 0) + (vwapCross1 ? 1 : 0) + (vwapCross2 ? 1 : 0) + (vwapCross3 ? 1 : 0) + (vwapCross4 ? 1 : 0)
+bool nearVwapChopBand = math.abs(close - vwap) <= atr * vwapChopAtr
+bool vwapChoppy = vwapCrossCount >= 3 and nearVwapChopBand
+float longMapDistanceAtr = atr > 0.0 ? math.min(math.abs(close - vwap), not na(orHigh) ? math.abs(close - orHigh) : math.abs(close - vwap)) / atr : na
+float shortMapDistanceAtr = atr > 0.0 ? math.min(math.abs(close - vwap), not na(orLow) ? math.abs(close - orLow) : math.abs(close - vwap)) / atr : na
+bool longMapNear = not na(longMapDistanceAtr) and longMapDistanceAtr <= maxMapDistanceAtr
+bool shortMapNear = not na(shortMapDistanceAtr) and shortMapDistanceAtr <= maxMapDistanceAtr
+bool priceLongSide = close > vwap
+bool priceShortSide = close < vwap
+
+// -----------------------------------------------------------------------------
+// Daily state and scoring
+// -----------------------------------------------------------------------------
+var int dailyTrades = 0
+var int consecutiveLosses = 0
+var float dayStartNetprofit = 0.0
+if confirmed and newDay
+    dailyTrades := 0
+    consecutiveLosses := 0
+    dayStartNetprofit := strategy.netprofit
+float dailyPnl = strategy.netprofit - dayStartNetprofit
+bool dailyRiskOk = dailyTrades < maxDailyTrades and consecutiveLosses < maxConsecutiveLosses and dailyPnl > -maxDailyLossDollars
+bool halfSizeNext = consecutiveLosses >= reduceAfterLosses
+
+scoreFor(bool marketOk, bool sectorOk, bool relativeOk, bool priceSideOk, bool mapNearOk, bool volumeOk, bool rrOk) =>
+    (marketOk ? 1 : 0) + (sectorOk ? 1 : 0) + (relativeOk ? 1 : 0) + (priceSideOk ? 1 : 0) + (mapNearOk ? 1 : 0) + (volumeOk ? 1 : 0) + (rrOk ? 1 : 0)
+
+baseBlockReason(int direction) =>
+    string reason = "passed"
+    if not is2m
+        reason := "wrong_timeframe"
+    else if manualEventBlock
+        reason := "manual_event_block"
+    else if not metadataOk
+        reason := "metadata_missing"
+    else if not tradeAllowedByMeta
+        reason := "trade_not_allowed_symbol"
+    else if not entryWindowOpen
+        reason := "outside_entry_session"
+    else if not dailyRiskOk
+        reason := "daily_risk_stop"
+    else if (direction == 1 and not marketLongOk) or (direction == -1 and not marketShortOk)
+        reason := "market_not_aligned"
+    else if (direction == 1 and not sectorLongOk) or (direction == -1 and not sectorShortOk)
+        reason := "sector_not_aligned"
+    else if (direction == 1 and not relativeLongOk) or (direction == -1 and not relativeShortOk)
+        reason := "relative_strength_missing"
+    else if (direction == 1 and not priceLongSide) or (direction == -1 and not priceShortSide)
+        reason := "price_wrong_side_vwap"
+    else if vwapChoppy
+        reason := "vwap_choppy"
+    else if (direction == 1 and not longMapNear) or (direction == -1 and not shortMapNear)
+        reason := "too_far_from_map"
+    reason
+
+// -----------------------------------------------------------------------------
+// Three-stage bare-K/volume pattern
+// -----------------------------------------------------------------------------
+var int longStage = 0
+var int shortStage = 0
+var int longStageBar = na
+var int shortStageBar = na
+var float longMapLevel = na
+var float shortMapLevel = na
+var float longImpulseVolume = na
+var float shortImpulseVolume = na
+var float longPullbackLow = na
+var float shortRetestHigh = na
+var float longReconfirmLevel = na
+var float shortReconfirmLevel = na
+var string longPatternReason = "none"
+var string shortPatternReason = "none"
+
+if confirmed and (newDay or forceFlatNow)
+    longStage := 0
+    shortStage := 0
+    longStageBar := na
+    shortStageBar := na
+    longMapLevel := na
+    shortMapLevel := na
+    longImpulseVolume := na
+    shortImpulseVolume := na
+    longPullbackLow := na
+    shortRetestHigh := na
+    longReconfirmLevel := na
+    shortReconfirmLevel := na
+    longPatternReason := "none"
+    shortPatternReason := "none"
+
+bool hasPosition = strategy.position_size != 0
+var bool pendingEntry = false
+bool slotOpen = not hasPosition and not pendingEntry
+string longBaseBlock = baseBlockReason(1)
+string shortBaseBlock = baseBlockReason(-1)
+bool longBaseOk = longBaseBlock == "passed"
+bool shortBaseOk = shortBaseBlock == "passed"
+bool breakOrh = not na(orHigh) and close > orHigh and close[1] <= orHigh
+bool reclaimVwap = close > vwap and close[1] <= vwap
+bool breakOrl = not na(orLow) and close < orLow and close[1] >= orLow
+bool rejectVwap = close < vwap and close[1] >= vwap
+bool longImpulse = confirmed and slotOpen and orComplete and longBaseOk and volumeExpanded and not badLongWick and (breakOrh or reclaimVwap)
+bool shortImpulse = confirmed and slotOpen and orComplete and shortBaseOk and volumeExpanded and not badShortWick and (breakOrl or rejectVwap)
+
+if longImpulse
+    longStage := 1
+    longStageBar := bar_index
+    longMapLevel := breakOrh ? orHigh : vwap
+    longImpulseVolume := barVolume
+    longPatternReason := breakOrh ? "impulse_breakout_orh" : "impulse_reclaim_vwap"
+    shortStage := 0
+    if showLabels
+        label.new(bar_index, low - atr * 0.6, "L1 放量突破", style=label.style_label_up, color=color.new(color.green, 35), textcolor=color.white, size=size.tiny, tooltip=longPatternReason)
+
+if shortImpulse
+    shortStage := 1
+    shortStageBar := bar_index
+    shortMapLevel := breakOrl ? orLow : vwap
+    shortImpulseVolume := barVolume
+    shortPatternReason := breakOrl ? "impulse_breakdown_orl" : "impulse_reject_vwap"
+    longStage := 0
+    if showLabels
+        label.new(bar_index, high + atr * 0.6, "S1 放量跌破", style=label.style_label_down, color=color.new(color.red, 35), textcolor=color.white, size=size.tiny, tooltip=shortPatternReason)
+
+bool longStageExpired = longStage > 0 and not na(longStageBar) and bar_index - longStageBar > patternTtlBars
+bool shortStageExpired = shortStage > 0 and not na(shortStageBar) and bar_index - shortStageBar > patternTtlBars
+if confirmed and longStageExpired
+    longStage := 0
+    longPatternReason := "pattern_expired"
+if confirmed and shortStageExpired
+    shortStage := 0
+    shortPatternReason := "pattern_expired"
+
+bool longPullbackVolumeDry = longStage == 1 and barVolume <= nz(longImpulseVolume, barVolume) * pullbackVolumeMaxImpulseRatio and (na(volumeMa) or barVolume <= volumeMa * pullbackVolumeMaxMaRatio)
+bool longPullbackHolds = longStage == 1 and not na(longMapLevel) and low >= longMapLevel - atr * 0.05 and close >= longMapLevel
+bool longPullback = confirmed and slotOpen and longBaseOk and longPullbackVolumeDry and longPullbackHolds
+bool shortRetestVolumeDry = shortStage == 1 and barVolume <= nz(shortImpulseVolume, barVolume) * pullbackVolumeMaxImpulseRatio and (na(volumeMa) or barVolume <= volumeMa * pullbackVolumeMaxMaRatio)
+bool shortRetestHolds = shortStage == 1 and not na(shortMapLevel) and high <= shortMapLevel + atr * 0.05 and close <= shortMapLevel
+bool shortRetest = confirmed and slotOpen and shortBaseOk and shortRetestVolumeDry and shortRetestHolds
+
+if longStage == 1 and confirmed and close < nz(longMapLevel, close) - atr * 0.05
+    longStage := 0
+    longPatternReason := "pullback_broke_map"
+if shortStage == 1 and confirmed and close > nz(shortMapLevel, close) + atr * 0.05
+    shortStage := 0
+    shortPatternReason := "retest_broke_map"
+
+if longPullback
+    longStage := 2
+    longStageBar := bar_index
+    longPullbackLow := low
+    longReconfirmLevel := high
+    longPatternReason := "low_volume_pullback_hold"
+    if showLabels
+        label.new(bar_index, low - atr * 0.8, "L2 缩量回踩", style=label.style_label_up, color=color.new(color.teal, 35), textcolor=color.white, size=size.tiny, tooltip=longPatternReason)
+
+if shortRetest
+    shortStage := 2
+    shortStageBar := bar_index
+    shortRetestHigh := high
+    shortReconfirmLevel := low
+    shortPatternReason := "low_volume_retest_hold"
+    if showLabels
+        label.new(bar_index, high + atr * 0.8, "S2 缩量反抽", style=label.style_label_down, color=color.new(color.orange, 25), textcolor=color.white, size=size.tiny, tooltip=shortPatternReason)
+
+// -----------------------------------------------------------------------------
+// Candidate build, validation, and order submission
+// -----------------------------------------------------------------------------
+riskSafetyBuffer() =>
+    riskQtyBufferAtr > 0.0 ? math.max(syminfo.mintick, atr * riskQtyBufferAtr) : 0.0
+
+calcRiskQty(float entryPrice, float stopPrice) =>
+    float perShareRiskWithBuffer = math.abs(entryPrice - stopPrice) + riskSafetyBuffer()
+    float riskQty = perShareRiskWithBuffer > 0.0 ? math.floor(maxRiskDollars * riskQtySafetyPct / perShareRiskWithBuffer) : 0.0
+    float notionalQty = useNotionalCap and entryPrice > 0.0 ? math.floor(positionAmount / entryPrice) : riskQty
+    math.max(0.0, math.min(riskQty, notionalQty))
+
+calcRiskQtyRaw(float entryPrice, float stopPrice) =>
+    float perShareRiskWithBuffer = math.abs(entryPrice - stopPrice) + riskSafetyBuffer()
+    perShareRiskWithBuffer > 0.0 ? math.floor(maxRiskDollars * riskQtySafetyPct / perShareRiskWithBuffer) : 0.0
+
+calcNotionalQty(float entryPrice) =>
+    useNotionalCap and entryPrice > 0.0 ? math.floor(positionAmount / entryPrice) : na
+
+stopDistancePct(float entryPrice, float stopPrice) =>
+    entryPrice > 0.0 ? math.abs(entryPrice - stopPrice) / entryPrice * 100.0 : na
+
+basePayload(string eventType, string eventIdValue, string positionIdValue) =>
+    payloadlib.basePayload(eventType, eventIdValue, syminfo.ticker, syminfo.prefix, timeframe.period, SCRIPT_TAG, STRATEGY_VERSION, positionIdValue, time, time_close, timenow, time, bar_index)
+
+planId(string directionText, string setup, string intent) =>
+    payloadlib.planId(syminfo.ticker, directionText, time, timeframe.period, setup, intent)
+
+dirText(int direction) =>
+    payloadlib.dirText(direction)
+
+orderIdForDirection(int direction) =>
+    payloadlib.orderIdForDirection(direction)
+
+string selectedSetup = "none"
+int selectedDirection = 0
+float selectedEntry = na
+float selectedStop = na
+float selectedRisk = na
+float selectedTarget1 = na
+float selectedTarget2 = na
+float selectedQty = 0.0
+float selectedRiskQty = 0.0
+float selectedNotionalQty = 0.0
+float selectedStopPct = na
+string selectedBlockReason = "no_candidate"
+string selectedPatternStage = "none"
+string selectedPatternReason = "none"
+int selectedScore = 0
+
+bool longReconfirmRaw = confirmed and slotOpen and longStage == 2 and longBaseOk and volumeExpanded and close > nz(longReconfirmLevel, high) and not badLongWick
+bool shortReconfirmRaw = confirmed and slotOpen and shortStage == 2 and shortBaseOk and volumeExpanded and close < nz(shortReconfirmLevel, low) and not badShortWick
+int longScore = scoreFor(marketLongOk, sectorLongOk, relativeLongOk, priceLongSide, longMapNear, volumeExpanded, true)
+int shortScore = scoreFor(marketShortOk, sectorShortOk, relativeShortOk, priceShortSide, shortMapNear, volumeExpanded, true)
+int minScoreNow = inAfternoonEntry ? minAfternoonScore : minMorningScore
+bool longScoreOk = longScore >= minScoreNow
+bool shortScoreOk = shortScore >= minScoreNow
+
+if longReconfirmRaw
+    selectedSetup := "vwap_or_volume_retest_long"
+    selectedDirection := 1
+    selectedEntry := close
+    selectedStop := longPullbackLow - atr * atrBufferMult
+    selectedRisk := math.abs(selectedEntry - selectedStop)
+    selectedTarget1 := selectedEntry + selectedRisk
+    selectedTarget2 := selectedEntry + selectedRisk * 2.0
+    selectedRiskQty := calcRiskQtyRaw(selectedEntry, selectedStop)
+    selectedNotionalQty := calcNotionalQty(selectedEntry)
+    selectedQty := calcRiskQty(selectedEntry, selectedStop)
+    selectedQty := halfSizeNext ? math.floor(selectedQty * 0.5) : selectedQty
+    selectedStopPct := stopDistancePct(selectedEntry, selectedStop)
+    selectedScore := longScore
+    selectedPatternStage := "reconfirm_breakout_long"
+    selectedPatternReason := longPatternReason
+    selectedBlockReason := not longScoreOk ? "score_too_low" : selectedStop >= nz(longMapLevel, selectedEntry) ? "invalid_stop_structure" : selectedStopPct < minStopPct ? "stop_too_tight" : selectedStopPct > maxStopPct ? "stop_too_wide" : selectedQty < minQty ? "qty_too_small" : "passed"
+else if shortReconfirmRaw
+    selectedSetup := "vwap_or_volume_retest_short"
+    selectedDirection := -1
+    selectedEntry := close
+    selectedStop := shortRetestHigh + atr * atrBufferMult
+    selectedRisk := math.abs(selectedEntry - selectedStop)
+    selectedTarget1 := selectedEntry - selectedRisk
+    selectedTarget2 := selectedEntry - selectedRisk * 2.0
+    selectedRiskQty := calcRiskQtyRaw(selectedEntry, selectedStop)
+    selectedNotionalQty := calcNotionalQty(selectedEntry)
+    selectedQty := calcRiskQty(selectedEntry, selectedStop)
+    selectedQty := halfSizeNext ? math.floor(selectedQty * 0.5) : selectedQty
+    selectedStopPct := stopDistancePct(selectedEntry, selectedStop)
+    selectedScore := shortScore
+    selectedPatternStage := "reconfirm_breakdown_short"
+    selectedPatternReason := shortPatternReason
+    selectedBlockReason := not shortScoreOk ? "score_too_low" : selectedStop <= nz(shortMapLevel, selectedEntry) ? "invalid_stop_structure" : selectedStopPct < minStopPct ? "stop_too_tight" : selectedStopPct > maxStopPct ? "stop_too_wide" : selectedQty < minQty ? "qty_too_small" : "passed"
+else
+    selectedBlockReason := longBaseBlock != "passed" ? longBaseBlock : shortBaseBlock != "passed" ? shortBaseBlock : "no_candidate"
+
+// -----------------------------------------------------------------------------
+// Order state shared by payload builders and lifecycle.
+// -----------------------------------------------------------------------------
+var bool activePosition = false
+var int activeDirection = 0
+var string activeSetup = ""
+var string activeSignalId = ""
+var string activeTradeGroupId = ""
+var string activePositionId = ""
+var float activeEntry = na
+var float activeStop = na
+var float activeTarget1 = na
+var float activeTarget2 = na
+var float activeQty = na
+var float activeInitialRisk = na
+var int activeSignalBar = na
+var int activeEntryBar = na
+var bool activeBreakevenDone = false
+var float activeMfeR = 0.0
+var int activeRiskUpdateSeq = 0
+var string activeManualExitReason = ""
+
+// -----------------------------------------------------------------------------
+// Payload builders
+// -----------------------------------------------------------------------------
+commonDiagnostics() =>
+    "," + payloadlib.jsonStr("risk_model", RISK_MODEL) + "," + payloadlib.jsonStr("tp_sl_model", TP_SL_MODEL) + "," + payloadlib.jsonStr("trade_model", TRADE_MODEL) + "," + payloadlib.jsonStr("sector_etf", sectorEtf) + "," + payloadlib.jsonStr("sector_group", sectorGroup) + "," + payloadlib.jsonStr("industry_tag", industryTag) + "," + payloadlib.jsonStr("relative_benchmark", metalib.relativeBenchmark(syminfo.ticker)) + "," + payloadlib.jsonStr("metadata_version", metalib.metadataVersion()) + "," + payloadlib.jsonStr("metadata_source", "pine_lib_static") + "," + payloadlib.jsonNum("orh", orHigh) + "," + payloadlib.jsonNum("orl", orLow) + "," + payloadlib.jsonNum("vwap", vwap) + "," + payloadlib.jsonNum("rvol", rvol) + "," + payloadlib.jsonNum("volume_ma", volumeMa) + "," + payloadlib.jsonNum("stock_change_bps", stockChangeBps) + "," + payloadlib.jsonNum("relative_strength_bps", stockVsMarketBps) + "," + payloadlib.jsonNum("sector_relative_strength_bps", stockVsSectorBps) + "," + payloadlib.jsonNum("sector_vs_market_bps", sectorVsMarketBps) + "," + payloadlib.jsonNum("atr", atr) + "," + payloadlib.jsonNum("atr_stop_buffer", atr * atrBufferMult) + "," + payloadlib.jsonNum("position_amount", positionAmount) + "," + payloadlib.jsonNum("max_risk_dollars", maxRiskDollars)
+
+buildEntryPayload(string eventIdValue, string signalIdValue, string tradeGroupIdValue, string positionIdValue) =>
+    basePayload("entry", eventIdValue, positionIdValue) + "," + payloadlib.jsonStr("signal_id", signalIdValue) + "," + payloadlib.jsonStr("origin_signal_id", signalIdValue) + "," + payloadlib.jsonStr("trade_group_id", tradeGroupIdValue) + "," + payloadlib.jsonStr("direction", dirText(selectedDirection)) + "," + payloadlib.jsonStr("position_side", dirText(selectedDirection)) + "," + payloadlib.jsonStr("setup", selectedSetup) + "," + payloadlib.jsonStr("entry_setup", selectedSetup) + "," + payloadlib.jsonStr("signal", selectedSetup) + "," + payloadlib.jsonStr("reason", "entry_signal") + "," + payloadlib.jsonNum("entry", selectedEntry) + "," + payloadlib.jsonNum("entry_price", selectedEntry) + "," + payloadlib.jsonNum("planned_entry_price", selectedEntry) + "," + payloadlib.jsonNum("submitted_entry_limit_price", selectedEntry) + "," + payloadlib.jsonNum("stop_loss", selectedStop) + "," + payloadlib.jsonNum("take_profit", selectedTarget2) + "," + payloadlib.jsonNum("safety_take_profit", selectedTarget2) + "," + payloadlib.jsonNum("target_checkpoint", selectedTarget1) + "," + payloadlib.jsonNum("runner_activation_price", selectedTarget1) + "," + payloadlib.jsonNum("runner_activation_r", 1.0) + "," + payloadlib.jsonNum("shares", selectedQty) + "," + payloadlib.jsonStr("entry_intent", "market_next_bar") + "," + payloadlib.jsonStr("trial_risk_mode", "full") + "," + payloadlib.jsonStr("pattern_stage", selectedPatternStage) + "," + payloadlib.jsonStr("pattern_reason", selectedPatternReason) + "," + payloadlib.jsonInt("score", selectedScore) + "," + payloadlib.jsonStr("block_reason", selectedBlockReason) + "," + payloadlib.jsonNum("initial_risk", selectedRisk) + "," + payloadlib.jsonNum("target_1r", selectedTarget1) + "," + payloadlib.jsonNum("target_2r", selectedTarget2) + "," + payloadlib.jsonNum("risk_qty", selectedRiskQty) + "," + payloadlib.jsonNum("notional_qty", selectedNotionalQty) + commonDiagnostics() + "}"
+
+buildEntryFillPayload(string eventIdValue, string positionIdValue, float actualFillPrice) =>
+    basePayload("entry_fill", eventIdValue, positionIdValue) + "," + payloadlib.jsonStr("signal_id", activeSignalId) + "," + payloadlib.jsonStr("origin_signal_id", activeSignalId) + "," + payloadlib.jsonStr("trade_group_id", activeTradeGroupId) + "," + payloadlib.jsonStr("direction", dirText(activeDirection)) + "," + payloadlib.jsonStr("setup", activeSetup) + "," + payloadlib.jsonNum("entry", actualFillPrice) + "," + payloadlib.jsonNum("planned_entry_price", activeEntry) + "," + payloadlib.jsonNum("stop_loss", activeStop) + "," + payloadlib.jsonNum("take_profit", activeTarget2) + "," + payloadlib.jsonNum("shares", activeQty) + "," + payloadlib.jsonStr("entry_intent", "market_next_bar") + commonDiagnostics() + "}"
+
+buildRiskUpdatePayload(string eventIdValue, string positionIdValue, string reason, float previousStop, float newStop) =>
+    basePayload("risk_update", eventIdValue, positionIdValue) + "," + payloadlib.jsonStr("signal_id", activeSignalId) + "," + payloadlib.jsonStr("origin_signal_id", activeSignalId) + "," + payloadlib.jsonStr("trade_group_id", activeTradeGroupId) + "," + payloadlib.jsonStr("direction", dirText(activeDirection)) + "," + payloadlib.jsonStr("setup", activeSetup) + "," + payloadlib.jsonStr("reason", reason) + "," + payloadlib.jsonStr("risk_update_reason", reason) + "," + payloadlib.jsonInt("risk_update_seq", activeRiskUpdateSeq) + "," + payloadlib.jsonRequestedSides("stop_loss") + "," + payloadlib.jsonNum("previous_stop_loss", previousStop) + "," + payloadlib.jsonNum("new_stop_loss", newStop) + "," + payloadlib.jsonNum("stop_loss", newStop) + "," + payloadlib.jsonNum("take_profit", activeTarget2) + "," + payloadlib.jsonNum("safety_take_profit", activeTarget2) + "," + payloadlib.jsonNum("runner_activation_price", activeTarget1) + "," + payloadlib.jsonNum("runner_activation_r", 1.0) + "," + payloadlib.jsonBool("runner_enabled", true) + "," + payloadlib.jsonBool("runner_active", activeBreakevenDone) + commonDiagnostics() + "}"
+
+buildExitPayload(string eventIdValue, string positionIdValue, string reason, float exitPrice, float pnlPerShare) =>
+    basePayload("exit", eventIdValue, positionIdValue) + "," + payloadlib.jsonStr("signal_id", activeSignalId) + "," + payloadlib.jsonStr("origin_signal_id", activeSignalId) + "," + payloadlib.jsonStr("trade_group_id", activeTradeGroupId) + "," + payloadlib.jsonStr("direction", dirText(activeDirection)) + "," + payloadlib.jsonStr("setup", activeSetup) + "," + payloadlib.jsonStr("reason", reason) + "," + payloadlib.jsonStr("exit_reason", reason) + "," + payloadlib.jsonNum("exit_price", exitPrice) + "," + payloadlib.jsonNum("entry", activeEntry) + "," + payloadlib.jsonNum("stop_loss", activeStop) + "," + payloadlib.jsonNum("take_profit", activeTarget2) + "," + payloadlib.jsonNum("shares", activeQty) + "," + payloadlib.jsonNum("pnl", pnlPerShare * activeQty) + "," + payloadlib.jsonNum("pnl_per_share", pnlPerShare) + "," + payloadlib.jsonNum("pnl_r", activeInitialRisk > 0.0 ? pnlPerShare / activeInitialRisk : na) + "," + payloadlib.jsonBool("runner_active", activeBreakevenDone) + commonDiagnostics() + "}"
+
+buildCancelPayload(string eventIdValue, string positionIdValue, string reason) =>
+    basePayload("cancel", eventIdValue, positionIdValue) + "," + payloadlib.jsonStr("signal_id", activeSignalId) + "," + payloadlib.jsonStr("origin_signal_id", activeSignalId) + "," + payloadlib.jsonStr("trade_group_id", activeTradeGroupId) + "," + payloadlib.jsonStr("direction", dirText(activeDirection)) + "," + payloadlib.jsonStr("setup", activeSetup) + "," + payloadlib.jsonStr("reason", reason) + "," + payloadlib.jsonStr("cancel_reason", reason) + "," + payloadlib.jsonStr("cancel_scope", "unfilled_entry") + commonDiagnostics() + "}"
+
+// -----------------------------------------------------------------------------
+// Order lifecycle
+// -----------------------------------------------------------------------------
+bool submitNewPlan = confirmed and selectedBlockReason == "passed" and selectedDirection != 0 and selectedQty >= minQty and slotOpen
+if submitNewPlan
+    string directionText = dirText(selectedDirection)
+    string eventPlanId = planId(directionText, selectedSetup, "market_next_bar")
+    string signalId = eventPlanId + "_signal"
+    string tradeGroupId = eventPlanId + "_group"
+    string positionId = eventPlanId + "_pos"
+    strategy.entry(orderIdForDirection(selectedDirection), selectedDirection == 1 ? strategy.long : strategy.short, qty=selectedQty, comment=(selectedDirection == 1 ? "L " : "S ") + fmtlib.fmtPrice(selectedEntry) + " Q" + fmtlib.qtyText(selectedQty))
+    pendingEntry := true
+    activePosition := false
+    activeDirection := selectedDirection
+    activeSetup := selectedSetup
+    activeSignalId := signalId
+    activeTradeGroupId := tradeGroupId
+    activePositionId := positionId
+    activeEntry := selectedEntry
+    activeStop := selectedStop
+    activeTarget1 := selectedTarget1
+    activeTarget2 := selectedTarget2
+    activeQty := selectedQty
+    activeInitialRisk := selectedRisk
+    activeSignalBar := bar_index
+    activeEntryBar := na
+    activeBreakevenDone := false
+    activeMfeR := 0.0
+    activeRiskUpdateSeq := 0
+    activeManualExitReason := ""
+    dailyTrades += 1
+    longStage := 0
+    shortStage := 0
+    if enableAlerts
+        alert(buildEntryPayload(eventPlanId, signalId, tradeGroupId, positionId), alert.freq_all)
+    if showLabels
+        label.new(bar_index, selectedDirection == 1 ? low - atr : high + atr, (selectedDirection == 1 ? "BUY next" : "SELL next") + "\nQ " + fmtlib.qtyText(selectedQty), style=selectedDirection == 1 ? label.style_label_up : label.style_label_down, color=color.new(selectedDirection == 1 ? color.lime : color.red, 0), textcolor=color.black, size=size.small, tooltip="entry " + fmtlib.fmtPrice(selectedEntry) + " stop " + fmtlib.fmtPrice(selectedStop) + " 2R " + fmtlib.fmtPrice(selectedTarget2))
+
+bool positionOpenedNow = pendingEntry and strategy.position_size != 0 and strategy.position_size[1] == 0
+if confirmed and positionOpenedNow
+    pendingEntry := false
+    activePosition := true
+    activeEntryBar := bar_index
+    activeEntry := strategy.position_avg_price
+    activeInitialRisk := math.abs(activeEntry - activeStop)
+    activeTarget1 := activeEntry + activeInitialRisk * activeDirection
+    activeTarget2 := activeEntry + activeInitialRisk * activeDirection * 2.0
+    if enableFillConfirmAlerts and enableAlerts
+        alert(buildEntryFillPayload(planId("entry_fill", activeSetup, "market_next_bar"), activePositionId, strategy.position_avg_price), alert.freq_all)
+
+bool pendingEntryStale = confirmed and pendingEntry and not hasPosition and not na(activeSignalBar) and bar_index > activeSignalBar + 2
+if pendingEntryStale
+    strategy.cancel(orderIdForDirection(activeDirection))
+    if enableAlerts
+        alert(buildCancelPayload(planId("cancel", activeSetup, "market_next_bar"), activePositionId, "entry_not_filled"), alert.freq_all)
+    pendingEntry := false
+    activeDirection := 0
+
+if confirmed and activePosition and hasPosition
+    int barsInTrade = na(activeEntryBar) ? 0 : bar_index - activeEntryBar
+    float mfeNow = activeInitialRisk > 0.0 ? (activeDirection == 1 ? (high - activeEntry) / activeInitialRisk : (activeEntry - low) / activeInitialRisk) : 0.0
+    activeMfeR := math.max(nz(activeMfeR, 0.0), mfeNow)
+    bool target1Touched = activeDirection == 1 ? high >= activeTarget1 : low <= activeTarget1
+    if target1Touched and not activeBreakevenDone
+        float previousStop = activeStop
+        float breakevenStop = activeEntry + activeInitialRisk * breakevenOffsetR * activeDirection
+        activeStop := activeDirection == 1 ? math.max(activeStop, breakevenStop) : math.min(activeStop, breakevenStop)
+        activeBreakevenDone := true
+        activeRiskUpdateSeq += 1
+        if enableAlerts
+            alert(buildRiskUpdatePayload(planId("risk_update", activeSetup, "market_next_bar"), activePositionId, "runner_activation", previousStop, activeStop), alert.freq_all)
+    bool timeStopNow = not activeBreakevenDone and barsInTrade >= timeStopBars and activeMfeR < timeStopMinMfeR
+    if timeStopNow and activeManualExitReason == ""
+        activeManualExitReason := "time_stop"
+        strategy.close(orderIdForDirection(activeDirection), comment="TIME " + fmtlib.moneyText((close - activeEntry) * activeDirection * activeQty) + " X" + fmtlib.fmtPrice(close))
+    else if forceFlatNow and activeManualExitReason == ""
+        activeManualExitReason := "force_flat_eod"
+        strategy.close(orderIdForDirection(activeDirection), comment="EOD " + fmtlib.moneyText((close - activeEntry) * activeDirection * activeQty) + " X" + fmtlib.fmtPrice(close))
+    else
+        if activeDirection == 1
+            strategy.exit("VOR-L-TP1", from_entry="TV-VOR-L", qty_percent=50, stop=activeStop, limit=activeTarget1, comment_profit="TP1 " + fmtlib.fmtPrice(activeTarget1), comment_loss="SL " + fmtlib.fmtPrice(activeStop))
+            strategy.exit("VOR-L-TP2", from_entry="TV-VOR-L", qty_percent=50, stop=activeStop, limit=activeTarget2, comment_profit="TP2 " + fmtlib.fmtPrice(activeTarget2), comment_loss=(activeBreakevenDone ? "BE " : "SL ") + fmtlib.fmtPrice(activeStop))
+        if activeDirection == -1
+            strategy.exit("VOR-S-TP1", from_entry="TV-VOR-S", qty_percent=50, stop=activeStop, limit=activeTarget1, comment_profit="TP1 " + fmtlib.fmtPrice(activeTarget1), comment_loss="SL " + fmtlib.fmtPrice(activeStop))
+            strategy.exit("VOR-S-TP2", from_entry="TV-VOR-S", qty_percent=50, stop=activeStop, limit=activeTarget2, comment_profit="TP2 " + fmtlib.fmtPrice(activeTarget2), comment_loss=(activeBreakevenDone ? "BE " : "SL ") + fmtlib.fmtPrice(activeStop))
+
+bool positionClosedNow = activePosition and strategy.position_size == 0 and strategy.position_size[1] != 0
+if confirmed and positionClosedNow
+    int closedTradeIndex = strategy.closedtrades - 1
+    float exitPrice = close
+    string closedTradeComment = ""
+    if strategy.closedtrades > 0
+        exitPrice := strategy.closedtrades.exit_price(closedTradeIndex)
+        closedTradeComment := strategy.closedtrades.exit_comment(closedTradeIndex)
+    bool stopped = activeDirection == 1 ? low <= activeStop : high >= activeStop
+    bool target2Hit = activeDirection == 1 ? high >= activeTarget2 : low <= activeTarget2
+    string exitReason = activeManualExitReason != "" ? activeManualExitReason : str.contains(closedTradeComment, "TP2") or target2Hit ? "take_profit_2r" : str.contains(closedTradeComment, "BE") ? "breakeven_stop" : stopped ? "stop_loss" : forceFlatNow ? "force_flat_eod" : "strategy_closed"
+    float pnlPerShare = (exitPrice - activeEntry) * activeDirection
+    if pnlPerShare < 0.0
+        consecutiveLosses += 1
+    else
+        consecutiveLosses := 0
+    if enableAlerts
+        alert(buildExitPayload(planId("exit", activeSetup, "market_next_bar"), activePositionId, exitReason, exitPrice, pnlPerShare), alert.freq_all)
+    activePosition := false
+    activeDirection := 0
+    activeSetup := ""
+    activeSignalId := ""
+    activeTradeGroupId := ""
+    activePositionId := ""
+    activeEntry := na
+    activeStop := na
+    activeTarget1 := na
+    activeTarget2 := na
+    activeQty := na
+    activeInitialRisk := na
+    activeSignalBar := na
+    activeEntryBar := na
+    activeBreakevenDone := false
+    activeMfeR := 0.0
+    activeRiskUpdateSeq := 0
+    activeManualExitReason := ""
+
+// -----------------------------------------------------------------------------
+// Visuals
+// -----------------------------------------------------------------------------
+plot(vwap, "RTH VWAP", color=color.new(color.yellow, 0), linewidth=2)
+plot(orComplete ? orHigh : na, "ORH", color=color.new(color.lime, 0), linewidth=2, style=plot.style_linebr)
+plot(orComplete ? orLow : na, "ORL", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(activePosition ? activeStop : na, "Active Stop", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(activePosition ? activeTarget1 : na, "1R", color=color.new(color.blue, 0), linewidth=1, style=plot.style_linebr)
+plot(activePosition ? activeTarget2 : na, "2R", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plotshape(submitNewPlan and selectedDirection == 1, title="VOR long", style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, 0), size=size.small, text="VOR L")
+plotshape(submitNewPlan and selectedDirection == -1, title="VOR short", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.small, text="VOR S")
+
+var table statusTable = table.new(position.top_right, 2, 9, border_width=1)
+if confirmed and showStatusTable
+    table.cell(statusTable, 0, 0, "SSVOR", bgcolor=color.new(color.black, 0), text_color=color.white)
+    table.cell(statusTable, 1, 0, STRATEGY_VERSION, bgcolor=color.new(color.black, 0), text_color=color.white)
+    table.cell(statusTable, 0, 1, "meta", text_color=color.white)
+    table.cell(statusTable, 1, 1, (metadataOk ? sectorEtf + " " + sectorGroup : "missing"), text_color=metadataOk ? color.lime : color.red)
+    table.cell(statusTable, 0, 2, "OR", text_color=color.white)
+    table.cell(statusTable, 1, 2, fmtlib.fmtPrice(orHigh) + " / " + fmtlib.fmtPrice(orLow), text_color=color.white)
+    table.cell(statusTable, 0, 3, "RVOL", text_color=color.white)
+    table.cell(statusTable, 1, 3, fmtlib.fmt(rvol), text_color=volumeExpanded ? color.lime : color.gray)
+    table.cell(statusTable, 0, 4, "RS", text_color=color.white)
+    table.cell(statusTable, 1, 4, fmtlib.bpsText(stockVsMarketBps) + " / " + fmtlib.bpsText(stockVsSectorBps), text_color=relativeLongOk ? color.lime : relativeShortOk ? color.red : color.gray)
+    table.cell(statusTable, 0, 5, "stage", text_color=color.white)
+    table.cell(statusTable, 1, 5, "L" + str.tostring(longStage) + " S" + str.tostring(shortStage), text_color=color.white)
+    table.cell(statusTable, 0, 6, "block", text_color=color.white)
+    table.cell(statusTable, 1, 6, fmtlib.reasonCn(selectedBlockReason), text_color=selectedBlockReason == "passed" ? color.lime : color.orange)
+    table.cell(statusTable, 0, 7, "daily", text_color=color.white)
+    table.cell(statusTable, 1, 7, str.tostring(dailyTrades) + "/" + str.tostring(maxDailyTrades) + " " + fmtlib.moneyText(dailyPnl), text_color=dailyRiskOk ? color.white : color.red)
+    table.cell(statusTable, 0, 8, "tf/window", text_color=color.white)
+    table.cell(statusTable, 1, 8, (is2m ? "2m" : "wrong") + " " + (entryWindowOpen ? "entry" : manageOnly ? "manage" : "off"), text_color=is2m and entryWindowOpen ? color.lime : color.gray)
