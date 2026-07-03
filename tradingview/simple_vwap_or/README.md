@@ -24,6 +24,15 @@ Short structure is the inverse through ORL/VWAP.
 
 The script only trades on 2m RTH charts. 09:30-09:45 only builds ORH/ORL; 09:45-11:30 is the primary window; 14:00-15:30 is strict continuation only; 15:45 forces flat.
 
+Default filter notes:
+
+- `Max distance to VWAP/OR (ATR)` defaults to `1.20`, so the setup still stays near VWAP/OR but is less likely to reject normal WDC-style 2m movement as too extended.
+- `Max L3 confirm distance to VWAP/OR (ATR)` defaults to `2.20`. L1/L2 must still form near the map, but the final 2m confirmation is allowed to move slightly farther before entry; beyond this cap it remains blocked as a chase.
+- `Pattern TTL bars` defaults to `10`, matching the 20-minute time-stop window.
+- The script waits for ATR, VWAP, RVOL MA, QQQ/SPY, and sector data before L1/L2/L3 can trigger. During warmup, logs show `indicator_warmup` instead of a misleading `too_far_from_map`.
+- L2 can only be evaluated on a bar after L1, and L3 can only be evaluated on a bar after L2. This prevents same-bar `L1_PASS` plus `L2_BLOCK` contradictions.
+- Stop-structure validation uses the actual pullback low / retest high plus ATR buffer. The stop no longer has to be below ORH/VWAP for every long, or above ORL/VWAP for every short, because valid shallow retests can hold above/below the map.
+
 ## Chart Markers
 
 Use `Display profile` to switch label density:
@@ -100,9 +109,9 @@ On a real signal the chart label shows the same fields: entry, stop, risk/share,
 ## Publish Order
 
 1. Publish `libs/SSVOR_Lib_Format[Glory].pine` as version `2`.
-2. Publish `libs/SSVOR_Lib_SymbolMeta[Glory].pine` as version `3`; this adds storage/hardware names such as `WDC`, `SNDK`, `STX`, `NTAP`, and `PSTG` to `XLK`, and strips common exchange prefixes before matching.
+2. Publish `libs/SSVOR_Lib_SymbolMeta[Glory].pine` as version `2`; this is the currently published library version and includes the static metadata used by the core script.
 3. Publish `libs/SSVOR_Core_Payload[Glory].pine` as version `2`; it imports `SSVOR_Lib_Format_Glory/2`.
-4. Publish `core/Signal_Strategy_VWAP_OR_Core[Glory].pine`; it imports `SSVOR_Lib_Format_Glory/2`, `SSVOR_Lib_SymbolMeta_Glory/3`, and `SSVOR_Core_Payload_Glory/2`.
+4. Publish `core/Signal_Strategy_VWAP_OR_Core[Glory].pine`; it imports `SSVOR_Lib_Format_Glory/2`, `SSVOR_Lib_SymbolMeta_Glory/2`, and `SSVOR_Core_Payload_Glory/2`.
 
 If a library version changes, update the `import o8431/.../<version>` lines in dependent scripts.
 

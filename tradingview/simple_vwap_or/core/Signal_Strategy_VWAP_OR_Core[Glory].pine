@@ -5,7 +5,7 @@ import o8431/SSVOR_Lib_SymbolMeta_Glory/2 as metalib
 import o8431/SSVOR_Core_Payload_Glory/2 as payloadlib
 
 // VWAP/OR bare-K volume strategy. VWAP/OR is the map; volume-backed price action is the trigger.
-string STRATEGY_VERSION = "SSVOR_v1_20260703_active_gate_logs"
+string STRATEGY_VERSION = "SSVOR_v1_20260703_swing_stop_fix"
 string SCRIPT_TAG = "Signal_Strategy_VWAP_OR_Core[Glory]"
 string TRADE_MODEL = "vwap_or_bare_k_volume_v1"
 string RISK_MODEL = "structure_atr_buffer_risk_qty_notional_cap_v1"
@@ -33,10 +33,11 @@ rvolMin = input.float(1.30, "RVOL breakout min", step=0.05, minval=0.5, maxval=1
 strongRvolMin = input.float(1.50, "RVOL strong min", step=0.05, minval=0.5, maxval=10.0, group="03 Filters")
 pullbackVolumeMaxImpulseRatio = input.float(0.75, "Pullback volume max vs impulse", step=0.05, minval=0.1, maxval=2.0, group="03 Filters")
 pullbackVolumeMaxMaRatio = input.float(1.10, "Pullback volume max vs MA", step=0.05, minval=0.1, maxval=3.0, group="03 Filters")
-maxMapDistanceAtr = input.float(0.80, "Max distance to VWAP/OR (ATR)", step=0.05, minval=0.05, maxval=5.0, group="03 Filters")
+maxMapDistanceAtr = input.float(1.20, "Max distance to VWAP/OR (ATR)", step=0.05, minval=0.05, maxval=5.0, group="03 Filters")
+maxReconfirmDistanceAtr = input.float(2.20, "Max L3 confirm distance to VWAP/OR (ATR)", step=0.05, minval=0.05, maxval=6.0, group="03 Filters")
 vwapChopAtr = input.float(0.12, "VWAP chop band (ATR)", step=0.01, minval=0.01, maxval=1.0, group="03 Filters")
 maxBadWickRatio = input.float(0.45, "Max wrong-side wick ratio", step=0.05, minval=0.1, maxval=0.9, group="03 Filters")
-patternTtlBars = input.int(8, "Pattern TTL bars", minval=2, maxval=30, group="03 Filters")
+patternTtlBars = input.int(10, "Pattern TTL bars", minval=2, maxval=30, group="03 Filters")
 
 atrLen = input.int(14, "ATR length", minval=1, group="04 Position/Risk")
 atrBufferMult = input.float(0.15, "Stop ATR buffer", step=0.01, minval=0.0, maxval=2.0, group="04 Position/Risk")
@@ -98,7 +99,7 @@ dollarText(series float value) =>
     na(value) ? "$--" : "$" + str.tostring(value, "#.##")
 
 reasonText(series string reason) =>
-    reason == "orders_disabled" ? "orders disabled" : fmtlib.reasonCn(reason)
+    reason == "orders_disabled" ? "orders disabled" : reason == "indicator_warmup" ? "indicator warmup" : reason == "reconfirm_too_far_from_map" ? "L3 confirm too far from VWAP/OR" : fmtlib.reasonCn(reason)
 
 blockedMarkerTooltip(int direction, string reason, float entryPrice, float stopPrice, float qty, float stopPct, int score) =>
     string side = direction == 1 ? "long" : "short"
@@ -121,7 +122,7 @@ fillMarkerText(int direction, float fillPrice, float qty) =>
     isMinimalProfile() ? code : code + "\n" + fmtlib.fmtPrice(fillPrice) + " Q" + fmtlib.qtyText(qty)
 
 managementMarkerText(string code, string reason, float priceValue, float pnlR) =>
-    isMinimalProfile() ? code : isMobileProfile() ? code + "\n" + fmtlib.fmtPrice(priceValue) : code + "\n" + fmtlib.reasonCn(reason) + "\n" + fmtlib.fmtPrice(priceValue) + "\n" + fmtlib.fmt(pnlR) + "R"
+    isMinimalProfile() ? code : isMobileProfile() ? code + "\n" + fmtlib.fmtPrice(priceValue) : code + "\n" + reasonText(reason) + "\n" + fmtlib.fmtPrice(priceValue) + "\n" + fmtlib.fmt(pnlR) + "R"
 
 // -----------------------------------------------------------------------------
 // Session helpers
@@ -225,6 +226,7 @@ float sectorClose = request.security(sectorTvSymbol, timeframe.period, close)
 float sectorVwap = request.security(sectorTvSymbol, timeframe.period, rthVwap(hlc3))
 float sectorChangeBps = request.security(sectorTvSymbol, timeframe.period, rthChangeBps())
 float stockChangeBps = rthChangeBps()
+bool indicatorReady = inRth and not na(atrRaw) and not na(vwap) and not na(volumeMa) and volumeMa > 0.0 and not na(qqqClose) and not na(qqqVwap) and not na(qqqChangeBps) and not na(qqqTrend15) and not na(spyClose) and not na(spyVwap) and not na(sectorClose) and not na(sectorVwap) and not na(sectorChangeBps) and not na(stockChangeBps)
 
 float stockVsMarketBps = stockChangeBps - qqqChangeBps
 float stockVsSectorBps = stockChangeBps - sectorChangeBps
@@ -249,10 +251,12 @@ bool vwapCross4 = ta.cross(close[4], vwap[4])
 int vwapCrossCount = (vwapCross0 ? 1 : 0) + (vwapCross1 ? 1 : 0) + (vwapCross2 ? 1 : 0) + (vwapCross3 ? 1 : 0) + (vwapCross4 ? 1 : 0)
 bool nearVwapChopBand = math.abs(close - vwap) <= atr * vwapChopAtr
 bool vwapChoppy = vwapCrossCount >= 3 and nearVwapChopBand
-float longMapDistanceAtr = atr > 0.0 ? math.min(math.abs(close - vwap), not na(orHigh) ? math.abs(close - orHigh) : math.abs(close - vwap)) / atr : na
-float shortMapDistanceAtr = atr > 0.0 ? math.min(math.abs(close - vwap), not na(orLow) ? math.abs(close - orLow) : math.abs(close - vwap)) / atr : na
-bool longMapNear = not na(longMapDistanceAtr) and longMapDistanceAtr <= maxMapDistanceAtr
-bool shortMapNear = not na(shortMapDistanceAtr) and shortMapDistanceAtr <= maxMapDistanceAtr
+float longMapDistanceAtr = indicatorReady and atr > 0.0 ? math.min(math.abs(close - vwap), not na(orHigh) ? math.abs(close - orHigh) : math.abs(close - vwap)) / atr : na
+float shortMapDistanceAtr = indicatorReady and atr > 0.0 ? math.min(math.abs(close - vwap), not na(orLow) ? math.abs(close - orLow) : math.abs(close - vwap)) / atr : na
+bool longMapNear = indicatorReady and not na(longMapDistanceAtr) and longMapDistanceAtr <= maxMapDistanceAtr
+bool shortMapNear = indicatorReady and not na(shortMapDistanceAtr) and shortMapDistanceAtr <= maxMapDistanceAtr
+bool longReconfirmMapNear = indicatorReady and not na(longMapDistanceAtr) and longMapDistanceAtr <= maxReconfirmDistanceAtr
+bool shortReconfirmMapNear = indicatorReady and not na(shortMapDistanceAtr) and shortMapDistanceAtr <= maxReconfirmDistanceAtr
 bool priceLongSide = close > vwap
 bool priceShortSide = close < vwap
 
@@ -287,6 +291,8 @@ baseBlockReason(int direction) =>
         reason := "outside_entry_session"
     else if not dailyRiskOk
         reason := "daily_risk_stop"
+    else if not indicatorReady
+        reason := "indicator_warmup"
     else if (direction == 1 and not marketLongOk) or (direction == -1 and not marketShortOk)
         reason := "market_not_aligned"
     else if (direction == 1 and not sectorLongOk) or (direction == -1 and not sectorShortOk)
@@ -299,6 +305,13 @@ baseBlockReason(int direction) =>
         reason := "vwap_choppy"
     else if (direction == 1 and not longMapNear) or (direction == -1 and not shortMapNear)
         reason := "too_far_from_map"
+    reason
+
+reconfirmBaseBlockReason(int direction) =>
+    string reason = baseBlockReason(direction)
+    if reason == "too_far_from_map"
+        bool reconfirmMapOk = direction == 1 ? longReconfirmMapNear : shortReconfirmMapNear
+        reason := reconfirmMapOk ? "passed" : "reconfirm_too_far_from_map"
     reason
 
 dirName(int direction) =>
@@ -344,6 +357,7 @@ marketBlockDetail(int direction) =>
 marketGateDetail() =>
     string result = "Market gate hard filter"
     result := result + "\nGate tag: " + marketGateTag()
+    result := result + "\nIndicator ready: " + str.tostring(indicatorReady)
     result := result + "\nLong OK: " + str.tostring(marketLongOk) + " / QQQ long " + str.tostring(qqqLong) + " / SPY ok " + str.tostring(spyLongOk)
     result := result + "\nShort OK: " + str.tostring(marketShortOk) + " / QQQ short " + str.tostring(qqqShort) + " / SPY ok " + str.tostring(spyShortOk)
     result := result + "\nLong detail: " + (marketLongOk ? "PASS" : marketBlockCode(1) + " / " + marketBlockSummary(1))
@@ -371,11 +385,15 @@ debugCommonState(int direction, string reason) =>
     string result = "side=" + dirName(direction) + " reason=" + reason + " / " + reasonText(reason)
     if reason == "market_not_aligned" and direction != 0
         result := result + " market_code=" + marketBlockCode(direction) + " / " + marketBlockSummary(direction)
+    result := result + "\nindicator_ready=" + str.tostring(indicatorReady)
     result := result + "\nprice=" + fmtlib.fmtPrice(close) + " vwap=" + fmtlib.fmtPrice(vwap) + " ORH=" + fmtlib.fmtPrice(orHigh) + " ORL=" + fmtlib.fmtPrice(orLow)
     result := result + "\nrvol=" + fmtlib.fmt(rvol) + " vol_expanded=" + str.tostring(volumeExpanded) + " score=" + debugScoreText(direction)
     result := result + "\nmap_dist L/S=" + fmtlib.fmt(longMapDistanceAtr) + "/" + fmtlib.fmt(shortMapDistanceAtr) + " price_side L/S=" + str.tostring(priceLongSide) + "/" + str.tostring(priceShortSide)
+    result := result + "\nmap_max L1/L2=" + fmtlib.fmt(maxMapDistanceAtr) + "ATR L3=" + fmtlib.fmt(maxReconfirmDistanceAtr) + "ATR"
+    result := result + "\nl3_map_ok L/S=" + str.tostring(longReconfirmMapNear) + "/" + str.tostring(shortReconfirmMapNear) + " l3_score L/S=" + str.tostring(scoreFor(marketLongOk, sectorLongOk, relativeLongOk, priceLongSide, longReconfirmMapNear, volumeExpanded, true)) + "/" + str.tostring(scoreFor(marketShortOk, sectorShortOk, relativeShortOk, priceShortSide, shortReconfirmMapNear, volumeExpanded, true))
     result := result + "\nmarket=" + marketGateTag() + " qqq=" + fmtlib.fmtPrice(qqqClose) + "/" + fmtlib.fmtPrice(qqqVwap) + " q15=" + trendText(qqqTrend15) + " spy=" + fmtlib.fmtPrice(spyClose) + "/" + fmtlib.fmtPrice(spyVwap)
     result := result + "\nrs stock-market/sector=" + fmtlib.bpsText(stockVsMarketBps) + "/" + fmtlib.bpsText(stockVsSectorBps) + " sector-vs-market=" + fmtlib.bpsText(sectorVsMarketBps) + " sector=" + sectorEtf
+    result := result + "\nsector_close/vwap=" + fmtlib.fmtPrice(sectorClose) + "/" + fmtlib.fmtPrice(sectorVwap) + " sector_side L/S=" + str.tostring(sectorClose >= sectorVwap) + "/" + str.tostring(sectorClose <= sectorVwap) + " sector_ok L/S=" + str.tostring(sectorLongOk) + "/" + str.tostring(sectorShortOk)
     result
 
 debugLog(string category, string eventName, string detailText) =>
@@ -435,7 +453,7 @@ gateDetail(int direction, string stageText, string triggerText, string reason) =
     float mapDistance = direction == 1 ? longMapDistanceAtr : shortMapDistanceAtr
     int score = direction == 1 ? scoreFor(marketLongOk, sectorLongOk, relativeLongOk, priceLongSide, longMapNear, volumeExpanded, true) : scoreFor(marketShortOk, sectorShortOk, relativeShortOk, priceShortSide, shortMapNear, volumeExpanded, true)
     string result = stageText + " " + dirName(direction) + " / " + triggerText
-    result := result + "\nreason: " + fmtlib.reasonCn(reason) + " / " + reason
+    result := result + "\nreason: " + reasonText(reason) + " / " + reason
     if reason == "market_not_aligned"
         result := result + "\nmarket block: " + marketBlockCode(direction) + " / " + marketBlockSummary(direction)
     result := result + "\nscore now: " + str.tostring(score) + "/7"
@@ -532,8 +550,8 @@ if entryWindowOpenedNow
     string detail = "GATE state: entry window + hard filters"
     detail := detail + "\nOrders: " + (enableStrategyOrders ? "ON - strategy.entry allowed" : "OFF - diagnostics only")
     detail := detail + "\n" + activeGateLine
-    detail := detail + "\nLong base: " + fmtlib.reasonCn(longBaseBlock) + " / " + longBaseBlock + " / score " + str.tostring(scoreFor(marketLongOk, sectorLongOk, relativeLongOk, priceLongSide, longMapNear, volumeExpanded, true)) + "/7"
-    detail := detail + "\nShort base: " + fmtlib.reasonCn(shortBaseBlock) + " / " + shortBaseBlock + " / score " + str.tostring(scoreFor(marketShortOk, sectorShortOk, relativeShortOk, priceShortSide, shortMapNear, volumeExpanded, true)) + "/7"
+    detail := detail + "\nLong base: " + reasonText(longBaseBlock) + " / " + longBaseBlock + " / score " + str.tostring(scoreFor(marketLongOk, sectorLongOk, relativeLongOk, priceLongSide, longMapNear, volumeExpanded, true)) + "/7"
+    detail := detail + "\nShort base: " + reasonText(shortBaseBlock) + " / " + shortBaseBlock + " / score " + str.tostring(scoreFor(marketShortOk, sectorShortOk, relativeShortOk, priceShortSide, shortMapNear, volumeExpanded, true)) + "/7"
     detail := detail + "\nVWAP " + fmtlib.fmtPrice(vwap) + " / ORH " + fmtlib.fmtPrice(orHigh) + " / ORL " + fmtlib.fmtPrice(orLow)
     detail := detail + "\nRVOL " + fmtlib.fmt(rvol) + " / RS " + fmtlib.bpsText(stockVsMarketBps) + " / " + fmtlib.bpsText(stockVsSectorBps)
     detail := detail + "\n" + marketGateDetail()
@@ -610,14 +628,16 @@ if confirmed and shortStageExpired
     shortStage := 0
     shortPatternReason := "pattern_expired"
 
-bool longPullbackVolumeDry = longStage == 1 and barVolume <= nz(longImpulseVolume, barVolume) * pullbackVolumeMaxImpulseRatio and (na(volumeMa) or barVolume <= volumeMa * pullbackVolumeMaxMaRatio)
-bool longPullbackHolds = longStage == 1 and not na(longMapLevel) and low >= longMapLevel - atr * 0.05 and close >= longMapLevel
+bool longCanEvaluateL2 = longStage == 1 and not na(longStageBar) and bar_index > longStageBar
+bool shortCanEvaluateL2 = shortStage == 1 and not na(shortStageBar) and bar_index > shortStageBar
+bool longPullbackVolumeDry = longCanEvaluateL2 and barVolume <= nz(longImpulseVolume, barVolume) * pullbackVolumeMaxImpulseRatio and (na(volumeMa) or barVolume <= volumeMa * pullbackVolumeMaxMaRatio)
+bool longPullbackHolds = longCanEvaluateL2 and not na(longMapLevel) and low >= longMapLevel - atr * 0.05 and close >= longMapLevel
 bool longPullback = confirmed and slotOpen and longBaseOk and longPullbackVolumeDry and longPullbackHolds
-bool shortRetestVolumeDry = shortStage == 1 and barVolume <= nz(shortImpulseVolume, barVolume) * pullbackVolumeMaxImpulseRatio and (na(volumeMa) or barVolume <= volumeMa * pullbackVolumeMaxMaRatio)
-bool shortRetestHolds = shortStage == 1 and not na(shortMapLevel) and high <= shortMapLevel + atr * 0.05 and close <= shortMapLevel
+bool shortRetestVolumeDry = shortCanEvaluateL2 and barVolume <= nz(shortImpulseVolume, barVolume) * pullbackVolumeMaxImpulseRatio and (na(volumeMa) or barVolume <= volumeMa * pullbackVolumeMaxMaRatio)
+bool shortRetestHolds = shortCanEvaluateL2 and not na(shortMapLevel) and high <= shortMapLevel + atr * 0.05 and close <= shortMapLevel
 bool shortRetest = confirmed and slotOpen and shortBaseOk and shortRetestVolumeDry and shortRetestHolds
-bool longPullbackAttempt = confirmed and slotOpen and longStage == 1 and not na(longMapLevel) and (low <= longMapLevel + atr * 0.25 or close < longMapLevel - atr * 0.05)
-bool shortRetestAttempt = confirmed and slotOpen and shortStage == 1 and not na(shortMapLevel) and (high >= shortMapLevel - atr * 0.25 or close > shortMapLevel + atr * 0.05)
+bool longPullbackAttempt = confirmed and slotOpen and longCanEvaluateL2 and not na(longMapLevel) and (low <= longMapLevel + atr * 0.25 or close < longMapLevel - atr * 0.05)
+bool shortRetestAttempt = confirmed and slotOpen and shortCanEvaluateL2 and not na(shortMapLevel) and (high >= shortMapLevel - atr * 0.25 or close > shortMapLevel + atr * 0.05)
 string longPullbackBlock = not longBaseOk ? longBaseBlock : not longPullbackVolumeDry ? "pullback_volume_not_dry" : not longPullbackHolds ? "pullback_broke_map" : "passed"
 string shortRetestBlock = not shortBaseOk ? shortBaseBlock : not shortRetestVolumeDry ? "pullback_volume_not_dry" : not shortRetestHolds ? "retest_broke_map" : "passed"
 
@@ -712,17 +732,23 @@ string selectedPatternStage = "none"
 string selectedPatternReason = "none"
 int selectedScore = 0
 
-bool longReconfirmAttempt = confirmed and slotOpen and longStage == 2 and close > nz(longReconfirmLevel, high)
-bool shortReconfirmAttempt = confirmed and slotOpen and shortStage == 2 and close < nz(shortReconfirmLevel, low)
-string longReconfirmBlock = not longBaseOk ? longBaseBlock : not volumeExpanded ? "reconfirm_volume_missing" : badLongWick ? "bad_wick" : "passed"
-string shortReconfirmBlock = not shortBaseOk ? shortBaseBlock : not volumeExpanded ? "reconfirm_volume_missing" : badShortWick ? "bad_wick" : "passed"
+bool longCanEvaluateL3 = longStage == 2 and not na(longStageBar) and bar_index > longStageBar
+bool shortCanEvaluateL3 = shortStage == 2 and not na(shortStageBar) and bar_index > shortStageBar
+bool longReconfirmAttempt = confirmed and slotOpen and longCanEvaluateL3 and close > nz(longReconfirmLevel, high)
+bool shortReconfirmAttempt = confirmed and slotOpen and shortCanEvaluateL3 and close < nz(shortReconfirmLevel, low)
+string longReconfirmBaseBlock = reconfirmBaseBlockReason(1)
+string shortReconfirmBaseBlock = reconfirmBaseBlockReason(-1)
+bool longReconfirmBaseOk = longReconfirmBaseBlock == "passed"
+bool shortReconfirmBaseOk = shortReconfirmBaseBlock == "passed"
+string longReconfirmBlock = not longReconfirmBaseOk ? longReconfirmBaseBlock : not volumeExpanded ? "reconfirm_volume_missing" : badLongWick ? "bad_wick" : "passed"
+string shortReconfirmBlock = not shortReconfirmBaseOk ? shortReconfirmBaseBlock : not volumeExpanded ? "reconfirm_volume_missing" : badShortWick ? "bad_wick" : "passed"
 bool longReconfirmRaw = longReconfirmAttempt and longReconfirmBlock == "passed"
 bool shortReconfirmRaw = shortReconfirmAttempt and shortReconfirmBlock == "passed"
-int longScore = scoreFor(marketLongOk, sectorLongOk, relativeLongOk, priceLongSide, longMapNear, volumeExpanded, true)
-int shortScore = scoreFor(marketShortOk, sectorShortOk, relativeShortOk, priceShortSide, shortMapNear, volumeExpanded, true)
+int longReconfirmScore = scoreFor(marketLongOk, sectorLongOk, relativeLongOk, priceLongSide, longReconfirmMapNear, volumeExpanded, true)
+int shortReconfirmScore = scoreFor(marketShortOk, sectorShortOk, relativeShortOk, priceShortSide, shortReconfirmMapNear, volumeExpanded, true)
 int minScoreNow = inAfternoonEntry ? minAfternoonScore : minMorningScore
-bool longScoreOk = longScore >= minScoreNow
-bool shortScoreOk = shortScore >= minScoreNow
+bool longScoreOk = longReconfirmScore >= minScoreNow
+bool shortScoreOk = shortReconfirmScore >= minScoreNow
 
 if longReconfirmAttempt and not longReconfirmRaw and longReconfirmBlock != "passed"
     debugStageEvent(1, "L3_BLOCK", "2m reconfirm breakout", longReconfirmBlock)
@@ -749,10 +775,11 @@ if longReconfirmRaw
     selectedQty := calcRiskQty(selectedEntry, selectedStop)
     selectedQty := halfSizeNext ? math.floor(selectedQty * 0.5) : selectedQty
     selectedStopPct := stopDistancePct(selectedEntry, selectedStop)
-    selectedScore := longScore
+    selectedScore := longReconfirmScore
     selectedPatternStage := "reconfirm_breakout_long"
     selectedPatternReason := longPatternReason
-    selectedBlockReason := not longScoreOk ? "score_too_low" : selectedStop >= nz(longMapLevel, selectedEntry) ? "invalid_stop_structure" : selectedStopPct < minStopPct ? "stop_too_tight" : selectedStopPct > maxStopPct ? "stop_too_wide" : selectedQty < minQty ? "qty_too_small" : "passed"
+    bool longStopStructureOk = not na(longPullbackLow) and selectedStop < longPullbackLow and selectedStop < selectedEntry
+    selectedBlockReason := not longScoreOk ? "score_too_low" : not longStopStructureOk ? "invalid_stop_structure" : selectedStopPct < minStopPct ? "stop_too_tight" : selectedStopPct > maxStopPct ? "stop_too_wide" : selectedQty < minQty ? "qty_too_small" : "passed"
     debugStageEvent(1, selectedBlockReason == "passed" ? "L3_PASS" : "L3_CANDIDATE_BLOCK", selectedPatternReason, selectedBlockReason)
 else if shortReconfirmRaw
     selectedSetup := "vwap_or_volume_retest_short"
@@ -767,10 +794,11 @@ else if shortReconfirmRaw
     selectedQty := calcRiskQty(selectedEntry, selectedStop)
     selectedQty := halfSizeNext ? math.floor(selectedQty * 0.5) : selectedQty
     selectedStopPct := stopDistancePct(selectedEntry, selectedStop)
-    selectedScore := shortScore
+    selectedScore := shortReconfirmScore
     selectedPatternStage := "reconfirm_breakdown_short"
     selectedPatternReason := shortPatternReason
-    selectedBlockReason := not shortScoreOk ? "score_too_low" : selectedStop <= nz(shortMapLevel, selectedEntry) ? "invalid_stop_structure" : selectedStopPct < minStopPct ? "stop_too_tight" : selectedStopPct > maxStopPct ? "stop_too_wide" : selectedQty < minQty ? "qty_too_small" : "passed"
+    bool shortStopStructureOk = not na(shortRetestHigh) and selectedStop > shortRetestHigh and selectedStop > selectedEntry
+    selectedBlockReason := not shortScoreOk ? "score_too_low" : not shortStopStructureOk ? "invalid_stop_structure" : selectedStopPct < minStopPct ? "stop_too_tight" : selectedStopPct > maxStopPct ? "stop_too_wide" : selectedQty < minQty ? "qty_too_small" : "passed"
     debugStageEvent(-1, selectedBlockReason == "passed" ? "S3_PASS" : "S3_CANDIDATE_BLOCK", selectedPatternReason, selectedBlockReason)
 else
     selectedBlockReason := longBaseBlock != "passed" ? longBaseBlock : shortBaseBlock != "passed" ? shortBaseBlock : "no_candidate"
