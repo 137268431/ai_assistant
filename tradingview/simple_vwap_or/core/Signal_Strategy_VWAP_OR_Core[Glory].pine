@@ -1,11 +1,11 @@
 //@version=6
 strategy(title="Signal Strategy VWAP OR Markers[Glory]", overlay=true, pyramiding=0, initial_capital=100000, default_qty_type=strategy.fixed, default_qty_value=1, process_orders_on_close=false, calc_on_every_tick=false, dynamic_requests=true, max_labels_count=500, max_lines_count=100)
 import o8431/SSVOR_Lib_Format_Glory/2 as fmtlib
-import o8431/SSVOR_Lib_SymbolMeta_Glory/3 as metalib
+import o8431/SSVOR_Lib_SymbolMeta_Glory/2 as metalib
 import o8431/SSVOR_Core_Payload_Glory/2 as payloadlib
 
 // VWAP/OR bare-K volume strategy. VWAP/OR is the map; volume-backed price action is the trigger.
-string STRATEGY_VERSION = "SSVOR_v1_20260703_gate_market_debug"
+string STRATEGY_VERSION = "SSVOR_v1_20260703_order_switch_labels"
 string SCRIPT_TAG = "Signal_Strategy_VWAP_OR_Core[Glory]"
 string TRADE_MODEL = "vwap_or_bare_k_volume_v1"
 string RISK_MODEL = "structure_atr_buffer_risk_qty_notional_cap_v1"
@@ -55,6 +55,7 @@ maxDailyTrades = input.int(5, "Max trades per day", minval=1, maxval=20, group="
 maxConsecutiveLosses = input.int(3, "Max consecutive losses", minval=1, maxval=10, group="04 Position/Risk")
 reduceAfterLosses = input.int(2, "Half size after consecutive losses", minval=1, maxval=10, group="04 Position/Risk")
 maxDailyLossDollars = input.float(150.0, "Max daily planned loss ($)", step=10.0, minval=1.0, group="04 Position/Risk")
+enableStrategyOrders = input.bool(true, "Enable strategy orders", group="04 Position/Risk")
 
 minMorningScore = input.int(6, "Morning min score", minval=1, maxval=7, group="05 Alerts/Display")
 minAfternoonScore = input.int(7, "Afternoon min score", minval=1, maxval=7, group="05 Alerts/Display")
@@ -63,11 +64,14 @@ enableFillConfirmAlerts = input.bool(false, "Alert on strategy fill confirmation
 displayProfile = input.string("PC", "Display profile", options=["PC", "Mobile", "Minimal"], group="05 Alerts/Display")
 showRthVwapLine = input.bool(true, "Show RTH VWAP line", group="05 Alerts/Display")
 showMapLevelTags = input.bool(true, "Show VWAP/OR price tags", group="05 Alerts/Display")
+showSessionMarkers = input.bool(true, "Show session open/close markers", group="05 Alerts/Display")
 showDiagnosticEventFlow = input.bool(true, "Show old-style diagnostic event flow", group="05 Alerts/Display")
 showStageMarkers = input.bool(true, "Show stage markers", group="05 Alerts/Display")
 showBlockedMarkers = input.bool(true, "Show blocked candidate markers", group="05 Alerts/Display")
 showOrderCaseLabels = input.bool(true, "Show order case labels", group="05 Alerts/Display")
 showManagementMarkers = input.bool(true, "Show TP/SL management markers", group="05 Alerts/Display")
+markerLabelSize = input.string("Auto", "Marker label size", options=["Auto", "Tiny", "Small", "Normal", "Large", "Huge"], group="05 Alerts/Display")
+orderLabelSize = input.string("Auto", "Order label size", options=["Auto", "Tiny", "Small", "Normal", "Large", "Huge"], group="05 Alerts/Display")
 
 isMobileProfile() =>
     displayProfile == "Mobile"
@@ -75,18 +79,25 @@ isMobileProfile() =>
 isMinimalProfile() =>
     displayProfile == "Minimal"
 
+sizeFromInput(string sizeInput, string autoSize) =>
+    string resolved = sizeInput == "Auto" ? autoSize : sizeInput
+    resolved == "Huge" ? size.huge : resolved == "Large" ? size.large : resolved == "Normal" ? size.normal : resolved == "Small" ? size.small : size.tiny
+
 markerSize() =>
-    isMobileProfile() ? size.normal : isMinimalProfile() ? size.tiny : size.small
+    sizeFromInput(markerLabelSize, isMobileProfile() ? "Large" : isMinimalProfile() ? "Small" : "Normal")
 
 orderMarkerSize() =>
-    isMobileProfile() ? size.large : isMinimalProfile() ? size.normal : size.small
+    sizeFromInput(orderLabelSize, isMobileProfile() ? "Huge" : isMinimalProfile() ? "Normal" : "Large")
 
 dollarText(series float value) =>
     na(value) ? "$--" : "$" + str.tostring(value, "#.##")
 
+reasonText(series string reason) =>
+    reason == "orders_disabled" ? "orders disabled" : fmtlib.reasonCn(reason)
+
 blockedMarkerTooltip(int direction, string reason, float entryPrice, float stopPrice, float qty, float stopPct, int score) =>
     string side = direction == 1 ? "long" : "short"
-    "blocked " + side + " candidate" + "\nreason: " + reason + " / " + fmtlib.reasonCn(reason) + "\nentry: " + fmtlib.fmtPrice(entryPrice) + "\nstop: " + fmtlib.fmtPrice(stopPrice) + "\nrisk/share: " + fmtlib.fmtPrice(math.abs(entryPrice - stopPrice)) + "\nstop pct: " + fmtlib.fmt(stopPct) + "%\nqty: " + fmtlib.qtyText(qty) + "\nscore: " + str.tostring(score) + "/7"
+    "blocked " + side + " candidate" + "\nreason: " + reason + " / " + reasonText(reason) + "\nentry: " + fmtlib.fmtPrice(entryPrice) + "\nstop: " + fmtlib.fmtPrice(stopPrice) + "\nrisk/share: " + fmtlib.fmtPrice(math.abs(entryPrice - stopPrice)) + "\nstop pct: " + fmtlib.fmt(stopPct) + "%\nqty: " + fmtlib.qtyText(qty) + "\nscore: " + str.tostring(score) + "/7"
 
 orderCaseText(int direction, float entryPrice, float stopPrice, float target1, float target2, float qty, int score) =>
     string side = direction == 1 ? "BUY next" : "SELL next"
@@ -317,11 +328,15 @@ eventMarkerY(int direction, string markerKind, float offsetAtr) =>
     direction == 1 ? low - atr * distance : high + atr * distance
 
 eventMarkerSize(string markerKind) =>
-    isMobileProfile() ? size.small : markerKind == "confirmed" ? size.small : size.tiny
+    markerLabelSize == "Auto" ? (isMobileProfile() ? size.large : isMinimalProfile() ? size.small : (markerKind == "confirmed" or markerKind == "watch") ? size.normal : size.small) : markerSize()
 
 drawEventMarker(int direction, string markerKind, string markerText, string detailText, float offsetAtr) =>
     if showDiagnosticEventFlow
         label.new(bar_index, eventMarkerY(direction, markerKind, offsetAtr), markerText, style=label.style_none, color=color.new(color.white, 100), textcolor=eventMarkerColor(markerKind, direction), size=eventMarkerSize(markerKind), tooltip=detailText)
+
+drawSessionMarker(int direction, string markerText, string detailText, color markerColor, color markerTextColor, float offsetAtr) =>
+    if showSessionMarkers
+        label.new(bar_index, eventMarkerY(direction, "watch", offsetAtr), markerText, style=direction == 1 ? label.style_label_up : label.style_label_down, color=markerColor, textcolor=markerTextColor, size=markerSize(), tooltip=detailText)
 
 gateDetail(int direction, string stageText, string triggerText, string reason) =>
     bool marketOk = direction == 1 ? marketLongOk : marketShortOk
@@ -384,9 +399,36 @@ string longBaseBlock = baseBlockReason(1)
 string shortBaseBlock = baseBlockReason(-1)
 bool longBaseOk = longBaseBlock == "passed"
 bool shortBaseOk = shortBaseBlock == "passed"
-bool entryWindowOpenedNow = confirmed and entryWindowOpen and not (entryWindowOpen[1] == true)
+bool openingRangeStartedNow = confirmed and inOpeningRange and not (inOpeningRange[1] == true)
+bool morningEntryOpenedNow = confirmed and inMorningEntry and not (inMorningEntry[1] == true)
+bool morningEntryClosedNow = confirmed and not inMorningEntry and (inMorningEntry[1] == true)
+bool afternoonEntryOpenedNow = confirmed and inAfternoonEntry and not (inAfternoonEntry[1] == true)
+bool manageOnlyStartedNow = confirmed and manageOnly and not (manageOnly[1] == true)
+bool forceFlatStartedNow = confirmed and forceFlatNow and not (forceFlatNow[1] == true)
+bool entryWindowOpenedNow = morningEntryOpenedNow or afternoonEntryOpenedNow
+
+if openingRangeStartedNow
+    drawSessionMarker(1, isMinimalProfile() ? "OR" : "OR\n09:30", "09:30-09:45 New York time: build opening range only. No new entries.", color.new(color.gray, 0), color.white, 0.92)
+    drawSessionMarker(enableStrategyOrders ? 1 : -1, enableStrategyOrders ? "ORDER\nON" : "ORDER\nOFF", enableStrategyOrders ? "Strategy orders are enabled. A valid L3 signal can call strategy.entry()." : "Strategy orders are disabled. The script keeps diagnostics only and will not call strategy.entry().", color.new(enableStrategyOrders ? color.lime : color.red, 0), enableStrategyOrders ? color.black : color.white, 1.38)
+
+if morningEntryOpenedNow
+    drawSessionMarker(1, isMinimalProfile() ? "AM ON" : "AM ON\n09:45", "09:45-11:30 New York time: primary entry window is open after ORH/ORL are known.", color.new(color.lime, 0), color.black, 1.05)
+
+if morningEntryClosedNow
+    drawSessionMarker(-1, isMinimalProfile() ? "AM OFF" : "AM OFF\n11:30", "11:30 New York time: primary entry window is closed. Midday no-trade period starts.", color.new(color.orange, 0), color.black, 1.05)
+
+if afternoonEntryOpenedNow
+    drawSessionMarker(1, isMinimalProfile() ? "PM ON" : "PM ON\n14:00", "14:00-15:30 New York time: strict continuation entry window is open.", color.new(color.teal, 0), color.white, 1.05)
+
+if manageOnlyStartedNow
+    drawSessionMarker(-1, isMinimalProfile() ? "MANAGE" : "MANAGE\n15:30", "15:30 New York time: no new entries. Manage open positions only.", color.new(color.blue, 0), color.white, 1.05)
+
+if forceFlatStartedNow
+    drawSessionMarker(-1, isMinimalProfile() ? "FLAT" : "FLAT\n15:45", "15:45 New York time: force flat window. Intraday strategy should not hold overnight.", color.new(color.red, 0), color.white, 1.18)
+
 if entryWindowOpenedNow
     string detail = "GATE state: entry window + hard filters"
+    detail := detail + "\nOrders: " + (enableStrategyOrders ? "ON - strategy.entry allowed" : "OFF - diagnostics only")
     detail := detail + "\nLong base: " + fmtlib.reasonCn(longBaseBlock) + " / " + longBaseBlock + " / score " + str.tostring(scoreFor(marketLongOk, sectorLongOk, relativeLongOk, priceLongSide, longMapNear, volumeExpanded, true)) + "/7"
     detail := detail + "\nShort base: " + fmtlib.reasonCn(shortBaseBlock) + " / " + shortBaseBlock + " / score " + str.tostring(scoreFor(marketShortOk, sectorShortOk, relativeShortOk, priceShortSide, shortMapNear, volumeExpanded, true)) + "/7"
     detail := detail + "\nVWAP " + fmtlib.fmtPrice(vwap) + " / ORH " + fmtlib.fmtPrice(orHigh) + " / ORL " + fmtlib.fmtPrice(orLow)
@@ -589,6 +631,9 @@ else if shortReconfirmRaw
 else
     selectedBlockReason := longBaseBlock != "passed" ? longBaseBlock : shortBaseBlock != "passed" ? shortBaseBlock : "no_candidate"
 
+if selectedDirection != 0 and selectedBlockReason == "passed" and not enableStrategyOrders
+    selectedBlockReason := "orders_disabled"
+
 bool blockedCandidate = confirmed and showBlockedMarkers and selectedDirection != 0 and selectedBlockReason != "passed" and (longReconfirmRaw or shortReconfirmRaw)
 if blockedCandidate
     drawEventMarker(selectedDirection, "blocked", selectedDirection == 1 ? "xL3" : "xS3", blockedMarkerTooltip(selectedDirection, selectedBlockReason, selectedEntry, selectedStop, selectedQty, selectedStopPct, selectedScore), 0.44)
@@ -639,7 +684,7 @@ buildCancelPayload(string eventIdValue, string positionIdValue, string reason) =
 // -----------------------------------------------------------------------------
 // Order lifecycle
 // -----------------------------------------------------------------------------
-bool submitNewPlan = confirmed and selectedBlockReason == "passed" and selectedDirection != 0 and selectedQty >= minQty and slotOpen
+bool submitNewPlan = confirmed and enableStrategyOrders and selectedBlockReason == "passed" and selectedDirection != 0 and selectedQty >= minQty and slotOpen
 if submitNewPlan
     string directionText = dirText(selectedDirection)
     string eventPlanId = planId(directionText, selectedSetup, "market_next_bar")

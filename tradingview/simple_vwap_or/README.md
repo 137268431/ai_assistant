@@ -9,6 +9,7 @@ Core-only TradingView strategy for the simplified intraday model:
 - Position sizing follows the prior `$5000` notional-cap style with risk quantity safety.
 - Alerts keep the TV-primary `entry`, `entry_fill`, `risk_update`, `exit`, and `cancel` payload shape.
 - No status table is used. The chart shows an RTH-only VWAP line, ORH/ORL lines, stage markers, blocked-candidate markers, real order labels, and TP/SL management labels.
+- `Enable strategy orders` is the actual TradingView strategy order switch. When it is off, the script keeps diagnostics but will not call `strategy.entry()`.
 
 ## Trading Rules
 
@@ -31,10 +32,19 @@ Use `Display profile` to switch label density:
 - `Mobile`: larger, shorter labels for phone review.
 - `Minimal`: only key entry/block/management marks.
 
+Use `Marker label size` and `Order label size` to override the automatic sizing. `Auto` follows the selected display profile; choose `Tiny`, `Small`, `Normal`, `Large`, or `Huge` when phone tap targets need to be manually adjusted.
+
 Marker legend:
 
 - `RTH VWAP`: yellow RTH-only VWAP. It resets at 09:30 New York time and does not use extended-hours data; no horizontal track-price dotted line is drawn.
 - `VWAP`, `ORH`, `ORL` price tags: latest map levels, shown directly on the chart.
+- `OR 09:30`: RTH open marker. 09:30-09:45 builds ORH/ORL only; no new entries.
+- `ORDER ON` / `ORDER OFF`: shows whether the actual `strategy.entry()` switch is enabled.
+- `AM ON 09:45`: primary entry window is open.
+- `AM OFF 11:30`: morning entry window is closed; midday no-trade period starts.
+- `PM ON 14:00`: afternoon strict-continuation entry window is open when enabled.
+- `MANAGE 15:30`: no new entries; manage existing positions only.
+- `FLAT 15:45`: force-flat window starts; no overnight hold.
 - `GATE`: entry-window and hard-filter state marker. Tooltip shows long/short base gate, score, VWAP/OR, RVOL, RS, and QQQ/SPY market alignment details.
 - `L1` / `S1`: volume breakout or breakdown through OR/VWAP.
 - `L2` / `S2`: lower-volume pullback or retest holding OR/VWAP.
