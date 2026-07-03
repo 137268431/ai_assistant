@@ -8,19 +8,19 @@ Core-only TradingView strategy for the simplified intraday model:
 - Bare K + volume three-stage structure is the only entry trigger.
 - Position sizing follows the prior `$5000` notional-cap style with risk quantity safety.
 - Alerts keep the TV-primary `entry`, `entry_fill`, `risk_update`, `exit`, and `cancel` payload shape.
-- No status table is used. The chart shows an RTH-only VWAP line, ORH/ORL lines, stage markers, blocked-candidate markers, real order labels, and TP/SL management labels.
+- No status table is used. By default the chart shows the RTH VWAP line, ORH/ORL lines, session markers, real order labels, and TP/SL management labels. Stage and blocked-candidate markers are opt-in diagnostics.
 - `Enable strategy orders` is the actual TradingView strategy order switch. When it is off, the script keeps diagnostics but will not call `strategy.entry()`.
 
 ## Trading Rules
 
 Long structure:
 
-1. Volume breakout through ORH or VWAP.
+1. Morning volume breakout through ORH or VWAP. Afternoon entries only use ORH continuation.
 2. Lower-volume pullback holds ORH/VWAP.
 3. Volume reconfirmation breaks the pullback high.
 4. Strategy submits a market order for next 2m bar.
 
-Short structure is the inverse through ORL/VWAP.
+Short structure is the inverse through ORL/VWAP, with afternoon entries only using ORL continuation.
 
 The script only trades on 2m RTH charts. 09:30-09:45 only builds ORH/ORL; 09:45-11:30 is the primary window; 14:00-15:30 is strict continuation only; 15:45 forces flat.
 
@@ -29,6 +29,7 @@ Default filter notes:
 - `Max distance to VWAP/OR (ATR)` defaults to `1.20`, so the setup still stays near VWAP/OR but is less likely to reject normal WDC-style 2m movement as too extended.
 - `Max L3 confirm distance to VWAP/OR (ATR)` defaults to `2.20`. L1/L2 must still form near the map, but the final 2m confirmation is allowed to move slightly farther before entry; beyond this cap it remains blocked as a chase.
 - `Require sector beating QQQ as hard filter` defaults to `false`. The hard sector gate checks whether the sector ETF is on the correct VWAP side; the sector-vs-QQQ leadership value is still logged and can be made strict by enabling this option.
+- The 14:00-15:30 window is OR continuation only. Longs must be above ORH and VWAP; shorts must be below ORL and VWAP. VWAP-only afternoon reclaim/reject signals are blocked as `pm_not_continuation`.
 - `Pattern TTL bars` defaults to `10`, matching the 20-minute time-stop window.
 - The script waits for ATR, VWAP, RVOL MA, QQQ/SPY, and sector data before L1/L2/L3 can trigger. During warmup, logs show `indicator_warmup` instead of a misleading `too_far_from_map`.
 - L2 can only be evaluated on a bar after L1, and L3 can only be evaluated on a bar after L2. This prevents same-bar `L1_PASS` plus `L2_BLOCK` contradictions.
@@ -38,7 +39,7 @@ Default filter notes:
 
 Use `Display profile` to switch label density:
 
-- `PC`: full marker text plus detailed tooltip.
+- `PC`: compact marker text plus detailed tooltip.
 - `Mobile`: larger, shorter labels for phone review.
 - `Minimal`: only key entry/block/management marks.
 
@@ -56,7 +57,7 @@ Marker legend:
 - `MANAGE 15:30`: no new entries; manage existing positions only.
 - `FLAT 15:45`: force-flat window starts; no overnight hold.
 - `GATE`: entry-window and hard-filter state marker. It also shows `MKT L`, `MKT S`, `MKT MIX`, or `MKT DATA?` so the current market gate is visible without a table.
-- `L1` / `S1`: volume breakout or breakdown through OR/VWAP.
+- `L1` / `S1`: volume breakout or breakdown through OR/VWAP. Afternoon L1/S1 only uses ORH/ORL continuation.
 - `L2` / `S2`: lower-volume pullback or retest holding OR/VWAP.
 - `xL1` / `xS1`: breakout/reclaim attempt appeared, but environment, RVOL, wick, or timing blocked stage 1.
 - `xL2` / `xS2`: pullback/retest appeared, but volume did not dry up or the map level failed.
@@ -67,7 +68,7 @@ Marker legend:
 - `TP1/BE`: 1R touched and stop moved toward breakeven.
 - `TP2`, `SL`, `BE`, `TIME`, `EOD`: final exit reason.
 
-Blocked markers are diagnostics only. They do not call `strategy.entry()` and do not emit entry alerts.
+Stage and blocked markers are diagnostics only and default to hidden. They do not call `strategy.entry()` and do not emit entry alerts.
 
 `market_not_aligned` is intentional hard filtering. A long needs QQQ above VWAP with 15m trend not down and SPY not opposing; a short needs QQQ below VWAP with 15m trend not up and SPY not opposing. If the stock is strong/weak but QQQ/SPY do not agree, the script diagnoses the setup but does not trade. The alert-compatible `block_reason` remains `market_not_aligned`; chart labels add the exact short code:
 
@@ -89,6 +90,7 @@ Use `Enable Pine debug logs` when chart labels are inconvenient. Logs are writte
 - `GATE` logs include `active_side` / `active_base` plus the opposite side, so a short-market day does not get misread from the long-side `market_not_aligned` reason.
 - `Log extended skip events`: `EXTENDED_SKIP LONG/SHORT` when direction, sector, relative strength, and VWAP side agree, but price is already too far from VWAP/OR to avoid chasing.
 - `Log stage pass/block events`: L1/L2/L3 pass and block events with reason, market code, VWAP/OR, RVOL, score, relative strength, and sector state.
+- Afternoon logs include `pm_cont L/S`; if price is not outside ORH/ORL in the market direction, the block reason is `pm_not_continuation`.
 - `Log order lifecycle events`: order blocked/submitted, fill, cancel, TP1/breakeven, close request, and final position close.
 
 ## Order Case Example
@@ -105,7 +107,7 @@ Example using the default `$5000` notional cap:
 - TP1: `$100.80`
 - TP2: `$101.60`
 
-On a real signal the chart label shows the same fields: entry, stop, risk/share, qty, notional, TP1, TP2, and score. This is a calculation example only; the strategy does not create fake orders or relax filters to force examples.
+On a real signal the chart label shows the compact order case, while the tooltip shows entry, stop, risk/share, qty, notional, TP1, TP2, and score. This is a calculation example only; the strategy does not create fake orders or relax filters to force examples.
 
 ## Publish Order
 
