@@ -45,7 +45,7 @@ Marker legend:
 - `PM ON 14:00`: afternoon strict-continuation entry window is open when enabled.
 - `MANAGE 15:30`: no new entries; manage existing positions only.
 - `FLAT 15:45`: force-flat window starts; no overnight hold.
-- `GATE`: entry-window and hard-filter state marker. Tooltip shows long/short base gate, score, VWAP/OR, RVOL, RS, and QQQ/SPY market alignment details.
+- `GATE`: entry-window and hard-filter state marker. It also shows `MKT L`, `MKT S`, `MKT MIX`, or `MKT DATA?` so the current market gate is visible without a table.
 - `L1` / `S1`: volume breakout or breakdown through OR/VWAP.
 - `L2` / `S2`: lower-volume pullback or retest holding OR/VWAP.
 - `xL1` / `xS1`: breakout/reclaim attempt appeared, but environment, RVOL, wick, or timing blocked stage 1.
@@ -59,9 +59,27 @@ Marker legend:
 
 Blocked markers are diagnostics only. They do not call `strategy.entry()` and do not emit entry alerts.
 
-`market_not_aligned` is intentional hard filtering. A long needs QQQ above VWAP with 15m trend not down and SPY not opposing; a short needs QQQ below VWAP with 15m trend not up and SPY not opposing. If the stock is strong/weak but QQQ/SPY do not agree, the script diagnoses the setup but does not trade.
+`market_not_aligned` is intentional hard filtering. A long needs QQQ above VWAP with 15m trend not down and SPY not opposing; a short needs QQQ below VWAP with 15m trend not up and SPY not opposing. If the stock is strong/weak but QQQ/SPY do not agree, the script diagnoses the setup but does not trade. The alert-compatible `block_reason` remains `market_not_aligned`; chart labels add the exact short code:
+
+- `Q<VWAP`: long is blocked because QQQ is not above VWAP.
+- `Q>VWAP`: short is blocked because QQQ is not below VWAP.
+- `Q15Dn`: long is blocked because QQQ 15m trend is down.
+- `Q15Up`: short is blocked because QQQ 15m trend is up.
+- `SPY`: SPY opposes the QQQ direction.
+- `DATA?`: QQQ/SPY/VWAP/trend data is missing.
+- `MIX`: more than one market condition is unresolved or mixed.
 
 On Regular-only TradingView charts the script resets VWAP and the RTH open by date as well as by session start. This keeps the VWAP visible and prevents the prior day from leaking into the current RTH calculation.
+
+## Pine Debug Logs
+
+Use `Enable Pine debug logs` when chart labels are inconvenient. Logs are written to TradingView's Pine Logs panel and are off by default to avoid noise.
+
+- `Log session/gate events`: RTH open, AM/PM windows, manage-only, force-flat, and `GATE` market state.
+- `GATE` logs include `active_side` / `active_base` plus the opposite side, so a short-market day does not get misread from the long-side `market_not_aligned` reason.
+- `Log extended skip events`: `EXTENDED_SKIP LONG/SHORT` when direction, sector, relative strength, and VWAP side agree, but price is already too far from VWAP/OR to avoid chasing.
+- `Log stage pass/block events`: L1/L2/L3 pass and block events with reason, market code, VWAP/OR, RVOL, score, relative strength, and sector state.
+- `Log order lifecycle events`: order blocked/submitted, fill, cancel, TP1/breakeven, close request, and final position close.
 
 ## Order Case Example
 

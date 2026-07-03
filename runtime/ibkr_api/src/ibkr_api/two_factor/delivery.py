@@ -90,11 +90,17 @@ def _request_button(label: str, callback_url: str, environment: str) -> dict[str
     }
 
 
-def _append_action_rows(elements: list[dict[str, Any]], actions: list[dict[str, Any]]) -> None:
-    if not actions:
+def _append_action_rows(
+    elements: list[dict[str, Any]],
+    primary_actions: list[dict[str, Any]],
+    navigation_actions: list[dict[str, Any]],
+) -> None:
+    if not primary_actions and not navigation_actions:
         return
     elements.append({"tag": "hr"})
-    elements.extend({"tag": "action", "actions": [action]} for action in actions)
+    elements.extend({"tag": "action", "actions": [action]} for action in primary_actions)
+    if navigation_actions:
+        elements.append({"tag": "action", "actions": navigation_actions})
 
 
 def build_two_factor_card(
@@ -171,17 +177,19 @@ def build_two_factor_card(
             {"tag": "markdown", "content": confirm_note},
         ])
 
-    actions: list[dict[str, Any]] = []
+    primary_actions: list[dict[str, Any]] = []
     if str(state.get("status") or "") != "success":
         if is_current_cycle_active_status(state.get("status")) and runtime_url:
-            actions.append(_open_button(get_active_cycle_primary_label(state), runtime_url, "primary"))
+            primary_actions.append(_open_button(get_active_cycle_primary_label(state), runtime_url, "primary"))
         elif callback_url:
-            actions.append(_request_button(meta["button"], callback_url, runtime_environment))
+            primary_actions.append(_request_button(meta["button"], callback_url, runtime_environment))
+    navigation_actions: list[dict[str, Any]] = []
+    runtime_button_type = "default" if primary_actions else "primary"
     if runtime_url:
-        actions.append(_open_button("查看 Runtime", runtime_url))
+        navigation_actions.append(_open_button("查看 Runtime", runtime_url, runtime_button_type))
     if system_url:
-        actions.append(_open_button("查看 System", system_url))
-    _append_action_rows(elements, actions)
+        navigation_actions.append(_open_button("查看 System", system_url))
+    _append_action_rows(elements, primary_actions, navigation_actions)
     return {
         "config": {"wide_screen_mode": True, "update_multi": True},
         "header": {

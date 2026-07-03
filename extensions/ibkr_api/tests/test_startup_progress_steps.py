@@ -99,7 +99,7 @@ def _build_deps(pb):
 
 
 class StartupProgressStepTest(unittest.TestCase):
-    def test_startup_card_uses_vertical_compact_action_rows(self):
+    def test_startup_card_groups_navigation_buttons(self):
         state = normalize_startup_state(
             {
                 "cycle_id": "paper-cycle",
@@ -134,10 +134,13 @@ class StartupProgressStepTest(unittest.TestCase):
         )
 
         action_blocks = [element for element in card["elements"] if element.get("tag") == "action"]
-        actions = [block["actions"][0] for block in action_blocks]
+        actions = action_blocks[0]["actions"] + action_blocks[1]["actions"]
 
+        self.assertEqual(2, len(action_blocks))
+        self.assertEqual(1, len(action_blocks[0]["actions"]))
+        self.assertEqual(2, len(action_blocks[1]["actions"]))
         self.assertEqual(["开始 2FA 验证", "查看 Runtime", "查看 System"], [action["text"]["content"] for action in actions])
-        self.assertTrue(all(len(block.get("actions", [])) == 1 for block in action_blocks))
+        self.assertEqual(["primary", "default", "default"], [action["type"] for action in actions])
         self.assertFalse(any("width" in action for action in actions))
 
     def test_auth_done_without_trigger_marks_manual_steps_skipped(self):

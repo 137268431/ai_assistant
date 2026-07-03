@@ -267,11 +267,17 @@ def build_startup_checklist_markdown(steps: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _append_action_rows(elements: list[dict[str, Any]], actions: list[dict[str, Any]]) -> None:
-    if not actions:
+def _append_action_rows(
+    elements: list[dict[str, Any]],
+    primary_actions: list[dict[str, Any]],
+    navigation_actions: list[dict[str, Any]],
+) -> None:
+    if not primary_actions and not navigation_actions:
         return
     elements.append({"tag": "hr"})
-    elements.extend({"tag": "action", "actions": [action]} for action in actions)
+    elements.extend({"tag": "action", "actions": [action]} for action in primary_actions)
+    if navigation_actions:
+        elements.append({"tag": "action", "actions": navigation_actions})
 
 
 def build_startup_card(
@@ -318,11 +324,11 @@ def build_startup_card(
         {"tag": "hr"},
         {"tag": "markdown", "content": "\n".join(context_lines)},
     ]
-    actions: list[dict[str, Any]] = []
+    primary_actions: list[dict[str, Any]] = []
     if show_trigger:
         callback_url = f"{console_base_url()}/webhook/feishu/callback" if console_base_url() else ""
         if callback_url:
-            actions.append(
+            primary_actions.append(
                 {
                     "tag": "button",
                     "type": "primary",
@@ -332,17 +338,19 @@ def build_startup_card(
                     "value": {"action": "ibkr_2fa_start", "environment": runtime_environment, "force_restart": False},
                 }
             )
+    navigation_actions: list[dict[str, Any]] = []
+    runtime_button_type = "default" if primary_actions else "primary"
     if current_runtime_url:
-        actions.append(
+        navigation_actions.append(
             {
                 "tag": "button",
-                "type": "default",
+                "type": runtime_button_type,
                 "text": {"tag": "plain_text", "content": "查看 Runtime"},
                 "multi_url": {"url": current_runtime_url, "pc_url": current_runtime_url, "ios_url": current_runtime_url, "android_url": current_runtime_url},
             }
         )
     if current_system_url:
-        actions.append(
+        navigation_actions.append(
             {
                 "tag": "button",
                 "type": "default",
@@ -350,7 +358,7 @@ def build_startup_card(
                 "multi_url": {"url": current_system_url, "pc_url": current_system_url, "ios_url": current_system_url, "android_url": current_system_url},
             }
         )
-    _append_action_rows(elements, actions)
+    _append_action_rows(elements, primary_actions, navigation_actions)
     return {
         "config": {"wide_screen_mode": True, "update_multi": True},
         "header": {

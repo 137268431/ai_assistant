@@ -80,7 +80,7 @@ class TwoFactorBuildersTest(unittest.TestCase):
         self.merge_startup_steps = lambda existing, patch, trigger_login: dict(existing or {}) | dict(patch or {})
         self.deliver_startup_progress_card = lambda state, environment: {"success": True, "message_id": "startup-1"}
 
-    def test_two_factor_card_uses_vertical_compact_action_rows(self):
+    def test_two_factor_card_groups_navigation_buttons(self):
         card = build_two_factor_card(
             {
                 "status": "success",
@@ -95,10 +95,11 @@ class TwoFactorBuildersTest(unittest.TestCase):
         )
 
         action_blocks = [element for element in card["elements"] if element.get("tag") == "action"]
-        actions = [block["actions"][0] for block in action_blocks]
+        actions = action_blocks[0]["actions"]
 
+        self.assertEqual(1, len(action_blocks))
         self.assertEqual(["查看 Runtime", "查看 System"], [action["text"]["content"] for action in actions])
-        self.assertTrue(all(len(block.get("actions", [])) == 1 for block in action_blocks))
+        self.assertEqual(["primary", "default"], [action["type"] for action in actions])
         self.assertFalse(any("width" in action for action in actions))
 
     def test_request_builder_reuses_active_card(self):
