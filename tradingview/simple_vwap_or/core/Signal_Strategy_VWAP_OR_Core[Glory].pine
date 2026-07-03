@@ -5,7 +5,7 @@ import o8431/SSVOR_Lib_SymbolMeta_Glory/2 as metalib
 import o8431/SSVOR_Core_Payload_Glory/2 as payloadlib
 
 // VWAP/OR bare-K volume strategy. VWAP/OR is the map; volume-backed price action is the trigger.
-string STRATEGY_VERSION = "SSVOR_v1_20260703_swing_stop_fix"
+string STRATEGY_VERSION = "SSVOR_v1_20260703_sector_soft_filter"
 string SCRIPT_TAG = "Signal_Strategy_VWAP_OR_Core[Glory]"
 string TRADE_MODEL = "vwap_or_bare_k_volume_v1"
 string RISK_MODEL = "structure_atr_buffer_risk_qty_notional_cap_v1"
@@ -28,6 +28,7 @@ fallbackSectorEtfName = input.string("SMH", "Fallback sector ETF name", group="0
 
 relativeStrengthMinBps = input.float(20.0, "Relative strength min bps", step=5.0, minval=0.0, group="03 Filters")
 sectorVsMarketMinBps = input.float(0.0, "Sector vs QQQ min bps", step=5.0, group="03 Filters")
+requireSectorLeadership = input.bool(false, "Require sector beating QQQ as hard filter", group="03 Filters")
 volumeMaLen = input.int(20, "RVOL MA length", minval=1, maxval=200, group="03 Filters")
 rvolMin = input.float(1.30, "RVOL breakout min", step=0.05, minval=0.5, maxval=10.0, group="03 Filters")
 strongRvolMin = input.float(1.50, "RVOL strong min", step=0.05, minval=0.5, maxval=10.0, group="03 Filters")
@@ -238,8 +239,12 @@ bool spyLongOk = spyClose >= spyVwap or spyChangeBps >= 0.0
 bool spyShortOk = spyClose <= spyVwap or spyChangeBps <= 0.0
 bool marketLongOk = qqqLong and spyLongOk
 bool marketShortOk = qqqShort and spyShortOk
-bool sectorLongOk = metadataOk and sectorClose >= sectorVwap and sectorVsMarketBps >= sectorVsMarketMinBps
-bool sectorShortOk = metadataOk and sectorClose <= sectorVwap and sectorVsMarketBps <= -sectorVsMarketMinBps
+bool sectorTrendLongOk = metadataOk and sectorClose >= sectorVwap
+bool sectorTrendShortOk = metadataOk and sectorClose <= sectorVwap
+bool sectorLeadershipLongOk = sectorVsMarketBps >= sectorVsMarketMinBps
+bool sectorLeadershipShortOk = sectorVsMarketBps <= -sectorVsMarketMinBps
+bool sectorLongOk = sectorTrendLongOk and (not requireSectorLeadership or sectorLeadershipLongOk)
+bool sectorShortOk = sectorTrendShortOk and (not requireSectorLeadership or sectorLeadershipShortOk)
 bool relativeLongOk = stockVsMarketBps >= relativeStrengthMinBps and stockVsSectorBps >= relativeStrengthMinBps
 bool relativeShortOk = stockVsMarketBps <= -relativeStrengthMinBps and stockVsSectorBps <= -relativeStrengthMinBps
 
@@ -393,7 +398,7 @@ debugCommonState(int direction, string reason) =>
     result := result + "\nl3_map_ok L/S=" + str.tostring(longReconfirmMapNear) + "/" + str.tostring(shortReconfirmMapNear) + " l3_score L/S=" + str.tostring(scoreFor(marketLongOk, sectorLongOk, relativeLongOk, priceLongSide, longReconfirmMapNear, volumeExpanded, true)) + "/" + str.tostring(scoreFor(marketShortOk, sectorShortOk, relativeShortOk, priceShortSide, shortReconfirmMapNear, volumeExpanded, true))
     result := result + "\nmarket=" + marketGateTag() + " qqq=" + fmtlib.fmtPrice(qqqClose) + "/" + fmtlib.fmtPrice(qqqVwap) + " q15=" + trendText(qqqTrend15) + " spy=" + fmtlib.fmtPrice(spyClose) + "/" + fmtlib.fmtPrice(spyVwap)
     result := result + "\nrs stock-market/sector=" + fmtlib.bpsText(stockVsMarketBps) + "/" + fmtlib.bpsText(stockVsSectorBps) + " sector-vs-market=" + fmtlib.bpsText(sectorVsMarketBps) + " sector=" + sectorEtf
-    result := result + "\nsector_close/vwap=" + fmtlib.fmtPrice(sectorClose) + "/" + fmtlib.fmtPrice(sectorVwap) + " sector_side L/S=" + str.tostring(sectorClose >= sectorVwap) + "/" + str.tostring(sectorClose <= sectorVwap) + " sector_ok L/S=" + str.tostring(sectorLongOk) + "/" + str.tostring(sectorShortOk)
+    result := result + "\nsector_close/vwap=" + fmtlib.fmtPrice(sectorClose) + "/" + fmtlib.fmtPrice(sectorVwap) + " sector_side L/S=" + str.tostring(sectorTrendLongOk) + "/" + str.tostring(sectorTrendShortOk) + " sector_lead L/S=" + str.tostring(sectorLeadershipLongOk) + "/" + str.tostring(sectorLeadershipShortOk) + " hard_lead=" + str.tostring(requireSectorLeadership) + " sector_ok L/S=" + str.tostring(sectorLongOk) + "/" + str.tostring(sectorShortOk)
     result
 
 debugLog(string category, string eventName, string detailText) =>

@@ -28,6 +28,7 @@ Default filter notes:
 
 - `Max distance to VWAP/OR (ATR)` defaults to `1.20`, so the setup still stays near VWAP/OR but is less likely to reject normal WDC-style 2m movement as too extended.
 - `Max L3 confirm distance to VWAP/OR (ATR)` defaults to `2.20`. L1/L2 must still form near the map, but the final 2m confirmation is allowed to move slightly farther before entry; beyond this cap it remains blocked as a chase.
+- `Require sector beating QQQ as hard filter` defaults to `false`. The hard sector gate checks whether the sector ETF is on the correct VWAP side; the sector-vs-QQQ leadership value is still logged and can be made strict by enabling this option.
 - `Pattern TTL bars` defaults to `10`, matching the 20-minute time-stop window.
 - The script waits for ATR, VWAP, RVOL MA, QQQ/SPY, and sector data before L1/L2/L3 can trigger. During warmup, logs show `indicator_warmup` instead of a misleading `too_far_from_map`.
 - L2 can only be evaluated on a bar after L1, and L3 can only be evaluated on a bar after L2. This prevents same-bar `L1_PASS` plus `L2_BLOCK` contradictions.
