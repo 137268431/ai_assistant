@@ -3,7 +3,13 @@
 library("SSVOR_Lib_SymbolMeta_Glory", overlay=true)
 
 clean(series string symbol) =>
-    str.upper(str.replace_all(symbol, " ", ""))
+    string s = str.upper(str.replace_all(symbol, " ", ""))
+    s := str.replace_all(s, "NASDAQ:", "")
+    s := str.replace_all(s, "NYSE:", "")
+    s := str.replace_all(s, "AMEX:", "")
+    s := str.replace_all(s, "ARCA:", "")
+    s := str.replace_all(s, "BATS:", "")
+    s
 
 isAny(series string s, series string a, series string b, series string c, series string d, series string e, series string f, series string g, series string h, series string i, series string j) =>
     s == a or s == b or s == c or s == d or s == e or s == f or s == g or s == h or s == i or s == j
@@ -12,14 +18,14 @@ isAnyMore(series string s, series string a, series string b, series string c, se
     isAny(s, a, b, c, d, e, f, g, h, i, j)
 
 export metadataVersion() =>
-    "SSVOR_META_v1_20260702"
+    "SSVOR_META_v3_20260703"
 
 export sectorEtf(series string symbol) =>
     string s = clean(symbol)
     string result = ""
     if isAny(s, "NVDA", "AMD", "AVGO", "TSM", "MU", "AMAT", "LRCX", "KLAC", "INTC", "QCOM") or isAnyMore(s, "ASML", "ARM", "MRVL", "ON", "NXPI", "MCHP", "ADI", "TXN", "MPWR", "TER")
         result := "SMH"
-    else if isAny(s, "AAPL", "MSFT", "PLTR", "ORCL", "CRM", "ADBE", "NOW", "SNOW", "PANW", "CRWD") or isAnyMore(s, "MDB", "DDOG", "NET", "ZS", "TEAM", "SHOP", "IBM", "CSCO", "ANET", "DELL")
+    else if isAny(s, "AAPL", "MSFT", "PLTR", "ORCL", "CRM", "ADBE", "NOW", "SNOW", "PANW", "CRWD") or isAnyMore(s, "MDB", "DDOG", "NET", "ZS", "TEAM", "SHOP", "IBM", "CSCO", "ANET", "DELL") or isAny(s, "WDC", "SNDK", "STX", "NTAP", "PSTG", "HPE", "HPQ", "ACN", "CDNS", "SNPS")
         result := "XLK"
     else if isAny(s, "META", "GOOGL", "GOOG", "NFLX", "DIS", "CMCSA", "TMUS", "VZ", "T", "CHTR")
         result := "XLC"
@@ -56,7 +62,7 @@ export sectorGroup(series string symbol) =>
 export industryTag(series string symbol) =>
     string s = clean(symbol)
     string etf = sectorEtf(symbol)
-    isAny(s, "NVDA", "AMD", "AVGO", "TSM", "MU", "AMAT", "LRCX", "KLAC", "INTC", "QCOM") or etf == "SMH" ? "semiconductor" : isAny(s, "AAPL", "MSFT", "ORCL", "CRM", "ADBE", "NOW", "SNOW", "PANW", "CRWD", "PLTR") ? "technology_leader" : etf == "XLC" ? "communication_services" : etf == "XLY" ? "consumer_discretionary" : sectorGroup(symbol)
+    isAny(s, "NVDA", "AMD", "AVGO", "TSM", "MU", "AMAT", "LRCX", "KLAC", "INTC", "QCOM") or etf == "SMH" ? "semiconductor" : isAny(s, "WDC", "SNDK", "STX", "NTAP", "PSTG", "HPE", "HPQ", "DELL", "ANET", "CSCO") ? "hardware_storage_networking" : isAny(s, "AAPL", "MSFT", "ORCL", "CRM", "ADBE", "NOW", "SNOW", "PANW", "CRWD", "PLTR") ? "technology_leader" : etf == "XLC" ? "communication_services" : etf == "XLY" ? "consumer_discretionary" : sectorGroup(symbol)
 
 export relativeBenchmark(series string symbol) =>
     string s = clean(symbol)

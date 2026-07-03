@@ -1,11 +1,11 @@
 //@version=6
 strategy(title="Signal Strategy VWAP OR Markers[Glory]", overlay=true, pyramiding=0, initial_capital=100000, default_qty_type=strategy.fixed, default_qty_value=1, process_orders_on_close=false, calc_on_every_tick=false, dynamic_requests=true, max_labels_count=500, max_lines_count=100)
 import o8431/SSVOR_Lib_Format_Glory/2 as fmtlib
-import o8431/SSVOR_Lib_SymbolMeta_Glory/1 as metalib
+import o8431/SSVOR_Lib_SymbolMeta_Glory/2 as metalib
 import o8431/SSVOR_Core_Payload_Glory/2 as payloadlib
 
 // VWAP/OR bare-K volume strategy. VWAP/OR is the map; volume-backed price action is the trigger.
-string STRATEGY_VERSION = "SSVOR_v1_20260702_regular_vwap_debug_flow"
+string STRATEGY_VERSION = "SSVOR_v1_20260703_symbolmeta_v3"
 string SCRIPT_TAG = "Signal_Strategy_VWAP_OR_Core[Glory]"
 string TRADE_MODEL = "vwap_or_bare_k_volume_v1"
 string RISK_MODEL = "structure_atr_buffer_risk_qty_notional_cap_v1"
@@ -751,7 +751,7 @@ if confirmed and positionClosedNow
 // -----------------------------------------------------------------------------
 // Visuals
 // -----------------------------------------------------------------------------
-plot(showRthVwapLine ? vwap : na, "RTH VWAP", color=color.new(color.yellow, 0), linewidth=3, style=plot.style_linebr, trackprice=true)
+plot(showRthVwapLine ? vwap : na, "RTH VWAP", color=color.new(color.yellow, 0), linewidth=3, style=plot.style_linebr)
 plot(orComplete ? orHigh : na, "ORH", color=color.new(color.lime, 0), linewidth=2, style=plot.style_linebr)
 plot(orComplete ? orLow : na, "ORL", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
 plot(activePosition ? activeStop : na, "Active Stop", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)

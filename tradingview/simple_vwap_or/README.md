@@ -33,7 +33,7 @@ Use `Display profile` to switch label density:
 
 Marker legend:
 
-- `RTH VWAP`: yellow RTH-only VWAP. It resets at 09:30 New York time and does not use extended-hours data.
+- `RTH VWAP`: yellow RTH-only VWAP. It resets at 09:30 New York time and does not use extended-hours data; no horizontal track-price dotted line is drawn.
 - `VWAP`, `ORH`, `ORL` price tags: latest map levels, shown directly on the chart.
 - `WIN`: entry-window state marker. Tooltip shows long/short base gate, score, VWAP/OR, RVOL, and RS.
 - `L1` / `S1`: volume breakout or breakdown through OR/VWAP.
@@ -70,9 +70,9 @@ On a real signal the chart label shows the same fields: entry, stop, risk/share,
 ## Publish Order
 
 1. Publish `libs/SSVOR_Lib_Format[Glory].pine` as version `2`.
-2. Keep `libs/SSVOR_Lib_SymbolMeta[Glory].pine` at version `1` unless metadata changed.
+2. Publish `libs/SSVOR_Lib_SymbolMeta[Glory].pine` as version `3`; this adds storage/hardware names such as `WDC`, `SNDK`, `STX`, `NTAP`, and `PSTG` to `XLK`, and strips common exchange prefixes before matching.
 3. Publish `libs/SSVOR_Core_Payload[Glory].pine` as version `2`; it imports `SSVOR_Lib_Format_Glory/2`.
-4. Publish `core/Signal_Strategy_VWAP_OR_Core[Glory].pine`; it imports `SSVOR_Lib_Format_Glory/2`, `SSVOR_Lib_SymbolMeta_Glory/1`, and `SSVOR_Core_Payload_Glory/2`.
+4. Publish `core/Signal_Strategy_VWAP_OR_Core[Glory].pine`; it imports `SSVOR_Lib_Format_Glory/2`, `SSVOR_Lib_SymbolMeta_Glory/3`, and `SSVOR_Core_Payload_Glory/2`.
 
 If a library version changes, update the `import o8431/.../<version>` lines in dependent scripts.
 
