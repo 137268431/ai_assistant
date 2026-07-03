@@ -35,7 +35,7 @@ Marker legend:
 
 - `RTH VWAP`: yellow RTH-only VWAP. It resets at 09:30 New York time and does not use extended-hours data; no horizontal track-price dotted line is drawn.
 - `VWAP`, `ORH`, `ORL` price tags: latest map levels, shown directly on the chart.
-- `WIN`: entry-window state marker. Tooltip shows long/short base gate, score, VWAP/OR, RVOL, and RS.
+- `GATE`: entry-window and hard-filter state marker. Tooltip shows long/short base gate, score, VWAP/OR, RVOL, RS, and QQQ/SPY market alignment details.
 - `L1` / `S1`: volume breakout or breakdown through OR/VWAP.
 - `L2` / `S2`: lower-volume pullback or retest holding OR/VWAP.
 - `xL1` / `xS1`: breakout/reclaim attempt appeared, but environment, RVOL, wick, or timing blocked stage 1.
@@ -48,6 +48,8 @@ Marker legend:
 - `TP2`, `SL`, `BE`, `TIME`, `EOD`: final exit reason.
 
 Blocked markers are diagnostics only. They do not call `strategy.entry()` and do not emit entry alerts.
+
+`market_not_aligned` is intentional hard filtering. A long needs QQQ above VWAP with 15m trend not down and SPY not opposing; a short needs QQQ below VWAP with 15m trend not up and SPY not opposing. If the stock is strong/weak but QQQ/SPY do not agree, the script diagnoses the setup but does not trade.
 
 On Regular-only TradingView charts the script resets VWAP and the RTH open by date as well as by session start. This keeps the VWAP visible and prevents the prior day from leaking into the current RTH calculation.
 

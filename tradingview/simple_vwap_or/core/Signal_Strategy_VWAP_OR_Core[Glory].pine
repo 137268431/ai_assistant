@@ -1,11 +1,11 @@
 //@version=6
 strategy(title="Signal Strategy VWAP OR Markers[Glory]", overlay=true, pyramiding=0, initial_capital=100000, default_qty_type=strategy.fixed, default_qty_value=1, process_orders_on_close=false, calc_on_every_tick=false, dynamic_requests=true, max_labels_count=500, max_lines_count=100)
 import o8431/SSVOR_Lib_Format_Glory/2 as fmtlib
-import o8431/SSVOR_Lib_SymbolMeta_Glory/2 as metalib
+import o8431/SSVOR_Lib_SymbolMeta_Glory/3 as metalib
 import o8431/SSVOR_Core_Payload_Glory/2 as payloadlib
 
 // VWAP/OR bare-K volume strategy. VWAP/OR is the map; volume-backed price action is the trigger.
-string STRATEGY_VERSION = "SSVOR_v1_20260703_symbolmeta_v3"
+string STRATEGY_VERSION = "SSVOR_v1_20260703_gate_market_debug"
 string SCRIPT_TAG = "Signal_Strategy_VWAP_OR_Core[Glory]"
 string TRADE_MODEL = "vwap_or_bare_k_volume_v1"
 string RISK_MODEL = "structure_atr_buffer_risk_qty_notional_cap_v1"
@@ -288,6 +288,24 @@ baseBlockReason(int direction) =>
 dirName(int direction) =>
     direction == 1 ? "LONG" : direction == -1 ? "SHORT" : "FLAT"
 
+trendText(int trend) =>
+    trend == 1 ? "up" : trend == -1 ? "down" : "neutral"
+
+priceVsText(float priceValue, float refValue) =>
+    na(priceValue) or na(refValue) ? "na" : priceValue > refValue ? "above" : priceValue < refValue ? "below" : "at"
+
+marketGateDetail() =>
+    string result = "Market gate hard filter"
+    result := result + "\nLong OK: " + str.tostring(marketLongOk) + " / QQQ long " + str.tostring(qqqLong) + " / SPY ok " + str.tostring(spyLongOk)
+    result := result + "\nShort OK: " + str.tostring(marketShortOk) + " / QQQ short " + str.tostring(qqqShort) + " / SPY ok " + str.tostring(spyShortOk)
+    result := result + "\nQQQ close/VWAP: " + fmtlib.fmtPrice(qqqClose) + " / " + fmtlib.fmtPrice(qqqVwap) + " / " + priceVsText(qqqClose, qqqVwap)
+    result := result + "\nQQQ 15m trend: " + trendText(qqqTrend15) + " / raw " + str.tostring(qqqTrend15)
+    result := result + "\nQQQ RTH change: " + fmtlib.bpsText(qqqChangeBps)
+    result := result + "\nSPY close/VWAP: " + fmtlib.fmtPrice(spyClose) + " / " + fmtlib.fmtPrice(spyVwap) + " / " + priceVsText(spyClose, spyVwap)
+    result := result + "\nSPY RTH change: " + fmtlib.bpsText(spyChangeBps)
+    result := result + "\nRule: long needs QQQ above VWAP and 15m not down; short needs QQQ below VWAP and 15m not up. SPY must not oppose."
+    result
+
 eventMarkerColor(string markerKind, int direction) =>
     markerKind == "confirmed" ? color.new(direction == 1 ? color.lime : color.red, 0) : markerKind == "stage" ? color.new(color.aqua, 0) : markerKind == "blocked" ? color.new(color.purple, 0) : markerKind == "watch" ? color.new(direction == 1 ? color.lime : color.red, 0) : color.new(color.orange, 0)
 
@@ -322,6 +340,7 @@ gateDetail(int direction, string stageText, string triggerText, string reason) =
     result := result + "\nVWAP " + fmtlib.fmtPrice(vwap) + " / ORH " + fmtlib.fmtPrice(orHigh) + " / ORL " + fmtlib.fmtPrice(orLow)
     result := result + "\nRS stock-market/sector: " + fmtlib.bpsText(stockVsMarketBps) + " / " + fmtlib.bpsText(stockVsSectorBps)
     result := result + "\nsector vs market: " + fmtlib.bpsText(sectorVsMarketBps) + " / ETF " + sectorEtf
+    result := result + "\n" + marketGateDetail()
     result
 
 // -----------------------------------------------------------------------------
@@ -367,13 +386,14 @@ bool longBaseOk = longBaseBlock == "passed"
 bool shortBaseOk = shortBaseBlock == "passed"
 bool entryWindowOpenedNow = confirmed and entryWindowOpen and not (entryWindowOpen[1] == true)
 if entryWindowOpenedNow
-    string detail = "Entry window state"
+    string detail = "GATE state: entry window + hard filters"
     detail := detail + "\nLong base: " + fmtlib.reasonCn(longBaseBlock) + " / " + longBaseBlock + " / score " + str.tostring(scoreFor(marketLongOk, sectorLongOk, relativeLongOk, priceLongSide, longMapNear, volumeExpanded, true)) + "/7"
     detail := detail + "\nShort base: " + fmtlib.reasonCn(shortBaseBlock) + " / " + shortBaseBlock + " / score " + str.tostring(scoreFor(marketShortOk, sectorShortOk, relativeShortOk, priceShortSide, shortMapNear, volumeExpanded, true)) + "/7"
     detail := detail + "\nVWAP " + fmtlib.fmtPrice(vwap) + " / ORH " + fmtlib.fmtPrice(orHigh) + " / ORL " + fmtlib.fmtPrice(orLow)
     detail := detail + "\nRVOL " + fmtlib.fmt(rvol) + " / RS " + fmtlib.bpsText(stockVsMarketBps) + " / " + fmtlib.bpsText(stockVsSectorBps)
+    detail := detail + "\n" + marketGateDetail()
     detail := detail + "\nIf no L1/L2/L3 follows, no valid VWAP/OR price-action sequence formed."
-    drawEventMarker(priceLongSide ? 1 : -1, "watch", "WIN", detail, 0.10)
+    drawEventMarker(priceLongSide ? 1 : -1, "watch", "GATE", detail, 0.10)
 bool breakOrh = not na(orHigh) and close > orHigh and close[1] <= orHigh
 bool reclaimVwap = close > vwap and close[1] <= vwap
 bool breakOrl = not na(orLow) and close < orLow and close[1] >= orLow
