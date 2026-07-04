@@ -3,13 +3,13 @@
 Core-only TradingView strategy for the simplified intraday model:
 
 - Market/sector alignment filters the environment.
-- The 15m/30m hard trend filter must agree across QQQ, the sector ETF, and the stock before any 2m setup can trade.
+- Higher-timeframe trend filters the environment; 2m bars are used only for execution confirmation.
 - Symbol metadata is stored directly in `SSVOR_Lib_SymbolMeta[Glory].pine`.
 - VWAP and opening range are the map.
 - Bare K + volume three-stage structure is the only entry trigger.
 - Position sizing follows the prior `$5000` notional-cap style with risk quantity safety.
 - Alerts keep the TV-primary `entry`, `entry_fill`, `risk_update`, `exit`, and `cancel` payload shape.
-- No status table is used. By default the chart shows the RTH VWAP line, ORH/ORL lines, session markers, real order labels, and TP/SL management labels. Stage and blocked-candidate markers are opt-in diagnostics.
+- No status table is used. By default the chart shows the RTH VWAP line, ORH/ORL lines, session markers, key L1/L2 stage labels, real order labels, and TP/SL management labels. Blocked-candidate markers remain opt-in diagnostics.
 - `Enable strategy orders` is the actual TradingView strategy order switch. When it is off, the script keeps diagnostics but will not call `strategy.entry()`.
 
 ## Trading Rules
@@ -18,10 +18,10 @@ Long structure:
 
 1. Morning volume breakout through ORH or VWAP. Afternoon entries only use ORH continuation.
 2. Lower-volume pullback holds ORH/VWAP.
-3. Volume reconfirmation breaks the pullback high.
+3. A 2m execution bar breaks the pullback high with a strong close and recovered volume.
 4. Strategy submits a market order for next 2m bar.
 
-Short structure is the inverse through ORL/VWAP, with afternoon entries only using ORL continuation.
+Short structure is the inverse through ORL/VWAP, with afternoon entries only using ORL continuation. The intended model is: 15m/30m decides direction, VWAP/OR decides location, and 2m only decides timing.
 
 The script only trades on 2m RTH charts. 09:30-09:45 only builds ORH/ORL; 09:45-11:30 is the primary window; 14:00-15:30 is strict continuation only; 15:45 forces flat.
 
@@ -30,7 +30,11 @@ Default filter notes:
 - `Max distance to VWAP/OR (ATR)` defaults to `1.20`, so the setup still stays near VWAP/OR but is less likely to reject normal WDC-style 2m movement as too extended.
 - `Max L3 confirm distance to VWAP/OR (ATR)` defaults to `2.20`. L1/L2 must still form near the map, but the final 2m confirmation is allowed to move slightly farther before entry; beyond this cap it remains blocked as a chase.
 - `Require sector beating QQQ as hard filter` defaults to `false`. The hard sector gate checks whether the sector ETF is on the correct VWAP side; the sector-vs-QQQ leadership value is still logged and can be made strict by enabling this option.
-- The hard trend filter requires QQQ, sector ETF, and stock 15m/30m EMA20 trend to be fully aligned. Neutral trend does not pass.
+- `Trend filter mode` defaults to `Balanced`. Balanced keeps QQQ as the hard trend gate: longs need QQQ 30m up with 15m not down, shorts need QQQ 30m down with 15m not up. Sector ETF and stock 15m/30m trends contribute the trend score point instead of blocking every setup. `Hard` restores the older six-layer alignment rule; `Off` disables this trend gate for diagnostics.
+- L1 keeps the strict `RVOL breakout min` filter. L2 still requires lower-volume pullback/retest. L3 no longer needs another `RVOL >= 1.30`; it needs volume recovery: default `RVOL >= 0.75` plus either `RVOL >= 1.00`, volume at least `1.20x` the L2 pullback/retest bar, or volume at least `1.10x` the prior 2m bar.
+- L3 also requires the 2m confirmation candle to close in the correct half of its range by default. Blocks appear as `l3_volume_dead`, `l3_volume_not_recovered`, or `l3_weak_close`.
+- The 7-point score uses market, sector, relative strength, VWAP side, VWAP/OR map distance, volume, and trend context. RR/stop quality is checked separately during order validation instead of being a permanent score point.
+- Profit management is less aggressive than the first 1R/2R version: TP1 defaults to 33% at 1R, the stop still moves toward breakeven at 1R, and the final target defaults to 3R. Use `TP1 exit pct` and `Final target R multiple` to tighten or loosen it.
 - The 14:00-15:30 window is OR continuation only. Longs must be above ORH and VWAP; shorts must be below ORL and VWAP. VWAP-only afternoon reclaim/reject signals are blocked as `pm_not_continuation`.
 - `Pattern TTL bars` defaults to `10`, matching the 20-minute time-stop window.
 - The script waits for ATR, VWAP, RVOL MA, QQQ/SPY, and sector data before L1/L2/L3 can trigger. During warmup, logs show `indicator_warmup` instead of a misleading `too_far_from_map`.
@@ -51,8 +55,7 @@ Marker legend:
 
 - `RTH VWAP`: yellow RTH-only VWAP. It resets at 09:30 New York time and does not use extended-hours data; no horizontal track-price dotted line is drawn.
 - `VWAP`, `ORH`, `ORL` price tags: latest map levels, shown directly on the chart.
-- `OR 09:30`: RTH open marker. 09:30-09:45 builds ORH/ORL only; no new entries.
-- `ORDER ON` / `ORDER OFF`: shows whether the actual `strategy.entry()` switch is enabled.
+- `OR 09:30 ORDER ON/OFF`: RTH open marker. 09:30-09:45 builds ORH/ORL only; no new entries. The same marker also shows whether the actual `strategy.entry()` switch is enabled, so the chart does not stack duplicate 09:30 labels.
 - `AM ON 09:45`: primary entry window is open.
 - `AM OFF 11:30`: morning entry window is closed; midday no-trade period starts.
 - `PM ON 14:00`: afternoon strict-continuation entry window is open when enabled.
@@ -63,14 +66,14 @@ Marker legend:
 - `L2` / `S2`: lower-volume pullback or retest holding OR/VWAP.
 - `xL1` / `xS1`: breakout/reclaim attempt appeared, but environment, RVOL, wick, or timing blocked stage 1.
 - `xL2` / `xS2`: pullback/retest appeared, but volume did not dry up or the map level failed.
-- `xL3` / `xS3`: 2m reconfirm appeared, but volume, score, stop, or qty gate blocked the actual order.
+- `xL3` / `xS3`: 2m reconfirm appeared, but volume recovery, close quality, score, stop, or qty gate blocked the actual order.
 - `NO`: compact plot marker for a blocked L3 candidate; use the nearby `xL3` / `xS3` tooltip for details.
 - `BUY next` / `SELL next`: real strategy order submitted for the next 2m bar.
 - `FILL L` / `FILL S`: strategy position opened, using TradingView fill price.
 - `TP1/BE`: 1R touched and stop moved toward breakeven.
 - `TP2`, `SL`, `BE`, `TIME`, `EOD`: final exit reason.
 
-Stage and blocked markers are diagnostics only and default to hidden. They do not call `strategy.entry()` and do not emit entry alerts.
+Stage markers are visual execution breadcrumbs and default to visible. Blocked markers are diagnostics and default to hidden. Neither calls `strategy.entry()` or emits entry alerts.
 
 `market_not_aligned` is intentional hard filtering. A long needs QQQ above VWAP with 15m trend not down and SPY not opposing; a short needs QQQ below VWAP with 15m trend not up and SPY not opposing. If the stock is strong/weak but QQQ/SPY do not agree, the script diagnoses the setup but does not trade. The alert-compatible `block_reason` remains `market_not_aligned`; chart labels add the exact short code:
 
@@ -82,7 +85,7 @@ Stage and blocked markers are diagnostics only and default to hidden. They do no
 - `DATA?`: QQQ/SPY/VWAP/trend data is missing.
 - `MIX`: more than one market condition is unresolved or mixed.
 
-`trend_not_aligned` is the hard trend filter. A long needs QQQ, sector ETF, and stock 15m/30m trends all up; a short needs all six trends down. Logs show `trend_hard L/S` and `trend qqq15/30 sector15/30 stock15/30` so the missing trend layer is visible.
+`trend_not_aligned` depends on `Trend filter mode`. In the default Balanced mode, QQQ 30m is the hard direction filter and QQQ 15m must not oppose. Sector ETF and stock 15m/30m are logged as context scores and affect the 7-point setup score. In `Hard` mode, a long needs QQQ, sector ETF, and stock 15m/30m trends all up; a short needs all six trends down.
 
 On Regular-only TradingView charts the script resets VWAP and the RTH open by date as well as by session start. This keeps the VWAP visible and prevents the prior day from leaking into the current RTH calculation.
 
@@ -95,7 +98,8 @@ Use `Enable Pine debug logs` when chart labels are inconvenient. Logs are writte
 - `Log extended skip events`: `EXTENDED_SKIP LONG/SHORT` when direction, sector, relative strength, and VWAP side agree, but price is already too far from VWAP/OR to avoid chasing.
 - `Log stage pass/block events`: L1/L2/L3 pass and block events with reason, market code, VWAP/OR, RVOL, score, relative strength, and sector state.
 - Afternoon logs include `pm_cont L/S`; if price is not outside ORH/ORL in the market direction, the block reason is `pm_not_continuation`.
-- Trend logs include `trend_hard L/S` and QQQ/sector/stock 15m/30m direction; if any layer is neutral or opposite, the block reason is `trend_not_aligned`.
+- Trend logs include `trend_mode`, `trend_gate L/S`, context trend scores, `trend_hard L/S`, and QQQ/sector/stock 15m/30m direction.
+- L3 logs include `l3_rvol`, `l3_vs_l2`, `l3_vs_prev`, `l3_volume_ok`, `l3_volume_reason`, `l3_close_loc`, and `l3_close_ok`.
 - `Log order lifecycle events`: order blocked/submitted, fill, cancel, TP1/breakeven, close request, and final position close.
 
 ## Order Case Example
@@ -110,9 +114,12 @@ Example using the default `$5000` notional cap:
 - Notional-cap qty: `floor(5000 / 100.00) = 50` shares
 - Final order qty: `50` shares because the `$5000` cap is smaller
 - TP1: `$100.80`
-- TP2: `$101.60`
+- TP1 exit pct: `33%`
+- Final target: `$102.40` at the default `3R`
 
-On a real signal the chart label shows the compact order case, while the tooltip shows entry, stop, risk/share, qty, notional, TP1, TP2, and score. This is a calculation example only; the strategy does not create fake orders or relax filters to force examples.
+On a real signal the chart label shows the compact order case, while the tooltip shows entry, stop, risk/share, qty, notional, TP1, final target, and score. This is a calculation example only; the strategy does not create fake orders or relax filters to force examples.
+
+Order lifecycle logs also show `actual_risk_dollars`, `expected_1R_dollars`, `expected_final_dollars`, `final_target_r`, and `notional_cap_binds`. With the default `$5000` cap, high-priced stocks can use far less than the `$75` risk ceiling because share count is capped by notional first.
 
 ## Publish Order
 
