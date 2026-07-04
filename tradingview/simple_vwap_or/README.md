@@ -3,6 +3,7 @@
 Core-only TradingView strategy for the simplified intraday model:
 
 - Market/sector alignment filters the environment.
+- The 15m/30m hard trend filter must agree across QQQ, the sector ETF, and the stock before any 2m setup can trade.
 - Symbol metadata is stored directly in `SSVOR_Lib_SymbolMeta[Glory].pine`.
 - VWAP and opening range are the map.
 - Bare K + volume three-stage structure is the only entry trigger.
@@ -29,6 +30,7 @@ Default filter notes:
 - `Max distance to VWAP/OR (ATR)` defaults to `1.20`, so the setup still stays near VWAP/OR but is less likely to reject normal WDC-style 2m movement as too extended.
 - `Max L3 confirm distance to VWAP/OR (ATR)` defaults to `2.20`. L1/L2 must still form near the map, but the final 2m confirmation is allowed to move slightly farther before entry; beyond this cap it remains blocked as a chase.
 - `Require sector beating QQQ as hard filter` defaults to `false`. The hard sector gate checks whether the sector ETF is on the correct VWAP side; the sector-vs-QQQ leadership value is still logged and can be made strict by enabling this option.
+- The hard trend filter requires QQQ, sector ETF, and stock 15m/30m EMA20 trend to be fully aligned. Neutral trend does not pass.
 - The 14:00-15:30 window is OR continuation only. Longs must be above ORH and VWAP; shorts must be below ORL and VWAP. VWAP-only afternoon reclaim/reject signals are blocked as `pm_not_continuation`.
 - `Pattern TTL bars` defaults to `10`, matching the 20-minute time-stop window.
 - The script waits for ATR, VWAP, RVOL MA, QQQ/SPY, and sector data before L1/L2/L3 can trigger. During warmup, logs show `indicator_warmup` instead of a misleading `too_far_from_map`.
@@ -80,6 +82,8 @@ Stage and blocked markers are diagnostics only and default to hidden. They do no
 - `DATA?`: QQQ/SPY/VWAP/trend data is missing.
 - `MIX`: more than one market condition is unresolved or mixed.
 
+`trend_not_aligned` is the hard trend filter. A long needs QQQ, sector ETF, and stock 15m/30m trends all up; a short needs all six trends down. Logs show `trend_hard L/S` and `trend qqq15/30 sector15/30 stock15/30` so the missing trend layer is visible.
+
 On Regular-only TradingView charts the script resets VWAP and the RTH open by date as well as by session start. This keeps the VWAP visible and prevents the prior day from leaking into the current RTH calculation.
 
 ## Pine Debug Logs
@@ -91,6 +95,7 @@ Use `Enable Pine debug logs` when chart labels are inconvenient. Logs are writte
 - `Log extended skip events`: `EXTENDED_SKIP LONG/SHORT` when direction, sector, relative strength, and VWAP side agree, but price is already too far from VWAP/OR to avoid chasing.
 - `Log stage pass/block events`: L1/L2/L3 pass and block events with reason, market code, VWAP/OR, RVOL, score, relative strength, and sector state.
 - Afternoon logs include `pm_cont L/S`; if price is not outside ORH/ORL in the market direction, the block reason is `pm_not_continuation`.
+- Trend logs include `trend_hard L/S` and QQQ/sector/stock 15m/30m direction; if any layer is neutral or opposite, the block reason is `trend_not_aligned`.
 - `Log order lifecycle events`: order blocked/submitted, fill, cancel, TP1/breakeven, close request, and final position close.
 
 ## Order Case Example

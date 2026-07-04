@@ -5,7 +5,7 @@ import o8431/SSVOR_Lib_SymbolMeta_Glory/2 as metalib
 import o8431/SSVOR_Core_Payload_Glory/2 as payloadlib
 
 // VWAP/OR bare-K volume strategy. VWAP/OR is the map; volume-backed price action is the trigger.
-string STRATEGY_VERSION = "SSVOR_v1_20260703_pm_or_continuation"
+string STRATEGY_VERSION = "SSVOR_v1_20260703_hard_trend_filter"
 string SCRIPT_TAG = "Signal_Strategy_VWAP_OR_Core[Glory]"
 string TRADE_MODEL = "vwap_or_bare_k_volume_v1"
 string RISK_MODEL = "structure_atr_buffer_risk_qty_notional_cap_v1"
@@ -100,7 +100,7 @@ dollarText(series float value) =>
     na(value) ? "$--" : "$" + str.tostring(value, "#.##")
 
 reasonText(series string reason) =>
-    reason == "orders_disabled" ? "orders disabled" : reason == "indicator_warmup" ? "indicator warmup" : reason == "reconfirm_too_far_from_map" ? "L3 confirm too far from VWAP/OR" : reason == "pm_not_continuation" ? "PM not OR continuation" : fmtlib.reasonCn(reason)
+    reason == "orders_disabled" ? "orders disabled" : reason == "indicator_warmup" ? "indicator warmup" : reason == "reconfirm_too_far_from_map" ? "L3 confirm too far from VWAP/OR" : reason == "pm_not_continuation" ? "PM not OR continuation" : reason == "trend_not_aligned" ? "trend not aligned" : fmtlib.reasonCn(reason)
 
 blockedMarkerTooltip(int direction, string reason, float entryPrice, float stopPrice, float qty, float stopPct, int score) =>
     string side = direction == 1 ? "long" : "short"
@@ -173,7 +173,7 @@ rthChangeBps() =>
     float sessionOpen = rthOpenPrice()
     not na(sessionOpen) and sessionOpen > 0.0 ? (close - sessionOpen) / sessionOpen * 10000.0 : na
 
-trendDir15() =>
+trendDir() =>
     float e = ta.ema(close, 20)
     close >= e and e >= e[1] ? 1 : close <= e and e <= e[1] ? -1 : 0
 
@@ -217,15 +217,20 @@ bool tradeAllowedByMeta = metadataFallbackActive ? true : metalib.tradeAllowed(s
 float qqqClose = request.security(marketSymbol, timeframe.period, close)
 float qqqVwap = request.security(marketSymbol, timeframe.period, rthVwap(hlc3))
 float qqqChangeBps = request.security(marketSymbol, timeframe.period, rthChangeBps())
-int qqqTrend15 = request.security(marketSymbol, "15", trendDir15())
+int qqqTrend15 = request.security(marketSymbol, "15", trendDir())
+int qqqTrend30 = request.security(marketSymbol, "30", trendDir())
 float spyClose = request.security(confirmMarketSymbol, timeframe.period, close)
 float spyVwap = request.security(confirmMarketSymbol, timeframe.period, rthVwap(hlc3))
 float spyChangeBps = request.security(confirmMarketSymbol, timeframe.period, rthChangeBps())
 float sectorClose = request.security(sectorTvSymbol, timeframe.period, close)
 float sectorVwap = request.security(sectorTvSymbol, timeframe.period, rthVwap(hlc3))
 float sectorChangeBps = request.security(sectorTvSymbol, timeframe.period, rthChangeBps())
+int sectorTrend15 = request.security(sectorTvSymbol, "15", trendDir())
+int sectorTrend30 = request.security(sectorTvSymbol, "30", trendDir())
+int stockTrend15 = request.security(syminfo.tickerid, "15", trendDir())
+int stockTrend30 = request.security(syminfo.tickerid, "30", trendDir())
 float stockChangeBps = rthChangeBps()
-bool indicatorReady = inRth and not na(atrRaw) and not na(vwap) and not na(volumeMa) and volumeMa > 0.0 and not na(qqqClose) and not na(qqqVwap) and not na(qqqChangeBps) and not na(qqqTrend15) and not na(spyClose) and not na(spyVwap) and not na(sectorClose) and not na(sectorVwap) and not na(sectorChangeBps) and not na(stockChangeBps)
+bool indicatorReady = inRth and not na(atrRaw) and not na(vwap) and not na(volumeMa) and volumeMa > 0.0 and not na(qqqClose) and not na(qqqVwap) and not na(qqqChangeBps) and not na(qqqTrend15) and not na(qqqTrend30) and not na(spyClose) and not na(spyVwap) and not na(sectorClose) and not na(sectorVwap) and not na(sectorChangeBps) and not na(sectorTrend15) and not na(sectorTrend30) and not na(stockTrend15) and not na(stockTrend30) and not na(stockChangeBps)
 
 float stockVsMarketBps = stockChangeBps - qqqChangeBps
 float stockVsSectorBps = stockChangeBps - sectorChangeBps
@@ -237,6 +242,8 @@ bool spyLongOk = spyClose >= spyVwap or spyChangeBps >= 0.0
 bool spyShortOk = spyClose <= spyVwap or spyChangeBps <= 0.0
 bool marketLongOk = qqqLong and spyLongOk
 bool marketShortOk = qqqShort and spyShortOk
+bool hardTrendLongOk = qqqTrend15 == 1 and qqqTrend30 == 1 and sectorTrend15 == 1 and sectorTrend30 == 1 and stockTrend15 == 1 and stockTrend30 == 1
+bool hardTrendShortOk = qqqTrend15 == -1 and qqqTrend30 == -1 and sectorTrend15 == -1 and sectorTrend30 == -1 and stockTrend15 == -1 and stockTrend30 == -1
 bool sectorTrendLongOk = metadataOk and sectorClose >= sectorVwap
 bool sectorTrendShortOk = metadataOk and sectorClose <= sectorVwap
 bool sectorLeadershipLongOk = sectorVsMarketBps >= sectorVsMarketMinBps
@@ -300,6 +307,8 @@ baseBlockReason(int direction) =>
         reason := "indicator_warmup"
     else if inAfternoonEntry and ((direction == 1 and not pmLongContinuationOk) or (direction == -1 and not pmShortContinuationOk))
         reason := "pm_not_continuation"
+    else if (direction == 1 and not hardTrendLongOk) or (direction == -1 and not hardTrendShortOk)
+        reason := "trend_not_aligned"
     else if (direction == 1 and not marketLongOk) or (direction == -1 and not marketShortOk)
         reason := "market_not_aligned"
     else if (direction == 1 and not sectorLongOk) or (direction == -1 and not sectorShortOk)
@@ -331,7 +340,7 @@ priceVsText(float priceValue, float refValue) =>
     na(priceValue) or na(refValue) ? "na" : priceValue > refValue ? "above" : priceValue < refValue ? "below" : "at"
 
 marketDataMissing() =>
-    na(qqqClose) or na(qqqVwap) or na(qqqTrend15) or na(spyClose) or na(spyVwap)
+    na(qqqClose) or na(qqqVwap) or na(qqqTrend15) or na(qqqTrend30) or na(spyClose) or na(spyVwap)
 
 marketGateTag() =>
     marketDataMissing() ? "MKT DATA?" : marketLongOk and not marketShortOk ? "MKT L" : marketShortOk and not marketLongOk ? "MKT S" : "MKT MIX"
@@ -367,9 +376,11 @@ marketGateDetail() =>
     result := result + "\nIndicator ready: " + str.tostring(indicatorReady)
     result := result + "\nLong OK: " + str.tostring(marketLongOk) + " / QQQ long " + str.tostring(qqqLong) + " / SPY ok " + str.tostring(spyLongOk)
     result := result + "\nShort OK: " + str.tostring(marketShortOk) + " / QQQ short " + str.tostring(qqqShort) + " / SPY ok " + str.tostring(spyShortOk)
+    result := result + "\nHard trend L/S: " + str.tostring(hardTrendLongOk) + " / " + str.tostring(hardTrendShortOk)
     result := result + "\nLong detail: " + (marketLongOk ? "PASS" : marketBlockCode(1) + " / " + marketBlockSummary(1))
     result := result + "\nShort detail: " + (marketShortOk ? "PASS" : marketBlockCode(-1) + " / " + marketBlockSummary(-1))
     result := result + "\nQQQ close/VWAP: " + fmtlib.fmtPrice(qqqClose) + " / " + fmtlib.fmtPrice(qqqVwap) + " / " + priceVsText(qqqClose, qqqVwap)
+    result := result + "\nTrend q/s/st 15/30: " + trendText(qqqTrend15) + "/" + trendText(qqqTrend30) + " " + trendText(sectorTrend15) + "/" + trendText(sectorTrend30) + " " + trendText(stockTrend15) + "/" + trendText(stockTrend30)
     result := result + "\nQQQ 15m trend: " + trendText(qqqTrend15) + " / raw " + str.tostring(qqqTrend15)
     result := result + "\nQQQ RTH change: " + fmtlib.bpsText(qqqChangeBps)
     result := result + "\nSPY close/VWAP: " + fmtlib.fmtPrice(spyClose) + " / " + fmtlib.fmtPrice(spyVwap) + " / " + priceVsText(spyClose, spyVwap)
@@ -393,6 +404,8 @@ debugCommonState(int direction, string reason) =>
     if reason == "market_not_aligned" and direction != 0
         result := result + " market_code=" + marketBlockCode(direction) + " / " + marketBlockSummary(direction)
     result := result + "\nindicator_ready=" + str.tostring(indicatorReady)
+    result := result + "\ntrend_hard L/S=" + str.tostring(hardTrendLongOk) + "/" + str.tostring(hardTrendShortOk)
+    result := result + "\ntrend qqq15/30 sector15/30 stock15/30=" + trendText(qqqTrend15) + "/" + trendText(qqqTrend30) + " " + trendText(sectorTrend15) + "/" + trendText(sectorTrend30) + " " + trendText(stockTrend15) + "/" + trendText(stockTrend30)
     result := result + "\nprice=" + fmtlib.fmtPrice(close) + " vwap=" + fmtlib.fmtPrice(vwap) + " ORH=" + fmtlib.fmtPrice(orHigh) + " ORL=" + fmtlib.fmtPrice(orLow)
     result := result + "\nrvol=" + fmtlib.fmt(rvol) + " vol_expanded=" + str.tostring(volumeExpanded) + " score=" + debugScoreText(direction)
     result := result + "\nmap_dist L/S=" + fmtlib.fmt(longMapDistanceAtr) + "/" + fmtlib.fmt(shortMapDistanceAtr) + " price_side L/S=" + str.tostring(priceLongSide) + "/" + str.tostring(priceShortSide)
