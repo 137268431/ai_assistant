@@ -1,22 +1,23 @@
 //@version=6
 strategy(title="Signal Strategy VWAP OR Markers[Glory]", overlay=true, pyramiding=0, initial_capital=100000, default_qty_type=strategy.fixed, default_qty_value=1, process_orders_on_close=false, calc_on_every_tick=false, dynamic_requests=true, max_labels_count=500, max_lines_count=100)
 import o8431/SSVOR_Lib_Format_Glory/2 as fmtlib
-import o8431/SSVOR_Lib_SymbolMeta_Glory/2 as metalib
+import o8431/SSVOR_Lib_SymbolMeta_Glory/3 as metalib
 import o8431/SSVOR_Core_Payload_Glory/2 as payloadlib
 
 // VWAP/OR bare-K volume strategy. VWAP/OR is the map; volume-backed price action is the trigger.
-string STRATEGY_VERSION = "SSVOR_v1_20260704_2m_execution_volume"
+string STRATEGY_VERSION = "SSVOR_v1_20260706_primary_benchmark_trend_runner"
 string SCRIPT_TAG = "Signal_Strategy_VWAP_OR_Core[Glory]"
-string TRADE_MODEL = "vwap_or_bare_k_volume_v1"
-string RISK_MODEL = "structure_atr_buffer_risk_qty_notional_cap_v1"
-string TP_SL_MODEL = "partial_1r_final_r_breakeven_v2"
+string TRADE_MODEL = "vwap_or_plus_trend_day_continuation_v1"
+string RISK_MODEL = "structure_mtf_atr_buffer_risk_qty_notional_cap_v1"
+string TP_SL_MODEL = "partial_1r_runner_trailing_v1"
 
 // -----------------------------------------------------------------------------
 // Inputs
 // -----------------------------------------------------------------------------
 rthSession = input.session("0930-1600", "RTH session", group="01 Time")
-marketSymbol = input.symbol("NASDAQ:QQQ", "Primary market ETF", group="01 Time")
-confirmMarketSymbol = input.symbol("AMEX:SPY", "Confirm market ETF", group="01 Time")
+marketBenchmarkMode = input.string("Auto", "Market benchmark mode", options=["Auto", "QQQ", "SPY", "IWM", "Manual"], group="01 Time")
+manualPrimaryMarketSymbol = input.symbol("NASDAQ:QQQ", "Manual primary market ETF", group="01 Time")
+broadMarketSymbol = input.symbol("AMEX:SPY", "Broad risk ETF (SPY)", group="01 Time")
 manualEventBlock = input.bool(false, "Manual event block", group="01 Time")
 enableAfternoonWindow = input.bool(true, "Enable strict 14:00-15:30 window", group="01 Time")
 forceFlatHour = input.int(15, "Force flat hour ET", minval=0, maxval=23, group="01 Time")
@@ -27,8 +28,8 @@ fallbackSectorSymbol = input.symbol("NASDAQ:SMH", "Fallback sector ETF", group="
 fallbackSectorEtfName = input.string("SMH", "Fallback sector ETF name", group="02 Metadata")
 
 relativeStrengthMinBps = input.float(20.0, "Relative strength min bps", step=5.0, minval=0.0, group="03 Filters")
-sectorVsMarketMinBps = input.float(0.0, "Sector vs QQQ min bps", step=5.0, group="03 Filters")
-requireSectorLeadership = input.bool(false, "Require sector beating QQQ as hard filter", group="03 Filters")
+sectorVsMarketMinBps = input.float(0.0, "Sector vs primary min bps", step=5.0, group="03 Filters")
+requireSectorLeadership = input.bool(false, "Require sector beating primary as hard filter", group="03 Filters")
 trendFilterMode = input.string("Balanced", "Trend filter mode", options=["Balanced", "Hard", "Off"], group="03 Filters")
 balancedTrendScoreMin = input.int(2, "Balanced trend score point min", minval=0, maxval=4, group="03 Filters")
 volumeMaLen = input.int(20, "RVOL MA length", minval=1, maxval=200, group="03 Filters")
@@ -43,6 +44,13 @@ l3VolumeVsPrevMin = input.float(1.10, "L3 volume vs prev min", step=0.05, minval
 l3CloseLocationMin = input.float(0.50, "L3 close location min", step=0.05, minval=0.1, maxval=0.9, group="03 Filters")
 maxMapDistanceAtr = input.float(1.20, "Max distance to VWAP/OR (ATR)", step=0.05, minval=0.05, maxval=5.0, group="03 Filters")
 maxReconfirmDistanceAtr = input.float(2.20, "Max L3 confirm distance to VWAP/OR (ATR)", step=0.05, minval=0.05, maxval=6.0, group="03 Filters")
+enableTrendDayContinuation = input.bool(true, "Enable trend-day continuation", group="03 Filters")
+allowTrendDayMiddayEntries = input.bool(true, "Allow trend-day midday entries", group="03 Filters")
+continuationMinMapDistanceAtr = input.float(2.20, "Trend continuation min map distance (ATR)", step=0.05, minval=0.25, maxval=20.0, group="03 Filters")
+continuationMaxExtensionPct = input.float(10.0, "Trend continuation max VWAP extension %", step=0.25, minval=0.5, maxval=50.0, group="03 Filters")
+continuationConsolidationBars = input.int(3, "Trend continuation flag bars", minval=2, maxval=10, group="03 Filters")
+continuationMaxPullbackAtr = input.float(1.80, "Trend continuation max flag depth (ATR)", step=0.05, minval=0.25, maxval=8.0, group="03 Filters")
+continuationRvolMin = input.float(0.80, "Trend continuation RVOL min", step=0.05, minval=0.0, maxval=10.0, group="03 Filters")
 vwapChopAtr = input.float(0.12, "VWAP chop band (ATR)", step=0.01, minval=0.01, maxval=1.0, group="03 Filters")
 maxBadWickRatio = input.float(0.45, "Max wrong-side wick ratio", step=0.05, minval=0.1, maxval=0.9, group="03 Filters")
 patternTtlBars = input.int(10, "Pattern TTL bars", minval=2, maxval=30, group="03 Filters")
@@ -60,6 +68,12 @@ minQty = input.float(1.0, "Minimum shares", step=1.0, minval=1.0, group="04 Posi
 breakevenOffsetR = input.float(0.05, "Breakeven offset R", step=0.01, minval=0.0, maxval=1.0, group="04 Position/Risk")
 tp1ExitPct = input.int(33, "TP1 exit pct", minval=1, maxval=99, group="04 Position/Risk")
 target2RMultiple = input.float(3.0, "Final target R multiple", step=0.25, minval=1.1, maxval=10.0, group="04 Position/Risk")
+runnerMode = input.string("Trailing", "Runner exit mode", options=["Trailing", "Fixed target"], group="04 Position/Risk")
+trailAfterR = input.float(2.0, "Start runner trail after R", step=0.25, minval=1.0, maxval=10.0, group="04 Position/Risk")
+chandelierAfterR = input.float(3.0, "Use chandelier after R", step=0.25, minval=1.0, maxval=20.0, group="04 Position/Risk")
+trailAtrMult = input.float(2.50, "Runner trail ATR multiple", step=0.10, minval=0.25, maxval=10.0, group="04 Position/Risk")
+hardFinalTargetEnabled = input.bool(false, "Hard final target for trailing runner", group="04 Position/Risk")
+hardFinalTargetR = input.float(6.0, "Hard final target R", step=0.25, minval=1.5, maxval=30.0, group="04 Position/Risk")
 timeStopBars = input.int(10, "Time stop bars", minval=1, maxval=60, group="04 Position/Risk")
 timeStopMinMfeR = input.float(0.50, "Time stop min MFE R", step=0.05, minval=0.0, maxval=5.0, group="04 Position/Risk")
 maxDailyTrades = input.int(5, "Max trades per day", minval=1, maxval=20, group="04 Position/Risk")
@@ -89,6 +103,13 @@ debugLogStages = input.bool(true, "Log stage pass/block events", group="06 Debug
 debugLogExtendedSkips = input.bool(true, "Log extended skip events", group="06 Debug Logs")
 debugLogOrders = input.bool(true, "Log order lifecycle events", group="06 Debug Logs")
 
+benchmarkTvSymbol(series string benchmark) =>
+    benchmark == "SPY" ? "AMEX:SPY" : benchmark == "IWM" ? "AMEX:IWM" : "NASDAQ:QQQ"
+
+string autoRelativeBenchmark = metalib.relativeBenchmark(syminfo.ticker)
+string primaryBenchmark = marketBenchmarkMode == "Auto" ? autoRelativeBenchmark : marketBenchmarkMode == "Manual" ? "MANUAL" : marketBenchmarkMode
+string primaryMarketSymbol = marketBenchmarkMode == "Manual" ? manualPrimaryMarketSymbol : benchmarkTvSymbol(primaryBenchmark)
+
 isMobileProfile() =>
     displayProfile == "Mobile"
 
@@ -109,23 +130,32 @@ dollarText(series float value) =>
     na(value) ? "$--" : "$" + str.tostring(value, "#.##")
 
 reasonText(series string reason) =>
-    reason == "orders_disabled" ? "orders disabled" : reason == "indicator_warmup" ? "indicator warmup" : reason == "reconfirm_too_far_from_map" ? "L3 confirm too far from VWAP/OR" : reason == "pm_not_continuation" ? "PM not OR continuation" : reason == "trend_not_aligned" ? "trend not aligned" : reason == "l3_volume_dead" ? "L3 dead volume" : reason == "l3_volume_not_recovered" ? "L3 volume not recovered" : reason == "l3_weak_close" ? "L3 weak close" : reason == "take_profit_final" ? "final target" : fmtlib.reasonCn(reason)
+    reason == "orders_disabled" ? "orders disabled" : reason == "indicator_warmup" ? "indicator warmup" : reason == "reconfirm_too_far_from_map" ? "L3 confirm too far from VWAP/OR" : reason == "pm_not_continuation" ? "PM not OR continuation" : reason == "trend_not_aligned" ? "trend not aligned" : reason == "broad_market_veto" ? "SPY broad risk veto" : reason == "trend_day_disabled" ? "trend-day disabled" : reason == "l3_volume_dead" ? "L3 dead volume" : reason == "l3_volume_not_recovered" ? "L3 volume not recovered" : reason == "l3_weak_close" ? "L3 weak close" : reason == "trend_day_not_confirmed" ? "trend-day breakout not confirmed" : reason == "continuation_no_structure" ? "trend-day flag not ready" : reason == "continuation_too_extended" ? "trend-day move too extended" : reason == "continuation_not_extended" ? "not far enough for continuation" : reason == "runner_trail_update" ? "runner trail update" : reason == "runner_trailing_stop" ? "runner trailing stop" : reason == "take_profit_final" ? "final target" : fmtlib.reasonCn(reason)
 
 blockedMarkerTooltip(int direction, string reason, float entryPrice, float stopPrice, float qty, float stopPct, int score) =>
     string side = direction == 1 ? "long" : "short"
     "blocked " + side + " candidate" + "\nreason: " + reason + " / " + reasonText(reason) + "\nentry: " + fmtlib.fmtPrice(entryPrice) + "\nstop: " + fmtlib.fmtPrice(stopPrice) + "\nrisk/share: " + fmtlib.fmtPrice(math.abs(entryPrice - stopPrice)) + "\nstop pct: " + fmtlib.fmt(stopPct) + "%\nqty: " + fmtlib.qtyText(qty) + "\nscore: " + str.tostring(score) + "/7"
 
-orderCaseText(int direction, float entryPrice, float stopPrice, float target2, float qty) =>
-    string side = direction == 1 ? "BUY next" : "SELL next"
-    isMinimalProfile() ? side + "\nQ " + fmtlib.qtyText(qty) : side + (isMobileProfile() ? "" : " (L3)") + "\nE " + fmtlib.fmtPrice(entryPrice) + "\nSL " + fmtlib.fmtPrice(stopPrice) + "\nQ " + fmtlib.qtyText(qty) + "\nTP2 " + fmtlib.fmtPrice(target2)
+setupCode(series string setup) =>
+    str.contains(setup, "trend_day") ? "TC" : "L3"
 
-orderCaseTooltip(int direction, float entryPrice, float stopPrice, float target1, float target2, float qty, float riskQty, float notionalQty, int score) =>
+runnerTargetText(float target2) =>
+    runnerMode == "Trailing" ? (hardFinalTargetEnabled ? "HARD " + fmtlib.fmtPrice(target2) : "RUN trail") : "TP2 " + fmtlib.fmtPrice(target2)
+
+finalTargetR() =>
+    runnerMode == "Trailing" and hardFinalTargetEnabled ? hardFinalTargetR : target2RMultiple
+
+orderCaseText(int direction, float entryPrice, float stopPrice, float target2, float qty, string setup) =>
+    string side = direction == 1 ? "BUY next" : "SELL next"
+    isMinimalProfile() ? side + "\n" + setupCode(setup) + " Q " + fmtlib.qtyText(qty) : side + (isMobileProfile() ? "\n" + setupCode(setup) : " (" + setupCode(setup) + ")") + "\nE " + fmtlib.fmtPrice(entryPrice) + "\nSL " + fmtlib.fmtPrice(stopPrice) + "\nQ " + fmtlib.qtyText(qty) + "\n" + runnerTargetText(target2)
+
+orderCaseTooltip(int direction, float entryPrice, float stopPrice, float target1, float target2, float qty, float riskQty, float notionalQty, int score, string setup) =>
     string side = direction == 1 ? "long" : "short"
     float riskPerShare = math.abs(entryPrice - stopPrice)
     float notional = entryPrice * qty
     float actualRiskDollars = riskPerShare * qty
     bool notionalCapBinds = useNotionalCap and not na(notionalQty) and notionalQty <= riskQty
-    "real strategy order: " + side + "\nentry intent: market_next_bar" + "\nentry: " + fmtlib.fmtPrice(entryPrice) + "\nstop: " + fmtlib.fmtPrice(stopPrice) + "\nrisk/share: " + fmtlib.fmtPrice(riskPerShare) + "\nqty: " + fmtlib.qtyText(qty) + "\nnotional: " + dollarText(notional) + "\nrisk qty: " + fmtlib.qtyText(riskQty) + "\nnotional qty cap: " + fmtlib.qtyText(notionalQty) + "\nactual risk: " + dollarText(actualRiskDollars) + "\n1R/final dollars: " + dollarText(actualRiskDollars) + " / " + dollarText(actualRiskDollars * target2RMultiple) + "\nnotional cap binds: " + str.tostring(notionalCapBinds) + "\nTP1: " + fmtlib.fmtPrice(target1) + " / " + str.tostring(tp1ExitPct) + "%\nTP2: " + fmtlib.fmtPrice(target2) + " / " + fmtlib.fmt(target2RMultiple) + "R\nscore: " + str.tostring(score) + "/7"
+    "real strategy order: " + side + "\nsetup: " + setup + "\nentry intent: market_next_bar" + "\nentry: " + fmtlib.fmtPrice(entryPrice) + "\nstop: " + fmtlib.fmtPrice(stopPrice) + "\nrisk/share: " + fmtlib.fmtPrice(riskPerShare) + "\nqty: " + fmtlib.qtyText(qty) + "\nnotional: " + dollarText(notional) + "\nrisk qty: " + fmtlib.qtyText(riskQty) + "\nnotional qty cap: " + fmtlib.qtyText(notionalQty) + "\nactual risk: " + dollarText(actualRiskDollars) + "\n1R/reference dollars: " + dollarText(actualRiskDollars) + " / " + dollarText(actualRiskDollars * finalTargetR()) + "\nnotional cap binds: " + str.tostring(notionalCapBinds) + "\nTP1: " + fmtlib.fmtPrice(target1) + " / " + str.tostring(tp1ExitPct) + "%\nrunner: " + runnerMode + (runnerMode == "Trailing" and not hardFinalTargetEnabled ? " / no hard target" : " / ref " + fmtlib.fmtPrice(target2)) + "\nscore: " + str.tostring(score) + "/7"
 
 fillMarkerText(int direction, float fillPrice, float qty) =>
     string code = direction == 1 ? "FILL L" : "FILL S"
@@ -147,8 +177,10 @@ newDay = timeframe.change("D") or rthStarted
 inOpeningRange = inRth and etMinutes >= 9 * 60 + 30 and etMinutes < 9 * 60 + 45
 orComplete = inRth and etMinutes >= 9 * 60 + 45
 inMorningEntry = inRth and etMinutes >= 9 * 60 + 45 and etMinutes < 11 * 60 + 30
+inMidday = inRth and etMinutes >= 11 * 60 + 30 and etMinutes < 14 * 60
 inAfternoonEntry = enableAfternoonWindow and inRth and etMinutes >= 14 * 60 and etMinutes < 15 * 60 + 30
 entryWindowOpen = inMorningEntry or inAfternoonEntry
+continuationEntryWindowOpen = enableTrendDayContinuation and inRth and orComplete and etMinutes < 15 * 60 + 30 and (entryWindowOpen or (allowTrendDayMiddayEntries and inMidday))
 manageOnly = inRth and etMinutes >= 15 * 60 + 30 and etMinutes < 15 * 60 + 45
 forceFlatNow = inRth and etCloseMinutes >= forceFlatHour * 60 + forceFlatMinute
 
@@ -193,6 +225,14 @@ trendDir() =>
 // -----------------------------------------------------------------------------
 float atrRaw = ta.atr(atrLen)
 float atr = math.max(nz(atrRaw, syminfo.mintick), syminfo.mintick)
+float atr2 = atr
+float atr5Raw = request.security(syminfo.tickerid, "5", ta.atr(atrLen))
+float atr15Raw = request.security(syminfo.tickerid, "15", ta.atr(atrLen))
+float atr5 = math.max(nz(atr5Raw, atr2), syminfo.mintick)
+float atr15 = math.max(nz(atr15Raw, atr5), syminfo.mintick)
+float riskAtr = math.max(atr2, math.max(atr5 * 0.60, math.max(atr15 * 0.35, close * 0.0015)))
+float trailAtr = math.max(atr5, atr15 * 0.50)
+float ema20_5 = request.security(syminfo.tickerid, "5", ta.ema(close, 20))
 float vwap = rthVwap(hlc3)
 float volumeMa = ta.sma(volume, volumeMaLen)
 float barVolume = na(volume) ? nz(volumeMa, 0.0) : volume
@@ -219,20 +259,21 @@ string rawSectorTvSymbol = metalib.sectorTvSymbol(syminfo.ticker)
 bool rawMetadataOk = metalib.hasMetadata(syminfo.ticker)
 bool metadataFallbackActive = not rawMetadataOk and allowMetadataFallback
 string sectorEtf = rawMetadataOk ? rawSectorEtf : metadataFallbackActive ? fallbackSectorEtfName : ""
-string sectorTvSymbol = rawMetadataOk ? rawSectorTvSymbol : metadataFallbackActive ? fallbackSectorSymbol : marketSymbol
+string sectorTvSymbol = rawMetadataOk ? rawSectorTvSymbol : metadataFallbackActive ? fallbackSectorSymbol : primaryMarketSymbol
 string sectorGroup = rawMetadataOk ? metalib.sectorGroup(syminfo.ticker) : metadataFallbackActive ? "fallback" : "unknown"
 string industryTag = rawMetadataOk ? metalib.industryTag(syminfo.ticker) : metadataFallbackActive ? "fallback" : "unknown"
 bool metadataOk = rawMetadataOk or metadataFallbackActive
 bool tradeAllowedByMeta = metadataFallbackActive ? true : metalib.tradeAllowed(syminfo.ticker)
 
-float qqqClose = request.security(marketSymbol, timeframe.period, close)
-float qqqVwap = request.security(marketSymbol, timeframe.period, rthVwap(hlc3))
-float qqqChangeBps = request.security(marketSymbol, timeframe.period, rthChangeBps())
-int qqqTrend15 = request.security(marketSymbol, "15", trendDir())
-int qqqTrend30 = request.security(marketSymbol, "30", trendDir())
-float spyClose = request.security(confirmMarketSymbol, timeframe.period, close)
-float spyVwap = request.security(confirmMarketSymbol, timeframe.period, rthVwap(hlc3))
-float spyChangeBps = request.security(confirmMarketSymbol, timeframe.period, rthChangeBps())
+float primaryClose = request.security(primaryMarketSymbol, timeframe.period, close)
+float primaryVwap = request.security(primaryMarketSymbol, timeframe.period, rthVwap(hlc3))
+float primaryChangeBps = request.security(primaryMarketSymbol, timeframe.period, rthChangeBps())
+int primaryTrend15 = request.security(primaryMarketSymbol, "15", trendDir())
+int primaryTrend30 = request.security(primaryMarketSymbol, "30", trendDir())
+float broadClose = request.security(broadMarketSymbol, timeframe.period, close)
+float broadVwap = request.security(broadMarketSymbol, timeframe.period, rthVwap(hlc3))
+float broadChangeBps = request.security(broadMarketSymbol, timeframe.period, rthChangeBps())
+int broadTrend15 = request.security(broadMarketSymbol, "15", trendDir())
 float sectorClose = request.security(sectorTvSymbol, timeframe.period, close)
 float sectorVwap = request.security(sectorTvSymbol, timeframe.period, rthVwap(hlc3))
 float sectorChangeBps = request.security(sectorTvSymbol, timeframe.period, rthChangeBps())
@@ -241,22 +282,24 @@ int sectorTrend30 = request.security(sectorTvSymbol, "30", trendDir())
 int stockTrend15 = request.security(syminfo.tickerid, "15", trendDir())
 int stockTrend30 = request.security(syminfo.tickerid, "30", trendDir())
 float stockChangeBps = rthChangeBps()
-bool indicatorReady = inRth and not na(atrRaw) and not na(vwap) and not na(volumeMa) and volumeMa > 0.0 and not na(qqqClose) and not na(qqqVwap) and not na(qqqChangeBps) and not na(qqqTrend15) and not na(qqqTrend30) and not na(spyClose) and not na(spyVwap) and not na(sectorClose) and not na(sectorVwap) and not na(sectorChangeBps) and not na(sectorTrend15) and not na(sectorTrend30) and not na(stockTrend15) and not na(stockTrend30) and not na(stockChangeBps)
+bool indicatorReady = inRth and not na(atrRaw) and not na(vwap) and not na(volumeMa) and volumeMa > 0.0 and not na(primaryClose) and not na(primaryVwap) and not na(primaryChangeBps) and not na(primaryTrend15) and not na(primaryTrend30) and not na(broadClose) and not na(broadVwap) and not na(broadTrend15) and not na(sectorClose) and not na(sectorVwap) and not na(sectorChangeBps) and not na(sectorTrend15) and not na(sectorTrend30) and not na(stockTrend15) and not na(stockTrend30) and not na(stockChangeBps)
 
-float stockVsMarketBps = stockChangeBps - qqqChangeBps
+float stockVsMarketBps = stockChangeBps - primaryChangeBps
 float stockVsSectorBps = stockChangeBps - sectorChangeBps
-float sectorVsMarketBps = sectorChangeBps - qqqChangeBps
+float sectorVsMarketBps = sectorChangeBps - primaryChangeBps
 
-bool qqqLong = qqqClose > qqqVwap and qqqTrend15 >= 0
-bool qqqShort = qqqClose < qqqVwap and qqqTrend15 <= 0
-bool spyLongOk = spyClose >= spyVwap or spyChangeBps >= 0.0
-bool spyShortOk = spyClose <= spyVwap or spyChangeBps <= 0.0
-bool marketLongOk = qqqLong and spyLongOk
-bool marketShortOk = qqqShort and spyShortOk
-bool hardTrendLongOk = qqqTrend15 == 1 and qqqTrend30 == 1 and sectorTrend15 == 1 and sectorTrend30 == 1 and stockTrend15 == 1 and stockTrend30 == 1
-bool hardTrendShortOk = qqqTrend15 == -1 and qqqTrend30 == -1 and sectorTrend15 == -1 and sectorTrend30 == -1 and stockTrend15 == -1 and stockTrend30 == -1
-bool marketTrendLongOk = qqqTrend30 == 1 and qqqTrend15 >= 0
-bool marketTrendShortOk = qqqTrend30 == -1 and qqqTrend15 <= 0
+bool primaryLong = primaryClose > primaryVwap and primaryTrend15 >= 0
+bool primaryShort = primaryClose < primaryVwap and primaryTrend15 <= 0
+bool broadLongVeto = broadClose < broadVwap and broadTrend15 == -1
+bool broadShortVeto = broadClose > broadVwap and broadTrend15 == 1
+bool broadLongOk = not broadLongVeto
+bool broadShortOk = not broadShortVeto
+bool marketLongOk = primaryLong and broadLongOk
+bool marketShortOk = primaryShort and broadShortOk
+bool hardTrendLongOk = primaryTrend15 == 1 and primaryTrend30 == 1 and sectorTrend15 == 1 and sectorTrend30 == 1 and stockTrend15 == 1 and stockTrend30 == 1
+bool hardTrendShortOk = primaryTrend15 == -1 and primaryTrend30 == -1 and sectorTrend15 == -1 and sectorTrend30 == -1 and stockTrend15 == -1 and stockTrend30 == -1
+bool marketTrendLongOk = primaryTrend30 == 1 and primaryTrend15 >= 0
+bool marketTrendShortOk = primaryTrend30 == -1 and primaryTrend15 <= 0
 int contextTrendLongScore = (sectorTrend15 == 1 ? 1 : 0) + (sectorTrend30 == 1 ? 1 : 0) + (stockTrend15 == 1 ? 1 : 0) + (stockTrend30 == 1 ? 1 : 0)
 int contextTrendShortScore = (sectorTrend15 == -1 ? 1 : 0) + (sectorTrend30 == -1 ? 1 : 0) + (stockTrend15 == -1 ? 1 : 0) + (stockTrend30 == -1 ? 1 : 0)
 bool trendGateLongOk = trendFilterMode == "Off" ? true : trendFilterMode == "Hard" ? hardTrendLongOk : marketTrendLongOk
@@ -278,10 +321,10 @@ bool vwapCross2 = ta.cross(close[2], vwap[2])
 bool vwapCross3 = ta.cross(close[3], vwap[3])
 bool vwapCross4 = ta.cross(close[4], vwap[4])
 int vwapCrossCount = (vwapCross0 ? 1 : 0) + (vwapCross1 ? 1 : 0) + (vwapCross2 ? 1 : 0) + (vwapCross3 ? 1 : 0) + (vwapCross4 ? 1 : 0)
-bool nearVwapChopBand = math.abs(close - vwap) <= atr * vwapChopAtr
+bool nearVwapChopBand = math.abs(close - vwap) <= riskAtr * vwapChopAtr
 bool vwapChoppy = vwapCrossCount >= 3 and nearVwapChopBand
-float longMapDistanceAtr = indicatorReady and atr > 0.0 ? math.min(math.abs(close - vwap), not na(orHigh) ? math.abs(close - orHigh) : math.abs(close - vwap)) / atr : na
-float shortMapDistanceAtr = indicatorReady and atr > 0.0 ? math.min(math.abs(close - vwap), not na(orLow) ? math.abs(close - orLow) : math.abs(close - vwap)) / atr : na
+float longMapDistanceAtr = indicatorReady and riskAtr > 0.0 ? math.min(math.abs(close - vwap), not na(orHigh) ? math.abs(close - orHigh) : math.abs(close - vwap)) / riskAtr : na
+float shortMapDistanceAtr = indicatorReady and riskAtr > 0.0 ? math.min(math.abs(close - vwap), not na(orLow) ? math.abs(close - orLow) : math.abs(close - vwap)) / riskAtr : na
 bool longMapNear = indicatorReady and not na(longMapDistanceAtr) and longMapDistanceAtr <= maxMapDistanceAtr
 bool shortMapNear = indicatorReady and not na(shortMapDistanceAtr) and shortMapDistanceAtr <= maxMapDistanceAtr
 bool longReconfirmMapNear = indicatorReady and not na(longMapDistanceAtr) and longMapDistanceAtr <= maxReconfirmDistanceAtr
@@ -328,8 +371,10 @@ baseBlockReason(int direction) =>
         reason := "pm_not_continuation"
     else if (direction == 1 and not trendGateLongOk) or (direction == -1 and not trendGateShortOk)
         reason := "trend_not_aligned"
-    else if (direction == 1 and not marketLongOk) or (direction == -1 and not marketShortOk)
+    else if (direction == 1 and not primaryLong) or (direction == -1 and not primaryShort)
         reason := "market_not_aligned"
+    else if (direction == 1 and broadLongVeto) or (direction == -1 and broadShortVeto)
+        reason := "broad_market_veto"
     else if (direction == 1 and not sectorLongOk) or (direction == -1 and not sectorShortOk)
         reason := "sector_not_aligned"
     else if (direction == 1 and not relativeLongOk) or (direction == -1 and not relativeShortOk)
@@ -340,6 +385,40 @@ baseBlockReason(int direction) =>
         reason := "vwap_choppy"
     else if (direction == 1 and not longMapNear) or (direction == -1 and not shortMapNear)
         reason := "too_far_from_map"
+    reason
+
+continuationBaseBlockReason(int direction) =>
+    string reason = "passed"
+    if not enableTrendDayContinuation
+        reason := "trend_day_disabled"
+    else if not is2m
+        reason := "wrong_timeframe"
+    else if manualEventBlock
+        reason := "manual_event_block"
+    else if not metadataOk
+        reason := "metadata_missing"
+    else if not tradeAllowedByMeta
+        reason := "trade_not_allowed_symbol"
+    else if not continuationEntryWindowOpen
+        reason := "outside_entry_session"
+    else if not dailyRiskOk
+        reason := "daily_risk_stop"
+    else if not indicatorReady
+        reason := "indicator_warmup"
+    else if (direction == 1 and not trendGateLongOk) or (direction == -1 and not trendGateShortOk)
+        reason := "trend_not_aligned"
+    else if (direction == 1 and not primaryLong) or (direction == -1 and not primaryShort)
+        reason := "market_not_aligned"
+    else if (direction == 1 and broadLongVeto) or (direction == -1 and broadShortVeto)
+        reason := "broad_market_veto"
+    else if (direction == 1 and not sectorLongOk) or (direction == -1 and not sectorShortOk)
+        reason := "sector_not_aligned"
+    else if (direction == 1 and not relativeLongOk) or (direction == -1 and not relativeShortOk)
+        reason := "relative_strength_missing"
+    else if (direction == 1 and not priceLongSide) or (direction == -1 and not priceShortSide)
+        reason := "price_wrong_side_vwap"
+    else if vwapChoppy
+        reason := "vwap_choppy"
     reason
 
 reconfirmBaseBlockReason(int direction) =>
@@ -359,7 +438,7 @@ priceVsText(float priceValue, float refValue) =>
     na(priceValue) or na(refValue) ? "na" : priceValue > refValue ? "above" : priceValue < refValue ? "below" : "at"
 
 marketDataMissing() =>
-    na(qqqClose) or na(qqqVwap) or na(qqqTrend15) or na(qqqTrend30) or na(spyClose) or na(spyVwap)
+    na(primaryClose) or na(primaryVwap) or na(primaryTrend15) or na(primaryTrend30) or na(broadClose) or na(broadVwap) or na(broadTrend15)
 
 marketGateTag() =>
     marketDataMissing() ? "MKT DATA?" : marketLongOk and not marketShortOk ? "MKT L" : marketShortOk and not marketLongOk ? "MKT S" : "MKT MIX"
@@ -369,47 +448,48 @@ marketBlockCode(int direction) =>
     if marketDataMissing()
         code := "DATA?"
     else if direction == 1
-        code := qqqClose <= qqqVwap ? "Q<VWAP" : qqqTrend15 < 0 ? "Q15Dn" : not spyLongOk ? "SPY" : "MIX"
+        code := primaryClose <= primaryVwap ? "P<VWAP" : primaryTrend15 < 0 ? "P15Dn" : broadLongVeto ? "SPYVETO" : "MIX"
     else
-        code := qqqClose >= qqqVwap ? "Q>VWAP" : qqqTrend15 > 0 ? "Q15Up" : not spyShortOk ? "SPY" : "MIX"
+        code := primaryClose >= primaryVwap ? "P>VWAP" : primaryTrend15 > 0 ? "P15Up" : broadShortVeto ? "SPYVETO" : "MIX"
     code
 
 marketBlockSummary(int direction) =>
     string code = marketBlockCode(direction)
-    code == "DATA?" ? "market data missing" : code == "Q<VWAP" ? "QQQ is not above VWAP for long" : code == "Q>VWAP" ? "QQQ is not below VWAP for short" : code == "Q15Dn" ? "QQQ 15m trend is down" : code == "Q15Up" ? "QQQ 15m trend is up" : code == "SPY" ? "SPY opposes QQQ direction" : "mixed market state"
+    code == "DATA?" ? "market data missing" : code == "P<VWAP" ? "primary benchmark is not above VWAP for long" : code == "P>VWAP" ? "primary benchmark is not below VWAP for short" : code == "P15Dn" ? "primary 15m trend is down" : code == "P15Up" ? "primary 15m trend is up" : code == "SPYVETO" ? "SPY broad risk veto is active" : "mixed market state"
 
 marketBlockDetail(int direction) =>
     string side = direction == 1 ? "Long" : "Short"
     bool pass = direction == 1 ? marketLongOk : marketShortOk
-    bool spyOk = direction == 1 ? spyLongOk : spyShortOk
+    bool broadOk = direction == 1 ? broadLongOk : broadShortOk
     string result = side + " market: " + (pass ? "PASS" : marketBlockCode(direction) + " / " + marketBlockSummary(direction))
-    result := result + "\nQQQ close/VWAP: " + fmtlib.fmtPrice(qqqClose) + " / " + fmtlib.fmtPrice(qqqVwap) + " / " + priceVsText(qqqClose, qqqVwap)
-    result := result + "\nQQQ 15m trend: " + trendText(qqqTrend15) + " / raw " + str.tostring(qqqTrend15)
-    result := result + "\nSPY close/VWAP: " + fmtlib.fmtPrice(spyClose) + " / " + fmtlib.fmtPrice(spyVwap) + " / " + priceVsText(spyClose, spyVwap)
-    result := result + "\nSPY ok: " + str.tostring(spyOk) + " / RTH change " + fmtlib.bpsText(spyChangeBps)
+    result := result + "\nPrimary " + primaryBenchmark + " close/VWAP: " + fmtlib.fmtPrice(primaryClose) + " / " + fmtlib.fmtPrice(primaryVwap) + " / " + priceVsText(primaryClose, primaryVwap)
+    result := result + "\nPrimary 15m trend: " + trendText(primaryTrend15) + " / raw " + str.tostring(primaryTrend15)
+    result := result + "\nSPY broad close/VWAP: " + fmtlib.fmtPrice(broadClose) + " / " + fmtlib.fmtPrice(broadVwap) + " / " + priceVsText(broadClose, broadVwap)
+    result := result + "\nSPY broad ok: " + str.tostring(broadOk) + " / veto L/S " + str.tostring(broadLongVeto) + "/" + str.tostring(broadShortVeto) + " / RTH change " + fmtlib.bpsText(broadChangeBps)
     result
 
 marketGateDetail() =>
     string result = "Market/trend gate filter"
     result := result + "\nGate tag: " + marketGateTag()
     result := result + "\nIndicator ready: " + str.tostring(indicatorReady)
-    result := result + "\nLong OK: " + str.tostring(marketLongOk) + " / QQQ long " + str.tostring(qqqLong) + " / SPY ok " + str.tostring(spyLongOk)
-    result := result + "\nShort OK: " + str.tostring(marketShortOk) + " / QQQ short " + str.tostring(qqqShort) + " / SPY ok " + str.tostring(spyShortOk)
+    result := result + "\nBenchmark: mode " + marketBenchmarkMode + " / primary " + primaryBenchmark + " / " + primaryMarketSymbol + " / broad " + broadMarketSymbol
+    result := result + "\nLong OK: " + str.tostring(marketLongOk) + " / primary long " + str.tostring(primaryLong) + " / SPY veto " + str.tostring(broadLongVeto)
+    result := result + "\nShort OK: " + str.tostring(marketShortOk) + " / primary short " + str.tostring(primaryShort) + " / SPY veto " + str.tostring(broadShortVeto)
     result := result + "\nTrend mode: " + trendFilterMode + " / gate L/S " + str.tostring(trendGateLongOk) + " / " + str.tostring(trendGateShortOk)
     result := result + "\nMarket trend L/S: " + str.tostring(marketTrendLongOk) + " / " + str.tostring(marketTrendShortOk)
     result := result + "\nContext trend score L/S: " + str.tostring(contextTrendLongScore) + " / " + str.tostring(contextTrendShortScore) + " min " + str.tostring(balancedTrendScoreMin)
     result := result + "\nHard trend L/S: " + str.tostring(hardTrendLongOk) + " / " + str.tostring(hardTrendShortOk)
     result := result + "\nLong detail: " + (marketLongOk ? "PASS" : marketBlockCode(1) + " / " + marketBlockSummary(1))
     result := result + "\nShort detail: " + (marketShortOk ? "PASS" : marketBlockCode(-1) + " / " + marketBlockSummary(-1))
-    result := result + "\nQQQ close/VWAP: " + fmtlib.fmtPrice(qqqClose) + " / " + fmtlib.fmtPrice(qqqVwap) + " / " + priceVsText(qqqClose, qqqVwap)
-    result := result + "\nTrend q/s/st 15/30: " + trendText(qqqTrend15) + "/" + trendText(qqqTrend30) + " " + trendText(sectorTrend15) + "/" + trendText(sectorTrend30) + " " + trendText(stockTrend15) + "/" + trendText(stockTrend30)
-    result := result + "\nQQQ 15m trend: " + trendText(qqqTrend15) + " / raw " + str.tostring(qqqTrend15)
-    result := result + "\nQQQ RTH change: " + fmtlib.bpsText(qqqChangeBps)
-    result := result + "\nSPY close/VWAP: " + fmtlib.fmtPrice(spyClose) + " / " + fmtlib.fmtPrice(spyVwap) + " / " + priceVsText(spyClose, spyVwap)
-    result := result + "\nSPY RTH change: " + fmtlib.bpsText(spyChangeBps)
+    result := result + "\nPrimary close/VWAP: " + fmtlib.fmtPrice(primaryClose) + " / " + fmtlib.fmtPrice(primaryVwap) + " / " + priceVsText(primaryClose, primaryVwap)
+    result := result + "\nTrend primary/sector/stock 15/30: " + trendText(primaryTrend15) + "/" + trendText(primaryTrend30) + " " + trendText(sectorTrend15) + "/" + trendText(sectorTrend30) + " " + trendText(stockTrend15) + "/" + trendText(stockTrend30)
+    result := result + "\nPrimary 15m trend: " + trendText(primaryTrend15) + " / raw " + str.tostring(primaryTrend15)
+    result := result + "\nPrimary RTH change: " + fmtlib.bpsText(primaryChangeBps)
+    result := result + "\nSPY broad close/VWAP: " + fmtlib.fmtPrice(broadClose) + " / " + fmtlib.fmtPrice(broadVwap) + " / " + priceVsText(broadClose, broadVwap)
+    result := result + "\nSPY broad RTH change: " + fmtlib.bpsText(broadChangeBps) + " / trend " + trendText(broadTrend15)
     result := result + "\n" + marketBlockDetail(1)
     result := result + "\n" + marketBlockDetail(-1)
-    result := result + "\nRule: market/VWAP must agree; Balanced trend needs QQQ 30m with 15m not opposing, while sector/stock trend contributes the score point."
+    result := result + "\nRule: primary benchmark controls direction; SPY only vetoes when it is below VWAP with a down 15m trend for longs, or above VWAP with an up 15m trend for shorts."
     result
 
 debugEtStamp() =>
@@ -423,20 +503,23 @@ debugScoreText(int direction) =>
 
 debugCommonState(int direction, string reason) =>
     string result = "side=" + dirName(direction) + " reason=" + reason + " / " + reasonText(reason)
-    if reason == "market_not_aligned" and direction != 0
+    if (reason == "market_not_aligned" or reason == "broad_market_veto") and direction != 0
         result := result + " market_code=" + marketBlockCode(direction) + " / " + marketBlockSummary(direction)
     result := result + "\nindicator_ready=" + str.tostring(indicatorReady)
+    result := result + "\nbenchmark mode=" + marketBenchmarkMode + " primary=" + primaryBenchmark + " symbol=" + primaryMarketSymbol + " broad=" + broadMarketSymbol + " model=primary_plus_spy_risk_veto"
     result := result + "\ntrend_mode=" + trendFilterMode + " trend_gate L/S=" + str.tostring(trendGateLongOk) + "/" + str.tostring(trendGateShortOk) + " trend_score_point L/S=" + str.tostring(trendScoreLongOk) + "/" + str.tostring(trendScoreShortOk)
     result := result + "\ntrend_context_score L/S=" + str.tostring(contextTrendLongScore) + "/" + str.tostring(contextTrendShortScore) + " min=" + str.tostring(balancedTrendScoreMin) + " trend_market L/S=" + str.tostring(marketTrendLongOk) + "/" + str.tostring(marketTrendShortOk)
     result := result + "\ntrend_hard L/S=" + str.tostring(hardTrendLongOk) + "/" + str.tostring(hardTrendShortOk)
-    result := result + "\ntrend qqq15/30 sector15/30 stock15/30=" + trendText(qqqTrend15) + "/" + trendText(qqqTrend30) + " " + trendText(sectorTrend15) + "/" + trendText(sectorTrend30) + " " + trendText(stockTrend15) + "/" + trendText(stockTrend30)
+    result := result + "\ntrend primary15/30 sector15/30 stock15/30=" + trendText(primaryTrend15) + "/" + trendText(primaryTrend30) + " " + trendText(sectorTrend15) + "/" + trendText(sectorTrend30) + " " + trendText(stockTrend15) + "/" + trendText(stockTrend30)
     result := result + "\nprice=" + fmtlib.fmtPrice(close) + " vwap=" + fmtlib.fmtPrice(vwap) + " ORH=" + fmtlib.fmtPrice(orHigh) + " ORL=" + fmtlib.fmtPrice(orLow)
-    result := result + "\nrvol=" + fmtlib.fmt(rvol) + " vol_expanded=" + str.tostring(volumeExpanded) + " score=" + debugScoreText(direction)
+    result := result + "\nrvol=" + fmtlib.fmt(rvol) + " vol_expanded=" + str.tostring(volumeExpanded) + " vol_strong=" + str.tostring(volumeStrong) + " score=" + debugScoreText(direction)
+    result := result + "\natr2/5/15 risk/trail=" + fmtlib.fmt(atr2) + "/" + fmtlib.fmt(atr5) + "/" + fmtlib.fmt(atr15) + " " + fmtlib.fmt(riskAtr) + "/" + fmtlib.fmt(trailAtr)
     result := result + "\nmap_dist L/S=" + fmtlib.fmt(longMapDistanceAtr) + "/" + fmtlib.fmt(shortMapDistanceAtr) + " price_side L/S=" + str.tostring(priceLongSide) + "/" + str.tostring(priceShortSide)
     result := result + "\nmap_max L1/L2=" + fmtlib.fmt(maxMapDistanceAtr) + "ATR L3=" + fmtlib.fmt(maxReconfirmDistanceAtr) + "ATR"
+    result := result + "\ntc_window=" + str.tostring(continuationEntryWindowOpen) + " tc_midday=" + str.tostring(allowTrendDayMiddayEntries) + " tc_min_dist=" + fmtlib.fmt(continuationMinMapDistanceAtr) + "ATR"
     result := result + "\npm_cont L/S=" + str.tostring(pmLongContinuationOk) + "/" + str.tostring(pmShortContinuationOk) + " pm_rule=long_above_ORH short_below_ORL"
     result := result + "\nl3_map_ok L/S=" + str.tostring(longReconfirmMapNear) + "/" + str.tostring(shortReconfirmMapNear) + " l3_base_score_prevol L/S=" + str.tostring(scoreFor(marketLongOk, sectorLongOk, relativeLongOk, priceLongSide, longReconfirmMapNear, volumeExpanded, trendScoreLongOk)) + "/" + str.tostring(scoreFor(marketShortOk, sectorShortOk, relativeShortOk, priceShortSide, shortReconfirmMapNear, volumeExpanded, trendScoreShortOk))
-    result := result + "\nmarket=" + marketGateTag() + " qqq=" + fmtlib.fmtPrice(qqqClose) + "/" + fmtlib.fmtPrice(qqqVwap) + " q15=" + trendText(qqqTrend15) + " spy=" + fmtlib.fmtPrice(spyClose) + "/" + fmtlib.fmtPrice(spyVwap)
+    result := result + "\nmarket=" + marketGateTag() + " primary(" + primaryBenchmark + ")=" + fmtlib.fmtPrice(primaryClose) + "/" + fmtlib.fmtPrice(primaryVwap) + " p15=" + trendText(primaryTrend15) + " broad(SPY)=" + fmtlib.fmtPrice(broadClose) + "/" + fmtlib.fmtPrice(broadVwap) + " broad_veto L/S=" + str.tostring(broadLongVeto) + "/" + str.tostring(broadShortVeto)
     result := result + "\nrs stock-market/sector=" + fmtlib.bpsText(stockVsMarketBps) + "/" + fmtlib.bpsText(stockVsSectorBps) + " sector-vs-market=" + fmtlib.bpsText(sectorVsMarketBps) + " sector=" + sectorEtf
     result := result + "\nsector_close/vwap=" + fmtlib.fmtPrice(sectorClose) + "/" + fmtlib.fmtPrice(sectorVwap) + " sector_side L/S=" + str.tostring(sectorTrendLongOk) + "/" + str.tostring(sectorTrendShortOk) + " sector_lead L/S=" + str.tostring(sectorLeadershipLongOk) + "/" + str.tostring(sectorLeadershipShortOk) + " hard_lead=" + str.tostring(requireSectorLeadership) + " sector_ok L/S=" + str.tostring(sectorLongOk) + "/" + str.tostring(sectorShortOk)
     result
@@ -454,11 +537,12 @@ debugOrderState(string eventName, int direction, string reason, float entryPrice
     float riskQtyNoBuffer = riskPerShare > 0.0 ? math.floor(maxRiskDollars * riskQtySafetyPct / riskPerShare) : na
     float notionalQtyAtEntry = useNotionalCap and entryPrice > 0.0 ? math.floor(positionAmount / entryPrice) : na
     bool notionalCapBinds = useNotionalCap and not na(riskQtyNoBuffer) and not na(notionalQtyAtEntry) and notionalQtyAtEntry <= riskQtyNoBuffer
+    float finalR = finalTargetR()
     string scoreOut = scoreValue >= 0 ? str.tostring(scoreValue) + "/7" : "--"
     string detail = "side=" + dirName(direction) + " reason=" + reason + " / " + reasonText(reason)
     detail := detail + "\nentry=" + fmtlib.fmtPrice(entryPrice) + " stop=" + fmtlib.fmtPrice(stopPrice) + " risk/share=" + fmtlib.fmtPrice(riskPerShare)
     detail := detail + "\nqty=" + fmtlib.qtyText(qtyValue) + " notional=" + dollarText(entryPrice * qtyValue) + " TP1=" + fmtlib.fmtPrice(target1) + " TP2=" + fmtlib.fmtPrice(target2) + " score=" + scoreOut
-    detail := detail + "\nactual_risk_dollars=" + dollarText(actualRiskDollars) + " expected_1R_dollars=" + dollarText(actualRiskDollars) + " expected_final_dollars=" + dollarText(actualRiskDollars * target2RMultiple) + " final_target_r=" + fmtlib.fmt(target2RMultiple) + " notional_cap_binds=" + str.tostring(notionalCapBinds)
+    detail := detail + "\nactual_risk_dollars=" + dollarText(actualRiskDollars) + " expected_1R_dollars=" + dollarText(actualRiskDollars) + " expected_final_dollars=" + dollarText(actualRiskDollars * finalR) + " final_target_r=" + fmtlib.fmt(finalR) + " runner_mode=" + runnerMode + " notional_cap_binds=" + str.tostring(notionalCapBinds)
     detail := detail + "\n" + debugCommonState(direction, reason)
     debugLog("order", eventName, detail)
 
@@ -495,7 +579,7 @@ drawSessionMarker(int direction, string markerText, string detailText, color mar
         label.new(bar_index, eventMarkerY(direction, "watch", offsetAtr), markerText, style=direction == 1 ? label.style_label_up : label.style_label_down, color=markerColor, textcolor=markerTextColor, size=markerSize(), tooltip=detailText)
 
 blockMarkerText(string baseText, int direction, string reason) =>
-    reason == "market_not_aligned" ? baseText + "\n" + marketBlockCode(direction) : baseText
+    reason == "market_not_aligned" or reason == "broad_market_veto" ? baseText + "\n" + marketBlockCode(direction) : baseText
 
 gateDetail(int direction, string stageText, string triggerText, string reason) =>
     bool marketOk = direction == 1 ? marketLongOk : marketShortOk
@@ -507,7 +591,7 @@ gateDetail(int direction, string stageText, string triggerText, string reason) =
     int score = direction == 1 ? scoreFor(marketLongOk, sectorLongOk, relativeLongOk, priceLongSide, longMapNear, volumeExpanded, trendScoreLongOk) : scoreFor(marketShortOk, sectorShortOk, relativeShortOk, priceShortSide, shortMapNear, volumeExpanded, trendScoreShortOk)
     string result = stageText + " " + dirName(direction) + " / " + triggerText
     result := result + "\nreason: " + reasonText(reason) + " / " + reason
-    if reason == "market_not_aligned"
+    if reason == "market_not_aligned" or reason == "broad_market_veto"
         result := result + "\nmarket block: " + marketBlockCode(direction) + " / " + marketBlockSummary(direction)
     result := result + "\nscore now: " + str.tostring(score) + "/7"
     result := result + "\nmarket/sector/RS: " + str.tostring(marketOk) + " / " + str.tostring(sectorOk) + " / " + str.tostring(relativeOk)
@@ -590,8 +674,10 @@ if morningEntryOpenedNow
     debugLog("session", "AM_ENTRY_ON", "primary entry window opened\n" + debugCommonState(0, "session_open"))
 
 if morningEntryClosedNow
-    drawSessionMarker(-1, isMinimalProfile() ? "AM OFF" : "AM OFF\n11:30", "11:30 New York time: primary entry window is closed. Midday no-trade period starts.", color.new(color.orange, 0), color.black, 1.05)
-    debugLog("session", "AM_ENTRY_OFF", "primary entry window closed\n" + debugCommonState(0, "outside_entry_session"))
+    string middayText = allowTrendDayMiddayEntries and enableTrendDayContinuation ? (isMinimalProfile() ? "TC MID" : "AM OFF\nTC MID") : (isMinimalProfile() ? "AM OFF" : "AM OFF\n11:30")
+    string middayTip = allowTrendDayMiddayEntries and enableTrendDayContinuation ? "11:30 New York time: VWAP/OR L3 entry window closes, but trend-day continuation can still open new entries until 15:30." : "11:30 New York time: primary entry window is closed. Midday no-trade period starts."
+    drawSessionMarker(-1, middayText, middayTip, color.new(color.orange, 0), color.black, 1.05)
+    debugLog("session", "AM_ENTRY_OFF", "primary entry window closed; continuation_midday_enabled=" + str.tostring(allowTrendDayMiddayEntries and enableTrendDayContinuation) + "\n" + debugCommonState(0, "outside_entry_session"))
 
 if afternoonEntryOpenedNow
     drawSessionMarker(1, isMinimalProfile() ? "PM ON" : "PM ON\n14:00", "14:00-15:30 New York time: strict continuation entry window is open.", color.new(color.teal, 0), color.white, 1.05)
@@ -611,6 +697,7 @@ if entryWindowOpenedNow
     detail := detail + "\n" + activeGateLine
     detail := detail + "\nLong base: " + reasonText(longBaseBlock) + " / " + longBaseBlock + " / score " + str.tostring(scoreFor(marketLongOk, sectorLongOk, relativeLongOk, priceLongSide, longMapNear, volumeExpanded, trendScoreLongOk)) + "/7"
     detail := detail + "\nShort base: " + reasonText(shortBaseBlock) + " / " + shortBaseBlock + " / score " + str.tostring(scoreFor(marketShortOk, sectorShortOk, relativeShortOk, priceShortSide, shortMapNear, volumeExpanded, trendScoreShortOk)) + "/7"
+    detail := detail + "\nTC window: " + str.tostring(continuationEntryWindowOpen) + " / midday " + str.tostring(allowTrendDayMiddayEntries) + " / min dist " + fmtlib.fmt(continuationMinMapDistanceAtr) + "ATR"
     detail := detail + "\nVWAP " + fmtlib.fmtPrice(vwap) + " / ORH " + fmtlib.fmtPrice(orHigh) + " / ORL " + fmtlib.fmtPrice(orLow)
     detail := detail + "\nRVOL " + fmtlib.fmt(rvol) + " / RS " + fmtlib.bpsText(stockVsMarketBps) + " / " + fmtlib.bpsText(stockVsSectorBps)
     detail := detail + "\n" + marketGateDetail()
@@ -703,13 +790,13 @@ if confirmed and shortStageExpired
 bool longCanEvaluateL2 = longStage == 1 and not na(longStageBar) and bar_index > longStageBar
 bool shortCanEvaluateL2 = shortStage == 1 and not na(shortStageBar) and bar_index > shortStageBar
 bool longPullbackVolumeDry = longCanEvaluateL2 and barVolume <= nz(longImpulseVolume, barVolume) * pullbackVolumeMaxImpulseRatio and (na(volumeMa) or barVolume <= volumeMa * pullbackVolumeMaxMaRatio)
-bool longPullbackHolds = longCanEvaluateL2 and not na(longMapLevel) and low >= longMapLevel - atr * 0.05 and close >= longMapLevel
+bool longPullbackHolds = longCanEvaluateL2 and not na(longMapLevel) and low >= longMapLevel - riskAtr * 0.05 and close >= longMapLevel
 bool longPullback = confirmed and slotOpen and longBaseOk and longPullbackVolumeDry and longPullbackHolds
 bool shortRetestVolumeDry = shortCanEvaluateL2 and barVolume <= nz(shortImpulseVolume, barVolume) * pullbackVolumeMaxImpulseRatio and (na(volumeMa) or barVolume <= volumeMa * pullbackVolumeMaxMaRatio)
-bool shortRetestHolds = shortCanEvaluateL2 and not na(shortMapLevel) and high <= shortMapLevel + atr * 0.05 and close <= shortMapLevel
+bool shortRetestHolds = shortCanEvaluateL2 and not na(shortMapLevel) and high <= shortMapLevel + riskAtr * 0.05 and close <= shortMapLevel
 bool shortRetest = confirmed and slotOpen and shortBaseOk and shortRetestVolumeDry and shortRetestHolds
-bool longPullbackAttempt = confirmed and slotOpen and longCanEvaluateL2 and not na(longMapLevel) and (low <= longMapLevel + atr * 0.25 or close < longMapLevel - atr * 0.05)
-bool shortRetestAttempt = confirmed and slotOpen and shortCanEvaluateL2 and not na(shortMapLevel) and (high >= shortMapLevel - atr * 0.25 or close > shortMapLevel + atr * 0.05)
+bool longPullbackAttempt = confirmed and slotOpen and longCanEvaluateL2 and not na(longMapLevel) and (low <= longMapLevel + riskAtr * 0.25 or close < longMapLevel - riskAtr * 0.05)
+bool shortRetestAttempt = confirmed and slotOpen and shortCanEvaluateL2 and not na(shortMapLevel) and (high >= shortMapLevel - riskAtr * 0.25 or close > shortMapLevel + riskAtr * 0.05)
 string longPullbackBlock = not longBaseOk ? longBaseBlock : not longPullbackVolumeDry ? "pullback_volume_not_dry" : not longPullbackHolds ? "pullback_broke_map" : "passed"
 string shortRetestBlock = not shortBaseOk ? shortBaseBlock : not shortRetestVolumeDry ? "pullback_volume_not_dry" : not shortRetestHolds ? "retest_broke_map" : "passed"
 
@@ -725,12 +812,12 @@ if showBlockedMarkers and longPullbackAttempt and not longPullback and longPullb
 if showBlockedMarkers and shortRetestAttempt and not shortRetest and shortRetestBlock != "passed"
     drawEventMarker(-1, "blocked", blockMarkerText("xS2", -1, shortRetestBlock), gateDetail(-1, "S2 blocked", "retest near VWAP/OR", shortRetestBlock), 0.38)
 
-if longStage == 1 and confirmed and close < nz(longMapLevel, close) - atr * 0.05
+if longStage == 1 and confirmed and close < nz(longMapLevel, close) - riskAtr * 0.05
     debugStageEvent(1, "L2_RESET", "pullback broke VWAP/OR map", "pullback_broke_map")
     longStage := 0
     longPullbackVolume := na
     longPatternReason := "pullback_broke_map"
-if shortStage == 1 and confirmed and close > nz(shortMapLevel, close) + atr * 0.05
+if shortStage == 1 and confirmed and close > nz(shortMapLevel, close) + riskAtr * 0.05
     debugStageEvent(-1, "S2_RESET", "retest broke VWAP/OR map", "retest_broke_map")
     shortStage := 0
     shortRetestVolume := na
@@ -762,7 +849,7 @@ if shortRetest
 // Candidate build, validation, and order submission
 // -----------------------------------------------------------------------------
 riskSafetyBuffer() =>
-    riskQtyBufferAtr > 0.0 ? math.max(syminfo.mintick, atr * riskQtyBufferAtr) : 0.0
+    riskQtyBufferAtr > 0.0 ? math.max(syminfo.mintick, riskAtr * riskQtyBufferAtr) : 0.0
 
 calcRiskQty(float entryPrice, float stopPrice) =>
     float perShareRiskWithBuffer = math.abs(entryPrice - stopPrice) + riskSafetyBuffer()
@@ -848,6 +935,58 @@ int minScoreNow = inAfternoonEntry ? minAfternoonScore : minMorningScore
 bool longScoreOk = longReconfirmScore >= minScoreNow
 bool shortScoreOk = shortReconfirmScore >= minScoreNow
 
+string longContinuationBaseBlock = continuationBaseBlockReason(1)
+string shortContinuationBaseBlock = continuationBaseBlockReason(-1)
+bool longContinuationBaseOk = longContinuationBaseBlock == "passed"
+bool shortContinuationBaseOk = shortContinuationBaseBlock == "passed"
+float continuationPrevHigh = ta.highest(high[1], continuationConsolidationBars)
+float continuationPrevLow = ta.lowest(low[1], continuationConsolidationBars)
+float continuationHigh = continuationPrevHigh
+float continuationLow = continuationPrevLow
+float continuationRange = continuationHigh - continuationLow
+bool continuationRangeOk = not na(continuationRange) and continuationRange <= riskAtr * continuationMaxPullbackAtr * 2.0
+float longContinuationDepthAtr = riskAtr > 0.0 ? (close - continuationLow) / riskAtr : na
+float shortContinuationDepthAtr = riskAtr > 0.0 ? (continuationHigh - close) / riskAtr : na
+bool longContinuationDepthOk = not na(longContinuationDepthAtr) and longContinuationDepthAtr <= continuationMaxPullbackAtr * 2.50
+bool shortContinuationDepthOk = not na(shortContinuationDepthAtr) and shortContinuationDepthAtr <= continuationMaxPullbackAtr * 2.50
+bool longContinuationPriceContext = not na(orHigh) and close > vwap and close > orHigh
+bool shortContinuationPriceContext = not na(orLow) and close < vwap and close < orLow
+bool longContinuationFar = not na(longMapDistanceAtr) and longMapDistanceAtr >= continuationMinMapDistanceAtr
+bool shortContinuationFar = not na(shortMapDistanceAtr) and shortMapDistanceAtr >= continuationMinMapDistanceAtr
+float longContinuationExtensionPct = not na(vwap) and vwap > 0.0 ? (close - vwap) / vwap * 100.0 : na
+float shortContinuationExtensionPct = not na(vwap) and vwap > 0.0 ? (vwap - close) / vwap * 100.0 : na
+bool longContinuationExtensionOk = not na(longContinuationExtensionPct) and longContinuationExtensionPct <= continuationMaxExtensionPct
+bool shortContinuationExtensionOk = not na(shortContinuationExtensionPct) and shortContinuationExtensionPct <= continuationMaxExtensionPct
+bool longContinuationBreak = not na(continuationPrevHigh) and close > continuationPrevHigh and close > open
+bool shortContinuationBreak = not na(continuationPrevLow) and close < continuationPrevLow and close < open
+bool longContinuationVolumeOk = rvol >= continuationRvolMin
+bool shortContinuationVolumeOk = rvol >= continuationRvolMin
+bool longContinuationStructureOk = continuationRangeOk and longContinuationDepthOk
+bool shortContinuationStructureOk = continuationRangeOk and shortContinuationDepthOk
+bool longContinuationAttempt = confirmed and slotOpen and enableTrendDayContinuation and continuationEntryWindowOpen and longContinuationPriceContext and longContinuationFar and (longContinuationBreak or close > high[1] or longContinuationVolumeOk)
+bool shortContinuationAttempt = confirmed and slotOpen and enableTrendDayContinuation and continuationEntryWindowOpen and shortContinuationPriceContext and shortContinuationFar and (shortContinuationBreak or close < low[1] or shortContinuationVolumeOk)
+string longContinuationBlock = not longContinuationBaseOk ? longContinuationBaseBlock : not longContinuationPriceContext ? "price_wrong_side_vwap" : not longContinuationFar ? "continuation_not_extended" : not longContinuationExtensionOk ? "continuation_too_extended" : not longContinuationStructureOk ? "continuation_no_structure" : not longContinuationVolumeOk ? "volume_missing" : not longContinuationBreak ? "trend_day_not_confirmed" : badLongWick ? "bad_wick" : "passed"
+string shortContinuationBlock = not shortContinuationBaseOk ? shortContinuationBaseBlock : not shortContinuationPriceContext ? "price_wrong_side_vwap" : not shortContinuationFar ? "continuation_not_extended" : not shortContinuationExtensionOk ? "continuation_too_extended" : not shortContinuationStructureOk ? "continuation_no_structure" : not shortContinuationVolumeOk ? "volume_missing" : not shortContinuationBreak ? "trend_day_not_confirmed" : badShortWick ? "bad_wick" : "passed"
+bool longContinuationRaw = longContinuationAttempt and longContinuationBlock == "passed"
+bool shortContinuationRaw = shortContinuationAttempt and shortContinuationBlock == "passed"
+int longContinuationScore = scoreFor(marketLongOk, sectorLongOk, relativeLongOk, priceLongSide, longContinuationStructureOk, longContinuationVolumeOk, trendScoreLongOk)
+int shortContinuationScore = scoreFor(marketShortOk, sectorShortOk, relativeShortOk, priceShortSide, shortContinuationStructureOk, shortContinuationVolumeOk, trendScoreShortOk)
+bool longContinuationScoreOk = longContinuationScore >= minScoreNow
+bool shortContinuationScoreOk = shortContinuationScore >= minScoreNow
+
+continuationDetail(int direction) =>
+    float dist = direction == 1 ? longMapDistanceAtr : shortMapDistanceAtr
+    float extPct = direction == 1 ? longContinuationExtensionPct : shortContinuationExtensionPct
+    float depthAtr = direction == 1 ? longContinuationDepthAtr : shortContinuationDepthAtr
+    bool priceContext = direction == 1 ? longContinuationPriceContext : shortContinuationPriceContext
+    bool farEnough = direction == 1 ? longContinuationFar : shortContinuationFar
+    bool extensionOk = direction == 1 ? longContinuationExtensionOk : shortContinuationExtensionOk
+    bool structureOk = direction == 1 ? longContinuationStructureOk : shortContinuationStructureOk
+    bool breakOk = direction == 1 ? longContinuationBreak : shortContinuationBreak
+    bool volumeOk = direction == 1 ? longContinuationVolumeOk : shortContinuationVolumeOk
+    string base = direction == 1 ? longContinuationBaseBlock : shortContinuationBaseBlock
+    "tc_base=" + base + " price_ctx=" + str.tostring(priceContext) + " far=" + str.tostring(farEnough) + " dist=" + fmtlib.fmt(dist) + "ATR min=" + fmtlib.fmt(continuationMinMapDistanceAtr) + " ext=" + fmtlib.fmt(extPct) + "% max=" + fmtlib.fmt(continuationMaxExtensionPct) + "% ext_ok=" + str.tostring(extensionOk) + " range=" + fmtlib.fmt(continuationRange) + " depth=" + fmtlib.fmt(depthAtr) + "ATR struct_ok=" + str.tostring(structureOk) + " break_ok=" + str.tostring(breakOk) + " rvol=" + fmtlib.fmt(rvol) + " min=" + fmtlib.fmt(continuationRvolMin) + " vol_ok=" + str.tostring(volumeOk)
+
 if longReconfirmAttempt and not longReconfirmRaw and longReconfirmBlock != "passed"
     debugStageEvent(1, "L3_BLOCK", "2m reconfirm breakout\n" + l3VolumeDetail(1), longReconfirmBlock)
 
@@ -860,14 +999,26 @@ if showBlockedMarkers and longReconfirmAttempt and not longReconfirmRaw and long
 if showBlockedMarkers and shortReconfirmAttempt and not shortReconfirmRaw and shortReconfirmBlock != "passed"
     drawEventMarker(-1, "blocked", blockMarkerText("xS3", -1, shortReconfirmBlock), gateDetail(-1, "S3 blocked", "2m reconfirm breakdown\n" + l3VolumeDetail(-1), shortReconfirmBlock), 0.40)
 
+if longContinuationAttempt and not longContinuationRaw and longContinuationBlock != "passed"
+    debugStageEvent(1, "TC_BLOCK", "trend-day continuation\n" + continuationDetail(1), longContinuationBlock)
+
+if shortContinuationAttempt and not shortContinuationRaw and shortContinuationBlock != "passed"
+    debugStageEvent(-1, "TC_BLOCK", "trend-day continuation\n" + continuationDetail(-1), shortContinuationBlock)
+
+if showBlockedMarkers and longContinuationAttempt and not longContinuationRaw and longContinuationBlock != "passed"
+    drawEventMarker(1, "blocked", blockMarkerText("xTC", 1, longContinuationBlock), gateDetail(1, "TC blocked", "trend-day continuation\n" + continuationDetail(1), longContinuationBlock), 0.46)
+
+if showBlockedMarkers and shortContinuationAttempt and not shortContinuationRaw and shortContinuationBlock != "passed"
+    drawEventMarker(-1, "blocked", blockMarkerText("xTC", -1, shortContinuationBlock), gateDetail(-1, "TC blocked", "trend-day continuation\n" + continuationDetail(-1), shortContinuationBlock), 0.46)
+
 if longReconfirmRaw
     selectedSetup := "vwap_or_volume_retest_long"
     selectedDirection := 1
     selectedEntry := close
-    selectedStop := longPullbackLow - atr * atrBufferMult
+    selectedStop := longPullbackLow - riskAtr * atrBufferMult
     selectedRisk := math.abs(selectedEntry - selectedStop)
     selectedTarget1 := selectedEntry + selectedRisk
-    selectedTarget2 := selectedEntry + selectedRisk * target2RMultiple
+    selectedTarget2 := selectedEntry + selectedRisk * finalTargetR()
     selectedRiskQty := calcRiskQtyRaw(selectedEntry, selectedStop)
     selectedNotionalQty := calcNotionalQty(selectedEntry)
     selectedQty := calcRiskQty(selectedEntry, selectedStop)
@@ -883,10 +1034,10 @@ else if shortReconfirmRaw
     selectedSetup := "vwap_or_volume_retest_short"
     selectedDirection := -1
     selectedEntry := close
-    selectedStop := shortRetestHigh + atr * atrBufferMult
+    selectedStop := shortRetestHigh + riskAtr * atrBufferMult
     selectedRisk := math.abs(selectedEntry - selectedStop)
     selectedTarget1 := selectedEntry - selectedRisk
-    selectedTarget2 := selectedEntry - selectedRisk * target2RMultiple
+    selectedTarget2 := selectedEntry - selectedRisk * finalTargetR()
     selectedRiskQty := calcRiskQtyRaw(selectedEntry, selectedStop)
     selectedNotionalQty := calcNotionalQty(selectedEntry)
     selectedQty := calcRiskQty(selectedEntry, selectedStop)
@@ -898,19 +1049,57 @@ else if shortReconfirmRaw
     bool shortStopStructureOk = not na(shortRetestHigh) and selectedStop > shortRetestHigh and selectedStop > selectedEntry
     selectedBlockReason := not shortScoreOk ? "score_too_low" : not shortStopStructureOk ? "invalid_stop_structure" : selectedStopPct < minStopPct ? "stop_too_tight" : selectedStopPct > maxStopPct ? "stop_too_wide" : selectedQty < minQty ? "qty_too_small" : "passed"
     debugStageEvent(-1, selectedBlockReason == "passed" ? "S3_PASS" : "S3_CANDIDATE_BLOCK", selectedPatternReason + "\n" + l3VolumeDetail(-1), selectedBlockReason)
+else if longContinuationRaw
+    selectedSetup := "trend_day_continuation_long"
+    selectedDirection := 1
+    selectedEntry := close
+    selectedStop := continuationLow - riskAtr * atrBufferMult
+    selectedRisk := math.abs(selectedEntry - selectedStop)
+    selectedTarget1 := selectedEntry + selectedRisk
+    selectedTarget2 := selectedEntry + selectedRisk * finalTargetR()
+    selectedRiskQty := calcRiskQtyRaw(selectedEntry, selectedStop)
+    selectedNotionalQty := calcNotionalQty(selectedEntry)
+    selectedQty := calcRiskQty(selectedEntry, selectedStop)
+    selectedQty := halfSizeNext ? math.floor(selectedQty * 0.5) : selectedQty
+    selectedStopPct := stopDistancePct(selectedEntry, selectedStop)
+    selectedScore := longContinuationScore
+    selectedPatternStage := "trend_day_continuation_long"
+    selectedPatternReason := "flag_breakout_continuation"
+    bool longContinuationStopOk = not na(continuationLow) and selectedStop < continuationLow and selectedStop < selectedEntry
+    selectedBlockReason := not longContinuationScoreOk ? "score_too_low" : not longContinuationStopOk ? "invalid_stop_structure" : selectedStopPct < minStopPct ? "stop_too_tight" : selectedStopPct > maxStopPct ? "stop_too_wide" : selectedQty < minQty ? "qty_too_small" : "passed"
+    debugStageEvent(1, selectedBlockReason == "passed" ? "TC_PASS" : "TC_CANDIDATE_BLOCK", selectedPatternReason + "\n" + continuationDetail(1), selectedBlockReason)
+else if shortContinuationRaw
+    selectedSetup := "trend_day_continuation_short"
+    selectedDirection := -1
+    selectedEntry := close
+    selectedStop := continuationHigh + riskAtr * atrBufferMult
+    selectedRisk := math.abs(selectedEntry - selectedStop)
+    selectedTarget1 := selectedEntry - selectedRisk
+    selectedTarget2 := selectedEntry - selectedRisk * finalTargetR()
+    selectedRiskQty := calcRiskQtyRaw(selectedEntry, selectedStop)
+    selectedNotionalQty := calcNotionalQty(selectedEntry)
+    selectedQty := calcRiskQty(selectedEntry, selectedStop)
+    selectedQty := halfSizeNext ? math.floor(selectedQty * 0.5) : selectedQty
+    selectedStopPct := stopDistancePct(selectedEntry, selectedStop)
+    selectedScore := shortContinuationScore
+    selectedPatternStage := "trend_day_continuation_short"
+    selectedPatternReason := "flag_breakdown_continuation"
+    bool shortContinuationStopOk = not na(continuationHigh) and selectedStop > continuationHigh and selectedStop > selectedEntry
+    selectedBlockReason := not shortContinuationScoreOk ? "score_too_low" : not shortContinuationStopOk ? "invalid_stop_structure" : selectedStopPct < minStopPct ? "stop_too_tight" : selectedStopPct > maxStopPct ? "stop_too_wide" : selectedQty < minQty ? "qty_too_small" : "passed"
+    debugStageEvent(-1, selectedBlockReason == "passed" ? "TC_PASS" : "TC_CANDIDATE_BLOCK", selectedPatternReason + "\n" + continuationDetail(-1), selectedBlockReason)
 else
-    selectedBlockReason := longBaseBlock != "passed" ? longBaseBlock : shortBaseBlock != "passed" ? shortBaseBlock : "no_candidate"
+    selectedBlockReason := longBaseBlock != "passed" ? longBaseBlock : shortBaseBlock != "passed" ? shortBaseBlock : longContinuationAttempt and longContinuationBlock != "passed" ? longContinuationBlock : shortContinuationAttempt and shortContinuationBlock != "passed" ? shortContinuationBlock : "no_candidate"
 
 if selectedDirection != 0 and selectedBlockReason == "passed" and not enableStrategyOrders
     selectedBlockReason := "orders_disabled"
 
-bool blockedCandidateEvent = confirmed and selectedDirection != 0 and selectedBlockReason != "passed" and (longReconfirmRaw or shortReconfirmRaw)
+bool blockedCandidateEvent = confirmed and selectedDirection != 0 and selectedBlockReason != "passed" and (longReconfirmRaw or shortReconfirmRaw or longContinuationRaw or shortContinuationRaw)
 if blockedCandidateEvent
     debugOrderState("ORDER_BLOCK", selectedDirection, selectedBlockReason, selectedEntry, selectedStop, selectedTarget1, selectedTarget2, selectedQty, selectedScore)
 
 bool blockedCandidate = showBlockedMarkers and blockedCandidateEvent
 if blockedCandidate
-    drawEventMarker(selectedDirection, "blocked", blockMarkerText(selectedDirection == 1 ? "xL3" : "xS3", selectedDirection, selectedBlockReason), blockedMarkerTooltip(selectedDirection, selectedBlockReason, selectedEntry, selectedStop, selectedQty, selectedStopPct, selectedScore), 0.44)
+    drawEventMarker(selectedDirection, "blocked", blockMarkerText(str.contains(selectedSetup, "trend_day") ? "xTC" : selectedDirection == 1 ? "xL3" : "xS3", selectedDirection, selectedBlockReason), blockedMarkerTooltip(selectedDirection, selectedBlockReason, selectedEntry, selectedStop, selectedQty, selectedStopPct, selectedScore), 0.44)
 
 // -----------------------------------------------------------------------------
 // Order state shared by payload builders and lifecycle.
@@ -931,6 +1120,9 @@ var int activeSignalBar = na
 var int activeEntryBar = na
 var bool activeBreakevenDone = false
 var float activeMfeR = 0.0
+var float activeHighSinceEntry = na
+var float activeLowSinceEntry = na
+var string activeTrailReason = ""
 var int activeRiskUpdateSeq = 0
 var string activeManualExitReason = ""
 
@@ -940,23 +1132,24 @@ var string activeManualExitReason = ""
 commonDiagnostics() =>
     string result = "," + payloadlib.jsonStr("risk_model", RISK_MODEL) + "," + payloadlib.jsonStr("tp_sl_model", TP_SL_MODEL) + "," + payloadlib.jsonStr("trade_model", TRADE_MODEL)
     result := result + "," + payloadlib.jsonStr("sector_etf", sectorEtf) + "," + payloadlib.jsonStr("sector_group", sectorGroup) + "," + payloadlib.jsonStr("industry_tag", industryTag)
-    result := result + "," + payloadlib.jsonStr("relative_benchmark", metalib.relativeBenchmark(syminfo.ticker)) + "," + payloadlib.jsonStr("metadata_version", metalib.metadataVersion()) + "," + payloadlib.jsonStr("metadata_source", "pine_lib_static")
+    result := result + "," + payloadlib.jsonStr("relative_benchmark", autoRelativeBenchmark) + "," + payloadlib.jsonStr("primary_benchmark", primaryBenchmark) + "," + payloadlib.jsonStr("primary_market_symbol", primaryMarketSymbol) + "," + payloadlib.jsonStr("broad_confirm_symbol", broadMarketSymbol) + "," + payloadlib.jsonStr("market_model", "primary_plus_spy_risk_veto") + "," + payloadlib.jsonBool("broad_veto_long", broadLongVeto) + "," + payloadlib.jsonBool("broad_veto_short", broadShortVeto) + "," + payloadlib.jsonStr("metadata_version", metalib.metadataVersion()) + "," + payloadlib.jsonStr("metadata_source", "pine_lib_static")
     result := result + "," + payloadlib.jsonStr("trend_mode", trendFilterMode) + "," + payloadlib.jsonInt("context_trend_score_long", contextTrendLongScore) + "," + payloadlib.jsonInt("context_trend_score_short", contextTrendShortScore)
     result := result + "," + payloadlib.jsonBool("market_trend_long_ok", marketTrendLongOk) + "," + payloadlib.jsonBool("market_trend_short_ok", marketTrendShortOk) + "," + payloadlib.jsonBool("trend_gate_long_ok", trendGateLongOk) + "," + payloadlib.jsonBool("trend_gate_short_ok", trendGateShortOk)
+    result := result + "," + payloadlib.jsonBool("tc_enabled", enableTrendDayContinuation) + "," + payloadlib.jsonBool("tc_window_open", continuationEntryWindowOpen) + "," + payloadlib.jsonBool("tc_midday_enabled", allowTrendDayMiddayEntries) + "," + payloadlib.jsonNum("tc_min_map_distance_atr", continuationMinMapDistanceAtr) + "," + payloadlib.jsonNum("tc_extension_long_pct", longContinuationExtensionPct) + "," + payloadlib.jsonNum("tc_extension_short_pct", shortContinuationExtensionPct) + "," + payloadlib.jsonBool("tc_long_raw", longContinuationRaw) + "," + payloadlib.jsonBool("tc_short_raw", shortContinuationRaw)
     result := result + "," + payloadlib.jsonNum("orh", orHigh) + "," + payloadlib.jsonNum("orl", orLow) + "," + payloadlib.jsonNum("vwap", vwap) + "," + payloadlib.jsonNum("rvol", rvol) + "," + payloadlib.jsonNum("volume_ma", volumeMa)
     result := result + "," + payloadlib.jsonNum("l3_vs_l2_long", longL3VsL2Volume) + "," + payloadlib.jsonNum("l3_vs_l2_short", shortL3VsL2Volume) + "," + payloadlib.jsonNum("l3_vs_prev", l3VsPrevVolume) + "," + payloadlib.jsonBool("l3_volume_long_ok", longL3VolumeOk) + "," + payloadlib.jsonBool("l3_volume_short_ok", shortL3VolumeOk)
     result := result + "," + payloadlib.jsonNum("stock_change_bps", stockChangeBps) + "," + payloadlib.jsonNum("relative_strength_bps", stockVsMarketBps) + "," + payloadlib.jsonNum("sector_relative_strength_bps", stockVsSectorBps) + "," + payloadlib.jsonNum("sector_vs_market_bps", sectorVsMarketBps)
-    result := result + "," + payloadlib.jsonNum("atr", atr) + "," + payloadlib.jsonNum("atr_stop_buffer", atr * atrBufferMult) + "," + payloadlib.jsonNum("position_amount", positionAmount) + "," + payloadlib.jsonNum("max_risk_dollars", maxRiskDollars)
+    result := result + "," + payloadlib.jsonNum("atr", atr) + "," + payloadlib.jsonNum("atr2", atr2) + "," + payloadlib.jsonNum("atr5", atr5) + "," + payloadlib.jsonNum("atr15", atr15) + "," + payloadlib.jsonNum("risk_atr", riskAtr) + "," + payloadlib.jsonNum("trail_atr", trailAtr) + "," + payloadlib.jsonNum("atr_stop_buffer", riskAtr * atrBufferMult) + "," + payloadlib.jsonStr("runner_mode", runnerMode) + "," + payloadlib.jsonBool("hard_final_target_enabled", hardFinalTargetEnabled) + "," + payloadlib.jsonNum("position_amount", positionAmount) + "," + payloadlib.jsonNum("max_risk_dollars", maxRiskDollars)
     result
 
 buildEntryPayload(string eventIdValue, string signalIdValue, string tradeGroupIdValue, string positionIdValue) =>
-    basePayload("entry", eventIdValue, positionIdValue) + "," + payloadlib.jsonStr("signal_id", signalIdValue) + "," + payloadlib.jsonStr("origin_signal_id", signalIdValue) + "," + payloadlib.jsonStr("trade_group_id", tradeGroupIdValue) + "," + payloadlib.jsonStr("direction", dirText(selectedDirection)) + "," + payloadlib.jsonStr("position_side", dirText(selectedDirection)) + "," + payloadlib.jsonStr("setup", selectedSetup) + "," + payloadlib.jsonStr("entry_setup", selectedSetup) + "," + payloadlib.jsonStr("signal", selectedSetup) + "," + payloadlib.jsonStr("reason", "entry_signal") + "," + payloadlib.jsonNum("entry", selectedEntry) + "," + payloadlib.jsonNum("entry_price", selectedEntry) + "," + payloadlib.jsonNum("planned_entry_price", selectedEntry) + "," + payloadlib.jsonNum("submitted_entry_limit_price", selectedEntry) + "," + payloadlib.jsonNum("stop_loss", selectedStop) + "," + payloadlib.jsonNum("take_profit", selectedTarget2) + "," + payloadlib.jsonNum("safety_take_profit", selectedTarget2) + "," + payloadlib.jsonNum("target_checkpoint", selectedTarget1) + "," + payloadlib.jsonNum("runner_activation_price", selectedTarget1) + "," + payloadlib.jsonNum("runner_activation_r", 1.0) + "," + payloadlib.jsonNum("shares", selectedQty) + "," + payloadlib.jsonStr("entry_intent", "market_next_bar") + "," + payloadlib.jsonStr("trial_risk_mode", "full") + "," + payloadlib.jsonStr("pattern_stage", selectedPatternStage) + "," + payloadlib.jsonStr("pattern_reason", selectedPatternReason) + "," + payloadlib.jsonInt("score", selectedScore) + "," + payloadlib.jsonStr("block_reason", selectedBlockReason) + "," + payloadlib.jsonNum("initial_risk", selectedRisk) + "," + payloadlib.jsonNum("target_1r", selectedTarget1) + "," + payloadlib.jsonNum("target_2r", selectedTarget2) + "," + payloadlib.jsonNum("target_final", selectedTarget2) + "," + payloadlib.jsonNum("target_final_r", target2RMultiple) + "," + payloadlib.jsonNum("risk_qty", selectedRiskQty) + "," + payloadlib.jsonNum("notional_qty", selectedNotionalQty) + "," + payloadlib.jsonNum("actual_risk_dollars", selectedRisk * selectedQty) + "," + payloadlib.jsonNum("expected_1r_dollars", selectedRisk * selectedQty) + "," + payloadlib.jsonNum("expected_2r_dollars", selectedRisk * selectedQty * 2.0) + "," + payloadlib.jsonNum("expected_final_dollars", selectedRisk * selectedQty * target2RMultiple) + "," + payloadlib.jsonBool("notional_cap_binds", useNotionalCap and not na(selectedNotionalQty) and selectedNotionalQty <= selectedRiskQty) + commonDiagnostics() + "}"
+    basePayload("entry", eventIdValue, positionIdValue) + "," + payloadlib.jsonStr("signal_id", signalIdValue) + "," + payloadlib.jsonStr("origin_signal_id", signalIdValue) + "," + payloadlib.jsonStr("trade_group_id", tradeGroupIdValue) + "," + payloadlib.jsonStr("direction", dirText(selectedDirection)) + "," + payloadlib.jsonStr("position_side", dirText(selectedDirection)) + "," + payloadlib.jsonStr("setup", selectedSetup) + "," + payloadlib.jsonStr("entry_setup", selectedSetup) + "," + payloadlib.jsonStr("signal", selectedSetup) + "," + payloadlib.jsonStr("reason", "entry_signal") + "," + payloadlib.jsonNum("entry", selectedEntry) + "," + payloadlib.jsonNum("entry_price", selectedEntry) + "," + payloadlib.jsonNum("planned_entry_price", selectedEntry) + "," + payloadlib.jsonNum("submitted_entry_limit_price", selectedEntry) + "," + payloadlib.jsonNum("stop_loss", selectedStop) + "," + payloadlib.jsonNum("take_profit", selectedTarget2) + "," + payloadlib.jsonNum("safety_take_profit", selectedTarget2) + "," + payloadlib.jsonNum("target_checkpoint", selectedTarget1) + "," + payloadlib.jsonNum("runner_activation_price", selectedTarget1) + "," + payloadlib.jsonNum("runner_activation_r", 1.0) + "," + payloadlib.jsonNum("shares", selectedQty) + "," + payloadlib.jsonStr("entry_intent", "market_next_bar") + "," + payloadlib.jsonStr("trial_risk_mode", "full") + "," + payloadlib.jsonStr("pattern_stage", selectedPatternStage) + "," + payloadlib.jsonStr("pattern_reason", selectedPatternReason) + "," + payloadlib.jsonInt("score", selectedScore) + "," + payloadlib.jsonStr("block_reason", selectedBlockReason) + "," + payloadlib.jsonNum("initial_risk", selectedRisk) + "," + payloadlib.jsonNum("target_1r", selectedTarget1) + "," + payloadlib.jsonNum("target_2r", selectedTarget2) + "," + payloadlib.jsonNum("target_final", selectedTarget2) + "," + payloadlib.jsonNum("target_final_r", finalTargetR()) + "," + payloadlib.jsonNum("risk_qty", selectedRiskQty) + "," + payloadlib.jsonNum("notional_qty", selectedNotionalQty) + "," + payloadlib.jsonNum("actual_risk_dollars", selectedRisk * selectedQty) + "," + payloadlib.jsonNum("expected_1r_dollars", selectedRisk * selectedQty) + "," + payloadlib.jsonNum("expected_2r_dollars", selectedRisk * selectedQty * 2.0) + "," + payloadlib.jsonNum("expected_final_dollars", selectedRisk * selectedQty * finalTargetR()) + "," + payloadlib.jsonBool("notional_cap_binds", useNotionalCap and not na(selectedNotionalQty) and selectedNotionalQty <= selectedRiskQty) + commonDiagnostics() + "}"
 
 buildEntryFillPayload(string eventIdValue, string positionIdValue, float actualFillPrice) =>
     basePayload("entry_fill", eventIdValue, positionIdValue) + "," + payloadlib.jsonStr("signal_id", activeSignalId) + "," + payloadlib.jsonStr("origin_signal_id", activeSignalId) + "," + payloadlib.jsonStr("trade_group_id", activeTradeGroupId) + "," + payloadlib.jsonStr("direction", dirText(activeDirection)) + "," + payloadlib.jsonStr("setup", activeSetup) + "," + payloadlib.jsonNum("entry", actualFillPrice) + "," + payloadlib.jsonNum("planned_entry_price", activeEntry) + "," + payloadlib.jsonNum("stop_loss", activeStop) + "," + payloadlib.jsonNum("take_profit", activeTarget2) + "," + payloadlib.jsonNum("shares", activeQty) + "," + payloadlib.jsonStr("entry_intent", "market_next_bar") + commonDiagnostics() + "}"
 
 buildRiskUpdatePayload(string eventIdValue, string positionIdValue, string reason, float previousStop, float newStop) =>
-    basePayload("risk_update", eventIdValue, positionIdValue) + "," + payloadlib.jsonStr("signal_id", activeSignalId) + "," + payloadlib.jsonStr("origin_signal_id", activeSignalId) + "," + payloadlib.jsonStr("trade_group_id", activeTradeGroupId) + "," + payloadlib.jsonStr("direction", dirText(activeDirection)) + "," + payloadlib.jsonStr("setup", activeSetup) + "," + payloadlib.jsonStr("reason", reason) + "," + payloadlib.jsonStr("risk_update_reason", reason) + "," + payloadlib.jsonInt("risk_update_seq", activeRiskUpdateSeq) + "," + payloadlib.jsonRequestedSides("stop_loss") + "," + payloadlib.jsonNum("previous_stop_loss", previousStop) + "," + payloadlib.jsonNum("new_stop_loss", newStop) + "," + payloadlib.jsonNum("stop_loss", newStop) + "," + payloadlib.jsonNum("take_profit", activeTarget2) + "," + payloadlib.jsonNum("safety_take_profit", activeTarget2) + "," + payloadlib.jsonNum("runner_activation_price", activeTarget1) + "," + payloadlib.jsonNum("runner_activation_r", 1.0) + "," + payloadlib.jsonBool("runner_enabled", true) + "," + payloadlib.jsonBool("runner_active", activeBreakevenDone) + commonDiagnostics() + "}"
+    basePayload("risk_update", eventIdValue, positionIdValue) + "," + payloadlib.jsonStr("signal_id", activeSignalId) + "," + payloadlib.jsonStr("origin_signal_id", activeSignalId) + "," + payloadlib.jsonStr("trade_group_id", activeTradeGroupId) + "," + payloadlib.jsonStr("direction", dirText(activeDirection)) + "," + payloadlib.jsonStr("setup", activeSetup) + "," + payloadlib.jsonStr("reason", reason) + "," + payloadlib.jsonStr("risk_update_reason", reason) + "," + payloadlib.jsonInt("risk_update_seq", activeRiskUpdateSeq) + "," + payloadlib.jsonRequestedSides("stop_loss") + "," + payloadlib.jsonNum("previous_stop_loss", previousStop) + "," + payloadlib.jsonNum("new_stop_loss", newStop) + "," + payloadlib.jsonNum("stop_loss", newStop) + "," + payloadlib.jsonNum("take_profit", activeTarget2) + "," + payloadlib.jsonNum("safety_take_profit", activeTarget2) + "," + payloadlib.jsonNum("runner_activation_price", activeTarget1) + "," + payloadlib.jsonNum("runner_activation_r", 1.0) + "," + payloadlib.jsonBool("runner_enabled", true) + "," + payloadlib.jsonBool("runner_active", activeBreakevenDone) + "," + payloadlib.jsonNum("mfe_r", activeMfeR) + "," + payloadlib.jsonStr("trail_reason", activeTrailReason) + commonDiagnostics() + "}"
 
 buildExitPayload(string eventIdValue, string positionIdValue, string reason, float exitPrice, float pnlPerShare) =>
     basePayload("exit", eventIdValue, positionIdValue) + "," + payloadlib.jsonStr("signal_id", activeSignalId) + "," + payloadlib.jsonStr("origin_signal_id", activeSignalId) + "," + payloadlib.jsonStr("trade_group_id", activeTradeGroupId) + "," + payloadlib.jsonStr("direction", dirText(activeDirection)) + "," + payloadlib.jsonStr("setup", activeSetup) + "," + payloadlib.jsonStr("reason", reason) + "," + payloadlib.jsonStr("exit_reason", reason) + "," + payloadlib.jsonNum("exit_price", exitPrice) + "," + payloadlib.jsonNum("entry", activeEntry) + "," + payloadlib.jsonNum("stop_loss", activeStop) + "," + payloadlib.jsonNum("take_profit", activeTarget2) + "," + payloadlib.jsonNum("shares", activeQty) + "," + payloadlib.jsonNum("pnl", pnlPerShare * activeQty) + "," + payloadlib.jsonNum("pnl_per_share", pnlPerShare) + "," + payloadlib.jsonNum("pnl_r", activeInitialRisk > 0.0 ? pnlPerShare / activeInitialRisk : na) + "," + payloadlib.jsonBool("runner_active", activeBreakevenDone) + commonDiagnostics() + "}"
@@ -992,6 +1185,9 @@ if submitNewPlan
     activeEntryBar := na
     activeBreakevenDone := false
     activeMfeR := 0.0
+    activeHighSinceEntry := na
+    activeLowSinceEntry := na
+    activeTrailReason := ""
     activeRiskUpdateSeq := 0
     activeManualExitReason := ""
     dailyTrades += 1
@@ -1001,7 +1197,7 @@ if submitNewPlan
     if enableAlerts
         alert(buildEntryPayload(eventPlanId, signalId, tradeGroupId, positionId), alert.freq_all)
     if showOrderCaseLabels
-        label.new(bar_index, selectedDirection == 1 ? low - atr : high + atr, orderCaseText(selectedDirection, selectedEntry, selectedStop, selectedTarget2, selectedQty), style=selectedDirection == 1 ? label.style_label_up : label.style_label_down, color=color.new(selectedDirection == 1 ? color.lime : color.red, 0), textcolor=selectedDirection == 1 ? color.black : color.white, size=orderMarkerSize(), tooltip=orderCaseTooltip(selectedDirection, selectedEntry, selectedStop, selectedTarget1, selectedTarget2, selectedQty, selectedRiskQty, selectedNotionalQty, selectedScore))
+        label.new(bar_index, selectedDirection == 1 ? low - atr : high + atr, orderCaseText(selectedDirection, selectedEntry, selectedStop, selectedTarget2, selectedQty, selectedSetup), style=selectedDirection == 1 ? label.style_label_up : label.style_label_down, color=color.new(selectedDirection == 1 ? color.lime : color.red, 0), textcolor=selectedDirection == 1 ? color.black : color.white, size=orderMarkerSize(), tooltip=orderCaseTooltip(selectedDirection, selectedEntry, selectedStop, selectedTarget1, selectedTarget2, selectedQty, selectedRiskQty, selectedNotionalQty, selectedScore, selectedSetup))
 
 bool positionOpenedNow = pendingEntry and strategy.position_size != 0 and strategy.position_size[1] == 0
 if confirmed and positionOpenedNow
@@ -1011,7 +1207,10 @@ if confirmed and positionOpenedNow
     activeEntry := strategy.position_avg_price
     activeInitialRisk := math.abs(activeEntry - activeStop)
     activeTarget1 := activeEntry + activeInitialRisk * activeDirection
-    activeTarget2 := activeEntry + activeInitialRisk * activeDirection * target2RMultiple
+    activeTarget2 := activeEntry + activeInitialRisk * activeDirection * finalTargetR()
+    activeHighSinceEntry := high
+    activeLowSinceEntry := low
+    activeTrailReason := ""
     debugOrderState("ENTRY_FILL", activeDirection, "entry_fill", strategy.position_avg_price, activeStop, activeTarget1, activeTarget2, activeQty, -1)
     if enableFillConfirmAlerts and enableAlerts
         alert(buildEntryFillPayload(planId("entry_fill", activeSetup, "market_next_bar"), activePositionId, strategy.position_avg_price), alert.freq_all)
@@ -1029,6 +1228,8 @@ if pendingEntryStale
 
 if confirmed and activePosition and hasPosition
     int barsInTrade = na(activeEntryBar) ? 0 : bar_index - activeEntryBar
+    activeHighSinceEntry := na(activeHighSinceEntry) ? high : math.max(activeHighSinceEntry, high)
+    activeLowSinceEntry := na(activeLowSinceEntry) ? low : math.min(activeLowSinceEntry, low)
     float mfeNow = activeInitialRisk > 0.0 ? (activeDirection == 1 ? (high - activeEntry) / activeInitialRisk : (activeEntry - low) / activeInitialRisk) : 0.0
     activeMfeR := math.max(nz(activeMfeR, 0.0), mfeNow)
     bool target1Touched = activeDirection == 1 ? high >= activeTarget1 : low <= activeTarget1
@@ -1043,6 +1244,41 @@ if confirmed and activePosition and hasPosition
             alert(buildRiskUpdatePayload(planId("risk_update", activeSetup, "market_next_bar"), activePositionId, "runner_activation", previousStop, activeStop), alert.freq_all)
         if showManagementMarkers
             label.new(bar_index, activeTarget1, managementMarkerText("TP1/BE", "runner_activation", activeTarget1, 1.0), style=activeDirection == 1 ? label.style_label_down : label.style_label_up, color=color.new(color.blue, 0), textcolor=color.white, size=markerSize(), tooltip="1R touched; stop moved from " + fmtlib.fmtPrice(previousStop) + " to " + fmtlib.fmtPrice(activeStop))
+    if runnerMode == "Trailing" and activeBreakevenDone and activeInitialRisk > 0.0
+        float previousTrailStop = activeStop
+        float trailCandidate = activeStop
+        string trailReason = activeTrailReason
+        if activeMfeR >= trailAfterR
+            if activeDirection == 1
+                float emaTrailLong = not na(ema20_5) ? ema20_5 - trailAtr * 0.25 : activeStop
+                trailCandidate := math.max(trailCandidate, emaTrailLong)
+                trailReason := "ema20_5_trail"
+            else
+                float emaTrailShort = not na(ema20_5) ? ema20_5 + trailAtr * 0.25 : activeStop
+                trailCandidate := math.min(trailCandidate, emaTrailShort)
+                trailReason := "ema20_5_trail"
+        if activeMfeR >= chandelierAfterR
+            if activeDirection == 1
+                float chandelierLong = activeHighSinceEntry - trailAtr * trailAtrMult
+                trailCandidate := math.max(trailCandidate, chandelierLong)
+                trailReason := "chandelier_trail"
+            else
+                float chandelierShort = activeLowSinceEntry + trailAtr * trailAtrMult
+                trailCandidate := math.min(trailCandidate, chandelierShort)
+                trailReason := "chandelier_trail"
+        if activeDirection == 1
+            trailCandidate := math.min(trailCandidate, close - syminfo.mintick)
+            activeStop := math.max(activeStop, trailCandidate)
+        else
+            trailCandidate := math.max(trailCandidate, close + syminfo.mintick)
+            activeStop := math.min(activeStop, trailCandidate)
+        bool trailStopChanged = math.abs(activeStop - previousTrailStop) >= syminfo.mintick
+        if trailStopChanged
+            activeTrailReason := trailReason
+            activeRiskUpdateSeq += 1
+            debugOrderState("RUNNER_TRAIL_UPDATE", activeDirection, "runner_trail_update", activeEntry, activeStop, activeTarget1, activeTarget2, activeQty, -1)
+            if enableAlerts
+                alert(buildRiskUpdatePayload(planId("risk_update", activeSetup, "runner_trail"), activePositionId, "runner_trail_update", previousTrailStop, activeStop), alert.freq_all)
     bool timeStopNow = not activeBreakevenDone and barsInTrade >= timeStopBars and activeMfeR < timeStopMinMfeR
     if timeStopNow and activeManualExitReason == ""
         activeManualExitReason := "time_stop"
@@ -1053,12 +1289,15 @@ if confirmed and activePosition and hasPosition
         debugOrderState("CLOSE_REQUEST", activeDirection, "force_flat_eod", activeEntry, activeStop, activeTarget1, activeTarget2, activeQty, -1)
         strategy.close(orderIdForDirection(activeDirection), comment="EOD " + fmtlib.moneyText((close - activeEntry) * activeDirection * activeQty) + " X" + fmtlib.fmtPrice(close))
     else
+        float runnerLimit = runnerMode == "Fixed target" ? activeTarget2 : hardFinalTargetEnabled ? activeTarget2 : na
+        string runnerProfitComment = runnerMode == "Fixed target" ? "TP2 " + fmtlib.fmtPrice(activeTarget2) : hardFinalTargetEnabled ? "HARD " + fmtlib.fmtPrice(activeTarget2) : "RUN"
+        string runnerLossComment = runnerMode == "Trailing" and activeBreakevenDone ? "TRAIL " + fmtlib.fmtPrice(activeStop) : (activeBreakevenDone ? "BE " : "SL ") + fmtlib.fmtPrice(activeStop)
         if activeDirection == 1
             strategy.exit("VOR-L-TP1", from_entry="TV-VOR-L", qty_percent=tp1ExitPct, stop=activeStop, limit=activeTarget1, comment_profit="TP1 " + fmtlib.fmtPrice(activeTarget1), comment_loss="SL " + fmtlib.fmtPrice(activeStop))
-            strategy.exit("VOR-L-TP2", from_entry="TV-VOR-L", qty_percent=100 - tp1ExitPct, stop=activeStop, limit=activeTarget2, comment_profit="TP2 " + fmtlib.fmtPrice(activeTarget2), comment_loss=(activeBreakevenDone ? "BE " : "SL ") + fmtlib.fmtPrice(activeStop))
+            strategy.exit("VOR-L-TP2", from_entry="TV-VOR-L", qty_percent=100 - tp1ExitPct, stop=activeStop, limit=runnerLimit, comment_profit=runnerProfitComment, comment_loss=runnerLossComment)
         if activeDirection == -1
             strategy.exit("VOR-S-TP1", from_entry="TV-VOR-S", qty_percent=tp1ExitPct, stop=activeStop, limit=activeTarget1, comment_profit="TP1 " + fmtlib.fmtPrice(activeTarget1), comment_loss="SL " + fmtlib.fmtPrice(activeStop))
-            strategy.exit("VOR-S-TP2", from_entry="TV-VOR-S", qty_percent=100 - tp1ExitPct, stop=activeStop, limit=activeTarget2, comment_profit="TP2 " + fmtlib.fmtPrice(activeTarget2), comment_loss=(activeBreakevenDone ? "BE " : "SL ") + fmtlib.fmtPrice(activeStop))
+            strategy.exit("VOR-S-TP2", from_entry="TV-VOR-S", qty_percent=100 - tp1ExitPct, stop=activeStop, limit=runnerLimit, comment_profit=runnerProfitComment, comment_loss=runnerLossComment)
 
 bool positionClosedNow = activePosition and strategy.position_size == 0 and strategy.position_size[1] != 0
 if confirmed and positionClosedNow
@@ -1069,8 +1308,9 @@ if confirmed and positionClosedNow
         exitPrice := strategy.closedtrades.exit_price(closedTradeIndex)
         closedTradeComment := strategy.closedtrades.exit_comment(closedTradeIndex)
     bool stopped = activeDirection == 1 ? low <= activeStop : high >= activeStop
-    bool target2Hit = activeDirection == 1 ? high >= activeTarget2 : low <= activeTarget2
-    string exitReason = activeManualExitReason != "" ? activeManualExitReason : str.contains(closedTradeComment, "TP2") or target2Hit ? "take_profit_final" : str.contains(closedTradeComment, "BE") ? "breakeven_stop" : stopped ? "stop_loss" : forceFlatNow ? "force_flat_eod" : "strategy_closed"
+    bool finalLimitEnabled = runnerMode == "Fixed target" or hardFinalTargetEnabled
+    bool target2Hit = finalLimitEnabled and (activeDirection == 1 ? high >= activeTarget2 : low <= activeTarget2)
+    string exitReason = activeManualExitReason != "" ? activeManualExitReason : str.contains(closedTradeComment, "TRAIL") ? "runner_trailing_stop" : str.contains(closedTradeComment, "TP2") or str.contains(closedTradeComment, "HARD") or target2Hit ? "take_profit_final" : str.contains(closedTradeComment, "BE") ? "breakeven_stop" : stopped and runnerMode == "Trailing" and activeBreakevenDone ? "runner_trailing_stop" : stopped ? "stop_loss" : forceFlatNow ? "force_flat_eod" : "strategy_closed"
     float pnlPerShare = (exitPrice - activeEntry) * activeDirection
     debugLog("order", "POSITION_CLOSED", "side=" + dirName(activeDirection) + " reason=" + exitReason + " / " + reasonText(exitReason) + "\nentry=" + fmtlib.fmtPrice(activeEntry) + " exit=" + fmtlib.fmtPrice(exitPrice) + " qty=" + fmtlib.qtyText(activeQty) + "\npnl/share=" + fmtlib.fmtPrice(pnlPerShare) + " pnl=" + fmtlib.moneyText(pnlPerShare * activeQty) + " pnlR=" + fmtlib.fmt(activeInitialRisk > 0.0 ? pnlPerShare / activeInitialRisk : na) + "\nclosed_comment=" + closedTradeComment)
     if pnlPerShare < 0.0
@@ -1080,10 +1320,10 @@ if confirmed and positionClosedNow
     if enableAlerts
         alert(buildExitPayload(planId("exit", activeSetup, "market_next_bar"), activePositionId, exitReason, exitPrice, pnlPerShare), alert.freq_all)
     float pnlR = activeInitialRisk > 0.0 ? pnlPerShare / activeInitialRisk : na
-    string exitCode = exitReason == "take_profit_final" ? "TP2" : exitReason == "take_profit_2r" ? "TP2" : exitReason == "stop_loss" ? "SL" : exitReason == "breakeven_stop" ? "BE" : exitReason == "time_stop" ? "TIME" : exitReason == "force_flat_eod" ? "EOD" : "EXIT"
-    color exitColor = exitReason == "take_profit_final" or exitReason == "take_profit_2r" ? color.lime : exitReason == "stop_loss" ? color.red : exitReason == "breakeven_stop" ? color.gray : color.orange
+    string exitCode = exitReason == "take_profit_final" ? "TP2" : exitReason == "take_profit_2r" ? "TP2" : exitReason == "runner_trailing_stop" ? "TRAIL" : exitReason == "stop_loss" ? "SL" : exitReason == "breakeven_stop" ? "BE" : exitReason == "time_stop" ? "TIME" : exitReason == "force_flat_eod" ? "EOD" : "EXIT"
+    color exitColor = exitReason == "take_profit_final" or exitReason == "take_profit_2r" ? color.lime : exitReason == "runner_trailing_stop" ? color.blue : exitReason == "stop_loss" ? color.red : exitReason == "breakeven_stop" ? color.gray : color.orange
     if showManagementMarkers
-        label.new(bar_index, exitPrice, managementMarkerText(exitCode, exitReason, exitPrice, pnlR), style=activeDirection == 1 ? label.style_label_down : label.style_label_up, color=color.new(exitColor, 0), textcolor=exitReason == "take_profit_final" or exitReason == "take_profit_2r" ? color.black : color.white, size=markerSize(), tooltip="exit reason: " + exitReason + "\nexit: " + fmtlib.fmtPrice(exitPrice) + "\npnl/share: " + fmtlib.fmtPrice(pnlPerShare) + "\npnl R: " + fmtlib.fmt(pnlR))
+        label.new(bar_index, exitPrice, managementMarkerText(exitCode, exitReason, exitPrice, pnlR), style=activeDirection == 1 ? label.style_label_down : label.style_label_up, color=color.new(exitColor, 0), textcolor=exitReason == "take_profit_final" or exitReason == "take_profit_2r" ? color.black : color.white, size=markerSize(), tooltip="exit reason: " + exitReason + "\nexit: " + fmtlib.fmtPrice(exitPrice) + "\npnl/share: " + fmtlib.fmtPrice(pnlPerShare) + "\npnl R: " + fmtlib.fmt(pnlR) + "\ntrail reason: " + activeTrailReason)
     activePosition := false
     activeDirection := 0
     activeSetup := ""
@@ -1100,6 +1340,9 @@ if confirmed and positionClosedNow
     activeEntryBar := na
     activeBreakevenDone := false
     activeMfeR := 0.0
+    activeHighSinceEntry := na
+    activeLowSinceEntry := na
+    activeTrailReason := ""
     activeRiskUpdateSeq := 0
     activeManualExitReason := ""
 
@@ -1111,7 +1354,7 @@ plot(orComplete ? orHigh : na, "ORH", color=color.new(color.lime, 0), linewidth=
 plot(orComplete ? orLow : na, "ORL", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
 plot(activePosition ? activeStop : na, "Active Stop", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
 plot(activePosition ? activeTarget1 : na, "1R", color=color.new(color.blue, 0), linewidth=1, style=plot.style_linebr)
-plot(activePosition ? activeTarget2 : na, "Final Target", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(activePosition and (runnerMode == "Fixed target" or hardFinalTargetEnabled) ? activeTarget2 : na, "Final Target", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
 plotshape(submitNewPlan and selectedDirection == 1, title="VOR long entry", style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, 0), size=size.small, text="BUY")
 plotshape(submitNewPlan and selectedDirection == -1, title="VOR short entry", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.small, text="SELL")
 plotshape(blockedCandidate and selectedDirection == 1, title="VOR long blocked", style=shape.xcross, location=location.abovebar, color=color.new(color.orange, 0), size=size.tiny, text="NO")

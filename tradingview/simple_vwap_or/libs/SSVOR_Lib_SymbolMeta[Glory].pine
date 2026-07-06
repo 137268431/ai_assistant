@@ -11,66 +11,137 @@ clean(series string symbol) =>
     s := str.replace_all(s, "BATS:", "")
     s
 
-isAny(series string s, series string a, series string b, series string c, series string d, series string e, series string f, series string g, series string h, series string i, series string j) =>
-    s == a or s == b or s == c or s == d or s == e or s == f or s == g or s == h or s == i or s == j
-
-isAnyMore(series string s, series string a, series string b, series string c, series string d, series string e, series string f, series string g, series string h, series string i, series string j) =>
-    isAny(s, a, b, c, d, e, f, g, h, i, j)
-
 export metadataVersion() =>
-    "SSVOR_META_v3_20260703"
+    "SSVOR_META_v5_20260706_daily_watchlist"
+
+const string SEMI_SYMBOLS = "|ADI|ALAB|AMAT|AMD|AMKR|ARM|ASML|ASX|AVGO|COHR|CRDO|INTC|KLAC|LITE|LRCX|LSCC|MCHP|MPWR|MRVL|MU|NVDA|NXPI|ON|QCOM|STM|SWKS|TER|TSM|TXN|UMC|"
+const string TECHNOLOGY_SYMBOLS = "|AAPL|ACN|ADBE|ANET|APH|APP|CACI|CDNS|CDW|CRM|CRWD|CRWV|CSCO|CTSH|DDOG|DELL|DOCU|DT|FLEX|FSLR|FTNT|GLW|GWRE|HPE|HPQ|HUBS|IBM|INFY|INTU|IONQ|LFUS|MDB|MSFT|MSTR|NBIS|NET|NOK|NOW|NTAP|NTNX|NXT|OKTA|ORCL|PANW|PLTR|PSTG|RBRK|SANM|SAP|SHOP|SMCI|SNDK|SNOW|SNPS|SNX|SONY|STX|TEAM|VICR|VSAT|WDAY|WDC|ZS|"
+const string COMMUNICATION_SYMBOLS = "|ASTS|BIDU|CHTR|CMCSA|DIS|DKNG|GOOG|GOOGL|META|NFLX|NTES|PDD|PINS|RBLX|RDDT|ROKU|SNAP|T|TKO|TMUS|VZ|"
+const string DISCRETIONARY_SYMBOLS = "|ABNB|AMZN|APTV|BABA|BBY|BKNG|BWA|CCL|CMG|CVNA|DASH|EXPE|F|FIVE|GM|HD|LOW|LULU|LYFT|MAR|MCD|MGM|NKE|ONON|RCL|RIVN|SBUX|SGI|SN|TSLA|UBER|VIK|WSM|"
+const string FINANCIAL_SYMBOLS = "|AFRM|ARES|AXP|BAC|BBVA|BCS|BLK|BX|C|COIN|CPAY|CRCL|DB|FUTU|GS|HOOD|HSBC|HUT|IBKR|IREN|JPM|KKR|MS|MUFG|NU|NWG|RKT|SAN|SCHW|SOFI|UPST|WFC|XYZ|"
+const string ENERGY_SYMBOLS = "|BKR|BP|CCJ|CNQ|COP|CVX|DVN|EOG|EQNR|ET|HAL|MPC|OKE|OXY|PBR|PBR.A|SHEL|SLB|SU|VLO|XOM|"
+const string HEALTHCARE_SYMBOLS = "|A|ABBV|ABT|ALGN|ARWR|BMRN|BNTX|BSX|CVS|GH|HIMS|ICLR|ILMN|IQV|ISRG|JNJ|LLY|MDLN|MEDP|MRK|MTD|NTRA|NVO|PFE|RVTY|TMO|UNH|VEEV|VRTX|WAT|ZTS|"
+const string INDUSTRIAL_SYMBOLS = "|AAON|AVAV|AXON|B|BA|BE|CAT|CR|DAL|DE|DRS|DY|ETN|FPS|GE|GNRC|HEI|HON|IESC|KNX|KTOS|LDOS|LII|LMT|LUV|MOD|MOG.A|OC|ODFL|PCAR|PL|POWL|RELX|RKLB|RTX|SPCX|SPXC|STRL|UAL|UPS|VRT|XPO|"
+const string MATERIALS_SYMBOLS = "|AA|AEM|ALB|APD|ATI|AU|BHP|CRS|DD|DOW|ECL|ESI|FCX|GFI|LIN|MP|NEM|NUE|RIO|SCCO|SHW|SOLS|SW|VALE|WPM|"
+const string STAPLES_SYMBOLS = "|BTI|CELH|CL|COST|DEO|DG|DLTR|KO|MDLZ|MO|PEP|PFGC|PG|PM|TGT|WMT|"
+const string UTILITIES_SYMBOLS = "|AEP|CEG|D|DUK|EXC|NEE|PEG|SO|SRE|TLN|VST|XEL|"
+const string REALESTATE_SYMBOLS = "|AMT|CCI|DLR|EQIX|LINE|O|PLD|PSA|SPG|VICI|WELL|"
+const string SECTOR_ETF_SYMBOLS = "|SMH|XLK|XLC|XLY|XLF|XLE|XLV|XLI|XLB|XLP|XLU|XLRE|"
+const string MARKET_ETF_SYMBOLS = "|SMH|XLK|XLC|XLY|XLF|XLE|XLV|XLI|XLB|XLP|XLU|XLRE|SPY|QQQ|IWM|DIA|VIX|TQQQ|SQQQ|UVXY|"
+const string HARDWARE_TAG_SYMBOLS = "|WDC|SNDK|STX|NTAP|PSTG|HPE|HPQ|DELL|ANET|CSCO|"
+const string SOFTWARE_TAG_SYMBOLS = "|AAPL|MSFT|ORCL|CRM|ADBE|NOW|SNOW|PANW|CRWD|PLTR|"
+const string SMALLCAP_BENCHMARK_SYMBOLS = "|IWM|RIVN|SOFI|AFRM|UPST|HOOD|DKNG|PINS|SNAP|ROKU|CELH|HUT|IREN|IONQ|RKLB|PL|ASTS|"
+const string QQQ_EXTRA_BENCHMARK_SYMBOLS = "|COIN|MSTR|CRCL|XYZ|FUTU|"
+
+containsSymbol(series string list, series string symbol) =>
+    str.contains(list, "|" + symbol + "|")
+
+isSemiSymbol(series string s) =>
+    containsSymbol(SEMI_SYMBOLS, s)
+
+isTechnologySymbol(series string s) =>
+    containsSymbol(TECHNOLOGY_SYMBOLS, s)
+
+isCommunicationSymbol(series string s) =>
+    containsSymbol(COMMUNICATION_SYMBOLS, s)
+
+isDiscretionarySymbol(series string s) =>
+    containsSymbol(DISCRETIONARY_SYMBOLS, s)
+
+isFinancialSymbol(series string s) =>
+    containsSymbol(FINANCIAL_SYMBOLS, s)
+
+isEnergySymbol(series string s) =>
+    containsSymbol(ENERGY_SYMBOLS, s)
+
+isHealthcareSymbol(series string s) =>
+    containsSymbol(HEALTHCARE_SYMBOLS, s)
+
+isIndustrialSymbol(series string s) =>
+    containsSymbol(INDUSTRIAL_SYMBOLS, s)
+
+isMaterialsSymbol(series string s) =>
+    containsSymbol(MATERIALS_SYMBOLS, s)
+
+isStaplesSymbol(series string s) =>
+    containsSymbol(STAPLES_SYMBOLS, s)
+
+isUtilitiesSymbol(series string s) =>
+    containsSymbol(UTILITIES_SYMBOLS, s)
+
+isRealEstateSymbol(series string s) =>
+    containsSymbol(REALESTATE_SYMBOLS, s)
+
+isSectorEtfSymbol(series string s) =>
+    containsSymbol(SECTOR_ETF_SYMBOLS, s)
+
+isMarketEtfSymbol(series string s) =>
+    containsSymbol(MARKET_ETF_SYMBOLS, s)
 
 export sectorEtf(series string symbol) =>
     string s = clean(symbol)
     string result = ""
-    if isAny(s, "NVDA", "AMD", "AVGO", "TSM", "MU", "AMAT", "LRCX", "KLAC", "INTC", "QCOM") or isAnyMore(s, "ASML", "ARM", "MRVL", "ON", "NXPI", "MCHP", "ADI", "TXN", "MPWR", "TER")
+    if isSemiSymbol(s)
         result := "SMH"
-    else if isAny(s, "AAPL", "MSFT", "PLTR", "ORCL", "CRM", "ADBE", "NOW", "SNOW", "PANW", "CRWD") or isAnyMore(s, "MDB", "DDOG", "NET", "ZS", "TEAM", "SHOP", "IBM", "CSCO", "ANET", "DELL") or isAny(s, "WDC", "SNDK", "STX", "NTAP", "PSTG", "HPE", "HPQ", "ACN", "CDNS", "SNPS")
+    else if isTechnologySymbol(s)
         result := "XLK"
-    else if isAny(s, "META", "GOOGL", "GOOG", "NFLX", "DIS", "CMCSA", "TMUS", "VZ", "T", "CHTR")
+    else if isCommunicationSymbol(s)
         result := "XLC"
-    else if isAny(s, "AMZN", "TSLA", "HD", "LOW", "NKE", "SBUX", "MCD", "BKNG", "ABNB", "RIVN") or isAnyMore(s, "F", "GM", "LULU", "CMG", "DASH", "UBER", "LYFT", "RCL", "CCL", "MAR")
+    else if isDiscretionarySymbol(s)
         result := "XLY"
-    else if isAny(s, "JPM", "BAC", "WFC", "GS", "MS", "C", "AXP", "BLK", "SCHW", "COIN")
+    else if isFinancialSymbol(s)
         result := "XLF"
-    else if isAny(s, "XOM", "CVX", "COP", "SLB", "EOG", "OXY", "MPC", "VLO", "HAL", "BKR")
+    else if isEnergySymbol(s)
         result := "XLE"
-    else if isAny(s, "UNH", "LLY", "JNJ", "ABBV", "MRK", "PFE", "TMO", "ABT", "ISRG", "VRTX")
+    else if isHealthcareSymbol(s)
         result := "XLV"
-    else if isAny(s, "CAT", "BA", "GE", "HON", "UPS", "RTX", "LMT", "DE", "ETN", "UBER")
+    else if isIndustrialSymbol(s)
         result := "XLI"
-    else if isAny(s, "LIN", "APD", "SHW", "FCX", "NEM", "DOW", "DD", "ECL", "NUE", "ALB")
+    else if isMaterialsSymbol(s)
         result := "XLB"
-    else if isAny(s, "COST", "WMT", "PG", "KO", "PEP", "PM", "MO", "CL", "MDLZ", "TGT")
+    else if isStaplesSymbol(s)
         result := "XLP"
-    else if isAny(s, "NEE", "SO", "DUK", "CEG", "AEP", "SRE", "D", "EXC", "XEL", "PEG")
+    else if isUtilitiesSymbol(s)
         result := "XLU"
-    else if isAny(s, "PLD", "AMT", "EQIX", "WELL", "SPG", "O", "DLR", "CCI", "PSA", "VICI")
+    else if isRealEstateSymbol(s)
         result := "XLRE"
-    else if isAny(s, "SPY", "QQQ", "SMH", "XLK", "XLC", "XLY", "XLF", "XLE", "XLV", "XLI") or isAnyMore(s, "XLB", "XLP", "XLU", "XLRE", "IWM", "DIA", "VIX", "TQQQ", "SQQQ", "UVXY")
+    else if isSectorEtfSymbol(s)
         result := s
+    else if s == "QQQ" or s == "TQQQ" or s == "SQQQ"
+        result := "QQQ"
+    else if s == "IWM"
+        result := "IWM"
+    else if s == "SPY" or s == "DIA" or s == "VIX" or s == "UVXY"
+        result := "SPY"
     result
 
 export sectorTvSymbol(series string symbol) =>
     string etf = sectorEtf(symbol)
-    etf == "QQQ" ? "NASDAQ:QQQ" : etf == "SMH" ? "NASDAQ:SMH" : etf == "SPY" ? "AMEX:SPY" : etf == "XLK" ? "AMEX:XLK" : etf == "XLC" ? "AMEX:XLC" : etf == "XLY" ? "AMEX:XLY" : etf == "XLF" ? "AMEX:XLF" : etf == "XLE" ? "AMEX:XLE" : etf == "XLV" ? "AMEX:XLV" : etf == "XLI" ? "AMEX:XLI" : etf == "XLB" ? "AMEX:XLB" : etf == "XLP" ? "AMEX:XLP" : etf == "XLU" ? "AMEX:XLU" : etf == "XLRE" ? "AMEX:XLRE" : ""
+    etf == "QQQ" ? "NASDAQ:QQQ" : etf == "IWM" ? "AMEX:IWM" : etf == "SMH" ? "NASDAQ:SMH" : etf == "SPY" ? "AMEX:SPY" : etf == "XLK" ? "AMEX:XLK" : etf == "XLC" ? "AMEX:XLC" : etf == "XLY" ? "AMEX:XLY" : etf == "XLF" ? "AMEX:XLF" : etf == "XLE" ? "AMEX:XLE" : etf == "XLV" ? "AMEX:XLV" : etf == "XLI" ? "AMEX:XLI" : etf == "XLB" ? "AMEX:XLB" : etf == "XLP" ? "AMEX:XLP" : etf == "XLU" ? "AMEX:XLU" : etf == "XLRE" ? "AMEX:XLRE" : ""
 
 export sectorGroup(series string symbol) =>
     string etf = sectorEtf(symbol)
-    etf == "SMH" ? "semiconductor" : etf == "XLK" ? "technology" : etf == "XLC" ? "communication" : etf == "XLY" ? "consumer_discretionary" : etf == "XLF" ? "financials" : etf == "XLE" ? "energy" : etf == "XLV" ? "healthcare" : etf == "XLI" ? "industrials" : etf == "XLB" ? "materials" : etf == "XLP" ? "consumer_staples" : etf == "XLU" ? "utilities" : etf == "XLRE" ? "real_estate" : etf == "SPY" or etf == "QQQ" ? "market_monitor" : "unknown"
+    etf == "SMH" ? "semiconductor" : etf == "XLK" ? "technology" : etf == "XLC" ? "communication" : etf == "XLY" ? "consumer_discretionary" : etf == "XLF" ? "financials" : etf == "XLE" ? "energy" : etf == "XLV" ? "healthcare" : etf == "XLI" ? "industrials" : etf == "XLB" ? "materials" : etf == "XLP" ? "consumer_staples" : etf == "XLU" ? "utilities" : etf == "XLRE" ? "real_estate" : etf == "SPY" or etf == "QQQ" or etf == "IWM" ? "market_monitor" : "unknown"
 
 export industryTag(series string symbol) =>
     string s = clean(symbol)
     string etf = sectorEtf(symbol)
-    isAny(s, "NVDA", "AMD", "AVGO", "TSM", "MU", "AMAT", "LRCX", "KLAC", "INTC", "QCOM") or etf == "SMH" ? "semiconductor" : isAny(s, "WDC", "SNDK", "STX", "NTAP", "PSTG", "HPE", "HPQ", "DELL", "ANET", "CSCO") ? "hardware_storage_networking" : isAny(s, "AAPL", "MSFT", "ORCL", "CRM", "ADBE", "NOW", "SNOW", "PANW", "CRWD", "PLTR") ? "technology_leader" : etf == "XLC" ? "communication_services" : etf == "XLY" ? "consumer_discretionary" : sectorGroup(symbol)
+    isSemiSymbol(s) ? "semiconductor" : containsSymbol(HARDWARE_TAG_SYMBOLS, s) ? "hardware_storage_networking" : containsSymbol(SOFTWARE_TAG_SYMBOLS, s) ? "software_cloud_cyber" : isFinancialSymbol(s) ? "financials_fintech_banks" : isHealthcareSymbol(s) ? "healthcare_life_science" : isIndustrialSymbol(s) ? "industrial_aero_electrical_transport" : isMaterialsSymbol(s) ? "materials_miners_chemicals" : sectorGroup(symbol)
 
 export relativeBenchmark(series string symbol) =>
     string s = clean(symbol)
-    s == "SPY" or s == "DIA" or s == "IWM" ? "SPY" : "QQQ"
+    string etf = sectorEtf(symbol)
+    bool smallCapProxy = containsSymbol(SMALLCAP_BENCHMARK_SYMBOLS, s)
+    bool qqqProxy = etf == "SMH" or etf == "XLK" or etf == "XLC" or etf == "XLY" or containsSymbol(QQQ_EXTRA_BENCHMARK_SYMBOLS, s)
+    bool broadSpyProxy = s == "SPY" or s == "DIA" or etf == "XLF" or etf == "XLE" or etf == "XLV" or etf == "XLI" or etf == "XLB" or etf == "XLP" or etf == "XLU" or etf == "XLRE"
+    smallCapProxy ? "IWM" : qqqProxy ? "QQQ" : broadSpyProxy ? "SPY" : "QQQ"
+
+export benchmarkTvSymbol(series string benchmark) =>
+    benchmark == "SPY" ? "AMEX:SPY" : benchmark == "IWM" ? "AMEX:IWM" : "NASDAQ:QQQ"
 
 export isMarketMonitor(series string symbol) =>
     string s = clean(symbol)
-    isAny(s, "SPY", "QQQ", "SMH", "XLK", "XLC", "XLY", "XLF", "XLE", "XLV", "XLI") or isAnyMore(s, "XLB", "XLP", "XLU", "XLRE", "IWM", "DIA", "VIX", "TQQQ", "SQQQ", "UVXY")
+    isMarketEtfSymbol(s)
 
 export hasMetadata(series string symbol) =>
     sectorEtf(symbol) != ""
