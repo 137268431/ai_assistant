@@ -63,13 +63,14 @@ marketDataMode = input.string("live", "Payload market_data_mode", options=["live
 strategyName = input.string(DEFAULT_STRATEGY_NAME, "Payload strategy_name", group="07 Alerts")
 enableAlerts = input.bool(true, "Enable alert() payloads", group="07 Alerts")
 enableFillConfirmAlerts = input.bool(false, "Alert on strategy fill confirmation", group="07 Alerts")
-showRankTable = input.bool(true, "Show ETF score table", group="08 Display")
+showRankTable = input.bool(false, "Show ETF score table", group="08 Display")
 showCandidateLabels = input.bool(true, "Show candidate labels", group="08 Display")
 showEntryLabels = input.bool(true, "Show entry/exit labels", group="08 Display")
 showDiagnosticLabels = input.bool(false, "Show blocked/expired diagnostics", group="08 Display")
 enableDiagnosticAlerts = input.bool(true, "Enable diagnostic heartbeat alerts", group="09 Debug")
+enablePineLogs = input.bool(true, "Enable Pine Logs", group="09 Debug")
 diagnosticAlertEveryBars = input.int(6, "Diagnostic heartbeat every N bars", minval=1, maxval=100, group="09 Debug")
-diagnosticImportantOnly = input.bool(true, "Diagnostic alerts only on important states", group="09 Debug")
+diagnosticImportantOnly = input.bool(false, "Diagnostic alerts/logs only on important states", group="09 Debug")
 diagnosticOnlyChartPool = input.bool(true, "Diagnostic alerts only for ETF pool charts", group="09 Debug")
 
 // -----------------------------------------------------------------------------
@@ -502,18 +503,30 @@ gateDiagnostics(series string reasonValue) =>
 buildDiagnosticPayload(series string eventIdValue, series string positionIdValue, series string reasonValue) =>
     basePayload("heartbeat", eventIdValue, positionIdValue) + "," + jsonStr("reason", "diagnostic_" + reasonValue) + gateDiagnostics(reasonValue) + rotationDiagnostics() + "}"
 
+diagnosticLogText(series string reasonValue) =>
+    "ETFROT debug=" + reasonValue + " chart=" + chartSymbol + " rank=" + str.tostring(chartRank) + " score=" + str.tostring(chartScore) + " spy_ok=" + str.tostring(spyRiskOk) + " cand_block=" + candidateBlockReason + " entry_block=" + blockedReason + " top3=" + str.tostring(chartInTopQualified) + " score_ok=" + str.tostring(chartScoreQualified) + " orh_broken=" + str.tostring(brokeOrhToday) + " pullback=" + str.tostring(pullbackHeld) + " support=" + pullbackSupportName + " reconfirm=" + str.tostring(reconfirmNow) + " stop_pct=" + fmt(entryStopPct) + " rvol=" + fmt(chartRvol)
+
 var string lastDiagnosticReason = ""
 var int lastDiagnosticBar = na
+var string lastPineLogReason = ""
+var int lastPineLogBar = na
 diagnosticChartOk = not diagnosticOnlyChartPool or chartInPool
 diagnosticBarReady = na(lastDiagnosticBar) or bar_index - lastDiagnosticBar >= diagnosticAlertEveryBars
+pineLogBarReady = na(lastPineLogBar) or bar_index - lastPineLogBar >= diagnosticAlertEveryBars
 diagnosticReasonChanged = debugReason != lastDiagnosticReason
+pineLogReasonChanged = debugReason != lastPineLogReason
 diagnosticInteresting = not diagnosticImportantOnly or candidateActive or pullbackHeld or chartInTopQualified or chartScoreQualified or not spyRiskOk or dailyLossStopHit or tradeCountStopHit or lossCountStopHit
 sendDiagnosticAlert = enableDiagnosticAlerts and confirmed and inRth and diagnosticChartOk and diagnosticInteresting and not entrySignal and (diagnosticReasonChanged or diagnosticBarReady)
+sendPineLog = enablePineLogs and confirmed and inRth and diagnosticChartOk and diagnosticInteresting and not entrySignal and (pineLogReasonChanged or pineLogBarReady)
 if sendDiagnosticAlert
     string diagId = planId(syminfo.ticker, "heartbeat", time, pendingSetup, "diagnostic")
     alert(buildDiagnosticPayload(diagId, activePositionId, debugReason), alert.freq_all)
     lastDiagnosticReason := debugReason
     lastDiagnosticBar := bar_index
+if sendPineLog
+    log.info(diagnosticLogText(debugReason))
+    lastPineLogReason := debugReason
+    lastPineLogBar := bar_index
 
 // -----------------------------------------------------------------------------
 // Entry submission
