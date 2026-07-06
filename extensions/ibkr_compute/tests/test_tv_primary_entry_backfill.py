@@ -9,7 +9,7 @@ for path in (SRC_ROOT, API_ROOT):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from ibkr_api.tradingview.tv_primary import _route_entry  # noqa: E402
+from ibkr_api.tradingview.tv_primary import TvPrimaryError, _route_entry  # noqa: E402
 
 
 def _escape(value):
@@ -50,8 +50,9 @@ def _entry_payload(symbol="WPM"):
 
 
 class DummyPocketBase:
-    def __init__(self, targets=None):
+    def __init__(self, targets=None, watchlist=None):
         self.targets = [dict(row) for row in (targets or [])]
+        self.watchlist = [dict(row) for row in (watchlist or [])]
         self.next_id = len(self.targets) + 1
 
     def _match_target(self, filter_expr):
@@ -69,6 +70,14 @@ class DummyPocketBase:
             return None
         row = self._match_target(filter)
         return dict(row) if row else None
+
+    def get_all_records(self, collection, filter="", sort="", max_pages=1):
+        del filter, sort, max_pages
+        if collection == "watchlist":
+            return [dict(row) for row in self.watchlist]
+        if collection == "ibkr_targets":
+            return [dict(row) for row in self.targets]
+        return []
 
     def create_record(self, collection, data):
         if collection != "ibkr_targets":
@@ -88,7 +97,7 @@ class DummyPocketBase:
         raise AssertionError(f"target not found: {record_id}")
 
 
-def _route_with_dummy_signal(pb, payload):
+def _route_with_dummy_signal(pb, payload, config_value=_config_value):
     captured = {}
 
     def build_signal_ingest_response(_pb, *, payload, **kwargs):
@@ -103,7 +112,7 @@ def _route_with_dummy_signal(pb, payload):
         event_type="entry",
         environment="live",
         broker_mode="live",
-        config_value=_config_value,
+        config_value=config_value,
         escape_filter=_escape,
         build_signal_ingest_response=build_signal_ingest_response,
         normalize_environment=lambda value, default: value or default,
@@ -113,6 +122,40 @@ def _route_with_dummy_signal(pb, payload):
         console_base_url="",
     )
     return result, status, captured["payload"]
+
+
+def _config_without_trade_universe(key, default, environment):
+    del environment
+    values = {
+        "tv_primary_trade_universe_symbols": "",
+        "tv_entry_requires_authorized_symbol": "TRUE",
+        "tv_entry_window_enforce_enabled": "TRUE",
+    }
+    return values.get(key, default)
+
+
+def _etf_rotation_payload(symbol="QQQ"):
+    payload = _entry_payload(symbol)
+    payload.update(
+        {
+            "exchange": "NASDAQ" if symbol == "QQQ" else "AMEX",
+            "script_tag": "Signal_Strategy_ETF_Rotation_Core[Glory]",
+            "strategy_name": "ETF Rotation Top3 Long Only",
+            "strategy_group": "etf_rotation_long_only",
+            "trade_model": "top3_etf_rotation_or_pullback_long_only_v1",
+            "chart_symbol": symbol,
+            "chart_symbol_rank": 2,
+            "chart_symbol_score": 82,
+            "chart_symbol_in_top3": True,
+            "diagnostic_type": "entry_gate",
+            "debug_reason": "waiting_reconfirm",
+            "gate_spy_ok": True,
+            "rank_1_symbol": "SMH",
+            "rank_2_symbol": symbol,
+            "rank_3_symbol": "XLK",
+        }
+    )
+    return payload
 
 
 class TvPrimaryEntryBackfillTests(unittest.TestCase):
@@ -217,6 +260,47 @@ class TvPrimaryEntryBackfillTests(unittest.TestCase):
         self.assertFalse(signal_payload["extra"]["target_backfilled"])
         self.assertEqual(signal_payload["extra"]["target_backfill"]["action"], "skipped")
         self.assertEqual(signal_payload["extra"]["target_backfill"]["reason"], "target_status_not_backfilled")
+
+    def test_etf_rotation_allows_qqq_even_when_watchlist_role_is_market_monitor(self):
+        pb = DummyPocketBase(
+            watchlist=[
+                {"symbol": "AAPL", "environment": "live", "symbol_role": "trade"},
+                {"symbol": "QQQ", "environment": "global", "symbol_role": "market_monitor"},
+                {"symbol": "SPY", "environment": "global", "symbol_role": "market_monitor"},
+            ]
+        )
+
+        result, status, signal_payload = _route_with_dummy_signal(
+            pb,
+            _etf_rotation_payload("QQQ"),
+            config_value=_config_without_trade_universe,
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(result["ok"])
+        self.assertEqual("QQQ", signal_payload["symbol"])
+        self.assertTrue(signal_payload["extra"]["authorized_symbol"])
+        self.assertIn("strategy_group:etf_rotation", signal_payload["extra"]["authorized_symbol_source"])
+        self.assertEqual("ETF Rotation Top3 Long Only", signal_payload["extra"]["strategy_name"])
+        self.assertEqual("waiting_reconfirm", signal_payload["extra"]["debug_reason"])
+        self.assertTrue(signal_payload["extra"]["gate_spy_ok"])
+
+    def test_market_monitor_qqq_is_still_rejected_without_etf_rotation_context(self):
+        pb = DummyPocketBase(
+            watchlist=[
+                {"symbol": "AAPL", "environment": "live", "symbol_role": "trade"},
+                {"symbol": "QQQ", "environment": "global", "symbol_role": "market_monitor"},
+            ]
+        )
+
+        with self.assertRaises(TvPrimaryError) as raised:
+            _route_with_dummy_signal(
+                pb,
+                _entry_payload("QQQ"),
+                config_value=_config_without_trade_universe,
+            )
+
+        self.assertEqual("symbol_not_authorized_for_tv_entry", raised.exception.reason)
 
 
 if __name__ == "__main__":

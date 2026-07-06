@@ -27,6 +27,8 @@ TV_RUNTIME_WAKEUP_EVENT_TYPES = {"entry", "risk_update", "exit", "cancel"}
 TV_RUNTIME_WAKEUP_TARGETS = {"ibkr_signals", "ibkr_reverse_signals"}
 TV_PREMARKET_VALIDATION_MODES = {"premarket_linkage", "tv_premarket_linkage"}
 TV_PREMARKET_VALIDATION_REJECTED_REASON = "premarket_validation_not_authorized"
+ETF_ROTATION_TRADE_SYMBOLS = {"QQQ", "XLK", "SMH", "XLF", "XLE", "XLV", "XLY", "XLI"}
+ETF_ROTATION_STRATEGY_GROUPS = {"etf_rotation", "etf_rotation_long_only"}
 TV_REAL_ACTIVE_ORDER_STATUSES = {"presubmitted", "pre_submitted", "submitted", "submitted_waiting_fill"}
 TV_REAL_FILLED_ORDER_STATUSES = {
     "executed",
@@ -515,6 +517,39 @@ def _authorized_symbol_universe(
     return set(), ""
 
 
+def _strategy_trade_symbol_universe(payload: dict[str, Any]) -> tuple[set[str], str]:
+    strategy_group = _lower(payload.get("strategy_group"))
+    script_tag = _lower(payload.get("script_tag"))
+    trade_model = _lower(payload.get("trade_model"))
+    if (
+        strategy_group in ETF_ROTATION_STRATEGY_GROUPS
+        or "etf_rotation" in script_tag
+        or "etf_rotation" in trade_model
+    ):
+        return set(ETF_ROTATION_TRADE_SYMBOLS), "strategy_group:etf_rotation"
+    return set(), ""
+
+
+def _entry_authorized_symbol_universe(
+    pb: Any,
+    payload: dict[str, Any],
+    *,
+    config_value: Callable[[str, str, str], str] | None,
+    environment: str,
+) -> tuple[set[str], str]:
+    configured_symbols, configured_source = _authorized_symbol_universe(
+        pb,
+        config_value=config_value,
+        environment=environment,
+    )
+    strategy_symbols, strategy_source = _strategy_trade_symbol_universe(payload)
+    if not strategy_symbols:
+        return configured_symbols, configured_source
+    if not configured_symbols:
+        return strategy_symbols, strategy_source
+    return configured_symbols | strategy_symbols, f"{configured_source}+{strategy_source}" if configured_source else strategy_source
+
+
 def _event_type(payload: dict[str, Any]) -> str:
     event_type = _lower(payload.get("event_type") or payload.get("type") or "")
     aliases = {
@@ -858,6 +893,7 @@ def _base_extra(
         "event_type": event_type,
         "position_id": _text(payload.get("position_id")),
         "script_tag": _text(payload.get("script_tag")),
+        "strategy_name": _text(payload.get("strategy_name") or extra.get("strategy_name")),
         "strategy_version": _text(payload.get("strategy_version")),
         "timeframe_stack": _text(payload.get("timeframe_stack") or extra.get("timeframe_stack")),
         "tv_chart_url": _text(payload.get("tv_chart_url")),
@@ -908,8 +944,15 @@ def _base_extra(
         "profit_space_filter_reason",
         "profit_space_basis",
         "entry_notional",
+        "requested_exposure",
+        "strategy_group",
+        "max_daily_loss_dollars",
         "gross_risk",
+        "planned_risk_dollars",
+        "actual_risk_dollars",
         "expected_gross_profit",
+        "expected_1r_dollars",
+        "expected_2r_dollars",
         "estimated_round_trip_cost",
         "expected_net_profit",
         "expected_net_roi_pct",
@@ -1066,6 +1109,64 @@ def _base_extra(
         "scale_plan_risk_model",
         "plan_risk_budget_used",
         "plan_risk_budget_ok",
+        "chart_symbol",
+        "chart_symbol_rank",
+        "chart_symbol_score",
+        "chart_symbol_in_top3",
+        "rank_1_symbol",
+        "rank_1_score",
+        "rank_2_symbol",
+        "rank_2_score",
+        "rank_3_symbol",
+        "rank_3_score",
+        "spy_vwap_ok",
+        "spy_chop_block",
+        "spy_vwap_cross_count_6",
+        "spy_change_pct",
+        "chart_change_pct",
+        "orh",
+        "orl",
+        "vwap",
+        "ema20_5m",
+        "rvol",
+        "candidate_active",
+        "candidate_age_bars",
+        "candidate_rank_at_birth",
+        "candidate_score_at_birth",
+        "candidate_wait_reason",
+        "candidate_support",
+        "candidate_stop",
+        "runner_mode",
+        "diagnostic_type",
+        "debug_reason",
+        "candidate_block_reason",
+        "entry_block_reason",
+        "gate_is_5m",
+        "gate_chart_in_pool",
+        "gate_chart_top3",
+        "gate_score_ok",
+        "gate_spy_ok",
+        "gate_entry_window_open",
+        "gate_candidate_window_open",
+        "gate_manual_event_block",
+        "gate_daily_loss_stop",
+        "gate_trade_count_stop",
+        "gate_loss_count_stop",
+        "gate_slot_open",
+        "gate_orh_broken_today",
+        "gate_pullback_held",
+        "gate_candidate_stop_ok",
+        "gate_candidate_rank_ok",
+        "gate_candidate_fresh",
+        "gate_reconfirm_now",
+        "gate_entry_stop_ok",
+        "gate_entry_qty_ok",
+        "gate_pullback_candidate_now",
+        "gate_entry_signal",
+        "debug_raw_candidate_stop_pct",
+        "debug_entry_stop_pct",
+        "debug_entry_risk_dollars",
+        "debug_close_location",
     ):
         value = _payload_first(payload, key)
         if value not in (None, "", []):
@@ -1580,7 +1681,12 @@ def _route_entry(
 
     date = _market_date(payload)
     target = _load_target(pb, symbol=symbol, date=date, environment=environment, escape_filter=escape_filter)
-    authorized_symbols, authorized_source = _authorized_symbol_universe(pb, config_value=config_value, environment=environment)
+    authorized_symbols, authorized_source = _entry_authorized_symbol_universe(
+        pb,
+        payload,
+        config_value=config_value,
+        environment=environment,
+    )
     requires_authorized_symbol = _config_bool(config_value, "tv_entry_requires_authorized_symbol", True, environment)
     authorized_symbol = symbol in authorized_symbols if authorized_symbols else None
     if not validation_authorized and requires_authorized_symbol and authorized_symbols and not authorized_symbol:

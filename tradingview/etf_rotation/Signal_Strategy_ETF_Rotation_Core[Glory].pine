@@ -1,0 +1,693 @@
+//@version=6
+strategy(title="Signal Strategy ETF Rotation Core[Glory]", overlay=true, pyramiding=0, initial_capital=20000, default_qty_type=strategy.fixed, default_qty_value=1, process_orders_on_close=false, calc_on_every_tick=false, dynamic_requests=true, max_labels_count=500, max_lines_count=100, commission_type=strategy.commission.percent, commission_value=0.005)
+
+// ETF rotation long-only strategy. The chart symbol is tradable only when it is
+// a qualified Top3 ETF by score; other ETFs are used for rotation context.
+string STRATEGY_VERSION = "ETFROT_v1_20260706_top3_long_only"
+string DEFAULT_STRATEGY_NAME = "ETF Rotation Top3 Long Only"
+string SCRIPT_TAG = "Signal_Strategy_ETF_Rotation_Core[Glory]"
+string STRATEGY_GROUP = "etf_rotation_long_only"
+string TRADE_MODEL = "top3_etf_rotation_or_pullback_long_only_v1"
+string RISK_MODEL = "fixed_10k_notional_structure_stop_v1"
+string TP_SL_MODEL = "partial_1r_runner_ema_vwap_v1"
+string TZ = "America/New_York"
+
+// -----------------------------------------------------------------------------
+// Inputs
+// -----------------------------------------------------------------------------
+rthSession = input.session("0930-1600", "RTH session", group="01 Time")
+manualEventBlock = input.bool(false, "Manual event block", group="01 Time")
+forceFlatHour = input.int(15, "Force flat hour ET", minval=0, maxval=23, group="01 Time")
+forceFlatMinute = input.int(50, "Force flat minute ET", minval=0, maxval=59, group="01 Time")
+
+spySymbol = input.symbol("AMEX:SPY", "SPY risk benchmark", group="02 Symbols")
+qqqSymbol = input.symbol("NASDAQ:QQQ", "QQQ", group="02 Symbols")
+xlkSymbol = input.symbol("AMEX:XLK", "XLK", group="02 Symbols")
+smhSymbol = input.symbol("NASDAQ:SMH", "SMH", group="02 Symbols")
+xlfSymbol = input.symbol("AMEX:XLF", "XLF", group="02 Symbols")
+xleSymbol = input.symbol("AMEX:XLE", "XLE", group="02 Symbols")
+xlvSymbol = input.symbol("AMEX:XLV", "XLV", group="02 Symbols")
+xlySymbol = input.symbol("AMEX:XLY", "XLY", group="02 Symbols")
+xliSymbol = input.symbol("AMEX:XLI", "XLI", group="02 Symbols")
+
+relativeVsSpyMinPct = input.float(0.15, "ETF must beat SPY by %", step=0.05, minval=0.0, group="03 Score")
+entryScoreMin = input.int(75, "Entry score min", minval=0, maxval=100, group="03 Score")
+candidateScoreMin = input.int(65, "Candidate score min", minval=0, maxval=100, group="03 Score")
+maxQualifiedRank = input.int(3, "Max tradable rank", minval=1, maxval=8, group="03 Score")
+volumeMaLen = input.int(20, "RVOL MA length", minval=1, maxval=200, group="03 Score")
+rvolMin = input.float(1.20, "RVOL min", step=0.05, minval=0.0, maxval=10.0, group="03 Score")
+requireSpyAboveVwap = input.bool(true, "Require SPY above VWAP", group="03 Score")
+spyChopCrossMax = input.int(2, "Max SPY VWAP crosses in last 6 bars", minval=0, maxval=6, group="03 Score")
+
+candidateTtlBars = input.int(6, "Candidate TTL bars", minval=1, maxval=30, group="04 Entry")
+pullbackTolerancePct = input.float(0.15, "Pullback touch tolerance %", step=0.01, minval=0.0, maxval=2.0, group="04 Entry")
+reconfirmCloseLocationMin = input.float(0.55, "Reconfirm close location min", step=0.05, minval=0.1, maxval=0.95, group="04 Entry")
+allowSameBarReconfirm = input.bool(true, "Allow same-bar pullback + reconfirm", group="04 Entry")
+atrLen = input.int(14, "ATR length", minval=1, group="04 Entry")
+stopBufferAtr = input.float(0.08, "Stop buffer ATR", step=0.01, minval=0.0, maxval=1.0, group="04 Entry")
+minStopPct = input.float(0.35, "Min stop distance %", step=0.05, minval=0.0, maxval=10.0, group="04 Entry")
+maxStopPct = input.float(1.00, "Max stop distance %", step=0.05, minval=0.01, maxval=20.0, group="04 Entry")
+
+positionNotional = input.float(10000.0, "Target notional per trade ($)", step=500.0, minval=100.0, group="05 Risk")
+maxDailyLossDollars = input.float(200.0, "Max daily loss ($)", step=10.0, minval=1.0, group="05 Risk")
+maxDailyTrades = input.int(2, "Max trades per chart/day", minval=1, maxval=20, group="05 Risk")
+maxConsecutiveLosses = input.int(2, "Max consecutive losses per chart/day", minval=1, maxval=10, group="05 Risk")
+minQty = input.float(1.0, "Minimum shares", step=1.0, minval=1.0, group="05 Risk")
+
+tp1ExitPct = input.int(50, "TP1 exit pct", minval=1, maxval=99, group="06 Exits")
+runnerMode = input.string("Runner trailing", "Runner mode", options=["Runner trailing", "2R full exit"], group="06 Exits")
+breakevenOffsetR = input.float(0.00, "Breakeven offset R", step=0.01, minval=0.0, maxval=0.5, group="06 Exits")
+
+brokerMode = input.string("paper", "Payload broker_mode", options=["paper", "live"], group="07 Alerts")
+marketDataMode = input.string("live", "Payload market_data_mode", options=["live", "paper"], group="07 Alerts")
+strategyName = input.string(DEFAULT_STRATEGY_NAME, "Payload strategy_name", group="07 Alerts")
+enableAlerts = input.bool(true, "Enable alert() payloads", group="07 Alerts")
+enableFillConfirmAlerts = input.bool(false, "Alert on strategy fill confirmation", group="07 Alerts")
+showRankTable = input.bool(true, "Show ETF score table", group="08 Display")
+showCandidateLabels = input.bool(true, "Show candidate labels", group="08 Display")
+showEntryLabels = input.bool(true, "Show entry/exit labels", group="08 Display")
+showDiagnosticLabels = input.bool(false, "Show blocked/expired diagnostics", group="08 Display")
+enableDiagnosticAlerts = input.bool(true, "Enable diagnostic heartbeat alerts", group="09 Debug")
+diagnosticAlertEveryBars = input.int(6, "Diagnostic heartbeat every N bars", minval=1, maxval=100, group="09 Debug")
+diagnosticImportantOnly = input.bool(true, "Diagnostic alerts only on important states", group="09 Debug")
+diagnosticOnlyChartPool = input.bool(true, "Diagnostic alerts only for ETF pool charts", group="09 Debug")
+
+// -----------------------------------------------------------------------------
+// Formatting and JSON helpers
+// -----------------------------------------------------------------------------
+fmt(series float value) =>
+    na(value) ? "--" : str.tostring(value, "#.##")
+
+fmtFull(series float value) =>
+    na(value) ? "null" : str.tostring(value, "#.########")
+
+fmtPrice(series float value) =>
+    na(value) ? "--" : str.tostring(value, format.mintick)
+
+moneyText(series float value) =>
+    na(value) ? "$--" : "$" + str.tostring(value, "#.##")
+
+qtyText(series float value) =>
+    na(value) ? "--" : str.tostring(value, "#")
+
+jsonStr(series string key, series string value) =>
+    "\"" + key + "\":\"" + str.replace_all(value, "\"", "'") + "\""
+
+jsonNum(series string key, series float value) =>
+    "\"" + key + "\":" + (na(value) ? "null" : fmtFull(value))
+
+jsonInt(series string key, series int value) =>
+    "\"" + key + "\":" + (na(value) ? "null" : str.tostring(value))
+
+jsonBool(series string key, series bool value) =>
+    "\"" + key + "\":" + (value ? "true" : "false")
+
+jsonRequestedSides(series string requestedSides) =>
+    "\"requested_sides\":" + (requestedSides == "stop_loss" ? "[\"stop_loss\"]" : requestedSides == "take_profit" ? "[\"take_profit\"]" : requestedSides == "stop_loss,take_profit" ? "[\"stop_loss\",\"take_profit\"]" : "[]")
+
+symbolKey(series string ticker) =>
+    str.replace_all(str.upper(ticker), " ", "_")
+
+planId(series string ticker, series string eventType, series int eventTimeMs, series string setup, series string intent) =>
+    symbolKey(ticker) + "_long_" + str.tostring(eventTimeMs) + "_" + timeframe.period + "_" + setup + "_" + eventType + "_" + intent
+
+cleanTicker(series string ticker) =>
+    str.upper(str.replace_all(ticker, " ", ""))
+
+// -----------------------------------------------------------------------------
+// Session and indicator helpers
+// -----------------------------------------------------------------------------
+inSession() =>
+    not na(time(timeframe.period, rthSession))
+
+etMinuteOfDay() =>
+    hour(time, TZ) * 60 + minute(time, TZ)
+
+etCloseMinuteOfDay() =>
+    hour(time_close, TZ) * 60 + minute(time_close, TZ)
+
+rthOpenPrice() =>
+    bool sess = inSession()
+    bool wasSess = sess[1] == true
+    bool start = sess and (not wasSess or timeframe.change("D"))
+    var float sessionOpen = na
+    if start
+        sessionOpen := open
+    else if not sess
+        sessionOpen := na
+    sessionOpen
+
+rthChangePct() =>
+    float sessionOpen = rthOpenPrice()
+    not na(sessionOpen) and sessionOpen > 0.0 ? (close - sessionOpen) / sessionOpen * 100.0 : na
+
+rthVwap(series float src) =>
+    bool sess = inSession()
+    bool wasSess = sess[1] == true
+    bool start = sess and (not wasSess or timeframe.change("D"))
+    var float cumPv = na
+    var float cumVol = na
+    if start
+        cumPv := src * volume
+        cumVol := volume
+    else if sess
+        cumPv := nz(cumPv, 0.0) + src * volume
+        cumVol := nz(cumVol, 0.0) + volume
+    else
+        cumPv := na
+        cumVol := na
+    not na(cumVol) and cumVol > 0.0 ? cumPv / cumVol : na
+
+rthOrLevels() =>
+    bool sess = inSession()
+    bool wasSess = sess[1] == true
+    bool start = sess and (not wasSess or timeframe.change("D"))
+    int mins = etMinuteOfDay()
+    bool inOr = sess and mins >= 9 * 60 + 30 and mins < 10 * 60
+    var float orHigh = na
+    var float orLow = na
+    if start
+        orHigh := na
+        orLow := na
+    if inOr
+        orHigh := na(orHigh) ? high : math.max(orHigh, high)
+        orLow := na(orLow) ? low : math.min(orLow, low)
+    [orHigh, orLow]
+
+nearestLongSupport(series float priceValue, series float orHighValue, series float vwapValue, series float emaValue) =>
+    float support = na
+    if not na(orHighValue) and orHighValue < priceValue
+        support := orHighValue
+    if not na(vwapValue) and vwapValue < priceValue
+        support := na(support) ? vwapValue : math.max(support, vwapValue)
+    if not na(emaValue) and emaValue < priceValue
+        support := na(support) ? emaValue : math.max(support, emaValue)
+    support
+
+stopPctFromSupport(series float priceValue, series float supportValue) =>
+    not na(priceValue) and priceValue > 0.0 and not na(supportValue) ? (priceValue - supportValue) / priceValue * 100.0 : na
+
+trendUp15() =>
+    float e = ta.ema(close, 20)
+    close > e and e > e[1]
+
+etf5Metrics() =>
+    float vwapValue = rthVwap(hlc3)
+    [orHighValue, orLowValue] = rthOrLevels()
+    float emaValue = ta.ema(close, 20)
+    float volMa = ta.sma(volume, volumeMaLen)
+    float rvolValue = not na(volMa) and volMa > 0.0 ? volume / volMa : na
+    float supportValue = nearestLongSupport(close, orHighValue, vwapValue, emaValue)
+    float stopPctValue = stopPctFromSupport(close, supportValue)
+    [rthChangePct(), close, vwapValue, orHighValue, rvolValue, stopPctValue]
+
+spy5Metrics() =>
+    float vwapValue = rthVwap(hlc3)
+    float crossValue = ta.cross(close, vwapValue) ? 1.0 : 0.0
+    float crossCount6 = crossValue + nz(crossValue[1]) + nz(crossValue[2]) + nz(crossValue[3]) + nz(crossValue[4]) + nz(crossValue[5])
+    [rthChangePct(), close, vwapValue, crossCount6]
+
+scoreEtf(series float changePct, series float spyChangePct, series float closeValue, series float vwapValue, series float orHighValue, series bool trendUpValue, series float rvolValue, series float stopPctValue) =>
+    int score = 0
+    score += not na(changePct) and not na(spyChangePct) and changePct - spyChangePct >= relativeVsSpyMinPct ? 25 : 0
+    score += not na(closeValue) and not na(vwapValue) and closeValue > vwapValue ? 20 : 0
+    score += not na(closeValue) and not na(orHighValue) and closeValue > orHighValue ? 20 : 0
+    score += trendUpValue ? 15 : 0
+    score += not na(rvolValue) and rvolValue >= rvolMin ? 10 : 0
+    score += not na(stopPctValue) and stopPctValue >= minStopPct and stopPctValue <= maxStopPct ? 10 : 0
+    score
+
+scoreBetter(series int candidateScore, series float candidateChange, series int refScore, series float refChange) =>
+    candidateScore > refScore or (candidateScore == refScore and nz(candidateChange, -100000.0) > nz(refChange, -100000.0))
+
+rankFor(series int score, series float changePct, series int qqqScore, series float qqqChange, series int xlkScore, series float xlkChange, series int smhScore, series float smhChange, series int xlfScore, series float xlfChange, series int xleScore, series float xleChange, series int xlvScore, series float xlvChange, series int xlyScore, series float xlyChange, series int xliScore, series float xliChange) =>
+    int rank = 1
+    rank += scoreBetter(qqqScore, qqqChange, score, changePct) ? 1 : 0
+    rank += scoreBetter(xlkScore, xlkChange, score, changePct) ? 1 : 0
+    rank += scoreBetter(smhScore, smhChange, score, changePct) ? 1 : 0
+    rank += scoreBetter(xlfScore, xlfChange, score, changePct) ? 1 : 0
+    rank += scoreBetter(xleScore, xleChange, score, changePct) ? 1 : 0
+    rank += scoreBetter(xlvScore, xlvChange, score, changePct) ? 1 : 0
+    rank += scoreBetter(xlyScore, xlyChange, score, changePct) ? 1 : 0
+    rank += scoreBetter(xliScore, xliChange, score, changePct) ? 1 : 0
+    rank
+
+// -----------------------------------------------------------------------------
+// Cross-ETF data and ranking
+// -----------------------------------------------------------------------------
+[spyChangePct, spyClose, spyVwap, spyVwapCrossCount] = request.security(spySymbol, "5", spy5Metrics(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+spyVwapOk = not na(spyClose) and not na(spyVwap) and spyClose > spyVwap
+spyChopBlock = not na(spyVwapCrossCount) and spyVwapCrossCount > spyChopCrossMax
+spyRiskOk = (not requireSpyAboveVwap or spyVwapOk) and not spyChopBlock
+
+[qqqChange, qqqClose, qqqVwap, qqqOrHigh, qqqRvol, qqqStopPct] = request.security(qqqSymbol, "5", etf5Metrics(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+[xlkChange, xlkClose, xlkVwap, xlkOrHigh, xlkRvol, xlkStopPct] = request.security(xlkSymbol, "5", etf5Metrics(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+[smhChange, smhClose, smhVwap, smhOrHigh, smhRvol, smhStopPct] = request.security(smhSymbol, "5", etf5Metrics(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+[xlfChange, xlfClose, xlfVwap, xlfOrHigh, xlfRvol, xlfStopPct] = request.security(xlfSymbol, "5", etf5Metrics(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+[xleChange, xleClose, xleVwap, xleOrHigh, xleRvol, xleStopPct] = request.security(xleSymbol, "5", etf5Metrics(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+[xlvChange, xlvClose, xlvVwap, xlvOrHigh, xlvRvol, xlvStopPct] = request.security(xlvSymbol, "5", etf5Metrics(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+[xlyChange, xlyClose, xlyVwap, xlyOrHigh, xlyRvol, xlyStopPct] = request.security(xlySymbol, "5", etf5Metrics(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+[xliChange, xliClose, xliVwap, xliOrHigh, xliRvol, xliStopPct] = request.security(xliSymbol, "5", etf5Metrics(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+qqqTrendUp = request.security(qqqSymbol, "15", trendUp15(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+xlkTrendUp = request.security(xlkSymbol, "15", trendUp15(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+smhTrendUp = request.security(smhSymbol, "15", trendUp15(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+xlfTrendUp = request.security(xlfSymbol, "15", trendUp15(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+xleTrendUp = request.security(xleSymbol, "15", trendUp15(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+xlvTrendUp = request.security(xlvSymbol, "15", trendUp15(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+xlyTrendUp = request.security(xlySymbol, "15", trendUp15(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+xliTrendUp = request.security(xliSymbol, "15", trendUp15(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+qqqScore = scoreEtf(qqqChange, spyChangePct, qqqClose, qqqVwap, qqqOrHigh, qqqTrendUp, qqqRvol, qqqStopPct)
+xlkScore = scoreEtf(xlkChange, spyChangePct, xlkClose, xlkVwap, xlkOrHigh, xlkTrendUp, xlkRvol, xlkStopPct)
+smhScore = scoreEtf(smhChange, spyChangePct, smhClose, smhVwap, smhOrHigh, smhTrendUp, smhRvol, smhStopPct)
+xlfScore = scoreEtf(xlfChange, spyChangePct, xlfClose, xlfVwap, xlfOrHigh, xlfTrendUp, xlfRvol, xlfStopPct)
+xleScore = scoreEtf(xleChange, spyChangePct, xleClose, xleVwap, xleOrHigh, xleTrendUp, xleRvol, xleStopPct)
+xlvScore = scoreEtf(xlvChange, spyChangePct, xlvClose, xlvVwap, xlvOrHigh, xlvTrendUp, xlvRvol, xlvStopPct)
+xlyScore = scoreEtf(xlyChange, spyChangePct, xlyClose, xlyVwap, xlyOrHigh, xlyTrendUp, xlyRvol, xlyStopPct)
+xliScore = scoreEtf(xliChange, spyChangePct, xliClose, xliVwap, xliOrHigh, xliTrendUp, xliRvol, xliStopPct)
+
+qqqRank = rankFor(qqqScore, qqqChange, qqqScore, qqqChange, xlkScore, xlkChange, smhScore, smhChange, xlfScore, xlfChange, xleScore, xleChange, xlvScore, xlvChange, xlyScore, xlyChange, xliScore, xliChange)
+xlkRank = rankFor(xlkScore, xlkChange, qqqScore, qqqChange, xlkScore, xlkChange, smhScore, smhChange, xlfScore, xlfChange, xleScore, xleChange, xlvScore, xlvChange, xlyScore, xlyChange, xliScore, xliChange)
+smhRank = rankFor(smhScore, smhChange, qqqScore, qqqChange, xlkScore, xlkChange, smhScore, smhChange, xlfScore, xlfChange, xleScore, xleChange, xlvScore, xlvChange, xlyScore, xlyChange, xliScore, xliChange)
+xlfRank = rankFor(xlfScore, xlfChange, qqqScore, qqqChange, xlkScore, xlkChange, smhScore, smhChange, xlfScore, xlfChange, xleScore, xleChange, xlvScore, xlvChange, xlyScore, xlyChange, xliScore, xliChange)
+xleRank = rankFor(xleScore, xleChange, qqqScore, qqqChange, xlkScore, xlkChange, smhScore, smhChange, xlfScore, xlfChange, xleScore, xleChange, xlvScore, xlvChange, xlyScore, xlyChange, xliScore, xliChange)
+xlvRank = rankFor(xlvScore, xlvChange, qqqScore, qqqChange, xlkScore, xlkChange, smhScore, smhChange, xlfScore, xlfChange, xleScore, xleChange, xlvScore, xlvChange, xlyScore, xlyChange, xliScore, xliChange)
+xlyRank = rankFor(xlyScore, xlyChange, qqqScore, qqqChange, xlkScore, xlkChange, smhScore, smhChange, xlfScore, xlfChange, xleScore, xleChange, xlvScore, xlvChange, xlyScore, xlyChange, xliScore, xliChange)
+xliRank = rankFor(xliScore, xliChange, qqqScore, qqqChange, xlkScore, xlkChange, smhScore, smhChange, xlfScore, xlfChange, xleScore, xleChange, xlvScore, xlvChange, xlyScore, xlyChange, xliScore, xliChange)
+
+rank1Symbol = qqqRank == 1 ? "QQQ" : xlkRank == 1 ? "XLK" : smhRank == 1 ? "SMH" : xlfRank == 1 ? "XLF" : xleRank == 1 ? "XLE" : xlvRank == 1 ? "XLV" : xlyRank == 1 ? "XLY" : xliRank == 1 ? "XLI" : ""
+rank1Score = rank1Symbol == "QQQ" ? qqqScore : rank1Symbol == "XLK" ? xlkScore : rank1Symbol == "SMH" ? smhScore : rank1Symbol == "XLF" ? xlfScore : rank1Symbol == "XLE" ? xleScore : rank1Symbol == "XLV" ? xlvScore : rank1Symbol == "XLY" ? xlyScore : rank1Symbol == "XLI" ? xliScore : 0
+rank1Change = rank1Symbol == "QQQ" ? qqqChange : rank1Symbol == "XLK" ? xlkChange : rank1Symbol == "SMH" ? smhChange : rank1Symbol == "XLF" ? xlfChange : rank1Symbol == "XLE" ? xleChange : rank1Symbol == "XLV" ? xlvChange : rank1Symbol == "XLY" ? xlyChange : rank1Symbol == "XLI" ? xliChange : na
+rank2Symbol = qqqRank == 2 ? "QQQ" : xlkRank == 2 ? "XLK" : smhRank == 2 ? "SMH" : xlfRank == 2 ? "XLF" : xleRank == 2 ? "XLE" : xlvRank == 2 ? "XLV" : xlyRank == 2 ? "XLY" : xliRank == 2 ? "XLI" : ""
+rank2Score = rank2Symbol == "QQQ" ? qqqScore : rank2Symbol == "XLK" ? xlkScore : rank2Symbol == "SMH" ? smhScore : rank2Symbol == "XLF" ? xlfScore : rank2Symbol == "XLE" ? xleScore : rank2Symbol == "XLV" ? xlvScore : rank2Symbol == "XLY" ? xlyScore : rank2Symbol == "XLI" ? xliScore : 0
+rank2Change = rank2Symbol == "QQQ" ? qqqChange : rank2Symbol == "XLK" ? xlkChange : rank2Symbol == "SMH" ? smhChange : rank2Symbol == "XLF" ? xlfChange : rank2Symbol == "XLE" ? xleChange : rank2Symbol == "XLV" ? xlvChange : rank2Symbol == "XLY" ? xlyChange : rank2Symbol == "XLI" ? xliChange : na
+rank3Symbol = qqqRank == 3 ? "QQQ" : xlkRank == 3 ? "XLK" : smhRank == 3 ? "SMH" : xlfRank == 3 ? "XLF" : xleRank == 3 ? "XLE" : xlvRank == 3 ? "XLV" : xlyRank == 3 ? "XLY" : xliRank == 3 ? "XLI" : ""
+rank3Score = rank3Symbol == "QQQ" ? qqqScore : rank3Symbol == "XLK" ? xlkScore : rank3Symbol == "SMH" ? smhScore : rank3Symbol == "XLF" ? xlfScore : rank3Symbol == "XLE" ? xleScore : rank3Symbol == "XLV" ? xlvScore : rank3Symbol == "XLY" ? xlyScore : rank3Symbol == "XLI" ? xliScore : 0
+rank3Change = rank3Symbol == "QQQ" ? qqqChange : rank3Symbol == "XLK" ? xlkChange : rank3Symbol == "SMH" ? smhChange : rank3Symbol == "XLF" ? xlfChange : rank3Symbol == "XLE" ? xleChange : rank3Symbol == "XLV" ? xlvChange : rank3Symbol == "XLY" ? xlyChange : rank3Symbol == "XLI" ? xliChange : na
+
+chartSymbol = cleanTicker(syminfo.ticker)
+chartInPool = chartSymbol == "QQQ" or chartSymbol == "XLK" or chartSymbol == "SMH" or chartSymbol == "XLF" or chartSymbol == "XLE" or chartSymbol == "XLV" or chartSymbol == "XLY" or chartSymbol == "XLI"
+chartScore = chartSymbol == "QQQ" ? qqqScore : chartSymbol == "XLK" ? xlkScore : chartSymbol == "SMH" ? smhScore : chartSymbol == "XLF" ? xlfScore : chartSymbol == "XLE" ? xleScore : chartSymbol == "XLV" ? xlvScore : chartSymbol == "XLY" ? xlyScore : chartSymbol == "XLI" ? xliScore : 0
+chartRank = chartSymbol == "QQQ" ? qqqRank : chartSymbol == "XLK" ? xlkRank : chartSymbol == "SMH" ? smhRank : chartSymbol == "XLF" ? xlfRank : chartSymbol == "XLE" ? xleRank : chartSymbol == "XLV" ? xlvRank : chartSymbol == "XLY" ? xlyRank : chartSymbol == "XLI" ? xliRank : 0
+chartChange = chartSymbol == "QQQ" ? qqqChange : chartSymbol == "XLK" ? xlkChange : chartSymbol == "SMH" ? smhChange : chartSymbol == "XLF" ? xlfChange : chartSymbol == "XLE" ? xleChange : chartSymbol == "XLV" ? xlvChange : chartSymbol == "XLY" ? xlyChange : chartSymbol == "XLI" ? xliChange : na
+chartStopPctScoreValue = chartSymbol == "QQQ" ? qqqStopPct : chartSymbol == "XLK" ? xlkStopPct : chartSymbol == "SMH" ? smhStopPct : chartSymbol == "XLF" ? xlfStopPct : chartSymbol == "XLE" ? xleStopPct : chartSymbol == "XLV" ? xlvStopPct : chartSymbol == "XLY" ? xlyStopPct : chartSymbol == "XLI" ? xliStopPct : na
+chartInTopQualified = chartInPool and chartRank > 0 and chartRank <= maxQualifiedRank
+chartScoreQualified = chartScore >= entryScoreMin
+
+// -----------------------------------------------------------------------------
+// Local chart structure
+// -----------------------------------------------------------------------------
+confirmed = barstate.isconfirmed
+is5m = timeframe.period == "5"
+inRth = inSession()
+rthStarted = inRth and (not (inRth[1] == true) or timeframe.change("D"))
+newDay = timeframe.change("D") or rthStarted
+etMinutes = etMinuteOfDay()
+etCloseMinutes = etCloseMinuteOfDay()
+inOpeningRange = inRth and etMinutes >= 9 * 60 + 30 and etMinutes < 10 * 60
+orComplete = inRth and etMinutes >= 10 * 60
+inRankOnlyWindow = inRth and etMinutes >= 10 * 60 and etMinutes < 10 * 60 + 30
+inMorningEntry = inRth and etMinutes >= 10 * 60 + 30 and etMinutes < 12 * 60
+inMiddayBlock = inRth and etMinutes >= 12 * 60 and etMinutes < 13 * 60 + 30
+inAfternoonEntry = inRth and etMinutes >= 13 * 60 + 30 and etMinutes < 15 * 60 + 20
+entryWindowOpen = inMorningEntry or inAfternoonEntry
+candidateWatchWindow = inRth and orComplete and ((etMinutes >= 10 * 60 and etMinutes < 12 * 60) or inAfternoonEntry)
+forceFlatNow = inRth and etCloseMinutes >= forceFlatHour * 60 + forceFlatMinute
+
+chartVwap = rthVwap(hlc3)
+[chartOrHigh, chartOrLow] = rthOrLevels()
+chartEma20 = ta.ema(close, 20)
+chartAtr = ta.atr(atrLen)
+chartVolMa = ta.sma(volume, volumeMaLen)
+chartRvol = not na(chartVolMa) and chartVolMa > 0.0 ? volume / chartVolMa : na
+barRange = math.max(high - low, syminfo.mintick)
+closeLocation = barRange > 0.0 ? (close - low) / barRange : 0.5
+
+var bool brokeOrhToday = false
+if newDay
+    brokeOrhToday := false
+if inRth and orComplete and not na(chartOrHigh) and close > chartOrHigh
+    brokeOrhToday := true
+
+pullbackTolerance = pullbackTolerancePct / 100.0
+heldOrh = brokeOrhToday and not na(chartOrHigh) and low <= chartOrHigh * (1.0 + pullbackTolerance) and close >= chartOrHigh
+heldVwap = brokeOrhToday and not na(chartVwap) and low <= chartVwap * (1.0 + pullbackTolerance) and close >= chartVwap
+heldEma20 = brokeOrhToday and not na(chartEma20) and low <= chartEma20 * (1.0 + pullbackTolerance) and close >= chartEma20
+float pullbackSupport = na
+string pullbackSupportName = "none"
+if heldOrh
+    pullbackSupport := chartOrHigh
+    pullbackSupportName := "ORH"
+if heldVwap and (na(pullbackSupport) or chartVwap > pullbackSupport)
+    pullbackSupport := chartVwap
+    pullbackSupportName := "VWAP"
+if heldEma20 and (na(pullbackSupport) or chartEma20 > pullbackSupport)
+    pullbackSupport := chartEma20
+    pullbackSupportName := "EMA20"
+
+pullbackHeld = not na(pullbackSupport)
+rawCandidateStop = pullbackHeld ? low - chartAtr * stopBufferAtr : na
+rawCandidateEntry = close
+rawCandidateRisk = not na(rawCandidateStop) ? rawCandidateEntry - rawCandidateStop : na
+rawCandidateStopPct = not na(rawCandidateRisk) and rawCandidateEntry > 0.0 ? rawCandidateRisk / rawCandidateEntry * 100.0 : na
+rawCandidateStopOk = not na(rawCandidateStopPct) and rawCandidateStopPct >= minStopPct and rawCandidateStopPct <= maxStopPct
+rawCandidateRankOk = chartInTopQualified and chartScore >= candidateScoreMin
+pullbackCandidateNow = confirmed and is5m and chartInPool and candidateWatchWindow and not manualEventBlock and pullbackHeld and rawCandidateStopOk and rawCandidateRankOk
+
+reconfirmNow = confirmed and close > high[1] and close > open and closeLocation >= reconfirmCloseLocationMin and close > chartEma20 and close > chartVwap
+
+// -----------------------------------------------------------------------------
+// Candidate and order state
+// -----------------------------------------------------------------------------
+var bool candidateActive = false
+var int candidateBar = na
+var float candidateStop = na
+var float candidateSupport = na
+var string candidateSupportName = "none"
+var int candidateRankAtBirth = na
+var int candidateScoreAtBirth = na
+var float candidateEntryRef = na
+var string candidateWaitReason = "none"
+
+var bool pendingEntry = false
+var string activeSignalId = ""
+var string activeTradeGroupId = ""
+var string activePositionId = ""
+var int activeSignalBar = na
+var float pendingStop = na
+var float pendingTarget1 = na
+var float pendingTarget2 = na
+var float pendingQty = na
+var float pendingPlannedEntry = na
+var int pendingScore = na
+var int pendingRank = na
+var string pendingSetup = "etf_rotation_top3_pullback_long"
+
+var bool activePosition = false
+var float activeEntry = na
+var float activeStop = na
+var float activeInitialRisk = na
+var float activeTarget1 = na
+var float activeTarget2 = na
+var float activeQty = na
+var bool activeBreakevenDone = false
+var string activeManualExitReason = ""
+var int activeEntryBar = na
+var int activeRiskUpdateSeq = 0
+var string activeSetup = "etf_rotation_top3_pullback_long"
+
+var int dailyEntries = 0
+var int consecutiveLosses = 0
+var float dayStartNetprofit = na
+var int lastClosedTradeCount = 0
+
+if newDay or na(dayStartNetprofit)
+    dayStartNetprofit := strategy.netprofit
+    dailyEntries := 0
+    consecutiveLosses := 0
+    candidateActive := false
+    candidateBar := na
+    candidateStop := na
+    candidateSupport := na
+    candidateSupportName := "none"
+    candidateRankAtBirth := na
+    candidateScoreAtBirth := na
+    candidateEntryRef := na
+    candidateWaitReason := "new_day"
+
+realizedToday = strategy.netprofit - nz(dayStartNetprofit, strategy.netprofit)
+dailyPnl = realizedToday + strategy.openprofit
+dailyLossStopHit = dailyPnl <= -maxDailyLossDollars
+tradeCountStopHit = dailyEntries >= maxDailyTrades
+lossCountStopHit = consecutiveLosses >= maxConsecutiveLosses
+slotOpen = strategy.position_size == 0 and not pendingEntry
+candidateBlockReason = not is5m ? "chart_not_5m" : not chartInPool ? "chart_not_in_pool" : not candidateWatchWindow ? "candidate_window_closed" : manualEventBlock ? "manual_event_block" : not brokeOrhToday ? "orh_not_broken" : not pullbackHeld ? "pullback_not_held" : not rawCandidateStopOk ? "candidate_stop_invalid" : not rawCandidateRankOk ? "rank_or_score_not_candidate" : not slotOpen ? "slot_not_open" : "candidate_ready"
+
+candidateAgeBars = candidateActive and not na(candidateBar) ? bar_index - candidateBar : na
+candidateExpired = candidateActive and not na(candidateAgeBars) and candidateAgeBars > candidateTtlBars
+candidateBroke = candidateActive and ((not na(candidateStop) and low <= candidateStop) or (not na(candidateSupport) and close < candidateSupport))
+candidateScoreLost = candidateActive and chartScore < candidateScoreMin
+candidateRankLost = candidateActive and (not chartInTopQualified)
+candidateTimeBlocked = candidateActive and (manualEventBlock or forceFlatNow or inMiddayBlock or (inRth and etMinutes >= 15 * 60 + 20))
+string candidateInvalidReason = candidateExpired ? "candidate_ttl_expired" : candidateBroke ? "candidate_structure_broken" : candidateScoreLost ? "candidate_score_lost" : candidateRankLost ? "candidate_rank_lost" : candidateTimeBlocked ? "candidate_window_blocked" : ""
+
+if confirmed and candidateInvalidReason != ""
+    if showDiagnosticLabels
+        label.new(bar_index, high, "xC\n" + candidateInvalidReason, style=label.style_label_down, color=color.new(color.orange, 0), textcolor=color.white, size=size.tiny)
+    candidateActive := false
+    candidateBar := na
+    candidateStop := na
+    candidateSupport := na
+    candidateSupportName := "none"
+    candidateRankAtBirth := na
+    candidateScoreAtBirth := na
+    candidateEntryRef := na
+    candidateWaitReason := candidateInvalidReason
+
+if pullbackCandidateNow and not candidateActive and slotOpen
+    candidateActive := true
+    candidateBar := bar_index
+    candidateStop := rawCandidateStop
+    candidateSupport := pullbackSupport
+    candidateSupportName := pullbackSupportName
+    candidateRankAtBirth := chartRank
+    candidateScoreAtBirth := chartScore
+    candidateEntryRef := close
+    candidateWaitReason := "waiting_reconfirm"
+    if showCandidateLabels
+        label.new(bar_index, low, "C " + chartSymbol + " #" + str.tostring(chartRank) + " " + str.tostring(chartScore) + "\n" + pullbackSupportName + " SL " + fmtPrice(rawCandidateStop), style=label.style_label_up, color=color.new(color.teal, 0), textcolor=color.white, size=size.small)
+
+candidateFreshEnough = candidateActive and (allowSameBarReconfirm or bar_index > candidateBar)
+entryStop = candidateActive ? candidateStop : rawCandidateStop
+entryRisk = not na(entryStop) ? close - entryStop : na
+entryStopPct = not na(entryRisk) and close > 0.0 ? entryRisk / close * 100.0 : na
+entryStopOk = not na(entryRisk) and entryRisk > 0.0 and not na(entryStopPct) and entryStopPct >= minStopPct and entryStopPct <= maxStopPct
+entryQty = entryStopOk ? math.floor(positionNotional / close) : na
+entryQtyOk = not na(entryQty) and entryQty >= minQty
+entryTarget1 = entryStopOk ? close + entryRisk : na
+entryTarget2 = entryStopOk ? close + entryRisk * 2.0 : na
+entryRiskDollars = entryStopOk and entryQtyOk ? entryRisk * entryQty : na
+
+entryHardGateOk = is5m and chartInPool and chartInTopQualified and chartScoreQualified and spyRiskOk and entryWindowOpen and not manualEventBlock and not dailyLossStopHit and not tradeCountStopHit and not lossCountStopHit and slotOpen
+entrySignal = confirmed and candidateFreshEnough and reconfirmNow and entryHardGateOk and entryStopOk and entryQtyOk
+
+blockedReason = not is5m ? "chart_not_5m" : not chartInPool ? "chart_not_in_pool" : not chartInTopQualified ? "rank_not_top3" : not chartScoreQualified ? "score_too_low" : not spyRiskOk ? "spy_risk_block" : not entryWindowOpen ? "entry_window_closed" : manualEventBlock ? "manual_event_block" : dailyLossStopHit ? "daily_loss_stop" : tradeCountStopHit ? "daily_trade_limit" : lossCountStopHit ? "consecutive_loss_limit" : not entryStopOk ? "stop_invalid" : not entryQtyOk ? "qty_too_small" : not reconfirmNow ? "waiting_reconfirm" : "passed"
+debugReason = entrySignal ? "entry_signal" : candidateInvalidReason != "" ? candidateInvalidReason : candidateActive ? blockedReason : candidateBlockReason
+
+basePayload(series string eventType, series string eventIdValue, series string positionIdValue) =>
+    "{" + jsonStr("source", "tradingview") + "," + jsonStr("signal_source", "tv") + "," + jsonStr("event_type", eventType) + "," + jsonStr("event_id", eventIdValue) + "," + jsonStr("symbol", syminfo.ticker) + "," + jsonStr("exchange", syminfo.prefix) + "," + jsonStr("interval", timeframe.period) + "," + jsonStr("chart_tf", timeframe.period) + "," + jsonStr("entry_tf", "5") + "," + jsonStr("timeframe_stack", "entry=5;confirm=15;opening_range=30") + "," + jsonStr("script_tag", SCRIPT_TAG) + "," + jsonStr("strategy_name", strategyName) + "," + jsonStr("strategy_version", STRATEGY_VERSION) + "," + jsonStr("strategy_group", STRATEGY_GROUP) + "," + jsonStr("broker_mode", brokerMode) + "," + jsonStr("market_data_mode", marketDataMode) + "," + jsonStr("data_environment", marketDataMode) + "," + jsonStr("position_id", positionIdValue) + "," + jsonStr("date", str.format_time(time, "yyyy-MM-dd", TZ)) + "," + jsonStr("us_time", str.format_time(time, "yyyy-MM-dd HH:mm", TZ)) + "," + jsonStr("cn_time", str.format_time(time, "yyyy-MM-dd HH:mm", "Asia/Shanghai")) + "," + jsonInt("bar_open_ms", time) + "," + jsonInt("bar_close_ms", time_close) + "," + jsonInt("pine_eval_ms", timenow) + "," + jsonInt("bar_time_ms", time) + "," + jsonInt("bar_index", bar_index)
+
+rotationDiagnostics() =>
+    "," + jsonStr("trade_model", TRADE_MODEL) + "," + jsonStr("risk_model", RISK_MODEL) + "," + jsonStr("tp_sl_model", TP_SL_MODEL) + "," + jsonStr("chart_symbol", chartSymbol) + "," + jsonInt("chart_symbol_rank", chartRank) + "," + jsonInt("chart_symbol_score", chartScore) + "," + jsonBool("chart_symbol_in_top3", chartInTopQualified) + "," + jsonStr("rank_1_symbol", rank1Symbol) + "," + jsonInt("rank_1_score", rank1Score) + "," + jsonStr("rank_2_symbol", rank2Symbol) + "," + jsonInt("rank_2_score", rank2Score) + "," + jsonStr("rank_3_symbol", rank3Symbol) + "," + jsonInt("rank_3_score", rank3Score) + "," + jsonBool("spy_vwap_ok", spyVwapOk) + "," + jsonBool("spy_chop_block", spyChopBlock) + "," + jsonNum("spy_vwap_cross_count_6", spyVwapCrossCount) + "," + jsonNum("spy_change_pct", spyChangePct) + "," + jsonNum("chart_change_pct", chartChange) + "," + jsonNum("orh", chartOrHigh) + "," + jsonNum("orl", chartOrLow) + "," + jsonNum("vwap", chartVwap) + "," + jsonNum("ema20_5m", chartEma20) + "," + jsonNum("rvol", chartRvol) + "," + jsonBool("candidate_active", candidateActive) + "," + jsonInt("candidate_age_bars", na(candidateAgeBars) ? 0 : candidateAgeBars) + "," + jsonInt("candidate_rank_at_birth", na(candidateRankAtBirth) ? 0 : candidateRankAtBirth) + "," + jsonInt("candidate_score_at_birth", na(candidateScoreAtBirth) ? 0 : candidateScoreAtBirth) + "," + jsonStr("candidate_wait_reason", candidateWaitReason) + "," + jsonStr("candidate_support", candidateSupportName) + "," + jsonNum("candidate_stop", candidateStop) + "," + jsonNum("requested_exposure", positionNotional) + "," + jsonNum("entry_notional", positionNotional) + "," + jsonNum("max_daily_loss_dollars", maxDailyLossDollars) + "," + jsonStr("runner_mode", runnerMode)
+
+buildEntryPayload(series string eventIdValue, series string signalIdValue, series string tradeGroupIdValue, series string positionIdValue, series float plannedEntry, series float stopPrice, series float target1, series float target2, series float qtyValue, series float riskValue, series float stopPctValue, series int scoreValue, series int rankValue) =>
+    basePayload("entry", eventIdValue, positionIdValue) + "," + jsonStr("signal_id", signalIdValue) + "," + jsonStr("origin_signal_id", signalIdValue) + "," + jsonStr("trade_group_id", tradeGroupIdValue) + "," + jsonStr("direction", "long") + "," + jsonStr("position_side", "long") + "," + jsonStr("setup", pendingSetup) + "," + jsonStr("entry_setup", pendingSetup) + "," + jsonStr("signal", pendingSetup) + "," + jsonStr("reason", "entry_signal") + "," + jsonNum("entry", plannedEntry) + "," + jsonNum("entry_price", plannedEntry) + "," + jsonNum("planned_entry_price", plannedEntry) + "," + jsonNum("submitted_entry_limit_price", plannedEntry) + "," + jsonNum("stop_loss", stopPrice) + "," + jsonNum("take_profit", target2) + "," + jsonNum("safety_take_profit", target2) + "," + jsonNum("target_checkpoint", target1) + "," + jsonNum("runner_activation_price", target1) + "," + jsonNum("runner_activation_r", 1.0) + "," + jsonNum("shares", qtyValue) + "," + jsonNum("limit_price", plannedEntry) + "," + jsonNum("quantity", qtyValue) + "," + jsonNum("rr", 2.0) + "," + jsonStr("entry_intent", "market_next_bar") + "," + jsonStr("status", "pending") + "," + jsonBool("qualified", true) + "," + jsonInt("score", scoreValue) + "," + jsonInt("activity_score", scoreValue) + "," + jsonInt("quality_score", scoreValue) + "," + jsonInt("rank", rankValue) + "," + jsonNum("initial_risk", riskValue) + "," + jsonNum("risk_r", riskValue) + "," + jsonNum("risk_per_share", riskValue) + "," + jsonNum("structure_risk_per_share", riskValue) + "," + jsonNum("structure_reward_per_share", riskValue * 2.0) + "," + jsonNum("reward_risk", 2.0) + "," + jsonNum("gross_reward_risk", 2.0) + "," + jsonNum("target_1r", target1) + "," + jsonNum("target_2r", target2) + "," + jsonNum("target_final", target2) + "," + jsonNum("target_final_r", 2.0) + "," + jsonBool("runner_enabled", runnerMode == "Runner trailing") + "," + jsonBool("tp_checkpoint_runner", runnerMode == "Runner trailing") + "," + jsonStr("target_role", runnerMode == "Runner trailing" ? "safety_tp" : "hard_tp") + "," + jsonBool("target_checkpoint_is_exit", runnerMode != "Runner trailing") + "," + jsonNum("stop_pct", stopPctValue) + "," + jsonNum("stop_distance_bps", stopPctValue * 100.0) + "," + jsonNum("gross_risk", riskValue * qtyValue) + "," + jsonNum("planned_risk_dollars", riskValue * qtyValue) + "," + jsonNum("actual_risk_dollars", riskValue * qtyValue) + "," + jsonNum("expected_gross_profit", riskValue * qtyValue * 2.0) + "," + jsonNum("expected_1r_dollars", riskValue * qtyValue) + "," + jsonNum("expected_2r_dollars", riskValue * qtyValue * 2.0) + rotationDiagnostics() + "}"
+
+buildEntryFillPayload(series string eventIdValue, series string positionIdValue, series float fillPrice) =>
+    basePayload("entry_fill", eventIdValue, positionIdValue) + "," + jsonStr("signal_id", activeSignalId) + "," + jsonStr("origin_signal_id", activeSignalId) + "," + jsonStr("trade_group_id", activeTradeGroupId) + "," + jsonStr("direction", "long") + "," + jsonStr("setup", activeSetup) + "," + jsonNum("entry", fillPrice) + "," + jsonNum("planned_entry_price", pendingPlannedEntry) + "," + jsonNum("stop_loss", activeStop) + "," + jsonNum("take_profit", activeTarget2) + "," + jsonNum("shares", activeQty) + "," + jsonNum("quantity", activeQty) + "," + jsonNum("fill_price", fillPrice) + "," + jsonStr("entry_intent", "market_next_bar") + rotationDiagnostics() + "}"
+
+buildRiskUpdatePayload(series string eventIdValue, series string positionIdValue, series string reason, series float previousStop, series float newStop) =>
+    basePayload("risk_update", eventIdValue, positionIdValue) + "," + jsonStr("signal_id", activeSignalId) + "," + jsonStr("origin_signal_id", activeSignalId) + "," + jsonStr("trade_group_id", activeTradeGroupId) + "," + jsonStr("direction", "long") + "," + jsonStr("setup", activeSetup) + "," + jsonStr("reason", reason) + "," + jsonStr("risk_update_reason", reason) + "," + jsonInt("risk_update_seq", activeRiskUpdateSeq) + "," + jsonRequestedSides("stop_loss") + "," + jsonNum("previous_stop_loss", previousStop) + "," + jsonNum("new_stop_loss", newStop) + "," + jsonNum("stop_loss", newStop) + "," + jsonNum("take_profit", activeTarget2) + "," + jsonNum("safety_take_profit", activeTarget2) + "," + jsonNum("runner_activation_price", activeTarget1) + "," + jsonNum("runner_activation_r", 1.0) + "," + jsonNum("shares", activeQty) + "," + jsonNum("quantity", activeQty) + "," + jsonBool("runner_enabled", true) + "," + jsonBool("runner_active", activeBreakevenDone) + rotationDiagnostics() + "}"
+
+buildExitPayload(series string eventIdValue, series string positionIdValue, series string reason, series float exitPrice, series float pnlPerShare) =>
+    basePayload("exit", eventIdValue, positionIdValue) + "," + jsonStr("signal_id", activeSignalId) + "," + jsonStr("origin_signal_id", activeSignalId) + "," + jsonStr("trade_group_id", activeTradeGroupId) + "," + jsonStr("direction", "long") + "," + jsonStr("setup", activeSetup) + "," + jsonStr("reason", reason) + "," + jsonStr("exit_reason", reason) + "," + jsonNum("exit_price", exitPrice) + "," + jsonNum("entry", activeEntry) + "," + jsonNum("stop_loss", activeStop) + "," + jsonNum("take_profit", activeTarget2) + "," + jsonNum("shares", activeQty) + "," + jsonNum("quantity", activeQty) + "," + jsonNum("pnl", pnlPerShare * activeQty) + "," + jsonNum("pnl_per_share", pnlPerShare) + "," + jsonNum("pnl_r", activeInitialRisk > 0.0 ? pnlPerShare / activeInitialRisk : na) + "," + jsonBool("runner_active", activeBreakevenDone) + rotationDiagnostics() + "}"
+
+buildCancelPayload(series string eventIdValue, series string positionIdValue, series string reason) =>
+    basePayload("cancel", eventIdValue, positionIdValue) + "," + jsonStr("signal_id", activeSignalId) + "," + jsonStr("origin_signal_id", activeSignalId) + "," + jsonStr("trade_group_id", activeTradeGroupId) + "," + jsonStr("direction", "long") + "," + jsonStr("setup", activeSetup) + "," + jsonStr("reason", reason) + "," + jsonStr("cancel_reason", reason) + "," + jsonStr("cancel_scope", "unfilled_entry") + rotationDiagnostics() + "}"
+
+gateDiagnostics(series string reasonValue) =>
+    "," + jsonStr("diagnostic_type", "entry_gate") + "," + jsonStr("debug_reason", reasonValue) + "," + jsonStr("candidate_block_reason", candidateBlockReason) + "," + jsonStr("entry_block_reason", blockedReason) + "," + jsonBool("gate_is_5m", is5m) + "," + jsonBool("gate_chart_in_pool", chartInPool) + "," + jsonBool("gate_chart_top3", chartInTopQualified) + "," + jsonBool("gate_score_ok", chartScoreQualified) + "," + jsonBool("gate_spy_ok", spyRiskOk) + "," + jsonBool("gate_entry_window_open", entryWindowOpen) + "," + jsonBool("gate_candidate_window_open", candidateWatchWindow) + "," + jsonBool("gate_manual_event_block", manualEventBlock) + "," + jsonBool("gate_daily_loss_stop", dailyLossStopHit) + "," + jsonBool("gate_trade_count_stop", tradeCountStopHit) + "," + jsonBool("gate_loss_count_stop", lossCountStopHit) + "," + jsonBool("gate_slot_open", slotOpen) + "," + jsonBool("gate_orh_broken_today", brokeOrhToday) + "," + jsonBool("gate_pullback_held", pullbackHeld) + "," + jsonBool("gate_candidate_stop_ok", rawCandidateStopOk) + "," + jsonBool("gate_candidate_rank_ok", rawCandidateRankOk) + "," + jsonBool("gate_candidate_fresh", candidateFreshEnough) + "," + jsonBool("gate_reconfirm_now", reconfirmNow) + "," + jsonBool("gate_entry_stop_ok", entryStopOk) + "," + jsonBool("gate_entry_qty_ok", entryQtyOk) + "," + jsonBool("gate_pullback_candidate_now", pullbackCandidateNow) + "," + jsonBool("gate_entry_signal", entrySignal) + "," + jsonNum("debug_raw_candidate_stop_pct", rawCandidateStopPct) + "," + jsonNum("debug_entry_stop_pct", entryStopPct) + "," + jsonNum("debug_entry_risk_dollars", entryRiskDollars) + "," + jsonNum("debug_close_location", closeLocation)
+
+buildDiagnosticPayload(series string eventIdValue, series string positionIdValue, series string reasonValue) =>
+    basePayload("heartbeat", eventIdValue, positionIdValue) + "," + jsonStr("reason", "diagnostic_" + reasonValue) + gateDiagnostics(reasonValue) + rotationDiagnostics() + "}"
+
+var string lastDiagnosticReason = ""
+var int lastDiagnosticBar = na
+diagnosticChartOk = not diagnosticOnlyChartPool or chartInPool
+diagnosticBarReady = na(lastDiagnosticBar) or bar_index - lastDiagnosticBar >= diagnosticAlertEveryBars
+diagnosticReasonChanged = debugReason != lastDiagnosticReason
+diagnosticInteresting = not diagnosticImportantOnly or candidateActive or pullbackHeld or chartInTopQualified or chartScoreQualified or not spyRiskOk or dailyLossStopHit or tradeCountStopHit or lossCountStopHit
+sendDiagnosticAlert = enableDiagnosticAlerts and confirmed and inRth and diagnosticChartOk and diagnosticInteresting and not entrySignal and (diagnosticReasonChanged or diagnosticBarReady)
+if sendDiagnosticAlert
+    string diagId = planId(syminfo.ticker, "heartbeat", time, pendingSetup, "diagnostic")
+    alert(buildDiagnosticPayload(diagId, activePositionId, debugReason), alert.freq_all)
+    lastDiagnosticReason := debugReason
+    lastDiagnosticBar := bar_index
+
+// -----------------------------------------------------------------------------
+// Entry submission
+// -----------------------------------------------------------------------------
+if entrySignal
+    string signalId = planId(syminfo.ticker, "entry", time, pendingSetup, "market_next_bar")
+    string tradeGroupId = symbolKey(syminfo.ticker) + "_" + str.tostring(time) + "_etf_rotation"
+    string positionId = signalId + "_pos"
+    activeSignalId := signalId
+    activeTradeGroupId := tradeGroupId
+    activePositionId := positionId
+    activeSignalBar := bar_index
+    pendingStop := entryStop
+    pendingTarget1 := entryTarget1
+    pendingTarget2 := entryTarget2
+    pendingQty := entryQty
+    pendingPlannedEntry := close
+    pendingScore := chartScore
+    pendingRank := chartRank
+    pendingEntry := true
+    candidateActive := false
+    candidateWaitReason := "entry_submitted"
+    strategy.entry("ETFROT-L", strategy.long, qty=entryQty, comment="ETFROT L #" + str.tostring(chartRank) + " S" + str.tostring(chartScore))
+    if showEntryLabels
+        label.new(bar_index, low, "BUY next\n" + chartSymbol + " #" + str.tostring(chartRank) + " S" + str.tostring(chartScore) + "\nQ " + qtyText(entryQty) + " SL " + fmtPrice(entryStop), style=label.style_label_up, color=color.new(color.lime, 0), textcolor=color.black, size=size.normal)
+    if enableAlerts
+        alert(buildEntryPayload(signalId, signalId, tradeGroupId, positionId, close, entryStop, entryTarget1, entryTarget2, entryQty, entryRisk, entryStopPct, chartScore, chartRank), alert.freq_all)
+else if confirmed and pullbackCandidateNow and showDiagnosticLabels and blockedReason != "passed" and not candidateActive
+    label.new(bar_index, low, "NO\n" + blockedReason, style=label.style_label_up, color=color.new(color.gray, 15), textcolor=color.white, size=size.tiny)
+
+positionOpenedNow = pendingEntry and strategy.position_size > 0 and strategy.position_size[1] == 0
+if confirmed and positionOpenedNow
+    pendingEntry := false
+    activePosition := true
+    activeEntry := strategy.position_avg_price
+    activeStop := pendingStop
+    activeInitialRisk := activeEntry - activeStop
+    activeTarget1 := activeEntry + activeInitialRisk
+    activeTarget2 := activeEntry + activeInitialRisk * 2.0
+    activeQty := math.abs(strategy.position_size)
+    activeBreakevenDone := false
+    activeManualExitReason := ""
+    activeEntryBar := bar_index
+    activeRiskUpdateSeq := 0
+    dailyEntries += 1
+    if showEntryLabels
+        label.new(bar_index, low, "FILL L\n" + fmtPrice(activeEntry) + " Q" + qtyText(activeQty), style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white, size=size.small)
+    if enableAlerts and enableFillConfirmAlerts
+        alert(buildEntryFillPayload(planId(syminfo.ticker, "entry_fill", time, activeSetup, "market_next_bar"), activePositionId, activeEntry), alert.freq_all)
+
+pendingEntryStale = confirmed and pendingEntry and strategy.position_size == 0 and not na(activeSignalBar) and bar_index > activeSignalBar + 2
+if pendingEntryStale
+    if enableAlerts
+        alert(buildCancelPayload(planId(syminfo.ticker, "cancel", time, activeSetup, "market_next_bar"), activePositionId, "entry_order_stale"), alert.freq_all)
+    strategy.cancel("ETFROT-L")
+    pendingEntry := false
+
+// -----------------------------------------------------------------------------
+// Position management
+// -----------------------------------------------------------------------------
+if confirmed and activePosition and strategy.position_size > 0
+    bool tp1Touched = not activeBreakevenDone and high >= activeTarget1
+    if tp1Touched
+        float previousStop = activeStop
+        activeBreakevenDone := true
+        activeRiskUpdateSeq += 1
+        activeStop := math.max(activeStop, activeEntry + activeInitialRisk * breakevenOffsetR)
+        if showEntryLabels
+            label.new(bar_index, high, "TP1/BE\nSL " + fmtPrice(activeStop), style=label.style_label_down, color=color.new(color.blue, 0), textcolor=color.white, size=size.small)
+        if enableAlerts
+            alert(buildRiskUpdatePayload(planId(syminfo.ticker, "risk_update", time, activeSetup, "breakeven"), activePositionId, "tp1_breakeven", previousStop, activeStop), alert.freq_all)
+
+    bool trailCloseNow = runnerMode == "Runner trailing" and activeBreakevenDone and (close < chartEma20 or close < chartVwap)
+    if dailyLossStopHit and activeManualExitReason == ""
+        activeManualExitReason := "daily_loss_stop"
+        strategy.close("ETFROT-L", comment="DLOSS " + fmtPrice(close))
+    else if forceFlatNow and activeManualExitReason == ""
+        activeManualExitReason := "force_flat_eod"
+        strategy.close("ETFROT-L", comment="EOD " + fmtPrice(close))
+    else if trailCloseNow and activeManualExitReason == ""
+        activeManualExitReason := "runner_trailing_stop"
+        strategy.close("ETFROT-L", comment="TRAIL " + fmtPrice(close))
+    else
+        float runnerLimit = runnerMode == "2R full exit" ? activeTarget2 : na
+        string runnerProfitComment = runnerMode == "2R full exit" ? "TP2 " + fmtPrice(activeTarget2) : "RUN"
+        string runnerLossComment = activeBreakevenDone ? "BE " + fmtPrice(activeStop) : "SL " + fmtPrice(activeStop)
+        strategy.exit("ETFROT-L-TP1", from_entry="ETFROT-L", qty_percent=tp1ExitPct, stop=activeStop, limit=activeTarget1, comment_profit="TP1 " + fmtPrice(activeTarget1), comment_loss="SL " + fmtPrice(activeStop))
+        strategy.exit("ETFROT-L-RUN", from_entry="ETFROT-L", qty_percent=100 - tp1ExitPct, stop=activeStop, limit=runnerLimit, comment_profit=runnerProfitComment, comment_loss=runnerLossComment)
+
+positionClosedNow = activePosition and strategy.position_size == 0 and strategy.position_size[1] > 0
+if confirmed and positionClosedNow
+    int closedTradeIndex = strategy.closedtrades - 1
+    float exitPrice = close
+    string closedTradeComment = ""
+    if strategy.closedtrades > 0
+        exitPrice := strategy.closedtrades.exit_price(closedTradeIndex)
+        closedTradeComment := strategy.closedtrades.exit_comment(closedTradeIndex)
+    bool stopped = low <= activeStop
+    bool target2Hit = runnerMode == "2R full exit" and high >= activeTarget2
+    string exitReason = activeManualExitReason != "" ? activeManualExitReason : str.contains(closedTradeComment, "TRAIL") ? "runner_trailing_stop" : str.contains(closedTradeComment, "TP2") or target2Hit ? "take_profit_2r" : str.contains(closedTradeComment, "BE") ? "breakeven_stop" : stopped and activeBreakevenDone ? "breakeven_stop" : stopped ? "stop_loss" : forceFlatNow ? "force_flat_eod" : "strategy_closed"
+    float pnlPerShare = exitPrice - activeEntry
+    if pnlPerShare < 0.0
+        consecutiveLosses += 1
+    else
+        consecutiveLosses := 0
+    if showEntryLabels
+        string exitCode = exitReason == "take_profit_2r" ? "TP2" : exitReason == "runner_trailing_stop" ? "TRAIL" : exitReason == "stop_loss" ? "SL" : exitReason == "breakeven_stop" ? "BE" : exitReason == "force_flat_eod" ? "EOD" : exitReason == "daily_loss_stop" ? "DLOSS" : "EXIT"
+        color exitColor = exitReason == "take_profit_2r" ? color.lime : exitReason == "runner_trailing_stop" ? color.blue : exitReason == "stop_loss" or exitReason == "daily_loss_stop" ? color.red : color.orange
+        label.new(bar_index, exitPrice, exitCode + "\n" + fmtPrice(exitPrice), style=label.style_label_down, color=exitColor, textcolor=color.white, size=size.small)
+    if enableAlerts
+        alert(buildExitPayload(planId(syminfo.ticker, "exit", time, activeSetup, "market"), activePositionId, exitReason, exitPrice, pnlPerShare), alert.freq_all)
+    activePosition := false
+    activeEntry := na
+    activeStop := na
+    activeInitialRisk := na
+    activeTarget1 := na
+    activeTarget2 := na
+    activeQty := na
+    activeBreakevenDone := false
+    activeManualExitReason := ""
+    activeEntryBar := na
+    activeRiskUpdateSeq := 0
+
+// -----------------------------------------------------------------------------
+// Visuals
+// -----------------------------------------------------------------------------
+plot(chartVwap, "RTH VWAP", color=color.new(color.yellow, 0), linewidth=2)
+plot(chartOrHigh, "Opening Range High", color=color.new(color.lime, 0), linewidth=2, style=plot.style_linebr)
+plot(chartOrLow, "Opening Range Low", color=color.new(color.red, 30), linewidth=1, style=plot.style_linebr)
+plot(chartEma20, "5m EMA20", color=color.new(color.aqua, 0), linewidth=1)
+
+plotshape(showDiagnosticLabels and confirmed and chartInPool and not chartInTopQualified and pullbackHeld, title="Blocked rank", style=shape.xcross, color=color.orange, size=size.tiny, location=location.belowbar, text="RANK")
+plotshape(showDiagnosticLabels and confirmed and chartInPool and chartInTopQualified and not chartScoreQualified and pullbackHeld, title="Blocked score", style=shape.xcross, color=color.gray, size=size.tiny, location=location.belowbar, text="SCORE")
+
+var table rankTable = table.new(position.top_right, 7, 10, border_width=1)
+rowBg(series string sym, series int rankValue, series bool isChartValue) =>
+    isChartValue ? color.new(color.yellow, 15) : rankValue <= maxQualifiedRank ? color.new(color.green, 82) : color.new(color.black, 84)
+
+stateText(series string sym, series int rankValue, series int scoreValue) =>
+    sym == chartSymbol and strategy.position_size > 0 ? "OPEN" : sym == chartSymbol and candidateActive ? "CAND" : rankValue <= maxQualifiedRank and scoreValue >= entryScoreMin ? "OK" : rankValue <= maxQualifiedRank ? "WATCH" : "WAIT"
+
+drawScoreRow(series int row, series string sym, series int rankValue, series int scoreValue, series float changeValue, series float stopPctValue, series float rvolValue) =>
+    bool isChartRow = sym == chartSymbol
+    color bg = rowBg(sym, rankValue, isChartRow)
+    table.cell(rankTable, 0, row, str.tostring(rankValue), text_color=color.white, bgcolor=bg)
+    table.cell(rankTable, 1, row, sym, text_color=isChartRow ? color.black : color.white, bgcolor=bg)
+    table.cell(rankTable, 2, row, str.tostring(scoreValue), text_color=color.white, bgcolor=bg)
+    table.cell(rankTable, 3, row, fmt(changeValue) + "%", text_color=color.white, bgcolor=bg)
+    table.cell(rankTable, 4, row, fmt(rvolValue), text_color=color.white, bgcolor=bg)
+    table.cell(rankTable, 5, row, fmt(stopPctValue) + "%", text_color=color.white, bgcolor=bg)
+    table.cell(rankTable, 6, row, stateText(sym, rankValue, scoreValue), text_color=color.white, bgcolor=bg)
+
+if barstate.islast and showRankTable
+    table.cell(rankTable, 0, 0, "Rank", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(rankTable, 1, 0, "ETF", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(rankTable, 2, 0, "Score", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(rankTable, 3, 0, "Chg", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(rankTable, 4, 0, "RVOL", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(rankTable, 5, 0, "Stop", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(rankTable, 6, 0, "State", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    drawScoreRow(1, "QQQ", qqqRank, qqqScore, qqqChange, qqqStopPct, qqqRvol)
+    drawScoreRow(2, "XLK", xlkRank, xlkScore, xlkChange, xlkStopPct, xlkRvol)
+    drawScoreRow(3, "SMH", smhRank, smhScore, smhChange, smhStopPct, smhRvol)
+    drawScoreRow(4, "XLF", xlfRank, xlfScore, xlfChange, xlfStopPct, xlfRvol)
+    drawScoreRow(5, "XLE", xleRank, xleScore, xleChange, xleStopPct, xleRvol)
+    drawScoreRow(6, "XLV", xlvRank, xlvScore, xlvChange, xlvStopPct, xlvRvol)
+    drawScoreRow(7, "XLY", xlyRank, xlyScore, xlyChange, xlyStopPct, xlyRvol)
+    drawScoreRow(8, "XLI", xliRank, xliScore, xliChange, xliStopPct, xliRvol)
+    string footer = "SPY " + (spyRiskOk ? "OK" : "BLOCK") + " | Day " + moneyText(dailyPnl) + " | Trades " + str.tostring(dailyEntries) + "/" + str.tostring(maxDailyTrades) + " | Debug " + debugReason
+    color footerBg = color.new(spyRiskOk ? color.green : color.red, 35)
+    table.cell(rankTable, 0, 9, footer, text_color=color.white, bgcolor=footerBg)
+    table.cell(rankTable, 1, 9, "", bgcolor=footerBg)
+    table.cell(rankTable, 2, 9, "", bgcolor=footerBg)
+    table.cell(rankTable, 3, 9, "", bgcolor=footerBg)
+    table.cell(rankTable, 4, 9, "", bgcolor=footerBg)
+    table.cell(rankTable, 5, 9, "", bgcolor=footerBg)
+    table.cell(rankTable, 6, 9, "", bgcolor=footerBg)
