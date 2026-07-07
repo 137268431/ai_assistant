@@ -3,13 +3,13 @@ strategy(title="Signal Strategy ETF Rotation Core[Glory]", overlay=true, pyramid
 
 // ETF rotation long-only strategy. The chart symbol is tradable only when it is
 // a qualified Top3 ETF by score; other ETFs are used for rotation context.
-string STRATEGY_VERSION = "ETFROT_v1_20260706_top3_long_only"
+string STRATEGY_VERSION = "ETFROT_v2_20260707_orh_confluence_long_only"
 string DEFAULT_STRATEGY_NAME = "ETF Rotation Top3 Long Only"
 string SCRIPT_TAG = "Signal_Strategy_ETF_Rotation_Core[Glory]"
 string STRATEGY_GROUP = "etf_rotation_long_only"
-string TRADE_MODEL = "top3_etf_rotation_or_pullback_long_only_v1"
+string TRADE_MODEL = "top3_etf_rotation_orh_confluence_long_only_v2"
 string RISK_MODEL = "fixed_10k_notional_structure_stop_v1"
-string TP_SL_MODEL = "partial_1r_runner_ema_vwap_v1"
+string TP_SL_MODEL = "r_multiple_with_atr_filter_runner_v2"
 string TZ = "America/New_York"
 
 // -----------------------------------------------------------------------------
@@ -32,7 +32,7 @@ xliSymbol = input.symbol("AMEX:XLI", "XLI", group="02 Symbols")
 
 relativeVsSpyMinPct = input.float(0.15, "ETF must beat SPY by %", step=0.05, minval=0.0, group="03 Score")
 entryScoreMin = input.int(75, "Entry score min", minval=0, maxval=100, group="03 Score")
-candidateScoreMin = input.int(65, "Candidate score min", minval=0, maxval=100, group="03 Score")
+candidateScoreMin = input.int(75, "Candidate score min", minval=0, maxval=100, group="03 Score")
 maxQualifiedRank = input.int(3, "Max tradable rank", minval=1, maxval=8, group="03 Score")
 volumeMaLen = input.int(20, "RVOL MA length", minval=1, maxval=200, group="03 Score")
 rvolMin = input.float(1.20, "RVOL min", step=0.05, minval=0.0, maxval=10.0, group="03 Score")
@@ -41,12 +41,14 @@ spyChopCrossMax = input.int(2, "Max SPY VWAP crosses in last 6 bars", minval=0, 
 
 candidateTtlBars = input.int(6, "Candidate TTL bars", minval=1, maxval=30, group="04 Entry")
 pullbackTolerancePct = input.float(0.15, "Pullback touch tolerance %", step=0.01, minval=0.0, maxval=2.0, group="04 Entry")
+orhConfluenceTolerancePct = input.float(0.15, "ORH confluence tolerance %", step=0.01, minval=0.0, maxval=2.0, group="04 Entry")
 reconfirmCloseLocationMin = input.float(0.55, "Reconfirm close location min", step=0.05, minval=0.1, maxval=0.95, group="04 Entry")
 allowSameBarReconfirm = input.bool(true, "Allow same-bar pullback + reconfirm", group="04 Entry")
 atrLen = input.int(14, "ATR length", minval=1, group="04 Entry")
 stopBufferAtr = input.float(0.08, "Stop buffer ATR", step=0.01, minval=0.0, maxval=1.0, group="04 Entry")
 minStopPct = input.float(0.35, "Min stop distance %", step=0.05, minval=0.0, maxval=10.0, group="04 Entry")
 maxStopPct = input.float(1.00, "Max stop distance %", step=0.05, minval=0.01, maxval=20.0, group="04 Entry")
+minTarget1Atr = input.float(0.40, "Min 1R vs ATR", step=0.05, minval=0.0, maxval=5.0, group="04 Entry")
 
 positionNotional = input.float(10000.0, "Target notional per trade ($)", step=500.0, minval=100.0, group="05 Risk")
 maxDailyLossDollars = input.float(200.0, "Max daily loss ($)", step=10.0, minval=1.0, group="05 Risk")
@@ -313,7 +315,7 @@ inMorningEntry = inRth and etMinutes >= 10 * 60 + 30 and etMinutes < 12 * 60
 inMiddayBlock = inRth and etMinutes >= 12 * 60 and etMinutes < 13 * 60 + 30
 inAfternoonEntry = inRth and etMinutes >= 13 * 60 + 30 and etMinutes < 15 * 60 + 20
 entryWindowOpen = inMorningEntry or inAfternoonEntry
-candidateWatchWindow = inRth and orComplete and ((etMinutes >= 10 * 60 and etMinutes < 12 * 60) or inAfternoonEntry)
+candidateWatchWindow = entryWindowOpen
 forceFlatNow = inRth and etCloseMinutes >= forceFlatHour * 60 + forceFlatMinute
 
 chartVwap = rthVwap(hlc3)
@@ -332,20 +334,18 @@ if inRth and orComplete and not na(chartOrHigh) and close > chartOrHigh
     brokeOrhToday := true
 
 pullbackTolerance = pullbackTolerancePct / 100.0
+orhConfluenceTolerance = orhConfluenceTolerancePct / 100.0
 heldOrh = brokeOrhToday and not na(chartOrHigh) and low <= chartOrHigh * (1.0 + pullbackTolerance) and close >= chartOrHigh
 heldVwap = brokeOrhToday and not na(chartVwap) and low <= chartVwap * (1.0 + pullbackTolerance) and close >= chartVwap
 heldEma20 = brokeOrhToday and not na(chartEma20) and low <= chartEma20 * (1.0 + pullbackTolerance) and close >= chartEma20
+orhVwapConfluence = heldOrh and not na(chartVwap) and not na(chartOrHigh) and math.abs(chartVwap - chartOrHigh) / chartOrHigh <= orhConfluenceTolerance
+orhEma20Confluence = heldOrh and not na(chartEma20) and not na(chartOrHigh) and math.abs(chartEma20 - chartOrHigh) / chartOrHigh <= orhConfluenceTolerance
+orhConfluenceOk = orhVwapConfluence or orhEma20Confluence
+pullbackQuality = heldOrh and orhVwapConfluence and orhEma20Confluence ? "orh_vwap_ema_confluence" : heldOrh and orhVwapConfluence ? "orh_vwap_confluence" : heldOrh and orhEma20Confluence ? "orh_ema_confluence" : heldOrh ? "orh_only" : heldVwap or heldEma20 ? "weak_pullback" : "none"
 float pullbackSupport = na
-string pullbackSupportName = "none"
-if heldOrh
+string pullbackSupportName = pullbackQuality
+if heldOrh and orhConfluenceOk
     pullbackSupport := chartOrHigh
-    pullbackSupportName := "ORH"
-if heldVwap and (na(pullbackSupport) or chartVwap > pullbackSupport)
-    pullbackSupport := chartVwap
-    pullbackSupportName := "VWAP"
-if heldEma20 and (na(pullbackSupport) or chartEma20 > pullbackSupport)
-    pullbackSupport := chartEma20
-    pullbackSupportName := "EMA20"
 
 pullbackHeld = not na(pullbackSupport)
 rawCandidateStop = pullbackHeld ? low - chartAtr * stopBufferAtr : na
@@ -353,8 +353,11 @@ rawCandidateEntry = close
 rawCandidateRisk = not na(rawCandidateStop) ? rawCandidateEntry - rawCandidateStop : na
 rawCandidateStopPct = not na(rawCandidateRisk) and rawCandidateEntry > 0.0 ? rawCandidateRisk / rawCandidateEntry * 100.0 : na
 rawCandidateStopOk = not na(rawCandidateStopPct) and rawCandidateStopPct >= minStopPct and rawCandidateStopPct <= maxStopPct
+rawTarget1Atr = not na(rawCandidateRisk) and not na(chartAtr) and chartAtr > 0.0 ? rawCandidateRisk / chartAtr : na
+rawTarget2Atr = not na(rawTarget1Atr) ? rawTarget1Atr * 2.0 : na
+rawAtrSpaceOk = not na(rawTarget1Atr) and rawTarget1Atr >= minTarget1Atr
 rawCandidateRankOk = chartInTopQualified and chartScore >= candidateScoreMin
-pullbackCandidateNow = confirmed and is5m and chartInPool and candidateWatchWindow and not manualEventBlock and pullbackHeld and rawCandidateStopOk and rawCandidateRankOk
+pullbackCandidateNow = confirmed and is5m and chartInPool and candidateWatchWindow and spyRiskOk and not manualEventBlock and pullbackHeld and rawCandidateStopOk and rawAtrSpaceOk and rawCandidateRankOk
 
 reconfirmNow = confirmed and close > high[1] and close > open and closeLocation >= reconfirmCloseLocationMin and close > chartEma20 and close > chartVwap
 
@@ -370,6 +373,10 @@ var int candidateRankAtBirth = na
 var int candidateScoreAtBirth = na
 var float candidateEntryRef = na
 var string candidateWaitReason = "none"
+var string candidateBirthReason = "none"
+var string candidateBirthTimeWindow = "none"
+var bool candidateBirthSpyOk = false
+var string candidateBirthSupportType = "none"
 
 var bool pendingEntry = false
 var string activeSignalId = ""
@@ -416,6 +423,10 @@ if newDay or na(dayStartNetprofit)
     candidateScoreAtBirth := na
     candidateEntryRef := na
     candidateWaitReason := "new_day"
+    candidateBirthReason := "new_day"
+    candidateBirthTimeWindow := "none"
+    candidateBirthSpyOk := false
+    candidateBirthSupportType := "none"
 
 realizedToday = strategy.netprofit - nz(dayStartNetprofit, strategy.netprofit)
 dailyPnl = realizedToday + strategy.openprofit
@@ -423,15 +434,17 @@ dailyLossStopHit = dailyPnl <= -maxDailyLossDollars
 tradeCountStopHit = dailyEntries >= maxDailyTrades
 lossCountStopHit = consecutiveLosses >= maxConsecutiveLosses
 slotOpen = strategy.position_size == 0 and not pendingEntry
-candidateBlockReason = not is5m ? "chart_not_5m" : not chartInPool ? "chart_not_in_pool" : not candidateWatchWindow ? "candidate_window_closed" : manualEventBlock ? "manual_event_block" : not brokeOrhToday ? "orh_not_broken" : not pullbackHeld ? "pullback_not_held" : not rawCandidateStopOk ? "candidate_stop_invalid" : not rawCandidateRankOk ? "rank_or_score_not_candidate" : not slotOpen ? "slot_not_open" : "candidate_ready"
+entryWindowName = inMorningEntry ? "morning_entry" : inAfternoonEntry ? "afternoon_entry" : inRankOnlyWindow ? "rank_only" : inMiddayBlock ? "midday_block" : "closed"
+candidateBlockReason = not is5m ? "chart_not_5m" : not chartInPool ? "chart_not_in_pool" : not candidateWatchWindow ? "candidate_window_closed" : manualEventBlock ? "manual_event_block" : not spyRiskOk ? "spy_risk_block" : not brokeOrhToday ? "orh_not_broken" : not heldOrh ? "orh_pullback_not_held" : not orhConfluenceOk ? "orh_confluence_missing" : not rawCandidateStopOk ? "candidate_stop_invalid" : not rawAtrSpaceOk ? "atr_space_too_small" : not rawCandidateRankOk ? "rank_or_score_not_candidate" : not slotOpen ? "slot_not_open" : "candidate_ready"
 
 candidateAgeBars = candidateActive and not na(candidateBar) ? bar_index - candidateBar : na
 candidateExpired = candidateActive and not na(candidateAgeBars) and candidateAgeBars > candidateTtlBars
 candidateBroke = candidateActive and ((not na(candidateStop) and low <= candidateStop) or (not na(candidateSupport) and close < candidateSupport))
+candidateSpyLost = candidateActive and not spyRiskOk
 candidateScoreLost = candidateActive and chartScore < candidateScoreMin
 candidateRankLost = candidateActive and (not chartInTopQualified)
-candidateTimeBlocked = candidateActive and (manualEventBlock or forceFlatNow or inMiddayBlock or (inRth and etMinutes >= 15 * 60 + 20))
-string candidateInvalidReason = candidateExpired ? "candidate_ttl_expired" : candidateBroke ? "candidate_structure_broken" : candidateScoreLost ? "candidate_score_lost" : candidateRankLost ? "candidate_rank_lost" : candidateTimeBlocked ? "candidate_window_blocked" : ""
+candidateTimeBlocked = candidateActive and (manualEventBlock or forceFlatNow or not entryWindowOpen)
+string candidateInvalidReason = candidateExpired ? "candidate_ttl_expired" : candidateBroke ? "candidate_structure_broken" : candidateSpyLost ? "candidate_spy_lost" : candidateScoreLost ? "candidate_score_lost" : candidateRankLost ? "candidate_rank_lost" : candidateTimeBlocked ? "candidate_window_blocked" : ""
 
 if confirmed and candidateInvalidReason != ""
     if showDiagnosticLabels
@@ -445,6 +458,10 @@ if confirmed and candidateInvalidReason != ""
     candidateScoreAtBirth := na
     candidateEntryRef := na
     candidateWaitReason := candidateInvalidReason
+    candidateBirthReason := candidateInvalidReason
+    candidateBirthTimeWindow := "none"
+    candidateBirthSpyOk := false
+    candidateBirthSupportType := "none"
 
 if pullbackCandidateNow and not candidateActive and slotOpen
     candidateActive := true
@@ -456,6 +473,10 @@ if pullbackCandidateNow and not candidateActive and slotOpen
     candidateScoreAtBirth := chartScore
     candidateEntryRef := close
     candidateWaitReason := "waiting_reconfirm"
+    candidateBirthReason := "entry_window_orh_confluence"
+    candidateBirthTimeWindow := entryWindowName
+    candidateBirthSpyOk := spyRiskOk
+    candidateBirthSupportType := pullbackQuality
     if showCandidateLabels
         label.new(bar_index, low, "C " + chartSymbol + " #" + str.tostring(chartRank) + " " + str.tostring(chartScore) + "\n" + pullbackSupportName + " SL " + fmtPrice(rawCandidateStop), style=label.style_label_up, color=color.new(color.teal, 0), textcolor=color.white, size=size.small)
 
@@ -469,18 +490,21 @@ entryQtyOk = not na(entryQty) and entryQty >= minQty
 entryTarget1 = entryStopOk ? close + entryRisk : na
 entryTarget2 = entryStopOk ? close + entryRisk * 2.0 : na
 entryRiskDollars = entryStopOk and entryQtyOk ? entryRisk * entryQty : na
+entryTarget1Atr = not na(entryRisk) and not na(chartAtr) and chartAtr > 0.0 ? entryRisk / chartAtr : na
+entryTarget2Atr = not na(entryTarget1Atr) ? entryTarget1Atr * 2.0 : na
+entryAtrSpaceOk = not na(entryTarget1Atr) and entryTarget1Atr >= minTarget1Atr
 
-entryHardGateOk = is5m and chartInPool and chartInTopQualified and chartScoreQualified and spyRiskOk and entryWindowOpen and not manualEventBlock and not dailyLossStopHit and not tradeCountStopHit and not lossCountStopHit and slotOpen
+entryHardGateOk = is5m and chartInPool and chartInTopQualified and chartScoreQualified and spyRiskOk and entryWindowOpen and not manualEventBlock and not dailyLossStopHit and not tradeCountStopHit and not lossCountStopHit and slotOpen and entryAtrSpaceOk
 entrySignal = confirmed and candidateFreshEnough and reconfirmNow and entryHardGateOk and entryStopOk and entryQtyOk
 
-blockedReason = not is5m ? "chart_not_5m" : not chartInPool ? "chart_not_in_pool" : not chartInTopQualified ? "rank_not_top3" : not chartScoreQualified ? "score_too_low" : not spyRiskOk ? "spy_risk_block" : not entryWindowOpen ? "entry_window_closed" : manualEventBlock ? "manual_event_block" : dailyLossStopHit ? "daily_loss_stop" : tradeCountStopHit ? "daily_trade_limit" : lossCountStopHit ? "consecutive_loss_limit" : not entryStopOk ? "stop_invalid" : not entryQtyOk ? "qty_too_small" : not reconfirmNow ? "waiting_reconfirm" : "passed"
+blockedReason = not is5m ? "chart_not_5m" : not chartInPool ? "chart_not_in_pool" : not chartInTopQualified ? "rank_not_top3" : not chartScoreQualified ? "score_too_low" : not spyRiskOk ? "spy_risk_block" : not entryWindowOpen ? "entry_window_closed" : manualEventBlock ? "manual_event_block" : dailyLossStopHit ? "daily_loss_stop" : tradeCountStopHit ? "daily_trade_limit" : lossCountStopHit ? "consecutive_loss_limit" : not entryStopOk ? "stop_invalid" : not entryAtrSpaceOk ? "atr_space_too_small" : not entryQtyOk ? "qty_too_small" : not reconfirmNow ? "waiting_reconfirm" : "passed"
 debugReason = entrySignal ? "entry_signal" : candidateInvalidReason != "" ? candidateInvalidReason : candidateActive ? blockedReason : candidateBlockReason
 
 basePayload(series string eventType, series string eventIdValue, series string positionIdValue) =>
     "{" + jsonStr("source", "tradingview") + "," + jsonStr("signal_source", "tv") + "," + jsonStr("event_type", eventType) + "," + jsonStr("event_id", eventIdValue) + "," + jsonStr("symbol", syminfo.ticker) + "," + jsonStr("exchange", syminfo.prefix) + "," + jsonStr("interval", timeframe.period) + "," + jsonStr("chart_tf", timeframe.period) + "," + jsonStr("entry_tf", "5") + "," + jsonStr("timeframe_stack", "entry=5;confirm=15;opening_range=30") + "," + jsonStr("script_tag", SCRIPT_TAG) + "," + jsonStr("strategy_name", strategyName) + "," + jsonStr("strategy_version", STRATEGY_VERSION) + "," + jsonStr("strategy_group", STRATEGY_GROUP) + "," + jsonStr("broker_mode", brokerMode) + "," + jsonStr("market_data_mode", marketDataMode) + "," + jsonStr("data_environment", marketDataMode) + "," + jsonStr("position_id", positionIdValue) + "," + jsonStr("date", str.format_time(time, "yyyy-MM-dd", TZ)) + "," + jsonStr("us_time", str.format_time(time, "yyyy-MM-dd HH:mm", TZ)) + "," + jsonStr("cn_time", str.format_time(time, "yyyy-MM-dd HH:mm", "Asia/Shanghai")) + "," + jsonInt("bar_open_ms", time) + "," + jsonInt("bar_close_ms", time_close) + "," + jsonInt("pine_eval_ms", timenow) + "," + jsonInt("bar_time_ms", time) + "," + jsonInt("bar_index", bar_index)
 
 rotationDiagnostics() =>
-    "," + jsonStr("trade_model", TRADE_MODEL) + "," + jsonStr("risk_model", RISK_MODEL) + "," + jsonStr("tp_sl_model", TP_SL_MODEL) + "," + jsonStr("chart_symbol", chartSymbol) + "," + jsonInt("chart_symbol_rank", chartRank) + "," + jsonInt("chart_symbol_score", chartScore) + "," + jsonBool("chart_symbol_in_top3", chartInTopQualified) + "," + jsonStr("rank_1_symbol", rank1Symbol) + "," + jsonInt("rank_1_score", rank1Score) + "," + jsonStr("rank_2_symbol", rank2Symbol) + "," + jsonInt("rank_2_score", rank2Score) + "," + jsonStr("rank_3_symbol", rank3Symbol) + "," + jsonInt("rank_3_score", rank3Score) + "," + jsonBool("spy_vwap_ok", spyVwapOk) + "," + jsonBool("spy_chop_block", spyChopBlock) + "," + jsonNum("spy_vwap_cross_count_6", spyVwapCrossCount) + "," + jsonNum("spy_change_pct", spyChangePct) + "," + jsonNum("chart_change_pct", chartChange) + "," + jsonNum("orh", chartOrHigh) + "," + jsonNum("orl", chartOrLow) + "," + jsonNum("vwap", chartVwap) + "," + jsonNum("ema20_5m", chartEma20) + "," + jsonNum("rvol", chartRvol) + "," + jsonBool("candidate_active", candidateActive) + "," + jsonInt("candidate_age_bars", na(candidateAgeBars) ? 0 : candidateAgeBars) + "," + jsonInt("candidate_rank_at_birth", na(candidateRankAtBirth) ? 0 : candidateRankAtBirth) + "," + jsonInt("candidate_score_at_birth", na(candidateScoreAtBirth) ? 0 : candidateScoreAtBirth) + "," + jsonStr("candidate_wait_reason", candidateWaitReason) + "," + jsonStr("candidate_support", candidateSupportName) + "," + jsonNum("candidate_stop", candidateStop) + "," + jsonNum("requested_exposure", positionNotional) + "," + jsonNum("entry_notional", positionNotional) + "," + jsonNum("max_daily_loss_dollars", maxDailyLossDollars) + "," + jsonStr("runner_mode", runnerMode)
+    "," + jsonStr("trade_model", TRADE_MODEL) + "," + jsonStr("risk_model", RISK_MODEL) + "," + jsonStr("tp_sl_model", TP_SL_MODEL) + "," + jsonStr("chart_symbol", chartSymbol) + "," + jsonInt("chart_symbol_rank", chartRank) + "," + jsonInt("chart_symbol_score", chartScore) + "," + jsonBool("chart_symbol_in_top3", chartInTopQualified) + "," + jsonStr("rank_1_symbol", rank1Symbol) + "," + jsonInt("rank_1_score", rank1Score) + "," + jsonStr("rank_2_symbol", rank2Symbol) + "," + jsonInt("rank_2_score", rank2Score) + "," + jsonStr("rank_3_symbol", rank3Symbol) + "," + jsonInt("rank_3_score", rank3Score) + "," + jsonBool("spy_vwap_ok", spyVwapOk) + "," + jsonBool("spy_chop_block", spyChopBlock) + "," + jsonNum("spy_vwap_cross_count_6", spyVwapCrossCount) + "," + jsonNum("spy_change_pct", spyChangePct) + "," + jsonNum("chart_change_pct", chartChange) + "," + jsonNum("orh", chartOrHigh) + "," + jsonNum("orl", chartOrLow) + "," + jsonNum("vwap", chartVwap) + "," + jsonNum("ema20_5m", chartEma20) + "," + jsonNum("rvol", chartRvol) + "," + jsonBool("candidate_active", candidateActive) + "," + jsonInt("candidate_age_bars", na(candidateAgeBars) ? 0 : candidateAgeBars) + "," + jsonInt("candidate_rank_at_birth", na(candidateRankAtBirth) ? 0 : candidateRankAtBirth) + "," + jsonInt("candidate_score_at_birth", na(candidateScoreAtBirth) ? 0 : candidateScoreAtBirth) + "," + jsonStr("candidate_wait_reason", candidateWaitReason) + "," + jsonStr("candidate_support", candidateSupportName) + "," + jsonNum("candidate_stop", candidateStop) + "," + jsonNum("requested_exposure", positionNotional) + "," + jsonNum("entry_notional", positionNotional) + "," + jsonNum("max_daily_loss_dollars", maxDailyLossDollars) + "," + jsonStr("runner_mode", runnerMode) + "," + jsonStr("candidate_birth_reason", candidateBirthReason) + "," + jsonStr("candidate_birth_time_window", candidateBirthTimeWindow) + "," + jsonBool("candidate_birth_spy_ok", candidateBirthSpyOk) + "," + jsonStr("candidate_birth_support_type", candidateBirthSupportType) + "," + jsonStr("pullback_quality", pullbackQuality) + "," + jsonBool("orh_confluence_ok", orhConfluenceOk) + "," + jsonBool("orh_vwap_confluence", orhVwapConfluence) + "," + jsonBool("orh_ema20_confluence", orhEma20Confluence) + "," + jsonBool("atr_space_ok", entryAtrSpaceOk) + "," + jsonNum("target_1r_vs_atr", entryTarget1Atr) + "," + jsonNum("target_2r_vs_atr", entryTarget2Atr) + "," + jsonNum("raw_target_1r_vs_atr", rawTarget1Atr) + "," + jsonNum("raw_target_2r_vs_atr", rawTarget2Atr) + "," + jsonNum("min_target_1r_vs_atr", minTarget1Atr)
 
 buildEntryPayload(series string eventIdValue, series string signalIdValue, series string tradeGroupIdValue, series string positionIdValue, series float plannedEntry, series float stopPrice, series float target1, series float target2, series float qtyValue, series float riskValue, series float stopPctValue, series int scoreValue, series int rankValue) =>
     basePayload("entry", eventIdValue, positionIdValue) + "," + jsonStr("signal_id", signalIdValue) + "," + jsonStr("origin_signal_id", signalIdValue) + "," + jsonStr("trade_group_id", tradeGroupIdValue) + "," + jsonStr("direction", "long") + "," + jsonStr("position_side", "long") + "," + jsonStr("setup", pendingSetup) + "," + jsonStr("entry_setup", pendingSetup) + "," + jsonStr("signal", pendingSetup) + "," + jsonStr("reason", "entry_signal") + "," + jsonNum("entry", plannedEntry) + "," + jsonNum("entry_price", plannedEntry) + "," + jsonNum("planned_entry_price", plannedEntry) + "," + jsonNum("submitted_entry_limit_price", plannedEntry) + "," + jsonNum("stop_loss", stopPrice) + "," + jsonNum("take_profit", target2) + "," + jsonNum("safety_take_profit", target2) + "," + jsonNum("target_checkpoint", target1) + "," + jsonNum("runner_activation_price", target1) + "," + jsonNum("runner_activation_r", 1.0) + "," + jsonNum("shares", qtyValue) + "," + jsonNum("limit_price", plannedEntry) + "," + jsonNum("quantity", qtyValue) + "," + jsonNum("rr", 2.0) + "," + jsonStr("entry_intent", "market_next_bar") + "," + jsonStr("status", "pending") + "," + jsonBool("qualified", true) + "," + jsonInt("score", scoreValue) + "," + jsonInt("activity_score", scoreValue) + "," + jsonInt("quality_score", scoreValue) + "," + jsonInt("rank", rankValue) + "," + jsonNum("initial_risk", riskValue) + "," + jsonNum("risk_r", riskValue) + "," + jsonNum("risk_per_share", riskValue) + "," + jsonNum("structure_risk_per_share", riskValue) + "," + jsonNum("structure_reward_per_share", riskValue * 2.0) + "," + jsonNum("reward_risk", 2.0) + "," + jsonNum("gross_reward_risk", 2.0) + "," + jsonNum("target_1r", target1) + "," + jsonNum("target_2r", target2) + "," + jsonNum("target_final", target2) + "," + jsonNum("target_final_r", 2.0) + "," + jsonBool("runner_enabled", runnerMode == "Runner trailing") + "," + jsonBool("tp_checkpoint_runner", runnerMode == "Runner trailing") + "," + jsonStr("target_role", runnerMode == "Runner trailing" ? "safety_tp" : "hard_tp") + "," + jsonBool("target_checkpoint_is_exit", runnerMode != "Runner trailing") + "," + jsonNum("stop_pct", stopPctValue) + "," + jsonNum("stop_distance_bps", stopPctValue * 100.0) + "," + jsonNum("gross_risk", riskValue * qtyValue) + "," + jsonNum("planned_risk_dollars", riskValue * qtyValue) + "," + jsonNum("actual_risk_dollars", riskValue * qtyValue) + "," + jsonNum("expected_gross_profit", riskValue * qtyValue * 2.0) + "," + jsonNum("expected_1r_dollars", riskValue * qtyValue) + "," + jsonNum("expected_2r_dollars", riskValue * qtyValue * 2.0) + rotationDiagnostics() + "}"
@@ -498,13 +522,13 @@ buildCancelPayload(series string eventIdValue, series string positionIdValue, se
     basePayload("cancel", eventIdValue, positionIdValue) + "," + jsonStr("signal_id", activeSignalId) + "," + jsonStr("origin_signal_id", activeSignalId) + "," + jsonStr("trade_group_id", activeTradeGroupId) + "," + jsonStr("direction", "long") + "," + jsonStr("setup", activeSetup) + "," + jsonStr("reason", reason) + "," + jsonStr("cancel_reason", reason) + "," + jsonStr("cancel_scope", "unfilled_entry") + rotationDiagnostics() + "}"
 
 gateDiagnostics(series string reasonValue) =>
-    "," + jsonStr("diagnostic_type", "entry_gate") + "," + jsonStr("debug_reason", reasonValue) + "," + jsonStr("candidate_block_reason", candidateBlockReason) + "," + jsonStr("entry_block_reason", blockedReason) + "," + jsonBool("gate_is_5m", is5m) + "," + jsonBool("gate_chart_in_pool", chartInPool) + "," + jsonBool("gate_chart_top3", chartInTopQualified) + "," + jsonBool("gate_score_ok", chartScoreQualified) + "," + jsonBool("gate_spy_ok", spyRiskOk) + "," + jsonBool("gate_entry_window_open", entryWindowOpen) + "," + jsonBool("gate_candidate_window_open", candidateWatchWindow) + "," + jsonBool("gate_manual_event_block", manualEventBlock) + "," + jsonBool("gate_daily_loss_stop", dailyLossStopHit) + "," + jsonBool("gate_trade_count_stop", tradeCountStopHit) + "," + jsonBool("gate_loss_count_stop", lossCountStopHit) + "," + jsonBool("gate_slot_open", slotOpen) + "," + jsonBool("gate_orh_broken_today", brokeOrhToday) + "," + jsonBool("gate_pullback_held", pullbackHeld) + "," + jsonBool("gate_candidate_stop_ok", rawCandidateStopOk) + "," + jsonBool("gate_candidate_rank_ok", rawCandidateRankOk) + "," + jsonBool("gate_candidate_fresh", candidateFreshEnough) + "," + jsonBool("gate_reconfirm_now", reconfirmNow) + "," + jsonBool("gate_entry_stop_ok", entryStopOk) + "," + jsonBool("gate_entry_qty_ok", entryQtyOk) + "," + jsonBool("gate_pullback_candidate_now", pullbackCandidateNow) + "," + jsonBool("gate_entry_signal", entrySignal) + "," + jsonNum("debug_raw_candidate_stop_pct", rawCandidateStopPct) + "," + jsonNum("debug_entry_stop_pct", entryStopPct) + "," + jsonNum("debug_entry_risk_dollars", entryRiskDollars) + "," + jsonNum("debug_close_location", closeLocation)
+    "," + jsonStr("diagnostic_type", "entry_gate") + "," + jsonStr("debug_reason", reasonValue) + "," + jsonStr("candidate_block_reason", candidateBlockReason) + "," + jsonStr("entry_block_reason", blockedReason) + "," + jsonBool("gate_is_5m", is5m) + "," + jsonBool("gate_chart_in_pool", chartInPool) + "," + jsonBool("gate_chart_top3", chartInTopQualified) + "," + jsonBool("gate_score_ok", chartScoreQualified) + "," + jsonBool("gate_spy_ok", spyRiskOk) + "," + jsonBool("gate_entry_window_open", entryWindowOpen) + "," + jsonBool("gate_candidate_window_open", candidateWatchWindow) + "," + jsonBool("gate_manual_event_block", manualEventBlock) + "," + jsonBool("gate_daily_loss_stop", dailyLossStopHit) + "," + jsonBool("gate_trade_count_stop", tradeCountStopHit) + "," + jsonBool("gate_loss_count_stop", lossCountStopHit) + "," + jsonBool("gate_slot_open", slotOpen) + "," + jsonBool("gate_orh_broken_today", brokeOrhToday) + "," + jsonBool("gate_pullback_held", pullbackHeld) + "," + jsonBool("gate_candidate_stop_ok", rawCandidateStopOk) + "," + jsonBool("gate_candidate_rank_ok", rawCandidateRankOk) + "," + jsonBool("gate_candidate_fresh", candidateFreshEnough) + "," + jsonBool("gate_reconfirm_now", reconfirmNow) + "," + jsonBool("gate_entry_stop_ok", entryStopOk) + "," + jsonBool("gate_entry_qty_ok", entryQtyOk) + "," + jsonBool("gate_pullback_candidate_now", pullbackCandidateNow) + "," + jsonBool("gate_entry_signal", entrySignal) + "," + jsonNum("debug_raw_candidate_stop_pct", rawCandidateStopPct) + "," + jsonNum("debug_entry_stop_pct", entryStopPct) + "," + jsonNum("debug_entry_risk_dollars", entryRiskDollars) + "," + jsonNum("debug_close_location", closeLocation) + "," + jsonBool("gate_orh_held", heldOrh) + "," + jsonBool("gate_orh_confluence_ok", orhConfluenceOk) + "," + jsonBool("gate_atr_space_ok", entryAtrSpaceOk) + "," + jsonStr("pullback_quality", pullbackQuality) + "," + jsonNum("target_1r_vs_atr", entryTarget1Atr) + "," + jsonNum("target_2r_vs_atr", entryTarget2Atr) + "," + jsonNum("raw_target_1r_vs_atr", rawTarget1Atr) + "," + jsonNum("raw_target_2r_vs_atr", rawTarget2Atr) + "," + jsonNum("min_target_1r_vs_atr", minTarget1Atr) + "," + jsonStr("candidate_birth_reason", candidateBirthReason) + "," + jsonStr("candidate_birth_time_window", candidateBirthTimeWindow) + "," + jsonBool("candidate_birth_spy_ok", candidateBirthSpyOk) + "," + jsonStr("candidate_birth_support_type", candidateBirthSupportType)
 
 buildDiagnosticPayload(series string eventIdValue, series string positionIdValue, series string reasonValue) =>
     basePayload("heartbeat", eventIdValue, positionIdValue) + "," + jsonStr("reason", "diagnostic_" + reasonValue) + gateDiagnostics(reasonValue) + rotationDiagnostics() + "}"
 
 diagnosticLogText(series string reasonValue) =>
-    "ETFROT debug=" + reasonValue + " chart=" + chartSymbol + " rank=" + str.tostring(chartRank) + " score=" + str.tostring(chartScore) + " spy_ok=" + str.tostring(spyRiskOk) + " cand_block=" + candidateBlockReason + " entry_block=" + blockedReason + " top3=" + str.tostring(chartInTopQualified) + " score_ok=" + str.tostring(chartScoreQualified) + " orh_broken=" + str.tostring(brokeOrhToday) + " pullback=" + str.tostring(pullbackHeld) + " support=" + pullbackSupportName + " reconfirm=" + str.tostring(reconfirmNow) + " stop_pct=" + fmt(entryStopPct) + " rvol=" + fmt(chartRvol)
+    "ETFROT debug=" + reasonValue + " chart=" + chartSymbol + " rank=" + str.tostring(chartRank) + " score=" + str.tostring(chartScore) + " spy_ok=" + str.tostring(spyRiskOk) + " cand_block=" + candidateBlockReason + " entry_block=" + blockedReason + " top3=" + str.tostring(chartInTopQualified) + " score_ok=" + str.tostring(chartScoreQualified) + " orh_broken=" + str.tostring(brokeOrhToday) + " pullback=" + str.tostring(pullbackHeld) + " support=" + pullbackSupportName + " reconfirm=" + str.tostring(reconfirmNow) + " stop_pct=" + fmt(entryStopPct) + " rvol=" + fmt(chartRvol) + " quality=" + pullbackQuality + " orh_conf=" + str.tostring(orhConfluenceOk) + " atr_ok=" + str.tostring(entryAtrSpaceOk) + " t1_atr=" + fmt(entryTarget1Atr) + " birth=" + candidateBirthReason + "/" + candidateBirthTimeWindow
 
 var string lastDiagnosticReason = ""
 var int lastDiagnosticBar = na

@@ -1167,6 +1167,23 @@ def _base_extra(
         "debug_entry_stop_pct",
         "debug_entry_risk_dollars",
         "debug_close_location",
+        "gate_orh_held",
+        "gate_orh_confluence_ok",
+        "gate_atr_space_ok",
+        "candidate_birth_reason",
+        "candidate_birth_time_window",
+        "candidate_birth_spy_ok",
+        "candidate_birth_support_type",
+        "pullback_quality",
+        "orh_confluence_ok",
+        "orh_vwap_confluence",
+        "orh_ema20_confluence",
+        "atr_space_ok",
+        "target_1r_vs_atr",
+        "target_2r_vs_atr",
+        "raw_target_1r_vs_atr",
+        "raw_target_2r_vs_atr",
+        "min_target_1r_vs_atr",
     ):
         value = _payload_first(payload, key)
         if value not in (None, "", []):

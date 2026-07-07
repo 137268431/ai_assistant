@@ -142,7 +142,7 @@ def _etf_rotation_payload(symbol="QQQ"):
             "script_tag": "Signal_Strategy_ETF_Rotation_Core[Glory]",
             "strategy_name": "ETF Rotation Top3 Long Only",
             "strategy_group": "etf_rotation_long_only",
-            "trade_model": "top3_etf_rotation_or_pullback_long_only_v1",
+            "trade_model": "top3_etf_rotation_orh_confluence_long_only_v2",
             "chart_symbol": symbol,
             "chart_symbol_rank": 2,
             "chart_symbol_score": 82,
@@ -150,6 +150,14 @@ def _etf_rotation_payload(symbol="QQQ"):
             "diagnostic_type": "entry_gate",
             "debug_reason": "waiting_reconfirm",
             "gate_spy_ok": True,
+            "gate_orh_confluence_ok": True,
+            "gate_atr_space_ok": True,
+            "candidate_birth_reason": "entry_window_orh_confluence",
+            "candidate_birth_time_window": "morning_entry",
+            "candidate_birth_spy_ok": True,
+            "candidate_birth_support_type": "orh_vwap_confluence",
+            "pullback_quality": "orh_vwap_confluence",
+            "target_1r_vs_atr": 0.72,
             "rank_1_symbol": "SMH",
             "rank_2_symbol": symbol,
             "rank_3_symbol": "XLK",
@@ -284,6 +292,10 @@ class TvPrimaryEntryBackfillTests(unittest.TestCase):
         self.assertEqual("ETF Rotation Top3 Long Only", signal_payload["extra"]["strategy_name"])
         self.assertEqual("waiting_reconfirm", signal_payload["extra"]["debug_reason"])
         self.assertTrue(signal_payload["extra"]["gate_spy_ok"])
+        self.assertTrue(signal_payload["extra"]["gate_orh_confluence_ok"])
+        self.assertEqual("entry_window_orh_confluence", signal_payload["extra"]["candidate_birth_reason"])
+        self.assertEqual("orh_vwap_confluence", signal_payload["extra"]["pullback_quality"])
+        self.assertEqual(0.72, signal_payload["extra"]["target_1r_vs_atr"])
 
     def test_market_monitor_qqq_is_still_rejected_without_etf_rotation_context(self):
         pb = DummyPocketBase(
