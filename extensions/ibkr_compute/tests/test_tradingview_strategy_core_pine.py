@@ -24,6 +24,116 @@ DISPLAY_VISUAL_PINE_PATH = DISPLAY_LIBS_DIR / "SSC_Display_Visual[Glory].pine"
 DISPLAY_TEXT_PINE_PATH = DISPLAY_LIBS_DIR / "SSC_Display_Text[Glory].pine"
 V1_CORE_PINE_PATH = REPO_ROOT / "tradingview" / "v1" / "Signal_Strategy_Core[Glory].pine"
 V1_DISPLAY_PINE_PATH = REPO_ROOT / "tradingview" / "v1" / "Signal_Strategy_Display[Glory].pine"
+ETF_SWEEP_RECLAIM_PATH = REPO_ROOT / "tradingview" / "etf_sweep_reclaim" / "ETF_Sweep_Reclaim_Strategy[Glory].pine"
+
+
+class TradingViewEtfSweepReclaimPineTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = ETF_SWEEP_RECLAIM_PATH.read_text(encoding="utf-8")
+
+    def test_sweep_reclaim_strategy_identity_and_scope_are_explicit(self):
+        source = self.source
+
+        self.assertTrue(ETF_SWEEP_RECLAIM_PATH.exists())
+        self.assertIn('//@version=6', source)
+        self.assertIn('strategy(title="ETF DCT Reclaim Strategy[Glory]"', source)
+        self.assertIn('string STRATEGY_VERSION = "ETFSR_v1_20260707_dct_mixed_day_trend_fragment"', source)
+        self.assertIn('string DEFAULT_STRATEGY_NAME = "ETF DCT Reclaim Long Only"', source)
+        self.assertIn('string SCRIPT_TAG = "ETF_Sweep_Reclaim_Strategy[Glory]"', source)
+        self.assertIn('string STRATEGY_GROUP = "etf_rotation_long_only"', source)
+        self.assertIn('string TRADE_MODEL = "etf_dct_reclaim_mixed_day_trend_fragment_long_only_v2"', source)
+        self.assertIn('strategy.long', source)
+        self.assertNotIn('strategy.short', source)
+
+    def test_sweep_reclaim_universe_uses_spy_only_as_benchmark(self):
+        source = self.source
+
+        for symbol in ("QQQ", "XLK", "SMH", "XLF", "XLE", "XLV", "XLY", "XLI"):
+            self.assertIn(f'chartSymbol == "{symbol}"', source)
+        self.assertIn('spySymbol = input.symbol("AMEX:SPY", "SPY benchmark only"', source)
+        self.assertIn('request.security(spySymbol, "5", spy5Metrics()', source)
+        self.assertNotIn('chartSymbol == "SPY"', source)
+        self.assertIn('requireRank1ForMain = input.bool(true, "Main entry requires chart ETF rank #1"', source)
+        self.assertIn('chartSymbol == rank1Symbol', source)
+
+    def test_sweep_reclaim_alpha_gates_and_payload_are_present(self):
+        source = self.source
+
+        for text in (
+            'minRsZ = input.float(1.00, "Minimum leader rs_z"',
+            'maxRsZ = input.float(2.50, "Maximum leader rs_z before overheat"',
+            'minSweepZ = input.float(0.40, "Minimum sweep_z"',
+            'maxSweepZ = input.float(1.40, "Maximum sweep_z"',
+            'reclaimMaxBars = input.int(3, "Reclaim must happen within N bars"',
+            'minTrendScoreFull = input.int(70, "Trend score full-risk threshold"',
+            'minTrendScoreSmall = input.int(50, "Trend score small-risk threshold"',
+            'maxChopScoreForTrade = input.int(70, "Chop score hard block"',
+            'trend_score = int(math.round(clampFloat(trendScoreRaw - trendScorePenalty, 0.0, 100.0)))',
+            'chop_score = int(math.round(clampFloat(chopScoreRaw, 0.0, 100.0)))',
+            'trendFullOk = trend_score >= minTrendScoreFull and not chopHardBlock',
+            'trendSmallOk = trend_score >= minTrendScoreSmall and not chopHardBlock',
+            'risk_multiplier = trendFullOk ? 1.0 : trendSmallOk ? mediumTrendRiskMultiplier : 0.0',
+            'chopHardBlock = chop_score >= maxChopScoreForTrade',
+            'validSweepNow = confirmed and is5m',
+            'reclaimNow = sweepActive and confirmed',
+            'entrySignal = breakoutNow and is5m',
+            'showRankTable = input.bool(false, "Show ETF score table"',
+            'enablePineLogs = input.bool(true, "Enable Pine Logs"',
+        ):
+            self.assertIn(text, source)
+
+        for field in (
+            'jsonStr("strategy_group", STRATEGY_GROUP)',
+            'jsonStr("trade_model", TRADE_MODEL)',
+            'jsonNum("entry_price", close)',
+            'jsonNum("stop_loss", plannedStop)',
+            'jsonNum("take_profit", plannedTargetFinal)',
+            'jsonNum("target_checkpoint", plannedTarget1)',
+            'jsonNum("quantity", plannedQty)',
+            'jsonNum("rs_z", chartRsZ)',
+            'jsonNum("sweep_z", sweepZAtBirth)',
+            'jsonNum("day_move_z", chartDayMoveZ)',
+            'jsonNum("cost_zone_low", sweepZoneLow)',
+            'jsonNum("cost_zone_high", sweepZoneHigh)',
+            'jsonNum("sweep_low", sweepLow)',
+            'jsonNum("reclaim_high", reclaimHigh)',
+            'jsonInt("reclaim_bars", reclaimBars)',
+            'jsonStr("alert_action", alertAction)',
+            'jsonInt("trend_score", trend_score)',
+            'jsonInt("chop_score", chop_score)',
+            'jsonStr("trend_regime", trend_regime)',
+            'jsonInt("etf_above_vwap_count", etfAboveVwapCount)',
+            'jsonInt("leader_switch_count", leaderSwitchCount)',
+            'jsonNum("price_efficiency", price_efficiency)',
+            'jsonNum("pullback_z", reloadCandidatePullbackZ)',
+            'jsonStr("mixed_day_state", trend_regime)',
+            'jsonStr("window_name", window_name)',
+            'jsonNum("risk_multiplier", risk_multiplier)',
+            'jsonStr("reload_state", reloadState)',
+        ):
+            self.assertIn(field, source)
+
+    def test_sweep_reclaim_uses_single_protective_exit_and_no_partial_webhook(self):
+        source = self.source
+
+        self.assertIn('strategy.exit("ETFSR-PROTECT"', source)
+        self.assertIn('strategy.close("ETFSR-L", qty_percent=partialPct', source)
+        self.assertIn('buildRiskUpdatePayload(', source)
+        self.assertIn('"TAKE_HALF_PROTECTED"', source)
+        self.assertNotIn('event_type", "take_half"', source)
+
+    def test_sweep_reclaim_reload_requires_trend_fragment_and_two_step_confirm(self):
+        source = self.source
+
+        self.assertIn('reloadCandidateActive := true', source)
+        self.assertIn('reloadCandidateHigh := high', source)
+        self.assertIn('bool reloadSignal = reloadCandidateActive and confirmed and bar_index > reloadCandidateBar', source)
+        self.assertIn('inReloadWindow and trendFullOk and chartRank <= 2', source)
+        self.assertIn('pullback_z > minReloadPullbackZ and pullback_z < maxReloadPullbackZ', source)
+        self.assertIn('math.max(originalQty - math.abs(strategy.position_size), 0.0)', source)
+        self.assertIn('buildReloadPayload(', source)
+        self.assertIn('"RELOAD"', source)
 
 
 class TradingViewStrategyCorePineTest(unittest.TestCase):

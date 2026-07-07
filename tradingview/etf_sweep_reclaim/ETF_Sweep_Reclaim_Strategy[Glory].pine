@@ -1,0 +1,871 @@
+//@version=6
+strategy(title="ETF DCT Reclaim Strategy[Glory]", overlay=true, pyramiding=2, initial_capital=20000, default_qty_type=strategy.fixed, default_qty_value=1, process_orders_on_close=false, calc_on_every_tick=false, dynamic_requests=true, max_labels_count=500, max_lines_count=100, commission_type=strategy.commission.cash_per_order, commission_value=0.35)
+
+// Long-only ETF alpha model: trade only the current chart ETF when it is the
+// cross-sectional leader and quickly reclaims VWAP/ORH after a stop sweep.
+string STRATEGY_VERSION = "ETFSR_v1_20260707_dct_mixed_day_trend_fragment"
+string DEFAULT_STRATEGY_NAME = "ETF DCT Reclaim Long Only"
+string SCRIPT_TAG = "ETF_Sweep_Reclaim_Strategy[Glory]"
+string STRATEGY_GROUP = "etf_rotation_long_only"
+string TRADE_MODEL = "etf_dct_reclaim_mixed_day_trend_fragment_long_only_v2"
+string RISK_MODEL = "fixed_risk_10k_notional_sweep_low_stop_v1"
+string TP_SL_MODEL = "one_stop_tp1_breakeven_reload_runner_v1"
+string TZ = "America/New_York"
+
+// -----------------------------------------------------------------------------
+// Inputs
+// -----------------------------------------------------------------------------
+rthSession = input.session("0930-1600", "RTH session", group="01 Time")
+manualEventBlock = input.bool(false, "Manual event block", group="01 Time")
+forceFlatHour = input.int(15, "Force flat hour ET", minval=0, maxval=23, group="01 Time")
+forceFlatMinute = input.int(45, "Force flat minute ET", minval=0, maxval=59, group="01 Time")
+
+spySymbol = input.symbol("AMEX:SPY", "SPY benchmark only", group="02 Symbols")
+qqqSymbol = input.symbol("NASDAQ:QQQ", "QQQ", group="02 Symbols")
+xlkSymbol = input.symbol("AMEX:XLK", "XLK", group="02 Symbols")
+smhSymbol = input.symbol("NASDAQ:SMH", "SMH", group="02 Symbols")
+xlfSymbol = input.symbol("AMEX:XLF", "XLF", group="02 Symbols")
+xleSymbol = input.symbol("AMEX:XLE", "XLE", group="02 Symbols")
+xlvSymbol = input.symbol("AMEX:XLV", "XLV", group="02 Symbols")
+xlySymbol = input.symbol("AMEX:XLY", "XLY", group="02 Symbols")
+xliSymbol = input.symbol("AMEX:XLI", "XLI", group="02 Symbols")
+
+minRsZ = input.float(1.00, "Minimum leader rs_z", step=0.10, minval=-5.0, maxval=5.0, group="03 Rotation")
+maxRsZ = input.float(2.50, "Maximum leader rs_z before overheat", step=0.10, minval=0.0, maxval=10.0, group="03 Rotation")
+minLeaderGapPct = input.float(0.20, "Minimum rank1-rank2 RS gap (%)", step=0.01, minval=0.0, maxval=5.0, group="03 Rotation")
+maxDayMoveZ = input.float(2.50, "Maximum intraday move / daily ATR", step=0.10, minval=0.1, maxval=10.0, group="03 Rotation")
+requireRank1ForMain = input.bool(true, "Main entry requires chart ETF rank #1", group="03 Rotation")
+requireSpyAboveVwap = input.bool(true, "Require SPY not below VWAP", group="03 Rotation")
+spyVwapTolerancePct = input.float(0.05, "SPY VWAP tolerance %", step=0.01, minval=0.0, maxval=1.0, group="03 Rotation")
+spyChopCrossMax = input.int(3, "Max SPY VWAP crosses in last 6 bars", minval=0, maxval=6, group="03 Rotation")
+
+minTrendScoreFull = input.int(70, "Trend score full-risk threshold", minval=0, maxval=100, group="04 Regime")
+minTrendScoreSmall = input.int(50, "Trend score small-risk threshold", minval=0, maxval=100, group="04 Regime")
+maxChopScoreForTrade = input.int(70, "Chop score hard block", minval=0, maxval=100, group="04 Regime")
+mediumTrendRiskMultiplier = input.float(0.50, "Medium trend risk multiplier", step=0.05, minval=0.10, maxval=1.0, group="04 Regime")
+minEtfsAboveVwapForTrend = input.int(5, "Minimum ETFs above VWAP", minval=1, maxval=8, group="04 Regime")
+leaderSwitchPenaltyMin = input.int(2, "Leader switches before penalty", minval=0, maxval=6, group="04 Regime")
+minPriceEfficiency = input.float(0.45, "Minimum price efficiency", step=0.05, minval=0.0, maxval=1.0, group="04 Regime")
+maxEfficiencyPullbackZ = input.float(1.20, "Max trend pullback z", step=0.05, minval=0.1, maxval=5.0, group="04 Regime")
+
+atrLen = input.int(14, "ATR length", minval=1, group="05 Sweep/Reclaim")
+volumeZLen = input.int(20, "Volume z length", minval=5, maxval=200, group="05 Sweep/Reclaim")
+costZoneBufferPct = input.float(0.04, "Cost-zone buffer %", step=0.01, minval=0.0, maxval=1.0, group="05 Sweep/Reclaim")
+orhVwapConfluencePct = input.float(0.15, "VWAP/ORH confluence %", step=0.01, minval=0.0, maxval=2.0, group="05 Sweep/Reclaim")
+minSweepZ = input.float(0.40, "Minimum sweep_z", step=0.05, minval=0.0, maxval=5.0, group="05 Sweep/Reclaim")
+maxSweepZ = input.float(1.40, "Maximum sweep_z", step=0.05, minval=0.1, maxval=10.0, group="05 Sweep/Reclaim")
+reclaimMaxBars = input.int(3, "Reclaim must happen within N bars", minval=1, maxval=10, group="05 Sweep/Reclaim")
+reclaimCloseLocationMin = input.float(0.60, "Reclaim close location min", step=0.05, minval=0.1, maxval=0.95, group="05 Sweep/Reclaim")
+reclaimVolumeZMin = input.float(0.00, "Reclaim volume_z min", step=0.10, minval=-5.0, maxval=5.0, group="05 Sweep/Reclaim")
+entryBreakBufferTicks = input.int(1, "Break reclaim high buffer (ticks)", minval=0, maxval=20, group="05 Sweep/Reclaim")
+setupTtlBars = input.int(4, "Breakout wait TTL bars", minval=1, maxval=20, group="05 Sweep/Reclaim")
+
+riskDollars = input.float(100.0, "Risk per main trade ($)", step=5.0, minval=1.0, group="06 Risk")
+maxNotionalPerTrade = input.float(10000.0, "Max notional per signal ($)", step=500.0, minval=100.0, group="06 Risk")
+maxDailyLossDollars = input.float(200.0, "Max daily loss ($)", step=10.0, minval=1.0, group="06 Risk")
+maxMainEntriesPerDay = input.int(2, "Max main entries per day", minval=1, maxval=5, group="06 Risk")
+maxConsecutiveLosses = input.int(2, "Max consecutive losses per chart/day", minval=1, maxval=10, group="06 Risk")
+minQty = input.float(1.0, "Minimum shares", step=1.0, minval=1.0, group="06 Risk")
+stopBufferPct = input.float(0.05, "Stop buffer %", step=0.01, minval=0.0, maxval=1.0, group="06 Risk")
+stopBufferAtr = input.float(0.08, "Stop buffer ATR", step=0.01, minval=0.0, maxval=1.0, group="06 Risk")
+maxStopPct = input.float(1.00, "Max stop distance %", step=0.05, minval=0.01, maxval=20.0, group="06 Risk")
+
+partialPct = input.int(50, "TP1 exit pct", minval=1, maxval=99, group="07 Exits")
+finalTargetR = input.float(1.90, "Final target R", step=0.10, minval=1.10, maxval=5.0, group="07 Exits")
+breakevenOffsetR = input.float(0.00, "Breakeven offset R", step=0.01, minval=0.0, maxval=0.5, group="07 Exits")
+trailAfterTp1 = input.bool(true, "Trail runner with EMA20/VWAP", group="07 Exits")
+allowReload = input.bool(true, "Allow one reload after TP1", group="07 Exits")
+reloadPullbackVolRatioMax = input.float(0.85, "Reload pullback volume <= impulse ratio", step=0.05, minval=0.1, maxval=2.0, group="07 Exits")
+reloadRiskPctOfMain = input.float(0.50, "Reload size pct of original qty", step=0.05, minval=0.1, maxval=1.0, group="07 Exits")
+minReloadPullbackZ = input.float(0.40, "Reload pullback_z min", step=0.05, minval=0.0, maxval=5.0, group="07 Exits")
+maxReloadPullbackZ = input.float(1.20, "Reload pullback_z max", step=0.05, minval=0.1, maxval=5.0, group="07 Exits")
+
+brokerMode = input.string("paper", "Payload broker_mode", options=["paper", "live"], group="08 Alerts")
+marketDataMode = input.string("live", "Payload market_data_mode", options=["live", "paper"], group="08 Alerts")
+strategyName = input.string(DEFAULT_STRATEGY_NAME, "Payload strategy_name", group="08 Alerts")
+enableAlerts = input.bool(true, "Enable alert() payloads", group="08 Alerts")
+enableFillConfirmAlerts = input.bool(false, "Alert on strategy fill confirmation", group="08 Alerts")
+
+showRankTable = input.bool(false, "Show ETF score table", group="09 Display")
+showSetupLabels = input.bool(true, "Show sweep/reclaim labels", group="09 Display")
+showDiagnosticLabels = input.bool(false, "Show blocked diagnostics", group="09 Display")
+enableDiagnosticAlerts = input.bool(false, "Enable diagnostic heartbeat alerts", group="10 Debug")
+enablePineLogs = input.bool(true, "Enable Pine Logs", group="10 Debug")
+diagnosticEveryBars = input.int(6, "Diagnostic heartbeat every N bars", minval=1, maxval=100, group="10 Debug")
+diagnosticImportantOnly = input.bool(false, "Diagnostics only on important states", group="10 Debug")
+
+// -----------------------------------------------------------------------------
+// Formatting and JSON helpers
+// -----------------------------------------------------------------------------
+fmt(series float value) =>
+    na(value) ? "--" : str.tostring(value, "#.##")
+
+fmtFull(series float value) =>
+    na(value) ? "null" : str.tostring(value, "#.########")
+
+fmtPrice(series float value) =>
+    na(value) ? "--" : str.tostring(value, format.mintick)
+
+moneyText(series float value) =>
+    na(value) ? "$--" : "$" + str.tostring(value, "#.##")
+
+qtyText(series float value) =>
+    na(value) ? "--" : str.tostring(value, "#")
+
+jsonStr(series string key, series string value) =>
+    "\"" + key + "\":\"" + str.replace_all(value, "\"", "'") + "\""
+
+jsonNum(series string key, series float value) =>
+    "\"" + key + "\":" + (na(value) ? "null" : fmtFull(value))
+
+jsonInt(series string key, series int value) =>
+    "\"" + key + "\":" + (na(value) ? "null" : str.tostring(value))
+
+jsonBool(series string key, series bool value) =>
+    "\"" + key + "\":" + (value ? "true" : "false")
+
+jsonRequestedSides(series string requestedSides) =>
+    "\"requested_sides\":" + (requestedSides == "stop_loss" ? "[\"stop_loss\"]" : requestedSides == "take_profit" ? "[\"take_profit\"]" : requestedSides == "stop_loss,take_profit" ? "[\"stop_loss\",\"take_profit\"]" : "[]")
+
+symbolKey(series string ticker) =>
+    str.replace_all(str.upper(ticker), " ", "_")
+
+cleanTicker(series string ticker) =>
+    str.upper(str.replace_all(ticker, " ", ""))
+
+planId(series string ticker, series string eventType, series int eventTimeMs, series string setup, series string intent) =>
+    symbolKey(ticker) + "_long_" + str.tostring(eventTimeMs) + "_" + timeframe.period + "_" + setup + "_" + eventType + "_" + intent
+
+clampFloat(series float value, series float minValue, series float maxValue) =>
+    math.min(math.max(value, minValue), maxValue)
+
+// -----------------------------------------------------------------------------
+// Session, benchmark, and ETF metrics
+// -----------------------------------------------------------------------------
+inSession() =>
+    not na(time(timeframe.period, rthSession))
+
+etMinuteOfDay() =>
+    hour(time, TZ) * 60 + minute(time, TZ)
+
+etCloseMinuteOfDay() =>
+    hour(time_close, TZ) * 60 + minute(time_close, TZ)
+
+rthOpenPrice() =>
+    bool sess = inSession()
+    bool wasSess = sess[1] == true
+    bool start = sess and (not wasSess or timeframe.change("D"))
+    var float sessionOpen = na
+    if start
+        sessionOpen := open
+    else if not sess
+        sessionOpen := na
+    sessionOpen
+
+rthChangePct() =>
+    float sessionOpen = rthOpenPrice()
+    not na(sessionOpen) and sessionOpen > 0.0 ? (close - sessionOpen) / sessionOpen * 100.0 : na
+
+rthVwap(series float src) =>
+    bool sess = inSession()
+    bool wasSess = sess[1] == true
+    bool start = sess and (not wasSess or timeframe.change("D"))
+    var float cumPv = na
+    var float cumVol = na
+    if start
+        cumPv := src * volume
+        cumVol := volume
+    else if sess
+        cumPv := nz(cumPv, 0.0) + src * volume
+        cumVol := nz(cumVol, 0.0) + volume
+    else
+        cumPv := na
+        cumVol := na
+    not na(cumVol) and cumVol > 0.0 ? cumPv / cumVol : na
+
+rthOrLevels() =>
+    bool sess = inSession()
+    bool wasSess = sess[1] == true
+    bool start = sess and (not wasSess or timeframe.change("D"))
+    int mins = etMinuteOfDay()
+    bool inOr = sess and mins >= 9 * 60 + 30 and mins < 10 * 60
+    var float orHigh = na
+    var float orLow = na
+    if start
+        orHigh := na
+        orLow := na
+    if inOr
+        orHigh := na(orHigh) ? high : math.max(orHigh, high)
+        orLow := na(orLow) ? low : math.min(orLow, low)
+    [orHigh, orLow]
+
+etf5Metrics() =>
+    float vwapValue = rthVwap(hlc3)
+    [orHighValue, orLowValue] = rthOrLevels()
+    [rthChangePct(), close, vwapValue, orHighValue, orLowValue]
+
+spy5Metrics() =>
+    float vwapValue = rthVwap(hlc3)
+    float crossValue = ta.cross(close, vwapValue) ? 1.0 : 0.0
+    float crossCount6 = crossValue + nz(crossValue[1]) + nz(crossValue[2]) + nz(crossValue[3]) + nz(crossValue[4]) + nz(crossValue[5])
+    [rthChangePct(), close, vwapValue, crossCount6]
+
+dailyContextMetrics() =>
+    float atrValue = ta.atr(14)
+    float atrPctValue = close > 0.0 ? atrValue / close * 100.0 : na
+    float change3 = close[3] > 0.0 ? (close - close[3]) / close[3] * 100.0 : na
+    float change5 = close[5] > 0.0 ? (close - close[5]) / close[5] * 100.0 : na
+    float ema20 = ta.ema(close, 20)
+    float extensionAtr = atrValue > 0.0 ? (close - ema20) / atrValue : na
+    int upDays = close > close[1] ? 1 : 0
+    upDays += upDays == 1 and close[1] > close[2] ? 1 : 0
+    upDays += upDays == 2 and close[2] > close[3] ? 1 : 0
+    upDays += upDays == 3 and close[3] > close[4] ? 1 : 0
+    upDays += upDays == 4 and close[4] > close[5] ? 1 : 0
+    int downDays = close < close[1] ? 1 : 0
+    downDays += downDays == 1 and close[1] < close[2] ? 1 : 0
+    downDays += downDays == 2 and close[2] < close[3] ? 1 : 0
+    downDays += downDays == 3 and close[3] < close[4] ? 1 : 0
+    downDays += downDays == 4 and close[4] < close[5] ? 1 : 0
+    [atrPctValue, change3, change5, extensionAtr, upDays, downDays]
+
+scoreBetter(series float candidateRs, series float candidateChange, series float refRs, series float refChange) =>
+    nz(candidateRs, -100000.0) > nz(refRs, -100000.0) or (nz(candidateRs, -100000.0) == nz(refRs, -100000.0) and nz(candidateChange, -100000.0) > nz(refChange, -100000.0))
+
+rankFor(series float rs, series float changePct, series float qqqRs, series float qqqChange, series float xlkRs, series float xlkChange, series float smhRs, series float smhChange, series float xlfRs, series float xlfChange, series float xleRs, series float xleChange, series float xlvRs, series float xlvChange, series float xlyRs, series float xlyChange, series float xliRs, series float xliChange) =>
+    int rank = 1
+    rank += scoreBetter(qqqRs, qqqChange, rs, changePct) ? 1 : 0
+    rank += scoreBetter(xlkRs, xlkChange, rs, changePct) ? 1 : 0
+    rank += scoreBetter(smhRs, smhChange, rs, changePct) ? 1 : 0
+    rank += scoreBetter(xlfRs, xlfChange, rs, changePct) ? 1 : 0
+    rank += scoreBetter(xleRs, xleChange, rs, changePct) ? 1 : 0
+    rank += scoreBetter(xlvRs, xlvChange, rs, changePct) ? 1 : 0
+    rank += scoreBetter(xlyRs, xlyChange, rs, changePct) ? 1 : 0
+    rank += scoreBetter(xliRs, xliChange, rs, changePct) ? 1 : 0
+    rank
+
+scoreFromContext(series float rsZ, series float dayMoveZ, series bool spyOk, series bool rankLeader, series float leaderGap) =>
+    float score = 50.0 + nz(rsZ, 0.0) * 20.0
+    score += spyOk ? 10.0 : -20.0
+    score += rankLeader ? 10.0 : -25.0
+    score += leaderGap >= minLeaderGapPct ? 10.0 : -10.0
+    score -= not na(dayMoveZ) and dayMoveZ > 1.5 ? (dayMoveZ - 1.5) * 8.0 : 0.0
+    int(math.round(clampFloat(score, 0.0, 100.0)))
+
+// -----------------------------------------------------------------------------
+// Cross-ETF data and ranking
+// -----------------------------------------------------------------------------
+[spyChangePct, spyClose, spyVwap, spyVwapCrossCount] = request.security(spySymbol, "5", spy5Metrics(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+spyVwapOk = not na(spyClose) and not na(spyVwap) and spyClose >= spyVwap * (1.0 - spyVwapTolerancePct / 100.0)
+spyChopBlock = not na(spyVwapCrossCount) and spyVwapCrossCount > spyChopCrossMax
+spyRiskOk = (not requireSpyAboveVwap or spyVwapOk) and not spyChopBlock
+
+[qqqChange, qqqClose, qqqVwap, qqqOrHigh, qqqOrLow] = request.security(qqqSymbol, "5", etf5Metrics(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+[xlkChange, xlkClose, xlkVwap, xlkOrHigh, xlkOrLow] = request.security(xlkSymbol, "5", etf5Metrics(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+[smhChange, smhClose, smhVwap, smhOrHigh, smhOrLow] = request.security(smhSymbol, "5", etf5Metrics(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+[xlfChange, xlfClose, xlfVwap, xlfOrHigh, xlfOrLow] = request.security(xlfSymbol, "5", etf5Metrics(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+[xleChange, xleClose, xleVwap, xleOrHigh, xleOrLow] = request.security(xleSymbol, "5", etf5Metrics(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+[xlvChange, xlvClose, xlvVwap, xlvOrHigh, xlvOrLow] = request.security(xlvSymbol, "5", etf5Metrics(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+[xlyChange, xlyClose, xlyVwap, xlyOrHigh, xlyOrLow] = request.security(xlySymbol, "5", etf5Metrics(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+[xliChange, xliClose, xliVwap, xliOrHigh, xliOrLow] = request.security(xliSymbol, "5", etf5Metrics(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+qqqRs = qqqChange - spyChangePct
+xlkRs = xlkChange - spyChangePct
+smhRs = smhChange - spyChangePct
+xlfRs = xlfChange - spyChangePct
+xleRs = xleChange - spyChangePct
+xlvRs = xlvChange - spyChangePct
+xlyRs = xlyChange - spyChangePct
+xliRs = xliChange - spyChangePct
+
+rsMean = (qqqRs + xlkRs + smhRs + xlfRs + xleRs + xlvRs + xlyRs + xliRs) / 8.0
+rsVariance = (math.pow(qqqRs - rsMean, 2) + math.pow(xlkRs - rsMean, 2) + math.pow(smhRs - rsMean, 2) + math.pow(xlfRs - rsMean, 2) + math.pow(xleRs - rsMean, 2) + math.pow(xlvRs - rsMean, 2) + math.pow(xlyRs - rsMean, 2) + math.pow(xliRs - rsMean, 2)) / 8.0
+rsStdev = math.sqrt(rsVariance)
+qqqRsZ = not na(qqqRs) and rsStdev > 0.0 ? (qqqRs - rsMean) / rsStdev : 0.0
+xlkRsZ = not na(xlkRs) and rsStdev > 0.0 ? (xlkRs - rsMean) / rsStdev : 0.0
+smhRsZ = not na(smhRs) and rsStdev > 0.0 ? (smhRs - rsMean) / rsStdev : 0.0
+xlfRsZ = not na(xlfRs) and rsStdev > 0.0 ? (xlfRs - rsMean) / rsStdev : 0.0
+xleRsZ = not na(xleRs) and rsStdev > 0.0 ? (xleRs - rsMean) / rsStdev : 0.0
+xlvRsZ = not na(xlvRs) and rsStdev > 0.0 ? (xlvRs - rsMean) / rsStdev : 0.0
+xlyRsZ = not na(xlyRs) and rsStdev > 0.0 ? (xlyRs - rsMean) / rsStdev : 0.0
+xliRsZ = not na(xliRs) and rsStdev > 0.0 ? (xliRs - rsMean) / rsStdev : 0.0
+
+qqqRank = rankFor(qqqRs, qqqChange, qqqRs, qqqChange, xlkRs, xlkChange, smhRs, smhChange, xlfRs, xlfChange, xleRs, xleChange, xlvRs, xlvChange, xlyRs, xlyChange, xliRs, xliChange)
+xlkRank = rankFor(xlkRs, xlkChange, qqqRs, qqqChange, xlkRs, xlkChange, smhRs, smhChange, xlfRs, xlfChange, xleRs, xleChange, xlvRs, xlvChange, xlyRs, xlyChange, xliRs, xliChange)
+smhRank = rankFor(smhRs, smhChange, qqqRs, qqqChange, xlkRs, xlkChange, smhRs, smhChange, xlfRs, xlfChange, xleRs, xleChange, xlvRs, xlvChange, xlyRs, xlyChange, xliRs, xliChange)
+xlfRank = rankFor(xlfRs, xlfChange, qqqRs, qqqChange, xlkRs, xlkChange, smhRs, smhChange, xlfRs, xlfChange, xleRs, xleChange, xlvRs, xlvChange, xlyRs, xlyChange, xliRs, xliChange)
+xleRank = rankFor(xleRs, xleChange, qqqRs, qqqChange, xlkRs, xlkChange, smhRs, smhChange, xlfRs, xlfChange, xleRs, xleChange, xlvRs, xlvChange, xlyRs, xlyChange, xliRs, xliChange)
+xlvRank = rankFor(xlvRs, xlvChange, qqqRs, qqqChange, xlkRs, xlkChange, smhRs, smhChange, xlfRs, xlfChange, xleRs, xleChange, xlvRs, xlvChange, xlyRs, xlyChange, xliRs, xliChange)
+xlyRank = rankFor(xlyRs, xlyChange, qqqRs, qqqChange, xlkRs, xlkChange, smhRs, smhChange, xlfRs, xlfChange, xleRs, xleChange, xlvRs, xlvChange, xlyRs, xlyChange, xliRs, xliChange)
+xliRank = rankFor(xliRs, xliChange, qqqRs, qqqChange, xlkRs, xlkChange, smhRs, smhChange, xlfRs, xlfChange, xleRs, xleChange, xlvRs, xlvChange, xlyRs, xlyChange, xliRs, xliChange)
+
+rank1Symbol = qqqRank == 1 ? "QQQ" : xlkRank == 1 ? "XLK" : smhRank == 1 ? "SMH" : xlfRank == 1 ? "XLF" : xleRank == 1 ? "XLE" : xlvRank == 1 ? "XLV" : xlyRank == 1 ? "XLY" : xliRank == 1 ? "XLI" : ""
+rank1Rs = rank1Symbol == "QQQ" ? qqqRs : rank1Symbol == "XLK" ? xlkRs : rank1Symbol == "SMH" ? smhRs : rank1Symbol == "XLF" ? xlfRs : rank1Symbol == "XLE" ? xleRs : rank1Symbol == "XLV" ? xlvRs : rank1Symbol == "XLY" ? xlyRs : rank1Symbol == "XLI" ? xliRs : na
+rank1RsZ = rank1Symbol == "QQQ" ? qqqRsZ : rank1Symbol == "XLK" ? xlkRsZ : rank1Symbol == "SMH" ? smhRsZ : rank1Symbol == "XLF" ? xlfRsZ : rank1Symbol == "XLE" ? xleRsZ : rank1Symbol == "XLV" ? xlvRsZ : rank1Symbol == "XLY" ? xlyRsZ : rank1Symbol == "XLI" ? xliRsZ : na
+rank2Symbol = qqqRank == 2 ? "QQQ" : xlkRank == 2 ? "XLK" : smhRank == 2 ? "SMH" : xlfRank == 2 ? "XLF" : xleRank == 2 ? "XLE" : xlvRank == 2 ? "XLV" : xlyRank == 2 ? "XLY" : xliRank == 2 ? "XLI" : ""
+rank2Rs = rank2Symbol == "QQQ" ? qqqRs : rank2Symbol == "XLK" ? xlkRs : rank2Symbol == "SMH" ? smhRs : rank2Symbol == "XLF" ? xlfRs : rank2Symbol == "XLE" ? xleRs : rank2Symbol == "XLV" ? xlvRs : rank2Symbol == "XLY" ? xlyRs : rank2Symbol == "XLI" ? xliRs : na
+rank3Symbol = qqqRank == 3 ? "QQQ" : xlkRank == 3 ? "XLK" : smhRank == 3 ? "SMH" : xlfRank == 3 ? "XLF" : xleRank == 3 ? "XLE" : xlvRank == 3 ? "XLV" : xlyRank == 3 ? "XLY" : xliRank == 3 ? "XLI" : ""
+leaderGap = not na(rank1Rs) and not na(rank2Rs) ? rank1Rs - rank2Rs : na
+
+chartSymbol = cleanTicker(syminfo.ticker)
+chartInPool = chartSymbol == "QQQ" or chartSymbol == "XLK" or chartSymbol == "SMH" or chartSymbol == "XLF" or chartSymbol == "XLE" or chartSymbol == "XLV" or chartSymbol == "XLY" or chartSymbol == "XLI"
+chartRank = chartSymbol == "QQQ" ? qqqRank : chartSymbol == "XLK" ? xlkRank : chartSymbol == "SMH" ? smhRank : chartSymbol == "XLF" ? xlfRank : chartSymbol == "XLE" ? xleRank : chartSymbol == "XLV" ? xlvRank : chartSymbol == "XLY" ? xlyRank : chartSymbol == "XLI" ? xliRank : 0
+chartRs = chartSymbol == "QQQ" ? qqqRs : chartSymbol == "XLK" ? xlkRs : chartSymbol == "SMH" ? smhRs : chartSymbol == "XLF" ? xlfRs : chartSymbol == "XLE" ? xleRs : chartSymbol == "XLV" ? xlvRs : chartSymbol == "XLY" ? xlyRs : chartSymbol == "XLI" ? xliRs : na
+chartRsZ = chartSymbol == "QQQ" ? qqqRsZ : chartSymbol == "XLK" ? xlkRsZ : chartSymbol == "SMH" ? smhRsZ : chartSymbol == "XLF" ? xlfRsZ : chartSymbol == "XLE" ? xleRsZ : chartSymbol == "XLV" ? xlvRsZ : chartSymbol == "XLY" ? xlyRsZ : chartSymbol == "XLI" ? xliRsZ : na
+chartChange = chartSymbol == "QQQ" ? qqqChange : chartSymbol == "XLK" ? xlkChange : chartSymbol == "SMH" ? smhChange : chartSymbol == "XLF" ? xlfChange : chartSymbol == "XLE" ? xleChange : chartSymbol == "XLV" ? xlvChange : chartSymbol == "XLY" ? xlyChange : chartSymbol == "XLI" ? xliChange : na
+
+[chartDailyAtrPct, chartDaily3dChangePct, chartDaily5dChangePct, chartDailyExtensionAtr, chartConsecutiveUpDays, chartConsecutiveDownDays] = request.security(syminfo.tickerid, "D", dailyContextMetrics(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+chartDayMoveZ = not na(chartDailyAtrPct) and chartDailyAtrPct > 0.0 ? math.abs(chartChange) / chartDailyAtrPct : na
+chartIsLeader = chartInPool and chartSymbol == rank1Symbol and chartRank == 1
+leaderGapOk = not na(leaderGap) and leaderGap >= minLeaderGapPct
+rsZOk = not na(chartRsZ) and chartRsZ >= minRsZ and chartRsZ <= maxRsZ
+dayMoveOk = na(chartDayMoveZ) or chartDayMoveZ <= maxDayMoveZ
+leaderOk = chartInPool and (not requireRank1ForMain or chartIsLeader) and leaderGapOk and rsZOk and dayMoveOk
+chartSymbolScore = scoreFromContext(chartRsZ, chartDayMoveZ, spyRiskOk, chartIsLeader, nz(leaderGap, 0.0))
+
+// -----------------------------------------------------------------------------
+// Local chart structure and time windows
+// -----------------------------------------------------------------------------
+confirmed = barstate.isconfirmed
+is5m = timeframe.period == "5"
+inRth = inSession()
+rthStarted = inRth and (not (inRth[1] == true) or timeframe.change("D"))
+newDay = timeframe.change("D") or rthStarted
+etMinutes = etMinuteOfDay()
+etCloseMinutes = etCloseMinuteOfDay()
+inOpeningRange = inRth and etMinutes >= 9 * 60 + 30 and etMinutes < 10 * 60
+orComplete = inRth and etMinutes >= 10 * 60
+inMainEntryWindow = inRth and etMinutes >= 10 * 60 and etMinutes < 11 * 60 + 45
+inMiddayBlock = inRth and etMinutes >= 12 * 60 and etMinutes < 13 * 60 + 30
+inReloadWindow = inRth and etMinutes >= 13 * 60 + 30 and etMinutes < 14 * 60 + 45
+entryWindowOpen = inMainEntryWindow
+forceFlatNow = inRth and etCloseMinutes >= forceFlatHour * 60 + forceFlatMinute
+
+chartVwap = rthVwap(hlc3)
+[chartOrHigh, chartOrLow] = rthOrLevels()
+chartEma20 = ta.ema(close, 20)
+chartAtr = ta.atr(atrLen)
+chartVolMa = ta.sma(volume, volumeZLen)
+chartVolStdev = ta.stdev(volume, volumeZLen)
+volumeZ = not na(chartVolStdev) and chartVolStdev > 0.0 ? (volume - chartVolMa) / chartVolStdev : 0.0
+barRange = math.max(high - low, syminfo.mintick)
+closeLocation = barRange > 0.0 ? (close - low) / barRange : 0.5
+entryBreakBuffer = syminfo.mintick * entryBreakBufferTicks
+window_name = inOpeningRange ? "discovery" : inMainEntryWindow ? "morning_main" : inMiddayBlock ? "midday_filter" : inReloadWindow ? "afternoon_confirm" : "closed"
+
+rank1Id = rank1Symbol == "QQQ" ? 1 : rank1Symbol == "XLK" ? 2 : rank1Symbol == "SMH" ? 3 : rank1Symbol == "XLF" ? 4 : rank1Symbol == "XLE" ? 5 : rank1Symbol == "XLV" ? 6 : rank1Symbol == "XLY" ? 7 : rank1Symbol == "XLI" ? 8 : 0
+leaderSwitchCount = (rank1Id != rank1Id[1] ? 1 : 0) + (rank1Id[1] != rank1Id[2] ? 1 : 0) + (rank1Id[2] != rank1Id[3] ? 1 : 0) + (rank1Id[3] != rank1Id[4] ? 1 : 0) + (rank1Id[4] != rank1Id[5] ? 1 : 0) + (rank1Id[5] != rank1Id[6] ? 1 : 0)
+etfAboveVwapCount = (qqqClose > qqqVwap ? 1 : 0) + (xlkClose > xlkVwap ? 1 : 0) + (smhClose > smhVwap ? 1 : 0) + (xlfClose > xlfVwap ? 1 : 0) + (xleClose > xleVwap ? 1 : 0) + (xlvClose > xlvVwap ? 1 : 0) + (xlyClose > xlyVwap ? 1 : 0) + (xliClose > xliVwap ? 1 : 0)
+chartVwapSlopeUp = not na(chartVwap) and not na(chartVwap[1]) and chartVwap > chartVwap[1]
+rsExpanding = not na(chartRs[2]) and chartRs > chartRs[1] and chartRs[1] > chartRs[2]
+rsExpandScore = rsExpanding ? 20 : not na(chartRs[1]) and chartRs > chartRs[1] ? 10 : 0
+rankStableTop2 = chartRank > 0 and chartRank <= 2 and chartRank[1] <= 2 and chartRank[2] <= 2
+priceNetMove = close - close[6]
+priceGrossMove = nz(math.abs(close - close[1])) + nz(math.abs(close[1] - close[2])) + nz(math.abs(close[2] - close[3])) + nz(math.abs(close[3] - close[4])) + nz(math.abs(close[4] - close[5])) + nz(math.abs(close[5] - close[6]))
+price_efficiency = not na(priceNetMove) and priceGrossMove > 0.0 ? math.max(priceNetMove, 0.0) / priceGrossMove : 0.0
+trendPullbackZ = not na(chartAtr) and chartAtr > 0.0 ? (ta.highest(high, 6) - low) / chartAtr : na
+priceEfficiencyOk = price_efficiency >= minPriceEfficiency and (na(trendPullbackZ) or trendPullbackZ <= maxEfficiencyPullbackZ)
+trendScoreRaw = (spyVwapOk and spyVwapCrossCount <= spyChopCrossMax ? 20 : 0) + (chartVwapSlopeUp ? 15 : 0) + rsExpandScore + (etfAboveVwapCount >= minEtfsAboveVwapForTrend ? 15 : 0) + (rankStableTop2 ? 15 : 0) + (priceEfficiencyOk ? 15 : 0)
+trendScorePenalty = (spyVwapCrossCount > 3 ? 20 : 0) + (leaderSwitchCount > leaderSwitchPenaltyMin ? 15 : 0)
+trend_score = int(math.round(clampFloat(trendScoreRaw - trendScorePenalty, 0.0, 100.0)))
+flatVwap = not na(chartVwap[3]) and chartVwap > 0.0 and math.abs(chartVwap - chartVwap[3]) / chartVwap < 0.0003
+chopScoreRaw = (spyVwapCrossCount > spyChopCrossMax ? 35 : spyVwapCrossCount >= 2 ? 15 : 0) + (not leaderGapOk ? 25 : 0) + (leaderSwitchCount > leaderSwitchPenaltyMin ? 20 : 0) + (flatVwap ? 15 : 0) + (price_efficiency < minPriceEfficiency ? 15 : 0)
+chop_score = int(math.round(clampFloat(chopScoreRaw, 0.0, 100.0)))
+chopHardBlock = chop_score >= maxChopScoreForTrade
+trendFullOk = trend_score >= minTrendScoreFull and not chopHardBlock
+trendSmallOk = trend_score >= minTrendScoreSmall and not chopHardBlock
+trendEntryAllowed = trendSmallOk
+risk_multiplier = trendFullOk ? 1.0 : trendSmallOk ? mediumTrendRiskMultiplier : 0.0
+trend_regime = trendFullOk ? "trend_fragment" : trendSmallOk ? "weak_trend_fragment" : chopHardBlock ? "chop" : "no_trade"
+spyBelowVwap2Bars = not na(spyClose) and not na(spyVwap) and spyClose < spyVwap and spyClose[1] < spyVwap[1]
+
+var bool brokeOrhToday = false
+if newDay
+    brokeOrhToday := false
+if inRth and orComplete and not na(chartOrHigh) and close > chartOrHigh
+    brokeOrhToday := true
+
+zoneBuffer = costZoneBufferPct / 100.0
+orhVwapConfluence = orComplete and not na(chartOrHigh) and not na(chartVwap) and math.abs(chartVwap - chartOrHigh) / chartOrHigh <= orhVwapConfluencePct / 100.0
+string costZoneSource = "none"
+float anchor = na
+if orhVwapConfluence
+    costZoneSource := "orh_vwap_confluence"
+    anchor := math.max(chartOrHigh, chartVwap)
+else if brokeOrhToday and not na(chartOrHigh) and not na(chartVwap)
+    bool nearOrh = math.abs(close - chartOrHigh) <= math.abs(close - chartVwap)
+    costZoneSource := nearOrh ? "orh" : "vwap"
+    anchor := nearOrh ? chartOrHigh : chartVwap
+else if not na(chartVwap)
+    costZoneSource := "vwap"
+    anchor := chartVwap
+else if not na(chartOrHigh)
+    costZoneSource := "orh"
+    anchor := chartOrHigh
+
+costZoneHigh = orhVwapConfluence ? math.max(chartOrHigh, chartVwap) * (1.0 + zoneBuffer) : not na(anchor) ? anchor * (1.0 + zoneBuffer) : na
+costZoneLow = orhVwapConfluence ? math.min(chartOrHigh, chartVwap) * (1.0 - zoneBuffer) : not na(anchor) ? anchor * (1.0 - zoneBuffer) : na
+sweepDepth = not na(costZoneLow) and low < costZoneLow ? costZoneLow - low : na
+sweepZ = not na(sweepDepth) and not na(chartAtr) and chartAtr > 0.0 ? sweepDepth / chartAtr : na
+validSweepNow = confirmed and is5m and chartInPool and entryWindowOpen and not manualEventBlock and not forceFlatNow and spyRiskOk and leaderOk and trendEntryAllowed and not na(sweepZ) and sweepZ >= minSweepZ and sweepZ <= maxSweepZ
+
+// -----------------------------------------------------------------------------
+// Daily state and sweep/reclaim state machine
+// -----------------------------------------------------------------------------
+var int dailyMainEntries = 0
+var int dailyReloads = 0
+var int consecutiveLosses = 0
+var float dayStartNetprofit = na
+var int lastClosedTradeCount = 0
+var bool noMoreTradesToday = false
+
+var bool sweepActive = false
+var int sweepBar = na
+var float sweepLow = na
+var float sweepZoneLow = na
+var float sweepZoneHigh = na
+var string sweepZoneSource = "none"
+var float sweepZAtBirth = na
+var float rsZAtBirth = na
+var float dayMoveZAtBirth = na
+var int rankAtBirth = na
+var float impulseVolumeAtSweep = na
+
+var bool reclaimReady = false
+var int reclaimBar = na
+var float reclaimHigh = na
+var float reclaimLow = na
+var int reclaimBars = na
+var float plannedStop = na
+var float plannedEntry = na
+var float plannedRisk = na
+var float plannedTarget1 = na
+var float plannedTargetFinal = na
+var float plannedQty = na
+var string setupState = "idle"
+var string blockReason = "init"
+var string activeSignalId = ""
+var string activeTradeGroupId = ""
+var string activePositionId = ""
+var string activeSetup = "etf_dct_reclaim_alpha_long"
+
+var bool activePosition = false
+var float activeEntry = na
+var float activeStop = na
+var float activeInitialRisk = na
+var float activeTarget1 = na
+var float activeTargetFinal = na
+var float activeQty = na
+var float originalQty = na
+var bool activeHalfTaken = false
+var bool activeReloadUsed = false
+var bool activeReloadFailed = false
+var bool reloadCandidateActive = false
+var int reloadCandidateBar = na
+var float reloadCandidateHigh = na
+var float reloadCandidateLow = na
+var float reloadCandidatePullbackZ = na
+var int activeEntryBar = na
+var int activeRiskUpdateSeq = 0
+var string activeManualExitReason = ""
+
+if newDay or na(dayStartNetprofit)
+    dayStartNetprofit := strategy.netprofit
+    dailyMainEntries := 0
+    dailyReloads := 0
+    consecutiveLosses := 0
+    noMoreTradesToday := false
+    sweepActive := false
+    reclaimReady := false
+    reloadCandidateActive := false
+    reloadCandidateBar := na
+    sweepBar := na
+    reclaimBar := na
+    setupState := "new_day"
+    blockReason := "new_day"
+
+realizedToday = strategy.netprofit - nz(dayStartNetprofit, strategy.netprofit)
+dailyPnl = realizedToday + strategy.openprofit
+dailyLossStopHit = dailyPnl <= -maxDailyLossDollars
+lossCountStopHit = consecutiveLosses >= maxConsecutiveLosses
+mainEntryCountStopHit = dailyMainEntries >= maxMainEntriesPerDay
+slotOpen = strategy.position_size == 0
+hardRiskStop = dailyLossStopHit or lossCountStopHit or noMoreTradesToday
+
+sweepAge = sweepActive and not na(sweepBar) ? bar_index - sweepBar : na
+reclaimAge = reclaimReady and not na(reclaimBar) ? bar_index - reclaimBar : na
+sweepExpired = sweepActive and not na(sweepAge) and sweepAge > reclaimMaxBars
+reclaimExpired = reclaimReady and not na(reclaimAge) and reclaimAge > setupTtlBars
+sweepBroken = sweepActive and close < sweepLow
+leaderLost = sweepActive and not leaderOk
+trendLost = sweepActive and not trendEntryAllowed
+spyLost = sweepActive and not spyRiskOk
+
+if confirmed and (sweepExpired or sweepBroken or leaderLost or trendLost or spyLost or forceFlatNow or manualEventBlock)
+    string reason = sweepExpired ? "sweep_reclaim_timeout" : sweepBroken ? "sweep_low_lost" : leaderLost ? "leader_filter_lost" : trendLost ? "trend_fragment_lost" : spyLost ? "spy_filter_lost" : forceFlatNow ? "force_flat_window" : "manual_event_block"
+    sweepActive := false
+    reclaimReady := false
+    setupState := reason
+    blockReason := reason
+
+canStartSweep = validSweepNow and slotOpen and not hardRiskStop and not mainEntryCountStopHit and not sweepActive and not reclaimReady
+if canStartSweep
+    sweepActive := true
+    reclaimReady := false
+    sweepBar := bar_index
+    sweepLow := low
+    sweepZoneLow := costZoneLow
+    sweepZoneHigh := costZoneHigh
+    sweepZoneSource := costZoneSource
+    sweepZAtBirth := sweepZ
+    rsZAtBirth := chartRsZ
+    dayMoveZAtBirth := chartDayMoveZ
+    rankAtBirth := chartRank
+    impulseVolumeAtSweep := volume
+    setupState := "sweep_detected"
+    blockReason := "waiting_reclaim"
+    if showSetupLabels
+        label.new(bar_index, low, "SWEEP\n" + chartSymbol + " #1\nz=" + fmt(sweepZ), style=label.style_label_up, color=color.new(color.orange, 0), textcolor=color.white, size=size.small)
+
+reclaimNow = sweepActive and confirmed and not na(sweepZoneHigh) and close > sweepZoneHigh and closeLocation >= reclaimCloseLocationMin and volumeZ >= reclaimVolumeZMin and (bar_index - sweepBar) >= 0 and (bar_index - sweepBar) <= reclaimMaxBars and (chartRank <= 2) and spyRiskOk and trendEntryAllowed
+if reclaimNow
+    reclaimReady := true
+    sweepActive := false
+    reclaimBar := bar_index
+    reclaimHigh := high
+    reclaimLow := low
+    reclaimBars := bar_index - sweepBar + 1
+    float stopBuffer = math.max(close * stopBufferPct / 100.0, chartAtr * stopBufferAtr)
+    plannedStop := sweepLow - stopBuffer
+    plannedEntry := close
+    plannedRisk := plannedEntry - plannedStop
+    plannedTarget1 := plannedEntry + plannedRisk
+    plannedTargetFinal := plannedEntry + plannedRisk * finalTargetR
+    float riskQty = plannedRisk > 0.0 ? (riskDollars * risk_multiplier) / plannedRisk : na
+    float notionalQty = plannedEntry > 0.0 ? maxNotionalPerTrade / plannedEntry : na
+    plannedQty := math.floor(math.min(nz(riskQty, 0.0), nz(notionalQty, 0.0)))
+    setupState := "reclaim_confirmed"
+    blockReason := "waiting_break_reclaim_high"
+    if showSetupLabels
+        label.new(bar_index, high, "RECLAIM\n" + sweepZoneSource + "\nvol_z=" + fmt(volumeZ), style=label.style_label_down, color=color.new(color.lime, 0), textcolor=color.black, size=size.small)
+
+stopPct = not na(plannedRisk) and plannedEntry > 0.0 ? plannedRisk / plannedEntry * 100.0 : na
+entryStopOk = not na(stopPct) and stopPct > 0.0 and stopPct <= maxStopPct
+entryQtyOk = not na(plannedQty) and plannedQty >= minQty
+breakoutNow = reclaimReady and confirmed and bar_index > reclaimBar and high >= reclaimHigh + entryBreakBuffer
+entrySignal = breakoutNow and is5m and chartInPool and slotOpen and not hardRiskStop and not mainEntryCountStopHit and entryStopOk and entryQtyOk and spyRiskOk and leaderOk and trendEntryAllowed and dayMoveOk and not manualEventBlock and not forceFlatNow
+
+if confirmed and reclaimExpired and not entrySignal
+    reclaimReady := false
+    setupState := "breakout_timeout"
+    blockReason := "breakout_timeout"
+
+if not is5m
+    blockReason := "chart_not_5m"
+else if not chartInPool
+    blockReason := "chart_not_in_etf_pool"
+else if manualEventBlock
+    blockReason := "manual_event_block"
+else if forceFlatNow
+    blockReason := "force_flat_window"
+else if hardRiskStop
+    blockReason := dailyLossStopHit ? "daily_loss_stop" : lossCountStopHit ? "consecutive_loss_stop" : "no_more_trades_today"
+else if mainEntryCountStopHit
+    blockReason := "main_entry_count_stop"
+else if not entryWindowOpen and not reclaimReady
+    blockReason := inOpeningRange ? "opening_range_building" : inMiddayBlock ? "midday_no_new_entries" : "entry_window_closed"
+else if not spyRiskOk
+    blockReason := spyChopBlock ? "spy_vwap_chop" : "spy_below_vwap"
+else if not leaderOk
+    blockReason := not chartIsLeader ? "chart_not_rank1" : not leaderGapOk ? "leader_gap_too_small" : not rsZOk ? "rs_z_not_in_range" : not dayMoveOk ? "day_move_overheated" : "leader_filter_failed"
+else if chopHardBlock
+    blockReason := "chop_score_block"
+else if not trendEntryAllowed
+    blockReason := "trend_score_too_low"
+else if not sweepActive and not reclaimReady and not validSweepNow
+    blockReason := "waiting_valid_sweep"
+else if sweepActive
+    blockReason := "waiting_reclaim"
+else if reclaimReady and not breakoutNow
+    blockReason := "waiting_break_reclaim_high"
+else if breakoutNow and not entryStopOk
+    blockReason := "entry_stop_too_wide"
+else if breakoutNow and not entryQtyOk
+    blockReason := "entry_qty_too_small"
+else
+    blockReason := entrySignal ? "passed" : blockReason
+
+// -----------------------------------------------------------------------------
+// Payload builders
+// -----------------------------------------------------------------------------
+rotationExtraObject(series string reloadState, series string exitStage, series string alertAction) =>
+    "\"extra\":{" + jsonStr("leader_symbol", rank1Symbol) + "," + jsonNum("leader_gap", leaderGap) + "," + jsonInt("leader_rank", chartRank) + "," + jsonStr("rank_1_symbol", rank1Symbol) + "," + jsonStr("rank_2_symbol", rank2Symbol) + "," + jsonStr("rank_3_symbol", rank3Symbol) + "," + jsonStr("chart_symbol", chartSymbol) + "," + jsonInt("chart_symbol_rank", chartRank) + "," + jsonInt("chart_symbol_score", chartSymbolScore) + "," + jsonBool("chart_symbol_is_leader", chartIsLeader) + "," + jsonNum("rs_z", chartRsZ) + "," + jsonNum("relative_strength_pct", chartRs) + "," + jsonNum("sweep_z", sweepZAtBirth) + "," + jsonNum("day_move_z", chartDayMoveZ) + "," + jsonNum("cost_zone_low", sweepZoneLow) + "," + jsonNum("cost_zone_high", sweepZoneHigh) + "," + jsonStr("cost_zone_source", sweepZoneSource) + "," + jsonNum("sweep_low", sweepLow) + "," + jsonNum("reclaim_high", reclaimHigh) + "," + jsonInt("reclaim_bars", reclaimBars) + "," + jsonStr("setup_state", setupState) + "," + jsonStr("debug_reason", blockReason) + "," + jsonStr("alert_action", alertAction) + "," + jsonInt("trend_score", trend_score) + "," + jsonInt("chop_score", chop_score) + "," + jsonStr("trend_regime", trend_regime) + "," + jsonInt("etf_above_vwap_count", etfAboveVwapCount) + "," + jsonInt("leader_switch_count", leaderSwitchCount) + "," + jsonNum("price_efficiency", price_efficiency) + "," + jsonNum("trend_pullback_z", trendPullbackZ) + "," + jsonNum("pullback_z", reloadCandidatePullbackZ) + "," + jsonStr("mixed_day_state", trend_regime) + "," + jsonStr("window_name", window_name) + "," + jsonNum("risk_multiplier", risk_multiplier) + "," + jsonStr("reload_state", reloadState) + "," + jsonInt("reload_count", dailyReloads) + "," + jsonStr("exit_stage", exitStage) + "," + jsonNum("daily_3d_change_pct", chartDaily3dChangePct) + "," + jsonNum("daily_5d_change_pct", chartDaily5dChangePct) + "," + jsonNum("daily_extension_atr", chartDailyExtensionAtr) + "," + jsonInt("consecutive_up_days", chartConsecutiveUpDays) + "," + jsonInt("consecutive_down_days", chartConsecutiveDownDays) + "," + jsonBool("spy_vwap_ok", spyVwapOk) + "," + jsonBool("spy_chop_block", spyChopBlock) + "," + jsonNum("spy_change_pct", spyChangePct) + "," + jsonNum("chart_change_pct", chartChange) + "}"
+
+basePayload(series string eventType, series string eventIdValue, series string positionIdValue, series string reloadState, series string exitStage, series string alertAction) =>
+    "{" + jsonStr("source", "tradingview") + "," + jsonStr("signal_source", "tv") + "," + jsonStr("event_type", eventType) + "," + jsonStr("event_id", eventIdValue) + "," + jsonStr("symbol", syminfo.ticker) + "," + jsonStr("exchange", syminfo.prefix) + "," + jsonStr("interval", timeframe.period) + "," + jsonStr("chart_tf", timeframe.period) + "," + jsonStr("entry_tf", "5") + "," + jsonStr("timeframe_stack", "entry=5;rotation=5;opening_range=30;daily_context=D") + "," + jsonStr("script_tag", SCRIPT_TAG) + "," + jsonStr("strategy_name", strategyName) + "," + jsonStr("strategy_version", STRATEGY_VERSION) + "," + jsonStr("strategy_group", STRATEGY_GROUP) + "," + jsonStr("trade_model", TRADE_MODEL) + "," + jsonStr("risk_model", RISK_MODEL) + "," + jsonStr("tp_sl_model", TP_SL_MODEL) + "," + jsonStr("broker_mode", brokerMode) + "," + jsonStr("market_data_mode", marketDataMode) + "," + jsonStr("data_environment", marketDataMode) + "," + jsonStr("position_id", positionIdValue) + "," + jsonStr("date", str.format_time(time, "yyyy-MM-dd", TZ)) + "," + jsonStr("us_time", str.format_time(time, "yyyy-MM-dd HH:mm", TZ)) + "," + jsonStr("cn_time", str.format_time(time, "yyyy-MM-dd HH:mm", "Asia/Shanghai")) + "," + jsonInt("bar_open_ms", time) + "," + jsonInt("bar_close_ms", time_close) + "," + jsonInt("pine_eval_ms", timenow) + "," + jsonInt("bar_time_ms", time) + "," + jsonInt("bar_index", bar_index) + "," + rotationExtraObject(reloadState, exitStage, alertAction)
+
+buildEntryPayload(series string eventIdValue, series string signalIdValue, series string tradeGroupIdValue, series string positionIdValue) =>
+    basePayload("entry", eventIdValue, positionIdValue, "none", "entry", "ENTRY") + "," + jsonStr("signal_id", signalIdValue) + "," + jsonStr("origin_signal_id", signalIdValue) + "," + jsonStr("trade_group_id", tradeGroupIdValue) + "," + jsonStr("direction", "long") + "," + jsonStr("position_side", "long") + "," + jsonStr("setup", activeSetup) + "," + jsonStr("entry_setup", activeSetup) + "," + jsonStr("signal", activeSetup) + "," + jsonStr("reason", "sweep_reclaim_breakout") + "," + jsonNum("entry", close) + "," + jsonNum("entry_price", close) + "," + jsonNum("planned_entry_price", plannedEntry) + "," + jsonNum("submitted_entry_limit_price", close) + "," + jsonNum("limit_price", close) + "," + jsonNum("stop_loss", plannedStop) + "," + jsonNum("take_profit", plannedTargetFinal) + "," + jsonNum("safety_take_profit", plannedTargetFinal) + "," + jsonNum("target_checkpoint", plannedTarget1) + "," + jsonNum("runner_activation_price", plannedTarget1) + "," + jsonNum("runner_activation_r", 1.0) + "," + jsonNum("shares", plannedQty) + "," + jsonNum("quantity", plannedQty) + "," + jsonNum("rr", finalTargetR) + "," + jsonStr("entry_intent", "market_after_reclaim_high_break") + "," + jsonBool("qualified", true) + "," + jsonInt("score", chartSymbolScore) + "," + jsonInt("activity_score", chartSymbolScore) + "," + jsonInt("quality_score", chartSymbolScore) + "," + jsonNum("risk_r", plannedRisk) + "," + jsonNum("initial_risk", plannedRisk) + "," + jsonNum("risk_per_share", plannedRisk) + "," + jsonNum("planned_risk_dollars", plannedRisk * plannedQty) + "," + jsonNum("actual_risk_dollars", plannedRisk * plannedQty) + "," + jsonNum("entry_notional", close * plannedQty) + "," + jsonNum("max_daily_loss_dollars", maxDailyLossDollars) + "}"
+
+buildReloadPayload(series string eventIdValue, series string positionIdValue, series float reloadQty) =>
+    basePayload("entry", eventIdValue, positionIdValue, "reload_signal", "reload", "RELOAD") + "," + jsonStr("signal_id", eventIdValue) + "," + jsonStr("origin_signal_id", activeSignalId) + "," + jsonStr("trade_group_id", activeTradeGroupId) + "," + jsonStr("direction", "long") + "," + jsonStr("position_side", "long") + "," + jsonStr("setup", activeSetup) + "," + jsonStr("entry_setup", activeSetup) + "," + jsonStr("signal", activeSetup) + "," + jsonStr("reason", "trend_reload_breakout") + "," + jsonNum("entry", close) + "," + jsonNum("entry_price", close) + "," + jsonNum("planned_entry_price", close) + "," + jsonNum("submitted_entry_limit_price", close) + "," + jsonNum("limit_price", close) + "," + jsonNum("stop_loss", activeStop) + "," + jsonNum("take_profit", activeTargetFinal) + "," + jsonNum("target_checkpoint", activeTarget1) + "," + jsonNum("runner_activation_price", activeTarget1) + "," + jsonNum("shares", reloadQty) + "," + jsonNum("quantity", reloadQty) + "," + jsonBool("qualified", true) + "," + jsonInt("score", chartSymbolScore) + "," + jsonInt("activity_score", chartSymbolScore) + "," + jsonInt("quality_score", chartSymbolScore) + "," + jsonNum("risk_r", activeInitialRisk) + "," + jsonNum("risk_per_share", activeInitialRisk) + "," + jsonNum("entry_notional", close * reloadQty) + "}"
+
+buildFillPayload(series string eventIdValue, series string positionIdValue, series float fillPrice) =>
+    basePayload("entry_fill", eventIdValue, positionIdValue, "none", "entry_fill", "ENTRY_FILL") + "," + jsonStr("signal_id", activeSignalId) + "," + jsonStr("origin_signal_id", activeSignalId) + "," + jsonStr("trade_group_id", activeTradeGroupId) + "," + jsonStr("direction", "long") + "," + jsonStr("setup", activeSetup) + "," + jsonNum("entry", fillPrice) + "," + jsonNum("planned_entry_price", plannedEntry) + "," + jsonNum("stop_loss", activeStop) + "," + jsonNum("take_profit", activeTargetFinal) + "," + jsonNum("shares", activeQty) + "," + jsonNum("quantity", activeQty) + "," + jsonNum("fill_price", fillPrice) + "," + jsonStr("entry_intent", "market_after_reclaim_high_break") + "}"
+
+buildRiskUpdatePayload(series string eventIdValue, series string positionIdValue, series string reason, series float previousStop, series float newStop) =>
+    basePayload("risk_update", eventIdValue, positionIdValue, activeReloadUsed ? "reload_used" : "none", "tp1_protected", "TAKE_HALF_PROTECTED") + "," + jsonStr("signal_id", activeSignalId) + "," + jsonStr("origin_signal_id", activeSignalId) + "," + jsonStr("trade_group_id", activeTradeGroupId) + "," + jsonStr("direction", "long") + "," + jsonStr("setup", activeSetup) + "," + jsonStr("reason", reason) + "," + jsonStr("risk_update_reason", reason) + "," + jsonInt("risk_update_seq", activeRiskUpdateSeq) + "," + jsonRequestedSides("stop_loss") + "," + jsonNum("previous_stop_loss", previousStop) + "," + jsonNum("new_stop_loss", newStop) + "," + jsonNum("stop_loss", newStop) + "," + jsonNum("take_profit", activeTargetFinal) + "," + jsonNum("runner_activation_price", activeTarget1) + "," + jsonNum("shares", math.abs(strategy.position_size)) + "," + jsonNum("quantity", math.abs(strategy.position_size)) + "," + jsonBool("runner_enabled", true) + "," + jsonBool("runner_active", activeHalfTaken) + "}"
+
+buildExitPayload(series string eventIdValue, series string positionIdValue, series string reason, series float exitPrice, series float pnlPerShare) =>
+    basePayload("exit", eventIdValue, positionIdValue, activeReloadUsed ? "reload_used" : "none", "final_exit", "EXIT") + "," + jsonStr("signal_id", activeSignalId) + "," + jsonStr("origin_signal_id", activeSignalId) + "," + jsonStr("trade_group_id", activeTradeGroupId) + "," + jsonStr("direction", "long") + "," + jsonStr("setup", activeSetup) + "," + jsonStr("reason", reason) + "," + jsonStr("exit_reason", reason) + "," + jsonNum("exit_price", exitPrice) + "," + jsonNum("entry", activeEntry) + "," + jsonNum("stop_loss", activeStop) + "," + jsonNum("take_profit", activeTargetFinal) + "," + jsonNum("shares", activeQty) + "," + jsonNum("quantity", activeQty) + "," + jsonNum("pnl", pnlPerShare * activeQty) + "," + jsonNum("pnl_per_share", pnlPerShare) + "," + jsonNum("pnl_r", activeInitialRisk > 0.0 ? pnlPerShare / activeInitialRisk : na) + "," + jsonBool("runner_active", activeHalfTaken) + "}"
+
+buildDiagnosticPayload(series string eventIdValue, series string positionIdValue, series string reasonValue) =>
+    basePayload("heartbeat", eventIdValue, positionIdValue, activeReloadUsed ? "reload_used" : "none", "diagnostic", chopHardBlock ? "NO_TRADE_CHOP" : "DIAGNOSTIC") + "," + jsonStr("reason", "diagnostic_" + reasonValue) + "," + jsonStr("diagnostic_type", "sweep_reclaim_gate") + "," + jsonStr("debug_reason", reasonValue) + "," + jsonBool("gate_is_5m", is5m) + "," + jsonBool("gate_chart_in_pool", chartInPool) + "," + jsonBool("gate_chart_rank1", chartIsLeader) + "," + jsonBool("gate_rs_z_ok", rsZOk) + "," + jsonBool("gate_leader_gap_ok", leaderGapOk) + "," + jsonBool("gate_day_move_ok", dayMoveOk) + "," + jsonBool("gate_trend_score_ok", trendEntryAllowed) + "," + jsonBool("gate_chop_ok", not chopHardBlock) + "," + jsonBool("gate_spy_ok", spyRiskOk) + "," + jsonBool("gate_sweep_active", sweepActive) + "," + jsonBool("gate_reclaim_ready", reclaimReady) + "," + jsonBool("gate_entry_signal", entrySignal) + "}"
+
+diagnosticLogText(series string reasonValue) =>
+    "ETFSR debug=" + reasonValue + " window=" + window_name + " regime=" + trend_regime + " trend=" + str.tostring(trend_score) + " chop=" + str.tostring(chop_score) + " chart=" + chartSymbol + " leader=" + rank1Symbol + " rank=" + str.tostring(chartRank) + " score=" + str.tostring(chartSymbolScore) + " rs_z=" + fmt(chartRsZ) + " gap=" + fmt(leaderGap) + " day_z=" + fmt(chartDayMoveZ) + " spy_ok=" + str.tostring(spyRiskOk) + " state=" + setupState + " sweep_z=" + fmt(sweepZAtBirth) + " pullback_z=" + fmt(reloadCandidatePullbackZ) + " reclaim_high=" + fmtPrice(reclaimHigh) + " stop_pct=" + fmt(stopPct) + " qty=" + qtyText(plannedQty)
+
+// -----------------------------------------------------------------------------
+// Entry submission and position lifecycle
+// -----------------------------------------------------------------------------
+if entrySignal
+    string signalId = planId(syminfo.ticker, "entry", time, activeSetup, "reclaim_break")
+    string tradeGroupId = symbolKey(syminfo.ticker) + "_" + str.tostring(time) + "_etf_sweep_reclaim"
+    string positionId = signalId + "_pos"
+    activeSignalId := signalId
+    activeTradeGroupId := tradeGroupId
+    activePositionId := positionId
+    strategy.entry("ETFSR-L", strategy.long, qty=plannedQty, comment="ETFSR L #1 S" + str.tostring(chartSymbolScore))
+    setupState := "entry_submitted"
+    blockReason := "entry_submitted"
+    reclaimReady := false
+    if showSetupLabels
+        label.new(bar_index, low, "BUY next\n" + chartSymbol + " #1\nQ " + qtyText(plannedQty) + " SL " + fmtPrice(plannedStop), style=label.style_label_up, color=color.new(color.lime, 0), textcolor=color.black, size=size.normal)
+    if enableAlerts
+        alert(buildEntryPayload(signalId, signalId, tradeGroupId, positionId), alert.freq_all)
+else if confirmed and breakoutNow and showDiagnosticLabels and blockReason != "passed"
+    label.new(bar_index, low, "NO\n" + blockReason, style=label.style_label_up, color=color.new(color.gray, 15), textcolor=color.white, size=size.tiny)
+
+positionOpenedNow = not activePosition and strategy.position_size > 0 and strategy.position_size[1] == 0
+if confirmed and positionOpenedNow
+    activePosition := true
+    activeEntry := strategy.position_avg_price
+    activeStop := plannedStop
+    activeInitialRisk := activeEntry - activeStop
+    activeTarget1 := activeEntry + activeInitialRisk
+    activeTargetFinal := activeEntry + activeInitialRisk * finalTargetR
+    activeQty := math.abs(strategy.position_size)
+    originalQty := activeQty
+    activeHalfTaken := false
+    activeReloadUsed := false
+    activeReloadFailed := false
+    reloadCandidateActive := false
+    reloadCandidateBar := na
+    reloadCandidateHigh := na
+    reloadCandidateLow := na
+    reloadCandidatePullbackZ := na
+    activeEntryBar := bar_index
+    activeRiskUpdateSeq := 0
+    activeManualExitReason := ""
+    dailyMainEntries += 1
+    if showSetupLabels
+        label.new(bar_index, low, "FILL L\n" + fmtPrice(activeEntry) + " Q" + qtyText(activeQty), style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white, size=size.small)
+    if enableAlerts and enableFillConfirmAlerts
+        alert(buildFillPayload(planId(syminfo.ticker, "entry_fill", time, activeSetup, "market_after_break"), activePositionId, activeEntry), alert.freq_all)
+
+// Single protective exit. It is updated after TP1, so the chart does not get two same-price SL labels.
+if activePosition and strategy.position_size > 0 and not na(activeStop)
+    float finalLimit = activeHalfTaken ? activeTargetFinal : na
+    strategy.exit("ETFSR-PROTECT", stop=activeStop, limit=finalLimit, comment_loss=activeHalfTaken ? "BE " + fmtPrice(activeStop) : "SL " + fmtPrice(activeStop), comment_profit="TPF " + fmtPrice(activeTargetFinal))
+
+if confirmed and activePosition and strategy.position_size > 0
+    bool tp1Touched = not activeHalfTaken and high >= activeTarget1
+    if tp1Touched
+        float previousStop = activeStop
+        activeHalfTaken := true
+        activeRiskUpdateSeq += 1
+        activeStop := math.max(activeStop, activeEntry + activeInitialRisk * breakevenOffsetR)
+        strategy.close("ETFSR-L", qty_percent=partialPct, comment="TP1 " + fmtPrice(activeTarget1))
+        if showSetupLabels
+            label.new(bar_index, high, "TP1/BE\nSL " + fmtPrice(activeStop), style=label.style_label_down, color=color.new(color.blue, 0), textcolor=color.white, size=size.small)
+        if enableAlerts
+            alert(buildRiskUpdatePayload(planId(syminfo.ticker, "risk_update", time, activeSetup, "breakeven"), activePositionId, "tp1_breakeven", previousStop, activeStop), alert.freq_all)
+
+    bool reloadSupportHeld = (not na(chartVwap) and low <= chartVwap and close >= chartVwap) or (not na(chartEma20) and low <= chartEma20 and close >= chartEma20) or (not na(reclaimHigh) and low <= reclaimHigh and close >= reclaimHigh)
+    float pullback_z = not na(chartAtr) and chartAtr > 0.0 ? (ta.highest(high, 6) - low) / chartAtr : na
+    bool reloadLowVolume = not na(impulseVolumeAtSweep) and volume <= impulseVolumeAtSweep * reloadPullbackVolRatioMax
+    bool reloadPullbackHeld = activeHalfTaken and allowReload and not activeReloadUsed and dailyReloads < 1 and inReloadWindow and trendFullOk and chartRank <= 2 and spyRiskOk and not hardRiskStop and reloadSupportHeld and reloadLowVolume and not na(pullback_z) and pullback_z > minReloadPullbackZ and pullback_z < maxReloadPullbackZ and close > activeStop
+    if reloadPullbackHeld and not reloadCandidateActive
+        reloadCandidateActive := true
+        reloadCandidateBar := bar_index
+        reloadCandidateHigh := high
+        reloadCandidateLow := low
+        reloadCandidatePullbackZ := pullback_z
+        if showSetupLabels
+            label.new(bar_index, low, "RLD CAND\nz=" + fmt(pullback_z), style=label.style_label_up, color=color.new(color.teal, 30), textcolor=color.white, size=size.tiny)
+    bool reloadCandidateExpired = reloadCandidateActive and (bar_index - reloadCandidateBar > setupTtlBars or not inReloadWindow or not trendFullOk or chartRank > 2 or close < activeStop)
+    if reloadCandidateExpired
+        reloadCandidateActive := false
+        reloadCandidateBar := na
+        reloadCandidateHigh := na
+        reloadCandidateLow := na
+        reloadCandidatePullbackZ := na
+    bool reloadSignal = reloadCandidateActive and confirmed and bar_index > reloadCandidateBar and high >= reloadCandidateHigh + entryBreakBuffer and close > open and trendFullOk and chartRank <= 2 and spyRiskOk
+    if reloadSignal
+        float reloadQty = math.floor(math.min(originalQty * reloadRiskPctOfMain, math.max(originalQty - math.abs(strategy.position_size), 0.0)))
+        if reloadQty >= minQty
+            strategy.entry("ETFSR-RLD", strategy.long, qty=reloadQty, comment="RELOAD")
+            activeReloadUsed := true
+            reloadCandidateActive := false
+            dailyReloads += 1
+            if showSetupLabels
+                label.new(bar_index, low, "RELOAD\nQ " + qtyText(reloadQty), style=label.style_label_up, color=color.new(color.teal, 0), textcolor=color.white, size=size.small)
+            if enableAlerts
+                alert(buildReloadPayload(planId(syminfo.ticker, "entry", time, activeSetup, "reload"), activePositionId, reloadQty), alert.freq_all)
+
+    bool reloadFailedNow = activeHalfTaken and activeReloadUsed and not activeReloadFailed and close < activeStop
+    bool rankLostExitNow = chartRank > 2
+    bool spyLostExitNow = spyBelowVwap2Bars
+    bool chopExitNow = activeHalfTaken and chopHardBlock
+    bool trailCloseNow = trailAfterTp1 and activeHalfTaken and (close < chartEma20 or close < chartVwap)
+    if reloadFailedNow and activeManualExitReason == ""
+        activeReloadFailed := true
+        activeManualExitReason := "reload_failed"
+        noMoreTradesToday := true
+        strategy.close_all(comment="RELOAD_FAIL " + fmtPrice(close))
+    else if rankLostExitNow and activeManualExitReason == ""
+        activeManualExitReason := "rank_lost_exit"
+        strategy.close_all(comment="RANK_LOST " + fmtPrice(close))
+    else if spyLostExitNow and activeManualExitReason == ""
+        activeManualExitReason := "spy_vwap_lost_2bars"
+        strategy.close_all(comment="SPY_LOST " + fmtPrice(close))
+    else if chopExitNow and activeManualExitReason == ""
+        activeManualExitReason := "mixed_day_chop_exit"
+        strategy.close_all(comment="CHOP " + fmtPrice(close))
+    else if dailyLossStopHit and activeManualExitReason == ""
+        activeManualExitReason := "daily_loss_stop"
+        strategy.close_all(comment="DLOSS " + fmtPrice(close))
+    else if forceFlatNow and activeManualExitReason == ""
+        activeManualExitReason := "force_flat_eod"
+        strategy.close_all(comment="EOD " + fmtPrice(close))
+    else if trailCloseNow and activeManualExitReason == ""
+        activeManualExitReason := "runner_trailing_stop"
+        strategy.close_all(comment="TRAIL " + fmtPrice(close))
+
+positionClosedNow = activePosition and strategy.position_size == 0 and strategy.position_size[1] > 0
+if confirmed and positionClosedNow
+    int closedTradeIndex = strategy.closedtrades - 1
+    float exitPrice = close
+    string closedTradeComment = ""
+    if strategy.closedtrades > 0
+        exitPrice := strategy.closedtrades.exit_price(closedTradeIndex)
+        closedTradeComment := strategy.closedtrades.exit_comment(closedTradeIndex)
+    bool stopped = low <= activeStop
+    bool finalTargetHit = high >= activeTargetFinal
+    string exitReason = activeManualExitReason != "" ? activeManualExitReason : str.contains(closedTradeComment, "TPF") or finalTargetHit ? "take_profit_final" : str.contains(closedTradeComment, "BE") ? "breakeven_stop" : stopped and activeHalfTaken ? "breakeven_stop" : stopped ? "stop_loss" : forceFlatNow ? "force_flat_eod" : "strategy_closed"
+    float pnlPerShare = exitPrice - activeEntry
+    if pnlPerShare < 0.0
+        consecutiveLosses += 1
+    else
+        consecutiveLosses := 0
+    if showSetupLabels
+        string exitCode = exitReason == "take_profit_final" ? "TPF" : exitReason == "runner_trailing_stop" ? "TRAIL" : exitReason == "stop_loss" ? "SL" : exitReason == "breakeven_stop" ? "BE" : exitReason == "force_flat_eod" ? "EOD" : exitReason == "reload_failed" ? "RLDX" : "EXIT"
+        color exitColor = exitReason == "take_profit_final" ? color.lime : exitReason == "runner_trailing_stop" ? color.blue : exitReason == "stop_loss" or exitReason == "daily_loss_stop" or exitReason == "reload_failed" ? color.red : color.orange
+        label.new(bar_index, exitPrice, exitCode + "\n" + fmtPrice(exitPrice), style=label.style_label_down, color=exitColor, textcolor=color.white, size=size.small)
+    if enableAlerts
+        alert(buildExitPayload(planId(syminfo.ticker, "exit", time, activeSetup, "market"), activePositionId, exitReason, exitPrice, pnlPerShare), alert.freq_all)
+    activePosition := false
+    activeEntry := na
+    activeStop := na
+    activeInitialRisk := na
+    activeTarget1 := na
+    activeTargetFinal := na
+    activeQty := na
+    originalQty := na
+    activeHalfTaken := false
+    activeReloadUsed := false
+    activeReloadFailed := false
+    reloadCandidateActive := false
+    reloadCandidateBar := na
+    reloadCandidateHigh := na
+    reloadCandidateLow := na
+    reloadCandidatePullbackZ := na
+    activeEntryBar := na
+    activeRiskUpdateSeq := 0
+    activeManualExitReason := ""
+    setupState := "flat_after_exit"
+
+// -----------------------------------------------------------------------------
+// Diagnostics and visuals
+// -----------------------------------------------------------------------------
+var string lastDiagnosticReason = ""
+var int lastDiagnosticBar = na
+var string lastPineLogReason = ""
+var int lastPineLogBar = na
+
+diagnosticBarReady = na(lastDiagnosticBar) or bar_index - lastDiagnosticBar >= diagnosticEveryBars
+pineLogBarReady = na(lastPineLogBar) or bar_index - lastPineLogBar >= diagnosticEveryBars
+diagnosticReasonChanged = blockReason != lastDiagnosticReason
+pineLogReasonChanged = blockReason != lastPineLogReason
+diagnosticInteresting = not diagnosticImportantOnly or sweepActive or reclaimReady or chartIsLeader or not spyRiskOk or dailyLossStopHit or lossCountStopHit
+sendDiagnosticAlert = enableDiagnosticAlerts and confirmed and inRth and diagnosticInteresting and not entrySignal and (diagnosticReasonChanged or diagnosticBarReady)
+sendPineLog = enablePineLogs and confirmed and inRth and diagnosticInteresting and not entrySignal and (pineLogReasonChanged or pineLogBarReady)
+if sendDiagnosticAlert
+    string diagId = planId(syminfo.ticker, "heartbeat", time, activeSetup, "diagnostic")
+    alert(buildDiagnosticPayload(diagId, activePositionId, blockReason), alert.freq_all)
+    lastDiagnosticReason := blockReason
+    lastDiagnosticBar := bar_index
+if sendPineLog
+    log.info(diagnosticLogText(blockReason))
+    lastPineLogReason := blockReason
+    lastPineLogBar := bar_index
+
+plot(chartVwap, "RTH VWAP", color=color.new(color.yellow, 0), linewidth=2)
+plot(chartOrHigh, "Opening Range High", color=color.new(color.lime, 0), linewidth=2, style=plot.style_linebr)
+plot(chartOrLow, "Opening Range Low", color=color.new(color.red, 30), linewidth=1, style=plot.style_linebr)
+plot(chartEma20, "5m EMA20", color=color.new(color.aqua, 0), linewidth=1)
+plot(costZoneHigh, "Cost Zone High", color=color.new(color.white, 55), linewidth=1, style=plot.style_linebr)
+plot(costZoneLow, "Cost Zone Low", color=color.new(color.white, 70), linewidth=1, style=plot.style_linebr)
+plotshape(showDiagnosticLabels and confirmed and chartInPool and not chartIsLeader and validSweepNow, title="Blocked not rank1", style=shape.xcross, color=color.orange, size=size.tiny, location=location.belowbar, text="R1")
+plotshape(showDiagnosticLabels and confirmed and chartInPool and chartIsLeader and not rsZOk, title="Blocked rs_z", style=shape.xcross, color=color.gray, size=size.tiny, location=location.belowbar, text="RSZ")
+
+var table rankTable = table.new(position.top_right, 7, 10, border_width=1)
+rowBg(series string sym, series int rankValue, series bool isChartValue) =>
+    isChartValue ? color.new(color.yellow, 15) : rankValue == 1 ? color.new(color.green, 78) : color.new(color.black, 84)
+
+drawRankRow(series int row, series string sym, series int rankValue, series float rsValue, series float rsZValue, series float changeValue) =>
+    bool isChartRow = sym == chartSymbol
+    color bg = rowBg(sym, rankValue, isChartRow)
+    table.cell(rankTable, 0, row, str.tostring(rankValue), text_color=color.white, bgcolor=bg)
+    table.cell(rankTable, 1, row, sym, text_color=isChartRow ? color.black : color.white, bgcolor=bg)
+    table.cell(rankTable, 2, row, fmt(rsValue) + "%", text_color=color.white, bgcolor=bg)
+    table.cell(rankTable, 3, row, fmt(rsZValue), text_color=color.white, bgcolor=bg)
+    table.cell(rankTable, 4, row, fmt(changeValue) + "%", text_color=color.white, bgcolor=bg)
+    table.cell(rankTable, 5, row, rankValue == 1 ? "LEAD" : "WAIT", text_color=color.white, bgcolor=bg)
+    table.cell(rankTable, 6, row, sym == chartSymbol ? setupState : "", text_color=color.white, bgcolor=bg)
+
+if barstate.islast and showRankTable
+    table.cell(rankTable, 0, 0, "Rank", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(rankTable, 1, 0, "ETF", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(rankTable, 2, 0, "RS", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(rankTable, 3, 0, "rs_z", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(rankTable, 4, 0, "Chg", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(rankTable, 5, 0, "State", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    table.cell(rankTable, 6, 0, "Setup", text_color=color.white, bgcolor=color.new(color.gray, 0))
+    drawRankRow(1, "QQQ", qqqRank, qqqRs, qqqRsZ, qqqChange)
+    drawRankRow(2, "XLK", xlkRank, xlkRs, xlkRsZ, xlkChange)
+    drawRankRow(3, "SMH", smhRank, smhRs, smhRsZ, smhChange)
+    drawRankRow(4, "XLF", xlfRank, xlfRs, xlfRsZ, xlfChange)
+    drawRankRow(5, "XLE", xleRank, xleRs, xleRsZ, xleChange)
+    drawRankRow(6, "XLV", xlvRank, xlvRs, xlvRsZ, xlvChange)
+    drawRankRow(7, "XLY", xlyRank, xlyRs, xlyRsZ, xlyChange)
+    drawRankRow(8, "XLI", xliRank, xliRs, xliRsZ, xliChange)
+    string footer = "SPY " + (spyRiskOk ? "OK" : "BLOCK") + " | T " + str.tostring(trend_score) + " C " + str.tostring(chop_score) + " | Gap " + fmt(leaderGap) + " | Day " + moneyText(dailyPnl) + " | " + blockReason
+    color footerBg = color.new(spyRiskOk ? color.green : color.red, 35)
+    table.cell(rankTable, 0, 9, footer, text_color=color.white, bgcolor=footerBg)
+    table.cell(rankTable, 1, 9, "", bgcolor=footerBg)
+    table.cell(rankTable, 2, 9, "", bgcolor=footerBg)
+    table.cell(rankTable, 3, 9, "", bgcolor=footerBg)
+    table.cell(rankTable, 4, 9, "", bgcolor=footerBg)
+    table.cell(rankTable, 5, 9, "", bgcolor=footerBg)
+    table.cell(rankTable, 6, 9, "", bgcolor=footerBg)

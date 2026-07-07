@@ -166,6 +166,56 @@ def _etf_rotation_payload(symbol="QQQ"):
     return payload
 
 
+def _etf_sweep_reclaim_payload(symbol="QQQ"):
+    payload = _entry_payload(symbol)
+    payload.update(
+        {
+            "exchange": "NASDAQ" if symbol == "QQQ" else "AMEX",
+            "script_tag": "ETF_Sweep_Reclaim_Strategy[Glory]",
+            "strategy_name": "ETF DCT Reclaim Long Only",
+            "strategy_group": "etf_rotation_long_only",
+            "trade_model": "etf_dct_reclaim_mixed_day_trend_fragment_long_only_v2",
+            "setup": "etf_dct_reclaim_alpha_long",
+            "reason": "sweep_reclaim_breakout",
+            "entry": 500.0,
+            "stop_loss": 496.0,
+            "take_profit": 507.6,
+            "shares": 20,
+            "activity_score": 86,
+            "quality_score": 86,
+            "extra": {
+                "leader_symbol": symbol,
+                "leader_gap": 0.22,
+                "leader_rank": 1,
+                "chart_symbol_rank": 1,
+                "chart_symbol_score": 86,
+                "rs_z": 1.42,
+                "sweep_z": 0.73,
+                "day_move_z": 1.15,
+                "cost_zone_low": 497.8,
+                "cost_zone_high": 498.2,
+                "sweep_low": 496.65,
+                "reclaim_high": 499.35,
+                "reclaim_bars": 2,
+                "reload_state": "none",
+                "setup_state": "reclaim_confirmed",
+                "alert_action": "ENTRY",
+                "trend_score": 78,
+                "chop_score": 25,
+                "trend_regime": "trend_fragment",
+                "etf_above_vwap_count": 6,
+                "leader_switch_count": 1,
+                "price_efficiency": 0.58,
+                "pullback_z": 0.82,
+                "mixed_day_state": "trend_fragment",
+                "window_name": "morning_main",
+                "risk_multiplier": 1.0,
+            },
+        }
+    )
+    return payload
+
+
 class TvPrimaryEntryBackfillTests(unittest.TestCase):
     def test_authorized_entry_creates_active_target_when_pre_alert_was_missing(self):
         pb = DummyPocketBase()
@@ -296,6 +346,43 @@ class TvPrimaryEntryBackfillTests(unittest.TestCase):
         self.assertEqual("entry_window_orh_confluence", signal_payload["extra"]["candidate_birth_reason"])
         self.assertEqual("orh_vwap_confluence", signal_payload["extra"]["pullback_quality"])
         self.assertEqual(0.72, signal_payload["extra"]["target_1r_vs_atr"])
+
+    def test_etf_sweep_reclaim_allows_qqq_and_preserves_alpha_diagnostics(self):
+        pb = DummyPocketBase(
+            watchlist=[
+                {"symbol": "AAPL", "environment": "live", "symbol_role": "trade"},
+                {"symbol": "QQQ", "environment": "global", "symbol_role": "market_monitor"},
+                {"symbol": "SPY", "environment": "global", "symbol_role": "market_monitor"},
+            ]
+        )
+
+        result, status, signal_payload = _route_with_dummy_signal(
+            pb,
+            _etf_sweep_reclaim_payload("QQQ"),
+            config_value=_config_without_trade_universe,
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(result["ok"])
+        self.assertEqual("QQQ", signal_payload["symbol"])
+        self.assertTrue(signal_payload["extra"]["authorized_symbol"])
+        self.assertIn("strategy_group:etf_rotation", signal_payload["extra"]["authorized_symbol_source"])
+        self.assertEqual("ETF DCT Reclaim Long Only", signal_payload["extra"]["strategy_name"])
+        self.assertEqual("etf_rotation_long_only", signal_payload["extra"]["strategy_group"])
+        self.assertEqual("etf_dct_reclaim_mixed_day_trend_fragment_long_only_v2", signal_payload["extra"]["trade_model"])
+        self.assertEqual("QQQ", signal_payload["extra"]["leader_symbol"])
+        self.assertEqual(1, signal_payload["extra"]["chart_symbol_rank"])
+        self.assertEqual(1.42, signal_payload["extra"]["rs_z"])
+        self.assertEqual(0.73, signal_payload["extra"]["sweep_z"])
+        self.assertEqual(1.15, signal_payload["extra"]["day_move_z"])
+        self.assertEqual(496.65, signal_payload["extra"]["sweep_low"])
+        self.assertEqual(499.35, signal_payload["extra"]["reclaim_high"])
+        self.assertEqual(2, signal_payload["extra"]["reclaim_bars"])
+        self.assertEqual("ENTRY", signal_payload["extra"]["alert_action"])
+        self.assertEqual(78, signal_payload["extra"]["trend_score"])
+        self.assertEqual(25, signal_payload["extra"]["chop_score"])
+        self.assertEqual("trend_fragment", signal_payload["extra"]["trend_regime"])
+        self.assertEqual(0.82, signal_payload["extra"]["pullback_z"])
 
     def test_market_monitor_qqq_is_still_rejected_without_etf_rotation_context(self):
         pb = DummyPocketBase(
