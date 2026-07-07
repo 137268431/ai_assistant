@@ -519,7 +519,11 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
             build_system_monitor_payload=build_system_monitor_payload,
             feishu_send_interactive=feishu_send_interactive,
             write_system_event_record=write_system_event_record,
-            get_state_payload=lambda state_key, environment: get_state_payload(state_key, environment, date=time_strings()["date"]),
+            get_state_payload=lambda state_key, environment, date=None: get_state_payload(
+                state_key,
+                environment,
+                date=date or time_strings()["date"],
+            ),
             upsert_state=lambda key, environment, data, date: pb.upsert_state(key, environment, data, date=date),
             config_value=config_value,
             console_base_url=console_base_url,

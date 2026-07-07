@@ -35,6 +35,9 @@ def _build_ibkr_order_history(service, requested_days: int = 1, *, broker_force:
     if not broker_error:
         broker_error = str(broker_payload.get("error") or "").strip()
 
+    execution_diagnostics = {}
+    if isinstance(broker_payload.get("execution_diagnostics"), dict):
+        execution_diagnostics = broker_payload.get("execution_diagnostics")
     raw_orders = broker_payload.get("orders") or []
     broker_orders = [
         _normalize_broker_history_order(item)
@@ -73,6 +76,15 @@ def _build_ibkr_order_history(service, requested_days: int = 1, *, broker_force:
         "source": "ibkr_direct_order_history" if broker_force else "ibkr_cached_order_history",
         "broker_force": bool(broker_force),
         "executions_requested": bool(broker_payload.get("executions_requested")),
+        "execution_diagnostics": {
+            "executions_requested": bool(broker_payload.get("executions_requested")),
+            **dict(execution_diagnostics),
+            "execution_count": int(
+                execution_diagnostics.get("execution_count")
+                or len((broker_payload.get("executions") or []))
+            ),
+            "order_count": int(execution_diagnostics.get("order_count") or len(raw_orders)),
+        },
         "service_running": bool(getattr(service, "is_running", False)),
         "session_authenticated": bool((service_status.get("session") or {}).get("authenticated")),
         "gateway_running": bool((service_status.get("gateway") or {}).get("running")),

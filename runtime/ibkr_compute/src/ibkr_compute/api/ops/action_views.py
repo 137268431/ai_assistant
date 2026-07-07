@@ -505,17 +505,46 @@ def _extract_uploaded_xml(payload: dict) -> str:
     return ""
 
 
-def _extract_recent_fill_items(payload: dict) -> list[dict]:
+def _recent_fill_candidates(payload: dict) -> tuple[list[dict], str]:
+    def filled_quantity(item: dict) -> float:
+        try:
+            return float(
+                item.get("filled_qty")
+                or item.get("filledQuantity")
+                or item.get("shares")
+                or 0
+            )
+        except (TypeError, ValueError):
+            return 0.0
+
     raw = payload.get("raw") if isinstance(payload.get("raw"), dict) else {}
-    candidates = raw.get("executions") if isinstance(raw.get("executions"), list) else None
-    if candidates is None:
-        candidates = payload.get("executions") if isinstance(payload.get("executions"), list) else None
-    if candidates is None:
-        candidates = raw.get("orders") if isinstance(raw.get("orders"), list) else None
-    if candidates is None:
-        candidates = payload.get("orders") if isinstance(payload.get("orders"), list) else None
-    if candidates is None:
-        candidates = payload.get("items") if isinstance(payload.get("items"), list) else []
+    for source, candidates in (
+        ("raw.executions", raw.get("executions")),
+        ("executions", payload.get("executions")),
+    ):
+        if isinstance(candidates, list):
+            return [item for item in candidates if isinstance(item, dict)], source
+    for source, candidates in (
+        ("raw.orders", raw.get("orders")),
+        ("orders", payload.get("orders")),
+        ("items", payload.get("items")),
+    ):
+        if isinstance(candidates, list):
+            filled = [
+                item
+                for item in candidates
+                if isinstance(item, dict)
+                and str(item.get("status") or item.get("orderStatus") or "").strip().lower()
+                in {"filled", "executed", "closed"}
+                and filled_quantity(item) > 0
+            ]
+            if filled:
+                return filled, source
+    return [], "none"
+
+
+def _extract_recent_fill_items(payload: dict) -> list[dict]:
+    candidates, _source = _recent_fill_candidates(payload)
     items = []
     for item in candidates or []:
         if not isinstance(item, dict):
@@ -596,7 +625,12 @@ def build_backtest_execution_cost_import_response():
 def _fetch_recent_fills_from_runtime(environment: str, days: int) -> dict:
     response = requests.get(
         f"{get_runtime_internal_url().rstrip('/')}/ibkr/orders/history",
-        params={"broker_mode": environment, "environment": environment, "days": max(1, int(days or 1))},
+        params={
+            "broker_mode": environment,
+            "environment": environment,
+            "days": max(1, int(days or 1)),
+            "broker_force": "true",
+        },
         timeout=30,
     )
     payload = response.json() if response.content else {}
@@ -607,6 +641,18 @@ def _fetch_recent_fills_from_runtime(environment: str, days: int) -> dict:
             "payload": payload if isinstance(payload, dict) else {},
         }
     return payload if isinstance(payload, dict) else {"ok": False, "error": "invalid_runtime_history_payload"}
+
+
+def _load_recent_fill_broker_payload(app_mod, environment: str, days: int) -> tuple[dict, str]:
+    service_getter = getattr(app_mod, "get_ibkr_service", None)
+    service = service_getter() if callable(service_getter) else None
+    tracker = getattr(service, "order_tracker", None) if service is not None else None
+    if tracker is not None and hasattr(tracker, "get_broker_order_history"):
+        return (
+            tracker.get_broker_order_history(days=days, force=True, include_executions=True),
+            "local_order_tracker",
+        )
+    return _fetch_recent_fills_from_runtime(environment, days), "runtime_order_history"
 
 
 def build_backtest_execution_cost_import_recent_fills_response():
@@ -620,14 +666,7 @@ def build_backtest_execution_cost_import_recent_fills_response():
     broker_payload = {}
     broker_source = "runtime_order_history"
     try:
-        service_getter = getattr(app_mod, "get_ibkr_service", None)
-        service = service_getter() if callable(service_getter) else None
-        tracker = getattr(service, "order_tracker", None) if service is not None else None
-        if tracker is not None and hasattr(tracker, "get_broker_order_history"):
-            broker_payload = tracker.get_broker_order_history(days=days, force=True)
-            broker_source = "local_order_tracker"
-        else:
-            broker_payload = _fetch_recent_fills_from_runtime(environment, days)
+        broker_payload, broker_source = _load_recent_fill_broker_payload(app_mod, environment, days)
         if not broker_payload.get("ok", True):
             return jsonify(
                 {
@@ -638,6 +677,40 @@ def build_backtest_execution_cost_import_recent_fills_response():
                 }
             ), 502
         raw_items = _extract_recent_fill_items(broker_payload)
+        candidate_items, candidate_source = _recent_fill_candidates(broker_payload)
+        recent_fill_diagnostics = {}
+        if isinstance(broker_payload.get("execution_diagnostics"), dict):
+            recent_fill_diagnostics = dict(broker_payload.get("execution_diagnostics") or {})
+        raw_payload = broker_payload.get("raw") if isinstance(broker_payload.get("raw"), dict) else {}
+        broker_order_items = broker_payload.get("orders")
+        if not isinstance(broker_order_items, list):
+            broker_order_items = raw_payload.get("orders")
+        if not isinstance(broker_order_items, list):
+            broker_order_items = broker_payload.get("items")
+        raw_execution_items = (
+            raw_payload.get("executions")
+            if isinstance(raw_payload.get("executions"), list)
+            else []
+        )
+        recent_fill_diagnostics.update(
+            {
+                "candidate_source": candidate_source,
+                "candidate_count": len(candidate_items),
+                "raw_count": len(raw_items),
+                "executions_requested": bool(broker_payload.get("executions_requested")),
+                "broker_order_count": len(broker_order_items or []),
+                "raw_execution_count": len(raw_execution_items),
+            }
+        )
+        if not raw_items:
+            recent_fill_diagnostics.setdefault(
+                "empty_reason",
+                (
+                    "recent_executions_empty"
+                    if recent_fill_diagnostics.get("executions_requested")
+                    else "executions_not_requested"
+                ),
+            )
         fills = normalize_execution_fills(
             raw_items,
             environment=environment,
@@ -657,6 +730,12 @@ def build_backtest_execution_cost_import_recent_fills_response():
                 "imported": len(fills),
                 "summary": summarize_execution_fills(fills),
                 "upsert": result,
+                "recent_fill_diagnostics": recent_fill_diagnostics,
+                "reason": (
+                    ""
+                    if raw_items
+                    else recent_fill_diagnostics.get("empty_reason", "recent_executions_empty")
+                ),
                 "limitations": broker_payload.get("limitations") or [],
             }
         )

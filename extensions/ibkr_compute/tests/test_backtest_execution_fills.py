@@ -16,6 +16,10 @@ from ibkr_compute.backtest.execution_fills import (
     normalize_execution_fills,
     parse_flex_xml_fills,
 )
+try:
+    from ibkr_compute.api.ops import action_views
+except ModuleNotFoundError:
+    action_views = None
 
 
 class BacktestExecutionFillCalibrationTests(unittest.TestCase):
@@ -65,6 +69,57 @@ class BacktestExecutionFillCalibrationTests(unittest.TestCase):
         self.assertAlmostEqual(fills[0]["shares"], 20.0)
         self.assertAlmostEqual(fills[0]["price"], 900.0)
         self.assertAlmostEqual(fills[0]["commission"], 1.25)
+
+    def test_recent_fill_runtime_fetch_forces_broker_executions(self):
+        if action_views is None:
+            self.skipTest("flask dependency unavailable")
+        calls = []
+
+        class _Response:
+            ok = True
+            content = b"{}"
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {"ok": True, "raw": {"executions": []}, "executions_requested": True}
+
+        def fake_get(url, params=None, timeout=None):
+            calls.append({"url": url, "params": dict(params or {}), "timeout": timeout})
+            return _Response()
+
+        with mock.patch.object(action_views, "get_runtime_internal_url", return_value="http://runtime"):
+            with mock.patch.object(action_views.requests, "get", side_effect=fake_get):
+                payload = action_views._fetch_recent_fills_from_runtime("paper", 1)
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual("true", calls[0]["params"]["broker_force"])
+        self.assertEqual("paper", calls[0]["params"]["broker_mode"])
+
+    def test_recent_fill_local_tracker_requests_execution_rows(self):
+        if action_views is None:
+            self.skipTest("flask dependency unavailable")
+        class _Tracker:
+            def __init__(self):
+                self.calls = []
+
+            def get_broker_order_history(self, **kwargs):
+                self.calls.append(dict(kwargs))
+                return {"ok": True, "executions_requested": bool(kwargs.get("include_executions"))}
+
+        class _App:
+            def __init__(self):
+                self.tracker = _Tracker()
+
+            def get_ibkr_service(self):
+                return type("_Service", (), {"order_tracker": self.tracker})()
+
+        app = _App()
+        payload, source = action_views._load_recent_fill_broker_payload(app, "paper", 1)
+
+        self.assertEqual("local_order_tracker", source)
+        self.assertTrue(payload["executions_requested"])
+        self.assertEqual([{"days": 1, "force": True, "include_executions": True}], app.tracker.calls)
 
     def test_calibrated_profile_infers_per_share_and_minimum(self):
         fills = normalize_execution_fills(

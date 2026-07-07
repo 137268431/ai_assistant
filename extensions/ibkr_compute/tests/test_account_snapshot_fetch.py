@@ -629,6 +629,17 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertFalse(payload["broker_force"])
         self.assertFalse(payload["executions_requested"])
         self.assertEqual(
+            {
+                "executions_requested": False,
+                "execution_count": 0,
+                "order_count": 0,
+            },
+            {
+                key: payload["execution_diagnostics"].get(key)
+                for key in ("executions_requested", "execution_count", "order_count")
+            },
+        )
+        self.assertEqual(
             [{"days": 1, "force": False, "include_executions": False}],
             service.order_tracker.calls,
         )
@@ -637,6 +648,21 @@ class AccountSnapshotFetchTest(unittest.TestCase):
         self.assertEqual("1001", payload["items"][0]["broker_order_id"])
         self.assertEqual("pb_cache_only", payload["items"][0]["diagnostic_state"])
         self.assertEqual(1, payload["reconciliation"]["pb_today_count"])
+
+        broker_payload = _with_fake_api_app(
+            app,
+            lambda: _build_ibkr_order_history(service, requested_days=1, broker_force=True),
+        )
+        self.assertTrue(broker_payload["broker_force"])
+        self.assertTrue(broker_payload["executions_requested"])
+        self.assertEqual(
+            [
+                {"days": 1, "force": False, "include_executions": False},
+                {"days": 1, "force": True, "include_executions": True},
+            ],
+            service.order_tracker.calls,
+        )
+        self.assertTrue(broker_payload["execution_diagnostics"]["executions_requested"])
 
     def test_account_snapshot_preserves_already_normalized_positions(self):
         class _NormalizedPositionLifecycle(_SnapshotLifecycle):

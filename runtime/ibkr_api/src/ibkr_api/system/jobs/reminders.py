@@ -8,10 +8,18 @@ from ibkr_api.system.jobs.market_session_text import market_session_detail_field
 
 
 DAILY_REMINDER_STATE_KEY = "system_notify_daily"
+MONITOR_ALERT_STATE_KEY = "system_monitor_alert"
 DEFAULT_MARKET_OPEN_REMINDER_TIME_ET = "09:30"
 DEFAULT_MARKET_OPEN_REMINDER_WINDOW_MINUTES = 10
 DEFAULT_DAILY_REPORT_TIME_ET = "16:05"
 DEFAULT_DAILY_REPORT_WINDOW_MINUTES = 30
+DEFAULT_ACCOUNT_SNAPSHOT_WARNING_CONSECUTIVE_COUNT = 2
+ACCOUNT_SNAPSHOT_WARNING_CODES = {
+    "account_snapshot_degraded",
+    "account_snapshot_timeout",
+    "account_positions_stale",
+    "account_pnl_unavailable",
+}
 
 NormalizeEnvironment = Callable[[Any, str], str]
 TimeStrings = Callable[[], dict[str, str]]
@@ -20,7 +28,7 @@ BuildSystemMonitorPayload = Callable[[str], dict[str, Any]]
 EmitSystemEvent = Callable[..., dict[str, Any]]
 FeishuSendInteractive = Callable[[dict[str, Any], str, str], dict[str, Any]]
 WriteSystemEventRecord = Callable[..., dict[str, Any]]
-GetStatePayload = Callable[[str, str], dict[str, Any]]
+GetStatePayload = Callable[..., dict[str, Any]]
 UpsertState = Callable[[str, str, dict[str, Any], str], dict[str, Any]]
 ConfigValue = Callable[[str, str, str], str]
 ConsoleBaseUrl = Callable[[], str]
@@ -259,6 +267,62 @@ def _status_problem(status: Any) -> bool:
     return bool(text) and text not in {"running", "ok", "ready", "healthy", "connected", "authenticated", "completed"}
 
 
+def _monitor_problem_flags(monitor: dict[str, Any]) -> list[dict[str, Any]]:
+    flags = []
+    for item in monitor.get("flags") or []:
+        if not isinstance(item, dict):
+            continue
+        severity = _to_text(item.get("severity")).lower()
+        if severity in {"warning", "error"}:
+            flags.append(dict(item))
+    return flags
+
+
+def _monitor_flag_issue_text(status: str, flags: list[dict[str, Any]]) -> str:
+    if not flags:
+        return f"监控状态 {status}"
+    parts = []
+    for item in flags[:3]:
+        code = _to_text(item.get("code")) or "flag"
+        detail = _to_text(item.get("detail"))
+        parts.append(f"{code}: {detail}" if detail else code)
+    return f"监控状态 {status}（" + "；".join(parts) + "）"
+
+
+def _config_int(config_value: ConfigValue | None, key: str, default: int, environment: str) -> int:
+    try:
+        raw = config_value(key, str(default), environment) if callable(config_value) else default
+        return max(0, int(raw))
+    except Exception:
+        return int(default)
+
+
+def _should_suppress_close_monitor_warning(
+    monitor: dict[str, Any],
+    *,
+    monitor_alert_state: dict[str, Any] | None,
+    config_value: ConfigValue | None,
+    environment: str,
+) -> bool:
+    flags = _monitor_problem_flags(monitor)
+    if not flags:
+        return False
+    if any(_to_text(item.get("severity")).lower() == "error" for item in flags):
+        return False
+    if not all(_to_text(item.get("code")) in ACCOUNT_SNAPSHOT_WARNING_CODES for item in flags):
+        return False
+    threshold = _config_int(
+        config_value,
+        "system_monitor_account_snapshot_warning_consecutive_count",
+        DEFAULT_ACCOUNT_SNAPSHOT_WARNING_CONSECUTIVE_COUNT,
+        environment,
+    )
+    if threshold <= 1:
+        return False
+    streak = _to_int(_as_dict(monitor_alert_state).get("account_snapshot_warning_streak"), 0)
+    return streak < threshold
+
+
 def _service_stats_line(services: dict[str, Any]) -> str:
     return ", ".join(f"{key}:{value}" for key, value in sorted(services.items())) if services else "n/a"
 
@@ -294,6 +358,9 @@ def _close_issue_lines(
     monitor: dict[str, Any],
     targets_payload: dict[str, Any],
     environment: str,
+    *,
+    monitor_alert_state: dict[str, Any] | None = None,
+    config_value: ConfigValue | None = None,
 ) -> tuple[list[str], bool]:
     context = _close_context(summary, monitor, targets_payload)
     issues: list[str] = []
@@ -304,8 +371,19 @@ def _close_issue_lines(
         issues.append(f"总体状态 {summary_status}")
         blocking = blocking or summary_status in {"offline", "error", "failed"}
     if monitor_status and monitor_status not in {"running", "ok"}:
-        issues.append(f"监控状态 {monitor_status}")
-        blocking = blocking or monitor_status in {"offline", "error", "failed"}
+        suppress_monitor_warning = monitor_status in {
+            "warning",
+            "warn",
+            "degraded",
+        } and _should_suppress_close_monitor_warning(
+            monitor,
+            monitor_alert_state=monitor_alert_state,
+            config_value=config_value,
+            environment=environment,
+        )
+        if not suppress_monitor_warning:
+            issues.append(_monitor_flag_issue_text(monitor_status, _monitor_problem_flags(monitor)))
+            blocking = blocking or monitor_status in {"offline", "error", "failed"}
     for label, status in (
         ("Compute", _as_dict(context.get("compute")).get("status")),
         ("Runtime", _as_dict(context.get("runtime")).get("status")),
@@ -387,13 +465,16 @@ def _build_close_report_card(
     monitor: dict[str, Any],
     targets_payload: dict[str, Any],
     console_base_url: str,
+    issue_lines: list[str] | None = None,
+    blocking: bool | None = None,
 ) -> dict[str, Any]:
     context = _close_context(summary, monitor, targets_payload)
     today = _as_dict(context.get("today"))
     daily_scan = _as_dict(context.get("daily_scan"))
     services = _as_dict(context.get("services"))
     market_date = _to_text(targets_payload.get("market_date")) or _to_text(daily_scan.get("market_date")) or _to_text(times.get("date"))
-    issue_lines, blocking = _close_issue_lines(summary, monitor, targets_payload, data_environment)
+    if issue_lines is None or blocking is None:
+        issue_lines, blocking = _close_issue_lines(summary, monitor, targets_payload, data_environment)
     issue_text = "；".join(issue_lines) if issue_lines else "无"
     market_session_fields = market_session_detail_fields(_as_dict(_as_dict(context.get("runtime")).get("market_session")))
     market_session_lines = "\n".join(f"**{key}**: {value}" for key, value in market_session_fields.items())
@@ -470,11 +551,14 @@ def _close_event_detail(
     monitor: dict[str, Any],
     targets_payload: dict[str, Any],
     data_environment: str,
+    issue_lines: list[str] | None = None,
+    blocking: bool | None = None,
 ) -> dict[str, Any]:
     context = _close_context(summary, monitor, targets_payload)
     today = _as_dict(context.get("today"))
     services = _as_dict(context.get("services"))
-    issue_lines, blocking = _close_issue_lines(summary, monitor, targets_payload, data_environment)
+    if issue_lines is None or blocking is None:
+        issue_lines, blocking = _close_issue_lines(summary, monitor, targets_payload, data_environment)
     detail = {
         "阶段": "close",
         "检查时间": _to_text(times.get("us")),
@@ -778,6 +862,18 @@ def build_system_daily_report_response(
     summary = build_system_summary_payload(broker_mode, lite_mode=True)
     monitor = build_system_monitor_payload(broker_mode)
     try:
+        monitor_alert_state = _as_dict(
+            _as_dict(
+                get_state_payload(MONITOR_ALERT_STATE_KEY, broker_mode, date=times["date"])
+            ).get("data")
+        )
+    except TypeError:
+        monitor_alert_state = _as_dict(
+            _as_dict(get_state_payload(MONITOR_ALERT_STATE_KEY, broker_mode)).get("data")
+        )
+    except Exception:
+        monitor_alert_state = {}
+    try:
         targets_payload, _ = build_today_targets_response(
             payload={
                 "broker_mode": broker_mode,
@@ -800,7 +896,14 @@ def build_system_daily_report_response(
             "daily_scan": {"status": "unknown", "last_error": f"targets_summary_error:{exc}", "market_date": times["date"]},
             "items": [],
         }
-    issue_lines, blocking = _close_issue_lines(summary, monitor, targets_payload, data_environment)
+    issue_lines, blocking = _close_issue_lines(
+        summary,
+        monitor,
+        targets_payload,
+        broker_mode,
+        monitor_alert_state=monitor_alert_state,
+        config_value=config_value,
+    )
     level = "error" if blocking else ("warning" if issue_lines else "info")
     card = _build_close_report_card(
         broker_mode=broker_mode,
@@ -810,6 +913,8 @@ def build_system_daily_report_response(
         monitor=monitor,
         targets_payload=targets_payload,
         console_base_url=console_base_url(),
+        issue_lines=issue_lines,
+        blocking=blocking,
     )
     result = _as_dict(feishu_send_interactive(card, startup_chat_id(broker_mode), broker_mode))
     notified = bool(result.get("success")) and not bool(result.get("suppressed"))
@@ -820,7 +925,15 @@ def build_system_daily_report_response(
         level,
         "ibkr-api",
         "IBKR 16:05 收盘汇总",
-        _close_event_detail(times=times, summary=summary, monitor=monitor, targets_payload=targets_payload, data_environment=data_environment),
+        _close_event_detail(
+            times=times,
+            summary=summary,
+            monitor=monitor,
+            targets_payload=targets_payload,
+            data_environment=data_environment,
+            issue_lines=issue_lines,
+            blocking=blocking,
+        ),
         broker_mode,
         notified,
     )

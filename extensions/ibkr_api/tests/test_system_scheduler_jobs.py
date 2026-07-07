@@ -282,7 +282,8 @@ class SystemSchedulerJobsTest(unittest.TestCase):
             overrides = config_overrides or {}
             return overrides.get(key, default)
 
-        def get_state_payload(state_key, environment, state_date=date):
+        def get_state_payload(state_key, environment, state_date=date, date=None):
+            state_date = date or state_date
             return {
                 "data": dict(pb.states.get((state_key, environment, state_date), {}).get("data") or {}),
                 "environment": environment,
@@ -2507,6 +2508,74 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         card_text = "\n".join(element.get("content", "") for element in sent[0]["card"]["elements"] if element.get("tag") == "markdown")
         self.assertIn("**今日止盈/止损**: 止盈成交 2（保护 1 + 平仓 1） | 止损成交 1（保护 1 + 平仓 0） | 平本 1 | 未判定 1", card_text)
         self.assertIn("**今日盈亏**: 净 +$123.45 | 盈利 2/+$200.00 | 亏损 1/-$76.55 | 手续费 $7.00 | PnL缺失 1", card_text)
+
+    def test_daily_report_suppresses_first_account_snapshot_warning(self):
+        pb = _ReminderPB()
+        sent = []
+        flag = {
+            "code": "account_snapshot_degraded",
+            "severity": "warning",
+            "title": "Account snapshot unavailable",
+            "detail": "read timeout",
+        }
+        deps = self._reminder_deps(pb, sent, now_us="2026-04-23 16:05:00", daily=True)
+        base_monitor = deps["build_system_monitor_payload"]
+
+        def build_system_monitor_payload(environment):
+            payload = base_monitor(environment)
+            payload["status"] = "warning"
+            payload["flags"] = [flag]
+            return payload
+
+        deps["build_system_monitor_payload"] = build_system_monitor_payload
+
+        payload, status_code = build_system_daily_report_response(payload={"environment": "live"}, **deps)
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual("green", sent[0]["card"]["header"]["template"])
+        card_text = "\n".join(
+            element.get("content", "")
+            for element in sent[0]["card"]["elements"]
+            if element.get("tag") == "markdown"
+        )
+        self.assertIn("运行正常", card_text)
+        self.assertNotIn("监控状态 warning", card_text)
+
+    def test_daily_report_includes_account_snapshot_warning_after_streak(self):
+        pb = _ReminderPB()
+        pb.states[("system_monitor_alert", "live", "2026-04-23")] = {
+            "data": {"account_snapshot_warning_streak": 2}
+        }
+        sent = []
+        flag = {
+            "code": "account_snapshot_degraded",
+            "severity": "warning",
+            "title": "Account snapshot unavailable",
+            "detail": "read timeout",
+        }
+        deps = self._reminder_deps(pb, sent, now_us="2026-04-23 16:05:00", daily=True)
+        base_monitor = deps["build_system_monitor_payload"]
+
+        def build_system_monitor_payload(environment):
+            payload = base_monitor(environment)
+            payload["status"] = "warning"
+            payload["flags"] = [flag]
+            return payload
+
+        deps["build_system_monitor_payload"] = build_system_monitor_payload
+
+        payload, status_code = build_system_daily_report_response(payload={"environment": "live"}, **deps)
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual("orange", sent[0]["card"]["header"]["template"])
+        card_text = "\n".join(
+            element.get("content", "")
+            for element in sent[0]["card"]["elements"]
+            if element.get("tag") == "markdown"
+        )
+        self.assertIn("监控状态 warning（account_snapshot_degraded: read timeout）", card_text)
 
     def test_daily_report_labels_paper_broker_with_shared_live_data(self):
         pb = _ReminderPB()

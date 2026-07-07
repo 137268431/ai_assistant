@@ -1177,6 +1177,7 @@ class OrderTracker:
             logger.warning("Failed to get live orders for history: %s", exc)
 
         raw_executions = []
+        recent_fill_error = ""
         if include_executions:
             try:
                 raw_executions = list(self.broker.list_recent_fills() or [])
@@ -1189,8 +1190,20 @@ class OrderTracker:
                         merged["status"] = "FILLED"
                     orders_by_id[order_id] = merged
             except Exception as exc:
+                recent_fill_error = str(exc)
                 logger.warning("Failed to get recent fills for history: %s", exc)
                 raw_executions = []
+
+        execution_diagnostics = {
+            "executions_requested": bool(include_executions),
+            "execution_count": len(raw_executions),
+            "order_count": len(orders_by_id),
+            "recent_fill_error": recent_fill_error,
+            "empty_reason": "" if raw_executions else (
+                recent_fill_error
+                or ("ib_returned_no_executions" if include_executions else "executions_not_requested")
+            ),
+        }
 
         return {
             "ok": True,
@@ -1199,6 +1212,7 @@ class OrderTracker:
             "current_day_only": False,
             "source": "broker_force" if force else "broker_callback_cache",
             "executions_requested": bool(include_executions),
+            "execution_diagnostics": execution_diagnostics,
             "orders": list(orders_by_id.values()),
             "executions": raw_executions,
             "raw": {"orders": list(orders_by_id.values()), "executions": raw_executions},
