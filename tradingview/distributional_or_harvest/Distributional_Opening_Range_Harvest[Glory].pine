@@ -1,0 +1,669 @@
+//@version=6
+strategy(title="Distributional Opening Range Harvest[Glory]", overlay=true, pyramiding=0, initial_capital=20000, default_qty_type=strategy.fixed, default_qty_value=1, process_orders_on_close=false, calc_on_every_tick=false, dynamic_requests=true, max_labels_count=500, max_lines_count=100, commission_type=strategy.commission.cash_per_order, commission_value=0.35, slippage=1)
+
+// Distributional Opening Range Harvest v2.
+// This script does not hard-code QQQ. It is intended for liquid ETFs only:
+// preferred QQQ/SPY/IWM; testable SMH/XLK/XLF/XLE/XLV/XLY.
+// Avoid individual stocks, 3x ETFs, and low-liquidity ETFs for the first pass.
+string STRATEGY_VERSION = "DORH_v2_20260707_dist_or_mean_reversion"
+string SCRIPT_TAG = "Distributional_Opening_Range_Harvest[Glory]"
+string TRADE_MODEL = "distributional_or_mean_reversion_v2"
+string RISK_MODEL = "fixed_risk_raw_or_breakout_stop_v1"
+string TP_SL_MODEL = "orm_70pct_opposite_edge_runner_v1"
+string TZ = "America/New_York"
+string LONG_ID = "DORH-L"
+string SHORT_ID = "DORH-S"
+
+// -----------------------------------------------------------------------------
+// Inputs
+// -----------------------------------------------------------------------------
+rthSession = input.session("0930-1600", "RTH session", group="01 Time")
+entryCutoffHour = input.int(15, "Last entry hour ET", minval=0, maxval=23, group="01 Time")
+entryCutoffMinute = input.int(30, "Last entry minute ET", minval=0, maxval=59, group="01 Time")
+forceFlatHour = input.int(15, "Force flat hour ET", minval=0, maxval=23, group="01 Time")
+forceFlatMinute = input.int(45, "Force flat minute ET", minval=0, maxval=59, group="01 Time")
+manualEventBlock = input.bool(false, "Manual event block", group="01 Time")
+
+restrictSymbol = input.bool(false, "Restrict to recommended ETFs", group="02 Symbol")
+showSymbolWarning = input.bool(true, "Show liquid-ETF warning", group="02 Symbol")
+
+orAtrLen = input.int(14, "OR width ATR length (5m)", minval=1, group="03 Range/Distribution")
+dailyAtrLen = input.int(20, "Daily ATR length", minval=1, group="03 Range/Distribution")
+minOrAtrMult = input.float(0.40, "Minimum OR width / ATR", step=0.05, minval=0.0, group="03 Range/Distribution")
+maxOrAtrMult = input.float(1.50, "Maximum OR width / ATR", step=0.05, minval=0.05, group="03 Range/Distribution")
+upperAtrThreshold = input.float(0.45, "Upper distribution ATR threshold", step=0.05, minval=0.0, group="03 Range/Distribution")
+lowerAtrThreshold = input.float(0.45, "Lower distribution ATR threshold", step=0.05, minval=0.0, group="03 Range/Distribution")
+entryMoveAtrMin = input.float(0.40, "Entry move ATR min", step=0.05, minval=0.0, group="03 Range/Distribution")
+nearEdgeDailyAtrMult = input.float(0.05, "Near-edge distance / daily ATR", step=0.01, minval=0.0, group="03 Range/Distribution")
+entryBreakBufferTicks = input.int(1, "Confirm break buffer (ticks)", minval=0, maxval=20, group="03 Range/Distribution")
+
+trendKillAtr = input.float(1.20, "Trend kill abs(today move / daily ATR)", step=0.05, minval=0.1, group="04 Trend Kill")
+vwapSlopeDailyAtrMult = input.float(0.03, "VWAP 3-bar slope / daily ATR kill", step=0.01, minval=0.0, group="04 Trend Kill")
+emaSideBars = input.int(6, "EMA20 same-side bars kill", minval=2, maxval=20, group="04 Trend Kill")
+outsideRawCloseBars = input.int(2, "Raw OR outside closes kill", minval=1, maxval=10, group="04 Trend Kill")
+
+accountSize = input.float(20000.0, "Account size for notional cap ($)", step=500.0, minval=100.0, group="05 Risk")
+riskDollars = input.float(60.0, "Risk per trade ($)", step=5.0, minval=1.0, group="05 Risk")
+maxDailyLossDollars = input.float(180.0, "Max daily loss ($)", step=10.0, minval=1.0, group="05 Risk")
+maxTradesPerDay = input.int(3, "Max trades per day", minval=1, maxval=10, group="05 Risk")
+stopBufferPct = input.float(0.12, "Raw OR stop/break buffer %", step=0.01, minval=0.0, group="05 Risk")
+tp1ExitPct = input.int(70, "TP1 ORM exit pct", minval=1, maxval=99, group="05 Risk")
+breakevenAtR = input.float(0.80, "Move stop to breakeven after MFE R", step=0.05, minval=0.1, group="05 Risk")
+timeStopBars = input.int(6, "Time stop bars", minval=1, maxval=60, group="05 Risk")
+timeStopMinMfeR = input.float(0.50, "Time stop minimum MFE R", step=0.05, minval=0.0, group="05 Risk")
+minQty = input.float(1.0, "Minimum shares", step=1.0, minval=1.0, group="05 Risk")
+enableStrategyOrders = input.bool(true, "Enable strategy orders", group="05 Risk")
+
+enableAlerts = input.bool(true, "Emit alert() JSON", group="06 Alerts/Display")
+showLevels = input.bool(true, "Show OR/distribution/edge levels", group="06 Alerts/Display")
+showVwapEma = input.bool(true, "Show VWAP and EMA20", group="06 Alerts/Display")
+showEventLabels = input.bool(true, "Show event labels", group="06 Alerts/Display")
+showDiagnostics = input.bool(false, "Show blocked setup diagnostics", group="06 Alerts/Display")
+
+enableDebugLogs = input.bool(true, "Enable Pine debug logs", group="07 Debug Logs")
+debugLogHistoricalBars = input.bool(false, "Log historical bars too", group="07 Debug Logs")
+debugLogGate = input.bool(true, "Log no-entry gate reasons", group="07 Debug Logs")
+debugLogSetups = input.bool(true, "Log setup/confirm reasons", group="07 Debug Logs")
+debugLogOrders = input.bool(true, "Log order lifecycle reasons", group="07 Debug Logs")
+debugHeartbeatBars = input.int(6, "No-entry heartbeat every N bars", minval=1, maxval=100, group="07 Debug Logs")
+showDebugTable = input.bool(true, "Show debug table on chart", group="07 Debug Logs")
+
+// -----------------------------------------------------------------------------
+// Formatting and payload helpers
+// -----------------------------------------------------------------------------
+fmt(series float value) =>
+    na(value) ? "--" : str.tostring(value, "#.##")
+
+fmtFull(series float value) =>
+    na(value) ? "null" : str.tostring(value, "#.########")
+
+fmtPrice(series float value) =>
+    na(value) ? "--" : str.tostring(value, format.mintick)
+
+qtyText(series float value) =>
+    na(value) ? "--" : str.tostring(value, "#")
+
+jsonStr(series string key, series string value) =>
+    "\"" + key + "\":\"" + str.replace_all(value, "\"", "'") + "\""
+
+jsonNum(series string key, series float value) =>
+    "\"" + key + "\":" + (na(value) ? "null" : fmtFull(value))
+
+jsonInt(series string key, series int value) =>
+    "\"" + key + "\":" + (na(value) ? "null" : str.tostring(value))
+
+jsonBool(series string key, series bool value) =>
+    "\"" + key + "\":" + (value ? "true" : "false")
+
+cleanTicker(series string ticker) =>
+    str.upper(str.replace_all(ticker, " ", ""))
+
+isRecommendedEtf() =>
+    string t = cleanTicker(syminfo.ticker)
+    t == "QQQ" or t == "SPY" or t == "IWM" or t == "SMH" or t == "XLK" or t == "XLF" or t == "XLE" or t == "XLV" or t == "XLY"
+
+dirText(series int direction) =>
+    direction == 1 ? "long" : direction == -1 ? "short" : "neutral"
+
+orderIdForDirection(series int direction) =>
+    direction == 1 ? LONG_ID : SHORT_ID
+
+eventId(series string eventType) =>
+    cleanTicker(syminfo.ticker) + "_" + eventType + "_" + str.tostring(time) + "_" + timeframe.period
+
+drawEventLabel(series string textValue, series string tooltipValue, series float priceValue, series bool above, series color bgColor, series color txtColor) =>
+    if showEventLabels
+        label.new(bar_index, priceValue, textValue, style=above ? label.style_label_down : label.style_label_up, color=bgColor, textcolor=txtColor, size=size.small, tooltip=tooltipValue)
+
+debugEtStamp() =>
+    str.tostring(hour(time, TZ)) + ":" + str.tostring(minute(time, TZ))
+
+debugCategoryEnabled(string category) =>
+    enableDebugLogs and (category == "gate" ? debugLogGate : category == "setup" ? debugLogSetups : debugLogOrders)
+
+debugShouldWrite() =>
+    debugLogHistoricalBars or barstate.islast or barstate.isrealtime
+
+debugLog(string category, string eventName, string detailText) =>
+    if debugCategoryEnabled(category) and debugShouldWrite()
+        log.warning("[" + SCRIPT_TAG + " " + STRATEGY_VERSION + "] " + syminfo.ticker + " tf=" + timeframe.period + " ET=" + debugEtStamp() + " bar=" + str.tostring(bar_index) + " " + eventName + "\n" + detailText)
+
+// -----------------------------------------------------------------------------
+// Session, RTH VWAP, and range construction
+// -----------------------------------------------------------------------------
+bool confirmed = barstate.isconfirmed
+bool is5m = timeframe.period == "5"
+int etMinutes = hour(time, TZ) * 60 + minute(time, TZ)
+int etCloseMinutes = hour(time_close, TZ) * 60 + minute(time_close, TZ)
+bool inRth = not na(time(timeframe.period, rthSession))
+bool rthStarted = inRth and (not (inRth[1] == true) or timeframe.change("D"))
+bool newDay = timeframe.change("D") or rthStarted
+bool inOpeningRange = inRth and etMinutes >= 9 * 60 + 30 and etMinutes < 10 * 60
+bool orComplete = inRth and etMinutes >= 10 * 60
+bool beforeEntryCutoff = inRth and etCloseMinutes < entryCutoffHour * 60 + entryCutoffMinute
+bool forceFlatNow = inRth and etCloseMinutes >= forceFlatHour * 60 + forceFlatMinute
+
+rthVwap(series float src) =>
+    bool sess = not na(time(timeframe.period, rthSession))
+    bool wasSess = sess[1] == true
+    bool start = sess and (not wasSess or timeframe.change("D"))
+    var float cumPv = na
+    var float cumVol = na
+    if start
+        cumPv := src * volume
+        cumVol := volume
+    else if sess
+        cumPv := nz(cumPv, 0.0) + src * volume
+        cumVol := nz(cumVol, 0.0) + volume
+    else
+        cumPv := na
+        cumVol := na
+    not na(cumVol) and cumVol > 0.0 ? cumPv / cumVol : na
+
+float atr5 = math.max(nz(ta.atr(orAtrLen), syminfo.mintick), syminfo.mintick)
+float dailyAtr20 = request.security(syminfo.tickerid, "D", ta.atr(dailyAtrLen)[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+float safeDailyAtr20 = math.max(nz(dailyAtr20, syminfo.mintick), syminfo.mintick)
+float vwap = rthVwap(hlc3)
+float ema20 = ta.ema(close, 20)
+
+var float dayOpen = na
+var float rawOrh = na
+var float rawOrl = na
+var float orAtrAtLock = na
+var bool orLocked = false
+
+if confirmed and newDay
+    dayOpen := inRth ? open : na
+    rawOrh := na
+    rawOrl := na
+    orAtrAtLock := na
+    orLocked := false
+
+if confirmed and rthStarted
+    dayOpen := open
+
+if confirmed and inOpeningRange
+    rawOrh := na(rawOrh) ? high : math.max(rawOrh, high)
+    rawOrl := na(rawOrl) ? low : math.min(rawOrl, low)
+
+if confirmed and orComplete and not orLocked and not na(rawOrh) and not na(rawOrl)
+    orLocked := true
+    orAtrAtLock := atr5
+
+float orm = not na(rawOrh) and not na(rawOrl) ? (rawOrh + rawOrl) / 2.0 : na
+float orWidth = not na(rawOrh) and not na(rawOrl) ? rawOrh - rawOrl : na
+bool orWidthOk = orLocked and not na(orWidth) and not na(orAtrAtLock) and orWidth > orAtrAtLock * minOrAtrMult and orWidth < orAtrAtLock * maxOrAtrMult
+bool orJustLocked = confirmed and orLocked and not (orLocked[1] == true)
+float todayMove = not na(dayOpen) ? close - dayOpen : na
+float todayMoveAtr = not na(todayMove) and safeDailyAtr20 > 0.0 ? todayMove / safeDailyAtr20 : na
+float distUpper = not na(dayOpen) ? dayOpen + safeDailyAtr20 * upperAtrThreshold : na
+float distLower = not na(dayOpen) ? dayOpen - safeDailyAtr20 * lowerAtrThreshold : na
+float shortEdge = not na(rawOrh) and not na(distUpper) ? math.min(rawOrh, distUpper) : na
+float longEdge = not na(rawOrl) and not na(distLower) ? math.max(rawOrl, distLower) : na
+bool edgeReady = orLocked and not na(shortEdge) and not na(longEdge) and not na(orm)
+float nearEdgeDistance = safeDailyAtr20 * nearEdgeDailyAtrMult
+float entryBreakBuffer = syminfo.mintick * entryBreakBufferTicks
+float upperBreakLevel = not na(rawOrh) ? rawOrh * (1.0 + stopBufferPct / 100.0) : na
+float lowerBreakLevel = not na(rawOrl) ? rawOrl * (1.0 - stopBufferPct / 100.0) : na
+
+if orJustLocked
+    debugLog("gate", "OR_LOCK", "raw_ORH=" + fmtPrice(rawOrh) + " raw_ORL=" + fmtPrice(rawOrl) + " ORM=" + fmtPrice(orm) + "\nOR_width=" + fmtPrice(orWidth) + " ATR5_lock=" + fmtPrice(orAtrAtLock) + " width_ok=" + str.tostring(orWidthOk) + "\nrequired: " + fmt(minOrAtrMult) + "x ATR < width < " + fmt(maxOrAtrMult) + "x ATR")
+
+// -----------------------------------------------------------------------------
+// Daily state, invalidation, and trend kill
+// -----------------------------------------------------------------------------
+var int tradesToday = 0
+var int longLossesToday = 0
+var int shortLossesToday = 0
+var bool longDisabledToday = false
+var bool shortDisabledToday = false
+var bool rangeInvalidatedToday = false
+var bool trendKillToday = false
+var bool dailyLossHaltedToday = false
+var float dayStartNetProfit = na
+
+var int aboveRawCloseCount = 0
+var int belowRawCloseCount = 0
+var int longEmaSideCount = 0
+var int shortEmaSideCount = 0
+
+if confirmed and newDay
+    tradesToday := 0
+    longLossesToday := 0
+    shortLossesToday := 0
+    longDisabledToday := false
+    shortDisabledToday := false
+    rangeInvalidatedToday := false
+    trendKillToday := false
+    dailyLossHaltedToday := false
+    dayStartNetProfit := strategy.netprofit
+    aboveRawCloseCount := 0
+    belowRawCloseCount := 0
+    longEmaSideCount := 0
+    shortEmaSideCount := 0
+
+if confirmed
+    if not inRth or not edgeReady
+        aboveRawCloseCount := 0
+        belowRawCloseCount := 0
+    else
+        aboveRawCloseCount := close > rawOrh ? aboveRawCloseCount + 1 : 0
+        belowRawCloseCount := close < rawOrl ? belowRawCloseCount + 1 : 0
+    if not inRth
+        longEmaSideCount := 0
+        shortEmaSideCount := 0
+    else
+        longEmaSideCount := close > ema20 ? longEmaSideCount + 1 : 0
+        shortEmaSideCount := close < ema20 ? shortEmaSideCount + 1 : 0
+
+bool validBreakUpNow = confirmed and edgeReady and close > upperBreakLevel
+bool validBreakDownNow = confirmed and edgeReady and close < lowerBreakLevel
+bool rangeInvalidationTrigger = (validBreakUpNow or validBreakDownNow) and not rangeInvalidatedToday
+bool outsideRawTrend = edgeReady and (aboveRawCloseCount >= outsideRawCloseBars or belowRawCloseCount >= outsideRawCloseBars)
+bool vwapSlopeSteep = edgeReady and not na(vwap) and not na(vwap[3]) and math.abs(vwap - vwap[3]) > safeDailyAtr20 * vwapSlopeDailyAtrMult
+bool emaSidePush = edgeReady and not na(close[emaSideBars - 1]) and ((longEmaSideCount >= emaSideBars and close > close[emaSideBars - 1]) or (shortEmaSideCount >= emaSideBars and close < close[emaSideBars - 1]))
+bool todayMoveTrend = edgeReady and not na(todayMoveAtr) and math.abs(todayMoveAtr) > trendKillAtr
+bool trendKillTrigger = confirmed and not trendKillToday and not rangeInvalidationTrigger and (todayMoveTrend or outsideRawTrend or vwapSlopeSteep or emaSidePush)
+
+float dayPnl = not na(dayStartNetProfit) ? strategy.netprofit - dayStartNetProfit + strategy.openprofit : strategy.openprofit
+bool dailyLossTrigger = confirmed and not dailyLossHaltedToday and not na(dayPnl) and dayPnl <= -maxDailyLossDollars
+bool symbolAllowed = not restrictSymbol or isRecommendedEtf()
+
+buildPayload(series string eventType, series int directionValue, series string reason, series float eventPrice, series float stopPrice, series float tp1Price, series float tp2Price, series float qtyValue) =>
+    string result = "{"
+    result := result + jsonStr("source", "tradingview")
+    result := result + "," + jsonStr("event_type", eventType)
+    result := result + "," + jsonStr("event_id", eventId(eventType))
+    result := result + "," + jsonStr("symbol", syminfo.ticker)
+    result := result + "," + jsonStr("exchange", syminfo.prefix)
+    result := result + "," + jsonStr("interval", timeframe.period)
+    result := result + "," + jsonStr("script_tag", SCRIPT_TAG)
+    result := result + "," + jsonStr("strategy_version", STRATEGY_VERSION)
+    result := result + "," + jsonStr("trade_model", TRADE_MODEL)
+    result := result + "," + jsonStr("risk_model", RISK_MODEL)
+    result := result + "," + jsonStr("tp_sl_model", TP_SL_MODEL)
+    result := result + "," + jsonStr("direction", dirText(directionValue))
+    result := result + "," + jsonStr("reason", reason)
+    result := result + "," + jsonNum("event_price", eventPrice)
+    result := result + "," + jsonNum("entry", eventPrice)
+    result := result + "," + jsonNum("stop_loss", stopPrice)
+    result := result + "," + jsonNum("tp1", tp1Price)
+    result := result + "," + jsonNum("tp2", tp2Price)
+    result := result + "," + jsonNum("shares", qtyValue)
+    result := result + "," + jsonNum("raw_orh", rawOrh)
+    result := result + "," + jsonNum("raw_orl", rawOrl)
+    result := result + "," + jsonNum("orm", orm)
+    result := result + "," + jsonNum("dist_upper", distUpper)
+    result := result + "," + jsonNum("dist_lower", distLower)
+    result := result + "," + jsonNum("short_edge", shortEdge)
+    result := result + "," + jsonNum("long_edge", longEdge)
+    result := result + "," + jsonNum("day_open", dayOpen)
+    result := result + "," + jsonNum("daily_atr20", dailyAtr20)
+    result := result + "," + jsonNum("today_move_atr", todayMoveAtr)
+    result := result + "," + jsonNum("or_width", orWidth)
+    result := result + "," + jsonBool("or_width_ok", orWidthOk)
+    result := result + "," + jsonBool("range_invalidated_today", rangeInvalidatedToday)
+    result := result + "," + jsonBool("trend_kill_today", trendKillToday)
+    result := result + "," + jsonInt("bar_open_ms", time)
+    result := result + "," + jsonInt("bar_close_ms", time_close)
+    result := result + "," + jsonInt("bar_index", bar_index)
+    result := result + "}"
+    result
+
+// -----------------------------------------------------------------------------
+// Position and setup state
+// -----------------------------------------------------------------------------
+var int setupDirection = 0
+var int setupBarIndex = na
+var float setupConfirmHigh = na
+var float setupConfirmLow = na
+var string setupReason = ""
+
+var int pendingDirection = 0
+var string pendingSetup = ""
+var float pendingStop = na
+var float pendingTp1 = na
+var float pendingTp2 = na
+var float pendingQty = na
+var float pendingPlannedEntry = na
+
+var int activeDirection = 0
+var string activeSetup = ""
+var float activeEntry = na
+var float activeStop = na
+var float activeInitialStop = na
+var float activeTp1 = na
+var float activeTp2 = na
+var float activeQty = na
+var float activeInitialRisk = na
+var float activeMfeR = 0.0
+var bool activeBreakevenDone = false
+var int activeEntryBar = na
+var float activeEntryNetProfit = na
+
+bool positionOpened = strategy.position_size != 0 and nz(strategy.position_size[1]) == 0
+bool positionClosed = strategy.position_size == 0 and nz(strategy.position_size[1]) != 0
+bool inPosition = strategy.position_size != 0
+
+if confirmed and newDay
+    setupDirection := 0
+    setupBarIndex := na
+    setupConfirmHigh := na
+    setupConfirmLow := na
+    setupReason := ""
+    pendingDirection := 0
+    pendingSetup := ""
+    pendingStop := na
+    pendingTp1 := na
+    pendingTp2 := na
+    pendingQty := na
+    pendingPlannedEntry := na
+
+if positionOpened
+    int fillDirection = pendingDirection != 0 ? pendingDirection : strategy.position_size > 0 ? 1 : -1
+    activeDirection := fillDirection
+    activeSetup := pendingSetup
+    activeEntry := strategy.position_avg_price
+    activeStop := pendingStop
+    activeInitialStop := pendingStop
+    activeTp1 := pendingTp1
+    activeTp2 := pendingTp2
+    activeQty := math.abs(strategy.position_size)
+    activeInitialRisk := math.abs(strategy.position_avg_price - pendingStop)
+    activeMfeR := 0.0
+    activeBreakevenDone := false
+    activeEntryBar := bar_index
+    activeEntryNetProfit := strategy.netprofit
+    pendingDirection := 0
+    pendingSetup := ""
+    pendingStop := na
+    pendingTp1 := na
+    pendingTp2 := na
+    pendingQty := na
+    pendingPlannedEntry := na
+    debugLog("order", "POSITION_OPENED", "side=" + dirText(fillDirection) + " fill=" + fmtPrice(strategy.position_avg_price) + " stop=" + fmtPrice(activeStop) + " tp1=" + fmtPrice(activeTp1) + " tp2=" + fmtPrice(activeTp2) + " qty=" + qtyText(activeQty))
+    drawEventLabel(fillDirection == 1 ? "FILL L" : "FILL S", "Strategy position opened at " + fmtPrice(strategy.position_avg_price), strategy.position_avg_price, fillDirection == -1, color.new(color.blue, 0), color.white)
+
+// -----------------------------------------------------------------------------
+// Forced state transitions
+// -----------------------------------------------------------------------------
+if rangeInvalidationTrigger
+    rangeInvalidatedToday := true
+    string reason = validBreakUpNow ? "valid_raw_orh_breakout" : "valid_raw_orl_breakdown"
+    debugLog("gate", "RANGE_INVALIDATED", "reason=" + reason + " close=" + fmtPrice(close) + " raw_ORH=" + fmtPrice(rawOrh) + " raw_ORL=" + fmtPrice(rawOrl))
+    if enableAlerts
+        alert(buildPayload("RANGE_INVALIDATED", 0, reason, close, na, na, na, na), alert.freq_all)
+    drawEventLabel("RANGE X", reason, close, validBreakUpNow, color.new(color.red, 0), color.white)
+    if inPosition
+        strategy.close(orderIdForDirection(activeDirection), comment="RANGE_INVALIDATED " + fmtPrice(close))
+
+if trendKillTrigger
+    trendKillToday := true
+    string reason = todayMoveTrend ? "today_move_atr_trend" : outsideRawTrend ? "outside_raw_or_closes" : vwapSlopeSteep ? "vwap_slope_steep" : "ema20_same_side_push"
+    debugLog("gate", "TREND_KILL", "reason=" + reason + " close=" + fmtPrice(close) + " today_move_atr=" + fmt(todayMoveAtr) + " raw_outside_counts=" + str.tostring(aboveRawCloseCount) + "/" + str.tostring(belowRawCloseCount))
+    if enableAlerts
+        alert(buildPayload("TREND_KILL", 0, reason, close, na, na, na, na), alert.freq_all)
+    drawEventLabel("TREND KILL", reason, close, close >= open, color.new(color.orange, 0), color.black)
+    if inPosition
+        strategy.close(orderIdForDirection(activeDirection), comment="TREND_KILL " + fmtPrice(close))
+
+if dailyLossTrigger
+    dailyLossHaltedToday := true
+    debugLog("gate", "DAILY_LOSS_HALT", "day_pnl=" + fmt(dayPnl) + " max_daily_loss=" + fmt(maxDailyLossDollars))
+    if inPosition
+        strategy.close(orderIdForDirection(activeDirection), comment="TIME_EXIT daily_loss " + fmtPrice(close))
+
+if confirmed and forceFlatNow and inPosition
+    debugLog("order", "FORCE_FLAT", "time exit at " + fmtPrice(close))
+    strategy.close(orderIdForDirection(activeDirection), comment="TIME_EXIT force_flat " + fmtPrice(close))
+
+// -----------------------------------------------------------------------------
+// Active trade management
+// -----------------------------------------------------------------------------
+bool forcedExitRequestedThisBar = inPosition and (rangeInvalidationTrigger or trendKillTrigger or dailyLossTrigger or (confirmed and forceFlatNow))
+
+if inPosition and not forcedExitRequestedThisBar and activeDirection != 0 and activeInitialRisk > 0.0
+    float favorableMove = activeDirection == 1 ? high - activeEntry : activeEntry - low
+    activeMfeR := math.max(activeMfeR, favorableMove / activeInitialRisk)
+    if not activeBreakevenDone and activeMfeR >= breakevenAtR
+        activeStop := activeEntry
+        activeBreakevenDone := true
+        drawEventLabel("BE", "MFE reached " + fmt(activeMfeR) + "R; stop moved to breakeven.", activeStop, activeDirection == -1, color.new(color.yellow, 0), color.black)
+    bool timeStopNow = confirmed and not forceFlatNow and bar_index - activeEntryBar >= timeStopBars and activeMfeR < timeStopMinMfeR
+    if timeStopNow
+        strategy.close(orderIdForDirection(activeDirection), comment="TIME_EXIT no_0_5r_in_30m " + fmtPrice(close))
+    else
+        if activeDirection == 1
+            strategy.exit("DORH-L-TP1", from_entry=LONG_ID, qty_percent=tp1ExitPct, stop=activeStop, limit=activeTp1, comment_profit="TAKE_MID " + fmtPrice(activeTp1), comment_loss="STOP_BREAKOUT " + fmtPrice(activeStop))
+            strategy.exit("DORH-L-TP2", from_entry=LONG_ID, qty_percent=100 - tp1ExitPct, stop=activeStop, limit=activeTp2, comment_profit="TAKE_EDGE " + fmtPrice(activeTp2), comment_loss="STOP_BREAKOUT " + fmtPrice(activeStop))
+        else
+            strategy.exit("DORH-S-TP1", from_entry=SHORT_ID, qty_percent=tp1ExitPct, stop=activeStop, limit=activeTp1, comment_profit="TAKE_MID " + fmtPrice(activeTp1), comment_loss="STOP_BREAKOUT " + fmtPrice(activeStop))
+            strategy.exit("DORH-S-TP2", from_entry=SHORT_ID, qty_percent=100 - tp1ExitPct, stop=activeStop, limit=activeTp2, comment_profit="TAKE_EDGE " + fmtPrice(activeTp2), comment_loss="STOP_BREAKOUT " + fmtPrice(activeStop))
+
+// -----------------------------------------------------------------------------
+// Closed trade alerts and day-failure accounting
+// -----------------------------------------------------------------------------
+var int lastClosedTrades = 0
+var int lastTerminalAlertBar = na
+var string lastTerminalAlertEvent = ""
+
+if strategy.closedtrades > lastClosedTrades
+    for tradeIndex = lastClosedTrades to strategy.closedtrades - 1
+        string exitComment = strategy.closedtrades.exit_comment(tradeIndex)
+        string eventType = str.contains(exitComment, "TAKE_MID") ? "TAKE_MID" : str.contains(exitComment, "TAKE_EDGE") ? "TAKE_EDGE" : str.contains(exitComment, "STOP_BREAKOUT") ? "STOP_BREAKOUT" : str.contains(exitComment, "RANGE_INVALIDATED") ? "RANGE_INVALIDATED" : str.contains(exitComment, "TREND_KILL") ? "TREND_KILL" : str.contains(exitComment, "TIME_EXIT") ? "TIME_EXIT" : ""
+        if eventType != ""
+            float exitPrice = strategy.closedtrades.exit_price(tradeIndex)
+            bool terminalEvent = eventType != "TAKE_MID"
+            bool shouldEmit = not terminalEvent or na(lastTerminalAlertBar) or bar_index != lastTerminalAlertBar or eventType != lastTerminalAlertEvent
+            if shouldEmit and enableAlerts
+                alert(buildPayload(eventType, activeDirection, exitComment, exitPrice, activeStop, activeTp1, activeTp2, activeQty), alert.freq_all)
+            if shouldEmit
+                drawEventLabel(eventType, exitComment, exitPrice, activeDirection == -1, eventType == "TAKE_MID" or eventType == "TAKE_EDGE" ? color.new(color.lime, 0) : color.new(color.red, 0), eventType == "TAKE_MID" or eventType == "TAKE_EDGE" ? color.black : color.white)
+            if terminalEvent and shouldEmit
+                lastTerminalAlertBar := bar_index
+                lastTerminalAlertEvent := eventType
+            if eventType == "STOP_BREAKOUT" or eventType == "RANGE_INVALIDATED"
+                rangeInvalidatedToday := true
+            if eventType == "TREND_KILL"
+                trendKillToday := true
+    lastClosedTrades := strategy.closedtrades
+
+if positionClosed and activeDirection != 0
+    float activeNetPnl = strategy.netprofit - nz(activeEntryNetProfit, strategy.netprofit)
+    debugLog("order", "POSITION_CLOSED", "side=" + dirText(activeDirection) + " net_pnl_since_entry=" + fmt(activeNetPnl) + " mfe_r=" + fmt(activeMfeR))
+    if activeNetPnl < 0.0
+        if activeDirection == 1
+            longLossesToday += 1
+            longDisabledToday := true
+        else
+            shortLossesToday += 1
+            shortDisabledToday := true
+    activeDirection := 0
+    activeSetup := ""
+    activeEntry := na
+    activeStop := na
+    activeInitialStop := na
+    activeTp1 := na
+    activeTp2 := na
+    activeQty := na
+    activeInitialRisk := na
+    activeMfeR := 0.0
+    activeBreakevenDone := false
+    activeEntryBar := na
+    activeEntryNetProfit := na
+
+// -----------------------------------------------------------------------------
+// Setup detection and entry submission
+// -----------------------------------------------------------------------------
+bool bothDirectionsFailedNow = longLossesToday >= 1 and shortLossesToday >= 1
+bool dayStopActive = rangeInvalidatedToday or trendKillToday or dailyLossHaltedToday or bothDirectionsFailedNow
+
+dayStopReason() =>
+    rangeInvalidatedToday ? "range_invalidated_today" : trendKillToday ? "trend_kill_today" : dailyLossHaltedToday ? "daily_loss_halted" : bothDirectionsFailedNow ? "both_directions_failed" : "none"
+
+entryGateBlockReason() =>
+    not confirmed ? "bar_not_confirmed" : not is5m ? "not_5m_chart" : not inRth ? "outside_rth" : not orComplete ? "opening_range_not_complete" : not edgeReady ? "edge_not_ready" : not orWidthOk ? "or_width_filter_failed" : not symbolAllowed ? "symbol_restricted" : manualEventBlock ? "manual_event_block" : dayStopActive ? dayStopReason() : tradesToday >= maxTradesPerDay ? "max_trades_reached" : strategy.position_size != 0 ? "position_open" : pendingDirection != 0 ? "entry_pending" : not beforeEntryCutoff ? "after_entry_cutoff" : not enableStrategyOrders ? "orders_disabled" : "gate_pass"
+
+longNoSignalReason() =>
+    string gateReason = entryGateBlockReason()
+    gateReason != "gate_pass" ? gateReason : longDisabledToday ? "long_disabled_after_loss" : na(todayMoveAtr) ? "today_move_atr_missing" : todayMoveAtr >= -entryMoveAtrMin ? "today_move_atr_not_oversold" : math.abs(todayMoveAtr) >= trendKillAtr ? "today_move_atr_strong_trend" : validBreakDownNow ? "raw_orl_breakout_invalidated" : na(longEdge) ? "long_edge_missing" : low > longEdge + nearEdgeDistance ? "price_not_near_long_edge" : close <= longEdge ? "no_close_back_above_long_edge" : "long_setup_ready"
+
+shortNoSignalReason() =>
+    string gateReason = entryGateBlockReason()
+    gateReason != "gate_pass" ? gateReason : shortDisabledToday ? "short_disabled_after_loss" : na(todayMoveAtr) ? "today_move_atr_missing" : todayMoveAtr <= entryMoveAtrMin ? "today_move_atr_not_overbought" : math.abs(todayMoveAtr) >= trendKillAtr ? "today_move_atr_strong_trend" : validBreakUpNow ? "raw_orh_breakout_invalidated" : na(shortEdge) ? "short_edge_missing" : high < shortEdge - nearEdgeDistance ? "price_not_near_short_edge" : close >= shortEdge ? "no_close_back_below_short_edge" : "short_setup_ready"
+
+debugCommonState() =>
+    string result = "gate=" + entryGateBlockReason() + " day_stop=" + dayStopReason()
+    result := result + "\nprice=" + fmtPrice(close) + " day_open=" + fmtPrice(dayOpen) + " daily_ATR20=" + fmtPrice(dailyAtr20) + " today_move_atr=" + fmt(todayMoveAtr)
+    result := result + "\nraw_ORH=" + fmtPrice(rawOrh) + " raw_ORL=" + fmtPrice(rawOrl) + " ORM=" + fmtPrice(orm) + " OR_locked=" + str.tostring(orLocked) + " OR_width_ok=" + str.tostring(orWidthOk)
+    result := result + "\nOR_width=" + fmtPrice(orWidth) + " ATR5_lock=" + fmtPrice(orAtrAtLock) + " width_bounds=" + fmt(minOrAtrMult) + "x/" + fmt(maxOrAtrMult) + "x"
+    result := result + "\ndist_upper=" + fmtPrice(distUpper) + " dist_lower=" + fmtPrice(distLower) + " short_edge=" + fmtPrice(shortEdge) + " long_edge=" + fmtPrice(longEdge) + " near_dist=" + fmtPrice(nearEdgeDistance)
+    result := result + "\nraw_break_upper=" + fmtPrice(upperBreakLevel) + " raw_break_lower=" + fmtPrice(lowerBreakLevel) + " valid_break_up/down=" + str.tostring(validBreakUpNow) + "/" + str.tostring(validBreakDownNow)
+    result := result + "\ntrend_kill_today=" + str.tostring(trendKillToday) + " range_invalidated=" + str.tostring(rangeInvalidatedToday) + " daily_loss_halt=" + str.tostring(dailyLossHaltedToday)
+    result := result + "\ntrend_inputs: abs_move_gt=" + str.tostring(todayMoveTrend) + " outside_raw=" + str.tostring(outsideRawTrend) + " vwap_slope=" + str.tostring(vwapSlopeSteep) + " ema_push=" + str.tostring(emaSidePush)
+    result := result + "\ncounts: above_raw=" + str.tostring(aboveRawCloseCount) + " below_raw=" + str.tostring(belowRawCloseCount) + " ema_up/down=" + str.tostring(longEmaSideCount) + "/" + str.tostring(shortEmaSideCount)
+    result := result + "\nrisk: trades=" + str.tostring(tradesToday) + "/" + str.tostring(maxTradesPerDay) + " day_pnl=" + fmt(dayPnl) + " max_loss=" + fmt(maxDailyLossDollars) + " Lfail/Sfail=" + str.tostring(longLossesToday) + "/" + str.tostring(shortLossesToday)
+    result := result + "\nlong_checks: reason=" + longNoSignalReason() + " move_ok=" + str.tostring(not na(todayMoveAtr) and todayMoveAtr < -entryMoveAtrMin) + " near=" + str.tostring(not na(longEdge) and low <= longEdge + nearEdgeDistance) + " reclaim=" + str.tostring(not na(longEdge) and close > longEdge)
+    result := result + "\nshort_checks: reason=" + shortNoSignalReason() + " move_ok=" + str.tostring(not na(todayMoveAtr) and todayMoveAtr > entryMoveAtrMin) + " near=" + str.tostring(not na(shortEdge) and high >= shortEdge - nearEdgeDistance) + " reject=" + str.tostring(not na(shortEdge) and close < shortEdge)
+    result := result + "\nsetup_dir=" + str.tostring(setupDirection) + " setup_bar=" + str.tostring(setupBarIndex) + " pending_dir=" + str.tostring(pendingDirection) + " position_size=" + str.tostring(strategy.position_size)
+    result
+
+debugConfirmText(int directionValue) =>
+    directionValue == 1 ? "need high > " + fmtPrice(setupConfirmHigh + entryBreakBuffer) + " actual high=" + fmtPrice(high) : "need low < " + fmtPrice(setupConfirmLow - entryBreakBuffer) + " actual low=" + fmtPrice(low)
+
+bool canOpenOrTrigger = confirmed and is5m and inRth and orComplete and beforeEntryCutoff and edgeReady and orWidthOk and symbolAllowed and not manualEventBlock and not dayStopActive and tradesToday < maxTradesPerDay and strategy.position_size == 0 and pendingDirection == 0 and enableStrategyOrders
+
+if confirmed and setupDirection != 0 and (not canOpenOrTrigger or bar_index > setupBarIndex + 1)
+    debugLog("setup", "SETUP_CANCEL", "reason=" + (not canOpenOrTrigger ? entryGateBlockReason() : "confirm_timeout") + " setup_dir=" + dirText(setupDirection) + "\n" + debugConfirmText(setupDirection) + "\n" + debugCommonState())
+    setupDirection := 0
+    setupBarIndex := na
+    setupConfirmHigh := na
+    setupConfirmLow := na
+    setupReason := ""
+
+bool longSetupBar = canOpenOrTrigger and setupDirection == 0 and not longDisabledToday and todayMoveAtr < -entryMoveAtrMin and math.abs(todayMoveAtr) < trendKillAtr and not validBreakDownNow and low <= longEdge + nearEdgeDistance and close > longEdge
+bool shortSetupBar = canOpenOrTrigger and setupDirection == 0 and not shortDisabledToday and todayMoveAtr > entryMoveAtrMin and math.abs(todayMoveAtr) < trendKillAtr and not validBreakUpNow and high >= shortEdge - nearEdgeDistance and close < shortEdge
+
+if longSetupBar
+    setupDirection := 1
+    setupBarIndex := bar_index
+    setupConfirmHigh := high
+    setupConfirmLow := low
+    setupReason := "long_reclaim_dist_edge"
+    debugLog("setup", "LONG_SETUP", "reason=" + setupReason + "\nnext bar confirm: high > " + fmtPrice(setupConfirmHigh + entryBreakBuffer) + "\n" + debugCommonState())
+    drawEventLabel("L setup", "Long setup: touched long_edge and closed back above it. Next bar must break this bar high.", low, false, color.new(color.teal, 0), color.white)
+else if shortSetupBar
+    setupDirection := -1
+    setupBarIndex := bar_index
+    setupConfirmHigh := high
+    setupConfirmLow := low
+    setupReason := "short_reject_dist_edge"
+    debugLog("setup", "SHORT_SETUP", "reason=" + setupReason + "\nnext bar confirm: low < " + fmtPrice(setupConfirmLow - entryBreakBuffer) + "\n" + debugCommonState())
+    drawEventLabel("S setup", "Short setup: touched short_edge and closed back below it. Next bar must break this bar low.", high, true, color.new(color.maroon, 0), color.white)
+
+bool longEntryTrigger = canOpenOrTrigger and setupDirection == 1 and bar_index == setupBarIndex + 1 and high > setupConfirmHigh + entryBreakBuffer
+bool shortEntryTrigger = canOpenOrTrigger and setupDirection == -1 and bar_index == setupBarIndex + 1 and low < setupConfirmLow - entryBreakBuffer
+int selectedDirection = longEntryTrigger ? 1 : shortEntryTrigger ? -1 : 0
+
+if selectedDirection != 0
+    float plannedEntry = close
+    float stopPrice = selectedDirection == 1 ? lowerBreakLevel : upperBreakLevel
+    float tp1Price = orm
+    float rawFallbackTp2 = selectedDirection == 1 ? rawOrh - syminfo.mintick : rawOrl + syminfo.mintick
+    float edgeTp2 = selectedDirection == 1 ? shortEdge : longEdge
+    float tp2Price = selectedDirection == 1 ? (not na(edgeTp2) and edgeTp2 > plannedEntry ? edgeTp2 : rawFallbackTp2) : (not na(edgeTp2) and edgeTp2 < plannedEntry ? edgeTp2 : rawFallbackTp2)
+    float stopDistance = math.abs(plannedEntry - stopPrice)
+    float riskQty = stopDistance > 0.0 ? math.floor(riskDollars / stopDistance) : na
+    float notionalQty = plannedEntry > 0.0 ? math.floor(accountSize / plannedEntry) : na
+    float plannedQty = math.min(nz(riskQty, 0.0), nz(notionalQty, 0.0))
+    bool favorableTargets = selectedDirection == 1 ? tp1Price > plannedEntry and tp2Price > plannedEntry and stopPrice < plannedEntry : tp1Price < plannedEntry and tp2Price < plannedEntry and stopPrice > plannedEntry
+    bool qtyOk = not na(plannedQty) and plannedQty >= minQty
+    if qtyOk and favorableTargets
+        debugLog("order", "ENTRY_ORDER", "side=" + dirText(selectedDirection) + " setup=" + setupReason + "\nplanned_entry=" + fmtPrice(plannedEntry) + " stop=" + fmtPrice(stopPrice) + " tp1=" + fmtPrice(tp1Price) + " tp2=" + fmtPrice(tp2Price) + " qty=" + qtyText(plannedQty) + "\nrisk_qty=" + qtyText(riskQty) + " notional_qty=" + qtyText(notionalQty) + "\n" + debugCommonState())
+        if selectedDirection == 1
+            strategy.entry(LONG_ID, strategy.long, qty=plannedQty, comment="LONG_FROM_DIST_EDGE Q" + qtyText(plannedQty))
+        else
+            strategy.entry(SHORT_ID, strategy.short, qty=plannedQty, comment="SHORT_FROM_DIST_EDGE Q" + qtyText(plannedQty))
+        pendingDirection := selectedDirection
+        pendingSetup := setupReason
+        pendingStop := stopPrice
+        pendingTp1 := tp1Price
+        pendingTp2 := tp2Price
+        pendingQty := plannedQty
+        pendingPlannedEntry := plannedEntry
+        tradesToday += 1
+        string eventType = selectedDirection == 1 ? "LONG_FROM_DIST_EDGE" : "SHORT_FROM_DIST_EDGE"
+        if enableAlerts
+            alert(buildPayload(eventType, selectedDirection, setupReason, plannedEntry, stopPrice, tp1Price, tp2Price, plannedQty), alert.freq_all)
+        drawEventLabel(selectedDirection == 1 ? "BUY next" : "SELL next", eventType + "\nentry " + fmtPrice(plannedEntry) + "\nstop " + fmtPrice(stopPrice) + "\nqty " + qtyText(plannedQty), plannedEntry, selectedDirection == -1, selectedDirection == 1 ? color.new(color.lime, 0) : color.new(color.red, 0), selectedDirection == 1 ? color.black : color.white)
+    else
+        string blockReason = not qtyOk ? "qty_too_small" : "unfavorable_target_or_stop"
+        debugLog("order", "ENTRY_BLOCKED", "side=" + dirText(selectedDirection) + " reason=" + blockReason + "\nplanned_entry=" + fmtPrice(plannedEntry) + " stop=" + fmtPrice(stopPrice) + " tp1=" + fmtPrice(tp1Price) + " tp2=" + fmtPrice(tp2Price) + " qty=" + qtyText(plannedQty) + "\nrisk_qty=" + qtyText(riskQty) + " notional_qty=" + qtyText(notionalQty) + "\nfavorable_targets=" + str.tostring(favorableTargets) + " qty_ok=" + str.tostring(qtyOk) + "\n" + debugCommonState())
+        if showDiagnostics
+            drawEventLabel("xDORH", blockReason + "\nentry " + fmtPrice(plannedEntry) + "\nstop " + fmtPrice(stopPrice) + "\ntp1 " + fmtPrice(tp1Price) + "\ntp2 " + fmtPrice(tp2Price), close, selectedDirection == -1, color.new(color.gray, 0), color.white)
+    setupDirection := 0
+    setupBarIndex := na
+    setupConfirmHigh := na
+    setupConfirmLow := na
+    setupReason := ""
+else if confirmed and setupDirection != 0 and bar_index == setupBarIndex + 1 and canOpenOrTrigger
+    debugLog("setup", "CONFIRM_BLOCK", "side=" + dirText(setupDirection) + " reason=next_bar_confirmation_failed\n" + debugConfirmText(setupDirection) + "\n" + debugCommonState())
+    setupDirection := 0
+    setupBarIndex := na
+    setupConfirmHigh := na
+    setupConfirmLow := na
+    setupReason := ""
+
+if enableDebugLogs and debugLogGate and confirmed and orComplete and strategy.position_size == 0 and pendingDirection == 0 and setupDirection == 0 and bar_index % debugHeartbeatBars == 0
+    debugLog("gate", "NO_ENTRY", "common_gate=" + entryGateBlockReason() + "\nlong_reason=" + longNoSignalReason() + "\nshort_reason=" + shortNoSignalReason() + "\n" + debugCommonState())
+
+var int lastDebugStatusBar = na
+if enableDebugLogs and debugLogGate and barstate.islast and (na(lastDebugStatusBar) or lastDebugStatusBar != bar_index)
+    debugLog("gate", "DEBUG_STATUS", "log pipeline alive. For historical per-bar reasons, enable 'Log historical bars too'.\ncommon_gate=" + entryGateBlockReason() + "\nlong_reason=" + longNoSignalReason() + "\nshort_reason=" + shortNoSignalReason() + "\n" + debugCommonState())
+    lastDebugStatusBar := bar_index
+
+// -----------------------------------------------------------------------------
+// Display
+// -----------------------------------------------------------------------------
+bgcolor(rangeInvalidatedToday ? color.new(color.red, 92) : trendKillToday ? color.new(color.orange, 92) : dailyLossHaltedToday ? color.new(color.gray, 90) : na)
+
+plot(showLevels and orComplete ? rawOrh : na, "raw_ORH", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(showLevels and orComplete ? rawOrl : na, "raw_ORL", color=color.new(color.lime, 0), linewidth=2, style=plot.style_linebr)
+plot(showLevels and orComplete ? orm : na, "ORM", color=color.new(color.gray, 0), linewidth=1, style=plot.style_linebr)
+plot(showLevels and edgeReady ? distUpper : na, "dist_upper", color=color.new(color.orange, 35), linewidth=1, style=plot.style_linebr)
+plot(showLevels and edgeReady ? distLower : na, "dist_lower", color=color.new(color.aqua, 35), linewidth=1, style=plot.style_linebr)
+plot(showLevels and edgeReady ? shortEdge : na, "short_edge", color=color.new(color.orange, 0), linewidth=2, style=plot.style_linebr)
+plot(showLevels and edgeReady ? longEdge : na, "long_edge", color=color.new(color.aqua, 0), linewidth=2, style=plot.style_linebr)
+plot(showVwapEma and inRth ? vwap : na, "RTH VWAP", color=color.new(color.yellow, 0), linewidth=1, style=plot.style_linebr)
+plot(showVwapEma and inRth ? ema20 : na, "EMA20", color=color.new(color.blue, 25), linewidth=1)
+
+var label statusLabel = na
+if confirmed and barstate.islast and showDiagnostics
+    label.delete(statusLabel)
+    string status = "DORH v2"
+    status := status + "\n5m=" + str.tostring(is5m) + " symbol_allowed=" + str.tostring(symbolAllowed)
+    status := status + "\nOR locked=" + str.tostring(orLocked) + " width_ok=" + str.tostring(orWidthOk)
+    status := status + "\nmoveATR=" + fmt(todayMoveAtr) + " near=" + fmtPrice(nearEdgeDistance)
+    status := status + "\nraw " + fmtPrice(rawOrh) + " / " + fmtPrice(rawOrl) + " ORM " + fmtPrice(orm)
+    status := status + "\nedge S/L " + fmtPrice(shortEdge) + " / " + fmtPrice(longEdge)
+    status := status + "\ntrades=" + str.tostring(tradesToday) + "/" + str.tostring(maxTradesPerDay) + " Lfail/Sfail=" + str.tostring(longLossesToday) + "/" + str.tostring(shortLossesToday)
+    status := status + "\ndayPnL=" + fmt(dayPnl) + " stop=" + str.tostring(dayStopActive)
+    statusLabel := label.new(bar_index, high, status, style=label.style_label_left, color=color.new(color.black, 10), textcolor=color.white, size=size.small)
+
+var table debugTable = table.new(position.top_right, 1, 1, frame_color=color.new(color.gray, 40), frame_width=1)
+if barstate.islast and showDebugTable
+    string debugTableText = "DORH Debug"
+    debugTableText := debugTableText + "\nlogs=" + (enableDebugLogs ? "ON" : "OFF") + " hist=" + str.tostring(debugLogHistoricalBars)
+    debugTableText := debugTableText + "\ngate: " + entryGateBlockReason()
+    debugTableText := debugTableText + "\nlong: " + longNoSignalReason()
+    debugTableText := debugTableText + "\nshort: " + shortNoSignalReason()
+    debugTableText := debugTableText + "\nmoveATR " + fmt(todayMoveAtr) + " ORok " + str.tostring(orWidthOk)
+    debugTableText := debugTableText + "\nSedge " + fmtPrice(shortEdge) + " Ledge " + fmtPrice(longEdge)
+    debugTableText := debugTableText + "\ntrade " + str.tostring(tradesToday) + "/" + str.tostring(maxTradesPerDay) + " stop " + str.tostring(dayStopActive)
+    table.cell(debugTable, 0, 0, debugTableText, text_color=color.white, bgcolor=color.new(color.black, 10), text_size=size.small)
+
+if confirmed and rthStarted and showSymbolWarning
+    string warning = is5m ? "DORH v2: liquid ETFs only. Not for single stocks, 3x ETFs, or low-liquidity ETFs." : "DORH v2 requires a 5m RTH chart for orders."
+    if restrictSymbol and not isRecommendedEtf()
+        warning := warning + "\nCurrent symbol is blocked by Restrict to recommended ETFs."
+    label.new(bar_index, high, warning, style=label.style_label_down, color=color.new(color.black, 0), textcolor=color.white, size=size.small)
