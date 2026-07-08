@@ -1,14 +1,14 @@
 //@version=6
-strategy(title="Distributional Opening Range Harvest[Glory]", overlay=true, pyramiding=0, initial_capital=20000, default_qty_type=strategy.fixed, default_qty_value=1, process_orders_on_close=false, calc_on_every_tick=false, dynamic_requests=true, max_labels_count=500, max_lines_count=100, commission_type=strategy.commission.cash_per_order, commission_value=0.35, slippage=1)
+strategy(title="Distributional Opening Range Harvest[Glory]", overlay=true, pyramiding=0, initial_capital=20000, default_qty_type=strategy.fixed, default_qty_value=1, process_orders_on_close=true, calc_on_every_tick=false, dynamic_requests=true, max_labels_count=500, max_lines_count=100, commission_type=strategy.commission.cash_per_order, commission_value=0.35, slippage=1)
 
-// Distributional Opening Range Harvest v3.4.
+// Distributional Opening Range Harvest v4.10.
 // Trade one liquid ETF at a time. Preferred test order: QQQ -> SPY -> IWM -> SMH -> XLK.
 // Avoid individual stocks, 3x ETFs, options, low-liquidity ETFs, and pre/post-market for v1 deployment.
-string STRATEGY_VERSION = "DORH_v3_4_20260708_lunch_reclaim"
+string STRATEGY_VERSION = "DORH_v4_10_reclaim_guard"
 string SCRIPT_TAG = "Distributional_Opening_Range_Harvest[Glory]"
-string TRADE_MODEL = "filter_first_distributional_or_mean_reversion_v3"
+string TRADE_MODEL = "tqqq_probe_runner_v410"
 string RISK_MODEL = "fixed_risk_raw_or_death_line_v2"
-string TP_SL_MODEL = "orm_70pct_opposite_dynamic_edge_v2"
+string TP_SL_MODEL = "probe_runner_v9"
 string TZ = "America/New_York"
 string LONG_ID = "DORH-L"
 string SHORT_ID = "DORH-S"
@@ -30,6 +30,7 @@ manualEventBlock = input.bool(false, "Manual event block", group="01 Time")
 
 restrictSymbol = input.bool(false, "Restrict to preferred ETF list", group="02 Universe")
 showSymbolWarning = input.bool(false, "Show liquid-ETF warning", group="02 Universe")
+tradeProfile = input.string("TQQQ aggressive", "Optimization profile", options=["TQQQ aggressive", "ETF standard"], group="02 Universe")
 qqqSymbol = input.symbol("NASDAQ:QQQ", "QQQ confirmation symbol", group="02 Universe")
 smhSymbol = input.symbol("NASDAQ:SMH", "SMH confirmation symbol", group="02 Universe")
 xlkSymbol = input.symbol("AMEX:XLK", "XLK confirmation symbol", group="02 Universe")
@@ -42,10 +43,24 @@ dailyAtrLen = input.int(20, "Daily ATR length", minval=1, group="03 Range/Distri
 minOrAtrMult = input.float(0.40, "Minimum OR width / ATR", step=0.05, minval=0.0, group="03 Range/Distribution")
 maxOrAtrMult = input.float(1.50, "Wide OR warning / ATR", step=0.05, minval=0.05, group="03 Range/Distribution")
 hardMaxOrAtrMult = input.float(4.00, "Hard chaos OR width / ATR", step=0.10, minval=0.50, group="03 Range/Distribution")
-upperAtrThreshold = input.float(0.45, "Upper distribution ATR threshold", step=0.05, minval=0.0, group="03 Range/Distribution")
-lowerAtrThreshold = input.float(0.45, "Lower distribution ATR threshold", step=0.05, minval=0.0, group="03 Range/Distribution")
+useVwapStdevDist = input.bool(true, "Use VWAP stdev distribution", group="03 Range/Distribution")
+stdevLen = input.int(24, "VWAP stdev lookback bars", minval=2, maxval=120, group="03 Range/Distribution")
+minStdevBars = input.int(6, "Min bars before sigma engine", minval=2, maxval=30, group="03 Range/Distribution")
+distDevEmaLen = input.int(3, "Smooth stdev length", minval=1, maxval=20, group="03 Range/Distribution")
+distDevMinAtrMult = input.float(0.08, "Min sigma / daily ATR", step=0.01, minval=0.0, group="03 Range/Distribution")
+distDevMaxAtrMult = input.float(0.60, "Max sigma / daily ATR", step=0.05, minval=0.05, group="03 Range/Distribution")
+fallbackAtrMult = input.float(0.45, "ATR fallback setup threshold", step=0.05, minval=0.05, group="03 Range/Distribution")
+sigmaSetup = input.float(1.50, "Setup sigma tier", step=0.10, minval=0.50, group="03 Range/Distribution")
+sigmaExtreme = input.float(2.00, "Extreme sigma tier", step=0.10, minval=1.00, group="03 Range/Distribution")
 entryMoveAtrMin = input.float(0.40, "Entry move ATR min", step=0.05, minval=0.0, group="03 Range/Distribution")
 nearEdgeDailyAtrMult = input.float(0.05, "Near-edge distance / daily ATR", step=0.01, minval=0.0, group="03 Range/Distribution")
+reclaimLookbackBars = input.int(12, "Sigma reclaim lookback bars", minval=1, maxval=48, group="03 Range/Distribution")
+reclaimMoveAtrMin = input.float(0.18, "Reclaim move ATR min", step=0.01, minval=0.0, group="03 Range/Distribution")
+reclaimEdgeBufferDailyAtrMult = input.float(0.02, "Reclaim edge buffer / daily ATR", step=0.01, minval=0.0, group="03 Range/Distribution")
+reclaimSafetyBufferDailyAtrMult = input.float(0.005, "Reclaim safety buffer / daily ATR", step=0.001, minval=0.0, group="03 Range/Distribution")
+reclaimStopMaxBars = input.int(24, "Reclaim stop max wait bars", minval=1, maxval=60, group="03 Range/Distribution")
+setupConfirmBars = input.int(1, "Setup confirm bars", minval=1, maxval=3, group="03 Range/Distribution")
+entryConfirmationMode = input.string("Reclaim close or next break", "Entry confirmation mode", options=["Reclaim close or next break", "Next bar break only"], group="03 Range/Distribution")
 entryBreakBufferTicks = input.int(1, "Confirm break buffer (ticks)", minval=0, maxval=20, group="03 Range/Distribution")
 
 trendKillAtr = input.float(1.20, "Trend kill abs(today move / daily ATR)", step=0.05, minval=0.1, group="04 Hard Filter")
@@ -61,6 +76,7 @@ longDownCumPctMax = input.float(-2.0, "Long down cumulative pct max", step=0.25,
 strongLongDownStreak = input.int(3, "Strong long down streak", minval=0, maxval=10, group="05 Setup Quality")
 strongLongDownCumPct = input.float(-4.0, "Strong long down cumulative pct", step=0.25, group="05 Setup Quality")
 requireDailyShortEnhancement = input.bool(true, "Require short daily up-streak/cum filter", group="05 Setup Quality")
+shortQualityMode = input.string("Tiered", "Short quality mode", options=["Strict daily", "Tiered", "Loose"], group="05 Setup Quality")
 shortUpStreakMin = input.int(3, "Short up streak min", minval=0, maxval=10, group="05 Setup Quality")
 shortUpCumPctMin = input.float(5.0, "Short up cumulative pct min", step=0.25, group="05 Setup Quality")
 strongShortUpStreak = input.int(4, "Strong short up streak", minval=0, maxval=10, group="05 Setup Quality")
@@ -70,6 +86,17 @@ relativeDivergencePct = input.float(0.20, "Relative divergence pct", step=0.05, 
 sectorSyncStrongPct = input.float(0.35, "SMH/XLK sync strong pct", step=0.05, minval=0.0, group="05 Setup Quality")
 coreSyncStrongPct = input.float(0.40, "Core weight sync strong pct", step=0.05, minval=0.0, group="05 Setup Quality")
 coreSyncStrongCountMin = input.int(2, "Core strong count min", minval=1, maxval=3, group="05 Setup Quality")
+useVolumeScore = input.bool(true, "Use prior/current volume score", group="05 Setup Quality")
+volumeLookback = input.int(20, "Volume baseline lookback", minval=2, maxval=100, group="05 Setup Quality")
+volumeSpikeMult = input.float(1.30, "Volume spike multiple", step=0.05, minval=0.10, group="05 Setup Quality")
+volumeDryUpMult = input.float(0.80, "Volume dry-up multiple", step=0.05, minval=0.10, group="05 Setup Quality")
+longScoreMin = input.int(4, "Long score min", minval=1, maxval=8, group="05 Setup Quality")
+shortScoreMin = input.int(5, "Short score min", minval=1, maxval=8, group="05 Setup Quality")
+enableBottomProbe = input.bool(true, "Enable TQQQ bottom probe", group="05 Setup Quality")
+bottomProbeSigmaExtreme = input.float(3.0, "Bottom probe extreme sigma", step=0.1, minval=1.0, group="05 Setup Quality")
+bottomProbeSigmaPullback = input.float(2.5, "Bottom probe pullback sigma", step=0.1, minval=1.0, group="05 Setup Quality")
+bottomProbeRelVolMin = input.float(1.30, "Bottom probe rel-vol min", step=0.05, minval=0.1, group="05 Setup Quality")
+reclaimStopExtremeSigma = input.float(2.50, "Reclaim stop extreme sigma", step=0.10, minval=1.0, group="05 Setup Quality")
 
 accountSize = input.float(20000.0, "Account size ($)", step=500.0, minval=100.0, group="06 Risk")
 maxNotionalPct = input.float(100.0, "Max notional pct of account", step=5.0, minval=10.0, maxval=150.0, group="06 Risk")
@@ -77,29 +104,67 @@ riskDollars = input.float(60.0, "Risk per trade ($)", step=5.0, minval=1.0, grou
 maxDailyLossDollars = input.float(180.0, "Max daily loss ($)", step=10.0, minval=1.0, group="06 Risk")
 maxTradesPerDay = input.int(3, "Max trades per day", minval=1, maxval=10, group="06 Risk")
 stopBufferPct = input.float(0.12, "Raw OR stop/break buffer %", step=0.01, minval=0.0, group="06 Risk")
+rawCloseStopBars = input.int(2, "Raw OR close stop bars", minval=1, maxval=3, group="06 Risk")
 tp1ExitPct = input.int(70, "TP1 ORM exit pct", minval=1, maxval=99, group="06 Risk")
+adaptiveTpEnabled = input.bool(true, "Adaptive TP for high-score trades", group="06 Risk")
+adaptiveTpScoreMin = input.int(5, "Adaptive TP score min", minval=1, maxval=8, group="06 Risk")
+adaptiveTpExtraR = input.float(0.25, "Adaptive TP1 extra R", step=0.05, minval=0.0, group="06 Risk")
+adaptiveTp1ExitPct = input.int(50, "Adaptive TP1 exit pct", minval=1, maxval=99, group="06 Risk")
 breakevenAtR = input.float(0.80, "Move stop to breakeven after MFE R", step=0.05, minval=0.1, group="06 Risk")
+runnerLockAtR = input.float(1.20, "Runner lock after MFE R", step=0.05, minval=0.1, group="06 Risk")
+runnerLockProfitR = input.float(0.20, "Runner locked profit R", step=0.05, minval=0.0, group="06 Risk")
 timeStopBars = input.int(6, "Time stop bars", minval=1, maxval=60, group="06 Risk")
 timeStopMinMfeR = input.float(0.50, "Time stop minimum MFE R", step=0.05, minval=0.0, group="06 Risk")
 minQty = input.float(1.0, "Minimum shares", step=1.0, minval=1.0, group="06 Risk")
+bottomProbeRiskMult = input.float(0.35, "Bottom probe risk mult", step=0.05, minval=0.05, maxval=1.0, group="06 Risk")
+bottomProbeMaxStopAtr = input.float(0.35, "Bottom probe max stop / daily ATR", step=0.05, minval=0.05, group="06 Risk")
+bottomProbeStopAtrMult = input.float(0.03, "Bottom probe stop buffer / daily ATR", step=0.01, minval=0.0, group="06 Risk")
+bottomProbeStopPct = input.float(0.10, "Bottom probe stop buffer %", step=0.01, minval=0.0, group="06 Risk")
+bottomProbeTp1Pct = input.int(30, "Bottom probe TP1 pct", minval=1, maxval=99, group="06 Risk")
+bottomProbeCatStopR = input.float(2.50, "Bottom probe catastrophic stop R", step=0.25, minval=1.0, group="06 Risk")
+bottomProbeCloseStopBars = input.int(2, "Bottom close stop confirm bars", minval=1, maxval=4, group="06 Risk")
+bottomProbeCloseStopBufferR = input.float(0.25, "Bottom close stop buffer R", step=0.05, minval=0.0, maxval=1.0, group="06 Risk")
 enableStrategyOrders = input.bool(true, "Enable strategy orders", group="06 Risk")
 
 enableAlerts = input.bool(true, "Emit alert() JSON", group="07 Alerts/Display")
 showLevels = input.bool(true, "Show core OR/edge levels", group="07 Alerts/Display")
-showDistributionLevels = input.bool(false, "Show dist upper/lower levels", group="07 Alerts/Display")
+showDistributionLevels = input.bool(true, "Show sigma setup channel", group="07 Alerts/Display")
+showSigmaOneGuide = input.bool(false, "Show +/-1 sigma guide", group="07 Alerts/Display")
+showSigmaExtreme = input.bool(true, "Show +/-2 sigma extreme", group="07 Alerts/Display")
 showVwapEma = input.bool(true, "Show VWAP and EMA20", group="07 Alerts/Display")
 showEventLabels = input.bool(true, "Show event labels", group="07 Alerts/Display")
-showStateLabels = input.bool(true, "Show WATCH/RANGE state labels", group="07 Alerts/Display")
-showDebugTable = input.bool(true, "Show state table", group="07 Alerts/Display")
-showDiagnostics = input.bool(false, "Show blocked setup labels", group="07 Alerts/Display")
+tableMode = input.string("Compact", "State table mode", options=["Compact", "Full", "Off"], group="07 Alerts/Display")
+tablePositionInput = input.string("Bottom right", "State table position", options=["Bottom right", "Top right", "Bottom left", "Top left"], group="07 Alerts/Display")
+labelMode = input.string("Key only", "Label mode", options=["Key only", "All debug", "Off"], group="07 Alerts/Display")
+labelAtrOffset = input.float(0.12, "Label vertical offset / ATR", step=0.01, minval=0.0, group="07 Alerts/Display")
+showDebugTable = input.bool(false, "Show state table", group="07 Alerts/Display")
+showDiagnostics = input.bool(false, "Show blocked event labels", group="07 Alerts/Display")
 
 enableDebugLogs = input.bool(true, "Enable Pine debug logs", group="08 Debug Logs")
 debugLogHistoricalBars = input.bool(false, "Log historical bars too", group="08 Debug Logs")
+debugImportantHistorical = input.bool(true, "Log important historical events", group="08 Debug Logs")
 debugLogGate = input.bool(true, "Log no-entry gate reasons", group="08 Debug Logs")
 debugLogStateChanges = input.bool(true, "Log compact state changes", group="08 Debug Logs")
 debugLogSetups = input.bool(true, "Log setup/confirm reasons", group="08 Debug Logs")
 debugLogOrders = input.bool(true, "Log order lifecycle reasons", group="08 Debug Logs")
 debugHeartbeatBars = input.int(6, "No-entry heartbeat every N bars", minval=1, maxval=100, group="08 Debug Logs")
+
+bool tqqqProfile = tradeProfile == "TQQQ aggressive"
+float effVolumeDryUpMult = tqqqProfile ? 0.65 : volumeDryUpMult
+int effTp1ExitPct = tqqqProfile ? 60 : tp1ExitPct
+int effAdaptiveTp1ExitPct = tqqqProfile ? 45 : adaptiveTp1ExitPct
+float effAdaptiveTpExtraR = tqqqProfile ? 0.30 : adaptiveTpExtraR
+float effRunnerStep1AtR = tqqqProfile ? 1.20 : runnerLockAtR
+float effRunnerStep1ProfitR = tqqqProfile ? 0.30 : runnerLockProfitR
+float effRunnerStep2AtR = tqqqProfile ? 1.60 : 999.0
+float effRunnerStep2ProfitR = tqqqProfile ? 0.80 : runnerLockProfitR
+float effRunnerStep3AtR = tqqqProfile ? 2.20 : 999.0
+float effRunnerStep3ProfitR = tqqqProfile ? 1.20 : runnerLockProfitR
+float effTp2CapTriggerR = tqqqProfile ? 2.20 : 999.0
+float effTp2CapTargetR = tqqqProfile ? 1.80 : 999.0
+float effProbeRiskMult = tqqqProfile ? 0.50 : 1.00
+int effProbeCooldownBars = tqqqProfile ? 6 : 0
+float effProbeFailMfeR = tqqqProfile ? 0.50 : 0.0
 
 // -----------------------------------------------------------------------------
 // Formatting and helpers
@@ -125,9 +190,6 @@ jsonNum(series string key, series float value) =>
 jsonInt(series string key, series int value) =>
     "\"" + key + "\":" + (na(value) ? "null" : str.tostring(value))
 
-jsonBool(series string key, series bool value) =>
-    "\"" + key + "\":" + (value ? "true" : "false")
-
 cleanTicker(series string ticker) =>
     str.upper(str.replace_all(ticker, " ", ""))
 
@@ -141,16 +203,22 @@ dirText(series int direction) =>
 orderIdForDirection(series int direction) =>
     direction == 1 ? LONG_ID : SHORT_ID
 
-eventId(series string eventType) =>
-    cleanTicker(syminfo.ticker) + "_" + eventType + "_" + str.tostring(time) + "_" + timeframe.period
+float labelAtrBase = math.max(nz(ta.atr(orAtrLen), syminfo.mintick), syminfo.mintick)
+
+labelSlot(series string textValue) =>
+    str.contains(textValue, "RUN") or str.contains(textValue, "BE") ? 4 : str.contains(textValue, "TAKE") or str.contains(textValue, "STOP") or str.contains(textValue, "EXIT") or str.contains(textValue, "WARN") ? 3 : str.contains(textValue, "ORDER") or str.contains(textValue, "FILL") or str.contains(textValue, "PROBE") ? 2 : 1
+
+isKeyEventLabel(series string textValue) =>
+    str.contains(textValue, "FILL") or str.contains(textValue, "TAKE") or str.contains(textValue, "STOP") or str.contains(textValue, "BE") or str.contains(textValue, "RUN") or str.contains(textValue, "PROBE") or str.contains(textValue, "RANGE") or str.contains(textValue, "TIME")
+
+tablePos() =>
+    tablePositionInput == "Top right" ? position.top_right : tablePositionInput == "Bottom left" ? position.bottom_left : tablePositionInput == "Top left" ? position.top_left : position.bottom_right
 
 drawEventLabel(series string textValue, series string tooltipValue, series float priceValue, series bool above, series color bgColor, series color txtColor) =>
-    if showEventLabels
-        label.new(bar_index, priceValue, textValue, style=above ? label.style_label_down : label.style_label_up, color=bgColor, textcolor=txtColor, size=size.small, tooltip=tooltipValue)
-
-drawStateLabel(series string textValue, series string tooltipValue, series float priceValue, series bool above, series color bgColor, series color txtColor) =>
-    if showStateLabels
-        label.new(bar_index, priceValue, textValue, style=above ? label.style_label_down : label.style_label_up, color=bgColor, textcolor=txtColor, size=size.small, tooltip=tooltipValue)
+    if showEventLabels and (labelMode == "All debug" or (labelMode == "Key only" and isKeyEventLabel(textValue)))
+        float offset = labelAtrBase * labelAtrOffset * labelSlot(textValue)
+        float y = above ? priceValue + offset : priceValue - offset
+        label.new(bar_index, y, textValue, style=above ? label.style_label_down : label.style_label_up, color=bgColor, textcolor=txtColor, size=size.small, tooltip=tooltipValue)
 
 debugEtStamp() =>
     str.tostring(hour(time, TZ)) + ":" + str.tostring(minute(time, TZ))
@@ -163,6 +231,10 @@ debugShouldWrite() =>
 
 debugLog(string category, string eventName, string detailText) =>
     if debugCategoryEnabled(category) and debugShouldWrite()
+        log.warning("[" + SCRIPT_TAG + " " + STRATEGY_VERSION + "] " + syminfo.ticker + " tf=" + timeframe.period + " ET=" + debugEtStamp() + " bar=" + str.tostring(bar_index) + " " + eventName + "\n" + detailText)
+
+debugEventLog(string category, string eventName, string detailText) =>
+    if debugCategoryEnabled(category) and (debugImportantHistorical or debugShouldWrite())
         log.warning("[" + SCRIPT_TAG + " " + STRATEGY_VERSION + "] " + syminfo.ticker + " tf=" + timeframe.period + " ET=" + debugEtStamp() + " bar=" + str.tostring(bar_index) + " " + eventName + "\n" + detailText)
 
 inSession() =>
@@ -239,7 +311,7 @@ bool inLunchBlock = inRth and etMinutes >= lunchStart and etMinutes < lunchEnd
 bool beforeEntryCutoff = inRth and etCloseMinutes < entryCutoffHour * 60 + entryCutoffMinute
 bool forceFlatNow = inRth and etCloseMinutes >= forceFlatHour * 60 + forceFlatMinute
 
-float atr5 = math.max(nz(ta.atr(orAtrLen), syminfo.mintick), syminfo.mintick)
+float atr5 = labelAtrBase
 float dailyAtr20 = request.security(syminfo.tickerid, "D", ta.atr(dailyAtrLen)[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
 float safeDailyAtr20 = math.max(nz(dailyAtr20, syminfo.mintick), syminfo.mintick)
 float vwap = rthVwap(hlc3)
@@ -249,6 +321,13 @@ float upperWickRatio = (high - math.max(open, close)) / barRange
 float lowerWickRatio = (math.min(open, close) - low) / barRange
 float vwapCrossValue = ta.cross(close, vwap) ? 1.0 : 0.0
 float vwapCrossCount12 = math.sum(vwapCrossValue, 12)
+float volBase = ta.sma(volume[1], volumeLookback)
+float relVol = not na(volBase) and volBase > 0.0 ? volume / volBase : na
+float priorRelVolMax3 = ta.highest(relVol[1], 3)
+bool volSpike = useVolumeScore and not na(relVol) and relVol >= volumeSpikeMult
+bool volDryUp = useVolumeScore and not na(relVol) and relVol <= effVolumeDryUpMult
+bool priorVolSpike3 = useVolumeScore and not na(priorRelVolMax3) and priorRelVolMax3 >= volumeSpikeMult
+string volumeState = not useVolumeScore ? "OFF" : na(relVol) ? "NA" : volSpike ? "SPIKE" : volDryUp ? "DRY" : priorVolSpike3 ? "PRIOR_SPIKE" : "NORMAL"
 
 var float dayOpen = na
 var float rawOrh = na
@@ -259,6 +338,21 @@ var bool rangeActiveAlertSent = false
 var bool wideOrWarningAlertSent = false
 var bool watchLongAlertSent = false
 var bool watchShortAlertSent = false
+var bool sigmaLongWatchLabelSent = false
+var bool sigmaShortWatchLabelSent = false
+var bool shortTqqqFilterAlertSent = false
+var bool bottomProbeReadyAlertSent = false
+var bool longReclaimArmedAlertSent = false
+var bool longReclaimNeedLevelAlertSent = false
+var bool longReclaimCutoffAlertSent = false
+var bool longScoreReadyAlertSent = false
+var bool shortScoreReadyAlertSent = false
+var bool longScoreBlockAlertSent = false
+var bool shortScoreBlockAlertSent = false
+var bool volumeConfirmAlertSent = false
+var bool longReclaimGuardBlockAlertSent = false
+var bool shortReclaimGuardBlockAlertSent = false
+var int rthBarCount = 0
 
 if confirmed and newDay
     dayOpen := inRth ? open : na
@@ -270,9 +364,32 @@ if confirmed and newDay
     wideOrWarningAlertSent := false
     watchLongAlertSent := false
     watchShortAlertSent := false
+    sigmaLongWatchLabelSent := false
+    sigmaShortWatchLabelSent := false
+    shortTqqqFilterAlertSent := false
+    bottomProbeReadyAlertSent := false
+    longReclaimArmedAlertSent := false
+    longReclaimNeedLevelAlertSent := false
+    longReclaimCutoffAlertSent := false
+    longScoreReadyAlertSent := false
+    shortScoreReadyAlertSent := false
+    longScoreBlockAlertSent := false
+    shortScoreBlockAlertSent := false
+    volumeConfirmAlertSent := false
+    longReclaimGuardBlockAlertSent := false
+    shortReclaimGuardBlockAlertSent := false
+    rthBarCount := 0
 
 if confirmed and rthStarted
     dayOpen := open
+
+if confirmed
+    if rthStarted
+        rthBarCount := 1
+    else if inRth
+        rthBarCount := math.max(rthBarCount + 1, 1)
+    else
+        rthBarCount := 0
 
 if confirmed and inOpeningRange
     rawOrh := na(rawOrh) ? high : math.max(rawOrh, high)
@@ -282,28 +399,53 @@ if confirmed and orComplete and not orLocked and not na(rawOrh) and not na(rawOr
     orLocked := true
     orAtrAtLock := atr5
 
-float orm = not na(rawOrh) and not na(rawOrl) ? (rawOrh + rawOrl) / 2.0 : na
-float orWidth = not na(rawOrh) and not na(rawOrl) ? rawOrh - rawOrl : na
-float orWidthAtr = not na(orWidth) and not na(orAtrAtLock) and orAtrAtLock > 0.0 ? orWidth / orAtrAtLock : na
-bool orTooNarrow = orLocked and not na(orWidth) and not na(orAtrAtLock) and orWidth < orAtrAtLock * minOrAtrMult
-bool orWideWarning = orLocked and not na(orWidth) and not na(orAtrAtLock) and orWidth > orAtrAtLock * maxOrAtrMult
-bool orTooWide = orLocked and not na(orWidth) and not na(orAtrAtLock) and orWidth > orAtrAtLock * hardMaxOrAtrMult
-bool orWidthOk = orLocked and not orTooNarrow and not orTooWide
-bool orJustLocked = confirmed and orLocked and not (orLocked[1] == true)
-float todayMove = not na(dayOpen) ? close - dayOpen : na
-float todayMoveAtr = not na(todayMove) and safeDailyAtr20 > 0.0 ? todayMove / safeDailyAtr20 : na
-float distUpper = not na(dayOpen) ? dayOpen + safeDailyAtr20 * upperAtrThreshold : na
-float distLower = not na(dayOpen) ? dayOpen - safeDailyAtr20 * lowerAtrThreshold : na
-float shortEdge = not na(rawOrh) and not na(distUpper) ? math.min(rawOrh, distUpper) : na
-float longEdge = not na(rawOrl) and not na(distLower) ? math.max(rawOrl, distLower) : na
-bool edgeReady = orLocked and not na(shortEdge) and not na(longEdge) and not na(orm)
-float nearEdgeDistance = safeDailyAtr20 * nearEdgeDailyAtrMult
-float entryBreakBuffer = syminfo.mintick * entryBreakBufferTicks
-float upperBreakLevel = not na(rawOrh) ? rawOrh * (1.0 + stopBufferPct / 100.0) : na
-float lowerBreakLevel = not na(rawOrl) ? rawOrl * (1.0 - stopBufferPct / 100.0) : na
-bool closeInsideOr = edgeReady and close <= rawOrh and close >= rawOrl
-bool rawCloseAbove = edgeReady and close > rawOrh
-bool rawCloseBelow = edgeReady and close < rawOrl
+calcRangeDistributionContext() =>
+    float ormValue = not na(rawOrh) and not na(rawOrl) ? (rawOrh + rawOrl) / 2.0 : na
+    float orWidthValue = not na(rawOrh) and not na(rawOrl) ? rawOrh - rawOrl : na
+    float orWidthAtrValue = not na(orWidthValue) and not na(orAtrAtLock) and orAtrAtLock > 0.0 ? orWidthValue / orAtrAtLock : na
+    bool orTooNarrowValue = orLocked and not na(orWidthValue) and not na(orAtrAtLock) and orWidthValue < orAtrAtLock * minOrAtrMult
+    bool orWideWarningValue = orLocked and not na(orWidthValue) and not na(orAtrAtLock) and orWidthValue > orAtrAtLock * maxOrAtrMult
+    bool orTooWideValue = orLocked and not na(orWidthValue) and not na(orAtrAtLock) and orWidthValue > orAtrAtLock * hardMaxOrAtrMult
+    bool orWidthOkValue = orLocked and not orTooNarrowValue and not orTooWideValue
+    bool orJustLockedValue = confirmed and orLocked and not (orLocked[1] == true)
+    float todayMoveValue = not na(dayOpen) ? close - dayOpen : na
+    float todayMoveAtrValue = not na(todayMoveValue) and safeDailyAtr20 > 0.0 ? todayMoveValue / safeDailyAtr20 : na
+    int effectiveStdevLenValue = math.min(stdevLen, math.max(minStdevBars, rthBarCount))
+    float priceDevValue = not na(vwap) ? close - vwap : na
+    float distDevRawValue = ta.stdev(priceDevValue, effectiveStdevLenValue)
+    float distDevSmoothValue = ta.ema(distDevRawValue, distDevEmaLen)
+    float distDevFloorValue = math.max(safeDailyAtr20 * distDevMinAtrMult, syminfo.mintick)
+    float distDevCeilingValue = math.max(distDevFloorValue, safeDailyAtr20 * distDevMaxAtrMult)
+    float vwapDistDevValue = not na(distDevSmoothValue) ? math.min(math.max(distDevSmoothValue, distDevFloorValue), distDevCeilingValue) : na
+    bool vwapSigmaReadyValue = useVwapStdevDist and inRth and rthBarCount >= minStdevBars and not na(vwap) and not na(vwapDistDevValue)
+    float safeSigmaSetupValue = math.max(sigmaSetup, 0.10)
+    float fallbackSigmaUnitValue = math.max(safeDailyAtr20 * fallbackAtrMult / safeSigmaSetupValue, syminfo.mintick)
+    string distMethodValue = vwapSigmaReadyValue ? "vwap_stdev" : "atr_fallback"
+    float distMeanValue = vwapSigmaReadyValue ? vwap : dayOpen
+    float distDevValue = vwapSigmaReadyValue ? vwapDistDevValue : fallbackSigmaUnitValue
+    float sigmaPosValue = not na(distMeanValue) and not na(distDevValue) and distDevValue > 0.0 ? (close - distMeanValue) / distDevValue : na
+    float sigmaUpper1Value = not na(distMeanValue) and not na(distDevValue) ? distMeanValue + distDevValue : na
+    float sigmaLower1Value = not na(distMeanValue) and not na(distDevValue) ? distMeanValue - distDevValue : na
+    float sigmaUpperSetupValue = not na(distMeanValue) and not na(distDevValue) ? distMeanValue + distDevValue * sigmaSetup : na
+    float sigmaLowerSetupValue = not na(distMeanValue) and not na(distDevValue) ? distMeanValue - distDevValue * sigmaSetup : na
+    float sigmaUpperExtremeValue = not na(distMeanValue) and not na(distDevValue) ? distMeanValue + distDevValue * sigmaExtreme : na
+    float sigmaLowerExtremeValue = not na(distMeanValue) and not na(distDevValue) ? distMeanValue - distDevValue * sigmaExtreme : na
+    string distTierValue = na(sigmaPosValue) ? "NA" : math.abs(sigmaPosValue) >= sigmaExtreme ? "EXTREME_2SIGMA" : math.abs(sigmaPosValue) >= sigmaSetup ? "SETUP_1_5SIGMA" : math.abs(sigmaPosValue) >= 1.0 ? "OBSERVE_1SIGMA" : "INSIDE_1SIGMA"
+    float shortEdgeValue = not na(rawOrh) and not na(sigmaUpperSetupValue) ? math.min(rawOrh, sigmaUpperSetupValue) : na
+    float longEdgeValue = not na(rawOrl) and not na(sigmaLowerSetupValue) ? math.max(rawOrl, sigmaLowerSetupValue) : na
+    bool edgeReadyValue = orLocked and not na(shortEdgeValue) and not na(longEdgeValue) and not na(ormValue)
+    float nearEdgeDistanceValue = safeDailyAtr20 * nearEdgeDailyAtrMult
+    float reclaimEdgeBufferValue = safeDailyAtr20 * reclaimEdgeBufferDailyAtrMult
+    float reclaimSafetyBufferValue = safeDailyAtr20 * reclaimSafetyBufferDailyAtrMult
+    float entryBreakBufferValue = syminfo.mintick * entryBreakBufferTicks
+    float upperBreakLevelValue = not na(rawOrh) ? rawOrh * (1.0 + stopBufferPct / 100.0) : na
+    float lowerBreakLevelValue = not na(rawOrl) ? rawOrl * (1.0 - stopBufferPct / 100.0) : na
+    bool closeInsideOrValue = edgeReadyValue and close <= rawOrh and close >= rawOrl
+    bool rawCloseAboveValue = edgeReadyValue and close > rawOrh
+    bool rawCloseBelowValue = edgeReadyValue and close < rawOrl
+    [ormValue, orWidthValue, orWidthAtrValue, orTooNarrowValue, orWideWarningValue, orTooWideValue, orWidthOkValue, orJustLockedValue, todayMoveValue, todayMoveAtrValue, distMethodValue, distDevValue, sigmaPosValue, sigmaUpper1Value, sigmaLower1Value, sigmaUpperSetupValue, sigmaLowerSetupValue, sigmaUpperExtremeValue, sigmaLowerExtremeValue, sigmaUpperSetupValue, sigmaLowerSetupValue, distTierValue, shortEdgeValue, longEdgeValue, edgeReadyValue, nearEdgeDistanceValue, reclaimEdgeBufferValue, reclaimSafetyBufferValue, entryBreakBufferValue, upperBreakLevelValue, lowerBreakLevelValue, closeInsideOrValue, rawCloseAboveValue, rawCloseBelowValue]
+
+[orm, orWidth, orWidthAtr, orTooNarrow, orWideWarning, orTooWide, orWidthOk, orJustLocked, todayMove, todayMoveAtr, distMethod, distDev, sigmaPos, sigmaUpper1, sigmaLower1, sigmaUpperSetup, sigmaLowerSetup, sigmaUpperExtreme, sigmaLowerExtreme, distUpper, distLower, distTier, shortEdge, longEdge, edgeReady, nearEdgeDistance, reclaimEdgeBuffer, reclaimSafetyBuffer, entryBreakBuffer, upperBreakLevel, lowerBreakLevel, closeInsideOr, rawCloseAbove, rawCloseBelow] = calcRangeDistributionContext()
 
 [upStreak, downStreak, upCumPct, downCumPct] = request.security(syminfo.tickerid, "D", dailyDirectionalMetrics(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
 [qqqChangePct, qqqClose, qqqHigh, qqqLow, qqqEma] = request.security(qqqSymbol, "5", relative5Metrics(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
@@ -334,6 +476,11 @@ var bool shortDisabledToday = false
 var bool rangeInvalidatedToday = false
 var bool noTradeTrendToday = false
 var bool dailyLossHaltedToday = false
+var bool probeFailedToday = false
+var bool bottomProbeFailedToday = false
+var bool probeReentryUsedToday = false
+var int probeFailedBar = na
+var int probeFailedDirection = 0
 var float dayStartNetProfit = na
 var int aboveRawCloseCount = 0
 var int belowRawCloseCount = 0
@@ -349,6 +496,11 @@ if confirmed and newDay
     rangeInvalidatedToday := false
     noTradeTrendToday := false
     dailyLossHaltedToday := false
+    probeFailedToday := false
+    bottomProbeFailedToday := false
+    probeReentryUsedToday := false
+    probeFailedBar := na
+    probeFailedDirection := 0
     dayStartNetProfit := strategy.netprofit
     aboveRawCloseCount := 0
     belowRawCloseCount := 0
@@ -369,43 +521,116 @@ if confirmed
         longEmaSideCount := close > ema20 ? longEmaSideCount + 1 : 0
         shortEmaSideCount := close < ema20 ? shortEmaSideCount + 1 : 0
 
-bool rawOutsideWatch = edgeReady and (aboveRawCloseCount >= outsideRawCloseBars or belowRawCloseCount >= outsideRawCloseBars)
-bool watchLongReclaim = edgeReady and rawCloseBelow and belowRawCloseCount >= outsideRawCloseBars and not rangeInvalidatedToday
-bool watchShortReject = edgeReady and rawCloseAbove and aboveRawCloseCount >= outsideRawCloseBars and not rangeInvalidatedToday
-int rawOutsideCount = math.max(aboveRawCloseCount, belowRawCloseCount)
-bool rawOutsideStale = edgeReady and (aboveRawCloseCount > reclaimWatchMaxBars or belowRawCloseCount > reclaimWatchMaxBars)
-bool longWatchStale = watchLongReclaim and belowRawCloseCount > reclaimWatchMaxBars
-bool shortWatchStale = watchShortReject and aboveRawCloseCount > reclaimWatchMaxBars
-string watchState = watchLongReclaim ? (longWatchStale ? "STALE_LONG_WATCH" : "WATCH_LONG_RECLAIM") : watchShortReject ? (shortWatchStale ? "STALE_SHORT_WATCH" : "WATCH_SHORT_REJECT") : "NONE"
-bool priorLongWatch = edgeReady and nz(belowRawCloseCount[1]) >= outsideRawCloseBars
-bool priorShortWatch = edgeReady and nz(aboveRawCloseCount[1]) >= outsideRawCloseBars
-bool vwapSlopeSteep = edgeReady and not na(vwap) and not na(vwap[3]) and math.abs(vwap - vwap[3]) > safeDailyAtr20 * vwapSlopeDailyAtrMult
-bool vwapStrongUp = vwapSlopeSteep and vwap > vwap[3]
-bool vwapStrongDown = vwapSlopeSteep and vwap < vwap[3]
-bool emaSidePush = edgeReady and not na(close[emaSideBars - 1]) and ((longEmaSideCount >= emaSideBars and close > close[emaSideBars - 1]) or (shortEmaSideCount >= emaSideBars and close < close[emaSideBars - 1]))
-bool hardTrendKillNow = edgeReady and not na(todayMoveAtr) and math.abs(todayMoveAtr) > trendKillAtr
-bool todayMoveTrend = hardTrendKillNow
-bool trendProgression = emaSidePush and vwapSlopeSteep
-bool softTrendBlockNow = edgeReady and trendProgression and rawOutsideWatch and not hardTrendKillNow
-bool noTradeTrendTrigger = confirmed and not noTradeTrendToday and hardTrendKillNow
+calcRegimeContext() =>
+    bool rawOutsideWatchValue = edgeReady and (aboveRawCloseCount >= outsideRawCloseBars or belowRawCloseCount >= outsideRawCloseBars)
+    bool watchLongReclaimValue = edgeReady and rawCloseBelow and belowRawCloseCount >= outsideRawCloseBars and not rangeInvalidatedToday
+    bool watchShortRejectValue = edgeReady and rawCloseAbove and aboveRawCloseCount >= outsideRawCloseBars and not rangeInvalidatedToday
+    int rawOutsideCountValue = math.max(aboveRawCloseCount, belowRawCloseCount)
+    bool rawOutsideStaleValue = edgeReady and (aboveRawCloseCount > reclaimWatchMaxBars or belowRawCloseCount > reclaimWatchMaxBars)
+    bool longWatchStaleValue = watchLongReclaimValue and belowRawCloseCount > reclaimWatchMaxBars
+    bool shortWatchStaleValue = watchShortRejectValue and aboveRawCloseCount > reclaimWatchMaxBars
+    string watchStateValue = watchLongReclaimValue ? (longWatchStaleValue ? "STALE_LONG_WATCH" : "WATCH_LONG_RECLAIM") : watchShortRejectValue ? (shortWatchStaleValue ? "STALE_SHORT_WATCH" : "WATCH_SHORT_REJECT") : "NONE"
+    bool priorLongWatchValue = edgeReady and nz(belowRawCloseCount[1]) >= outsideRawCloseBars
+    bool priorShortWatchValue = edgeReady and nz(aboveRawCloseCount[1]) >= outsideRawCloseBars
+    bool vwapSlopeSteepValue = edgeReady and not na(vwap) and not na(vwap[3]) and math.abs(vwap - vwap[3]) > safeDailyAtr20 * vwapSlopeDailyAtrMult
+    bool vwapStrongUpValue = vwapSlopeSteepValue and vwap > vwap[3]
+    bool emaSidePushValue = edgeReady and not na(close[emaSideBars - 1]) and ((longEmaSideCount >= emaSideBars and close > close[emaSideBars - 1]) or (shortEmaSideCount >= emaSideBars and close < close[emaSideBars - 1]))
+    bool hardTrendKillNowValue = edgeReady and not na(todayMoveAtr) and math.abs(todayMoveAtr) > trendKillAtr
+    bool trendProgressionValue = emaSidePushValue and vwapSlopeSteepValue
+    bool softTrendBlockNowValue = edgeReady and trendProgressionValue and rawOutsideWatchValue and not hardTrendKillNowValue
+    bool noTradeTrendTriggerValue = confirmed and not noTradeTrendToday and hardTrendKillNowValue
+    float dayPnlValue = not na(dayStartNetProfit) ? strategy.netprofit - dayStartNetProfit + strategy.openprofit : strategy.openprofit
+    bool dailyLossTriggerValue = confirmed and not dailyLossHaltedToday and not na(dayPnlValue) and dayPnlValue <= -maxDailyLossDollars
+    bool symbolAllowedValue = not restrictSymbol or isRecommendedEtf()
+    bool bothDirectionsFailedNowValue = longLossesToday >= 1 and shortLossesToday >= 1
+    bool todayMoveTrendValue = hardTrendKillNowValue
+    bool rangeDayValue = edgeReady and orWidthOk and closeInsideOr and not vwapSlopeSteepValue and vwapCrossCount12 <= maxVwapCrossesForRange and not todayMoveTrendValue
+    bool failedBreakWatchValue = edgeReady and rawOutsideWatchValue and not todayMoveTrendValue
+    bool weakTrendPullbackDayValue = edgeReady and orWidthOk and not todayMoveTrendValue and math.abs(nz(todayMoveAtr, 0.0)) < trendKillAtr
+    string regimeValue = not orLocked ? "BUILDING_OR" : orTooNarrow ? "LOW_VOL_DAY" : orTooWide ? "CHAOS_DAY" : noTradeTrendToday or hardTrendKillNowValue ? "NO_TRADE_TREND" : softTrendBlockNowValue ? "TREND_WATCH" : failedBreakWatchValue ? (rawOutsideStaleValue ? "STALE_BREAK_WATCH" : "FAILED_BREAK_WATCH") : orWideWarning ? "WIDE_RANGE_WATCH" : rangeDayValue ? "RANGE_DAY" : weakTrendPullbackDayValue ? "WEAK_TREND_PULLBACK" : "CHAOS_DAY"
+    bool regimeTradeableValue = regimeValue == "RANGE_DAY" or regimeValue == "WEAK_TREND_PULLBACK" or regimeValue == "FAILED_BREAK_WATCH" or regimeValue == "STALE_BREAK_WATCH" or regimeValue == "WIDE_RANGE_WATCH" or regimeValue == "TREND_WATCH"
+    bool dayStopActiveValue = rangeInvalidatedToday or noTradeTrendToday or dailyLossHaltedToday or bothDirectionsFailedNowValue
+    [rawOutsideWatchValue, watchLongReclaimValue, watchShortRejectValue, rawOutsideCountValue, rawOutsideStaleValue, longWatchStaleValue, shortWatchStaleValue, watchStateValue, priorLongWatchValue, priorShortWatchValue, vwapStrongUpValue, hardTrendKillNowValue, softTrendBlockNowValue, noTradeTrendTriggerValue, dayPnlValue, dailyLossTriggerValue, symbolAllowedValue, bothDirectionsFailedNowValue, regimeValue, regimeTradeableValue, dayStopActiveValue]
+
+[rawOutsideWatch, watchLongReclaim, watchShortReject, rawOutsideCount, rawOutsideStale, longWatchStale, shortWatchStale, watchState, priorLongWatch, priorShortWatch, vwapStrongUp, hardTrendKillNow, softTrendBlockNow, noTradeTrendTrigger, dayPnl, dailyLossTrigger, symbolAllowed, bothDirectionsFailedNow, regime, regimeTradeable, dayStopActive] = calcRegimeContext()
 bool rangeInvalidationTrigger = false
-float dayPnl = not na(dayStartNetProfit) ? strategy.netprofit - dayStartNetProfit + strategy.openprofit : strategy.openprofit
-bool dailyLossTrigger = confirmed and not dailyLossHaltedToday and not na(dayPnl) and dayPnl <= -maxDailyLossDollars
-bool symbolAllowed = not restrictSymbol or isRecommendedEtf()
-bool bothDirectionsFailedNow = longLossesToday >= 1 and shortLossesToday >= 1
-bool vwapFlatEnough = not vwapSlopeSteep
-bool rangeDay = edgeReady and orWidthOk and closeInsideOr and vwapFlatEnough and vwapCrossCount12 <= maxVwapCrossesForRange and not todayMoveTrend
-bool failedBreakWatch = edgeReady and rawOutsideWatch and not todayMoveTrend
-bool weakTrendPullbackDay = edgeReady and orWidthOk and not todayMoveTrend and math.abs(nz(todayMoveAtr, 0.0)) < trendKillAtr
-string regime = not orLocked ? "BUILDING_OR" : orTooNarrow ? "LOW_VOL_DAY" : orTooWide ? "CHAOS_DAY" : noTradeTrendToday or hardTrendKillNow ? "NO_TRADE_TREND" : softTrendBlockNow ? "TREND_WATCH" : failedBreakWatch ? (rawOutsideStale ? "STALE_BREAK_WATCH" : "FAILED_BREAK_WATCH") : orWideWarning ? "WIDE_RANGE_WATCH" : rangeDay ? "RANGE_DAY" : weakTrendPullbackDay ? "WEAK_TREND_PULLBACK" : "CHAOS_DAY"
-bool regimeTradeable = regime == "RANGE_DAY" or regime == "WEAK_TREND_PULLBACK" or regime == "FAILED_BREAK_WATCH" or regime == "STALE_BREAK_WATCH" or regime == "WIDE_RANGE_WATCH" or regime == "TREND_WATCH"
-bool dayStopActive = rangeInvalidatedToday or noTradeTrendToday or dailyLossHaltedToday or bothDirectionsFailedNow
-bool longInsideEdgeCandidate = closeInsideOr and low <= longEdge + nearEdgeDistance and close > longEdge
-bool longReclaimCandidate = priorLongWatch and close > longEdge
-bool shortInsideEdgeCandidate = closeInsideOr and high >= shortEdge - nearEdgeDistance and close < shortEdge
-bool shortRejectCandidate = priorShortWatch and close < shortEdge
-bool lunchReclaimCandidate = longReclaimCandidate or shortRejectCandidate
-bool lunchAllowsEntry = not inLunchBlock or lunchPolicy == "Allow all" or (lunchPolicy == "Reclaim only" and lunchReclaimCandidate)
+
+calcSetupContext() =>
+    float recentLowestSigmaValue = ta.lowest(sigmaPos, reclaimLookbackBars)
+    float recentHighestSigmaValue = ta.highest(sigmaPos, reclaimLookbackBars)
+    bool recentLongSigmaExcursionValue = not na(recentLowestSigmaValue) and recentLowestSigmaValue <= -sigmaSetup
+    bool recentShortSigmaExcursionValue = not na(recentHighestSigmaValue) and recentHighestSigmaValue >= sigmaSetup
+    float longEdgeTouchDistanceValue = not na(longEdge) ? low - longEdge : na
+    float shortEdgeTouchDistanceValue = not na(shortEdge) ? shortEdge - high : na
+    float recentLongEdgeDistanceValue = ta.lowest(longEdgeTouchDistanceValue, reclaimLookbackBars)
+    float recentShortEdgeDistanceValue = ta.lowest(shortEdgeTouchDistanceValue, reclaimLookbackBars)
+    bool recentLongEdgeTouchValue = not na(recentLongEdgeDistanceValue) and recentLongEdgeDistanceValue <= nearEdgeDistance
+    bool recentShortEdgeTouchValue = not na(recentShortEdgeDistanceValue) and recentShortEdgeDistanceValue <= nearEdgeDistance
+    bool longInsideEdgeCandidateValue = closeInsideOr and not na(sigmaPos) and (sigmaPos <= -sigmaSetup or low <= distLower + nearEdgeDistance) and low <= longEdge + nearEdgeDistance and close > longEdge
+    float longReclaimNeedValue = not na(longEdge) and not na(rawOrl) ? math.max(longEdge, rawOrl + reclaimSafetyBuffer) : na
+    float longReclaimGapValue = not na(longReclaimNeedValue) ? close - longReclaimNeedValue : na
+    bool longReclaimRecoveredValue = not na(longReclaimGapValue) and longReclaimGapValue > 0.0
+    bool longReclaimNearNeedValue = not na(longReclaimGapValue) and longReclaimGapValue > -reclaimEdgeBuffer
+    bool longReclaimSafetyOkValue = longReclaimRecoveredValue
+    bool longReclaimArmedValue = edgeReady and (watchLongReclaim or priorLongWatch or recentLongSigmaExcursionValue) and not na(todayMoveAtr) and todayMoveAtr < -reclaimMoveAtrMin and not hardTrendKillNow and not dayStopActive
+    bool shortRejectSafetyOkValue = not na(rawOrh) and close < rawOrh - reclaimSafetyBuffer
+    bool longRawReclaimTouchValue = priorLongWatch and longReclaimNearNeedValue
+    bool longSigmaReclaimTouchValue = recentLongSigmaExcursionValue and recentLongEdgeTouchValue and longReclaimNearNeedValue
+    bool longReclaimUnsafeValue = (longRawReclaimTouchValue or longSigmaReclaimTouchValue) and not longReclaimSafetyOkValue
+    bool longReclaimCandidateValue = (longRawReclaimTouchValue or longSigmaReclaimTouchValue) and longReclaimSafetyOkValue
+    bool shortInsideEdgeCandidateValue = closeInsideOr and not na(sigmaPos) and (sigmaPos >= sigmaSetup or high >= distUpper - nearEdgeDistance) and high >= shortEdge - nearEdgeDistance and close < shortEdge
+    bool shortRawRejectTouchValue = priorShortWatch and close < shortEdge + reclaimEdgeBuffer and not rawCloseAbove
+    bool shortSigmaRejectTouchValue = recentShortSigmaExcursionValue and recentShortEdgeTouchValue and close < shortEdge + reclaimEdgeBuffer and not rawCloseAbove
+    bool shortRejectUnsafeValue = (shortRawRejectTouchValue or shortSigmaRejectTouchValue) and not shortRejectSafetyOkValue
+    bool shortRejectCandidateValue = (shortRawRejectTouchValue or shortSigmaRejectTouchValue) and shortRejectSafetyOkValue
+    bool lunchReclaimCandidateValue = longReclaimCandidateValue or shortRejectCandidateValue
+    bool lunchAllowsEntryValue = not inLunchBlock or lunchPolicy == "Allow all" or (lunchPolicy == "Reclaim only" and lunchReclaimCandidateValue)
+    bool longDailyQualityValue = downStreak >= longDownStreakMin or downCumPct <= longDownCumPctMax
+    bool longDailyOkValue = not requireDailyLongEnhancement or longDailyQualityValue
+    bool strongLongStateValue = downStreak >= strongLongDownStreak or downCumPct <= strongLongDownCumPct
+    bool shortDailyOkValue = not requireDailyShortEnhancement or (upStreak >= shortUpStreakMin and upCumPct >= shortUpCumPctMin)
+    bool strongShortStateValue = upStreak >= strongShortUpStreak and upCumPct >= strongShortUpCumPct
+    bool longCandidateReadyValue = (longInsideEdgeCandidateValue and not longReclaimUnsafeValue) or longReclaimCandidateValue
+    bool shortCandidateReadyValue = shortInsideEdgeCandidateValue or shortRejectCandidateValue
+    bool longMoveOkValue = not na(todayMoveAtr) and (longReclaimCandidateValue ? todayMoveAtr < -reclaimMoveAtrMin : todayMoveAtr < -entryMoveAtrMin)
+    bool shortMoveOkValue = not na(todayMoveAtr) and (shortRejectCandidateValue ? todayMoveAtr > reclaimMoveAtrMin : todayMoveAtr > entryMoveAtrMin)
+    bool longReclaimSigmaReadyValue = longReclaimCandidateValue and recentLongSigmaExcursionValue
+    bool shortReclaimSigmaReadyValue = shortRejectCandidateValue and recentShortSigmaExcursionValue
+    bool longStopCandleValue = close > open and lowerWickRatio >= wickReversalMin
+    bool longReclaimEdgeValue = low < longEdge + reclaimEdgeBuffer and close > longEdge - reclaimEdgeBuffer
+    bool longHigherLowValue = not na(low[1]) and low > low[1] and low[1] <= longEdge + nearEdgeDistance
+    bool longTriggerOkValue = longStopCandleValue or longReclaimEdgeValue or longHigherLowValue or longRelativeDivergence
+    string longTriggerReasonValue = longReclaimEdgeValue ? "reclaim_edge" : longStopCandleValue ? "reversal_candle" : longHigherLowValue ? "higher_low" : longRelativeDivergence ? "relative_divergence" : "none"
+    bool shortFailureCandleValue = close < open and upperWickRatio >= wickReversalMin
+    bool shortRejectEdgeValue = high > shortEdge - reclaimEdgeBuffer and close < shortEdge + reclaimEdgeBuffer
+    bool shortLowerHighValue = not na(high[1]) and high < high[1] and high[1] >= shortEdge - nearEdgeDistance
+    bool shortTriggerOkValue = shortFailureCandleValue or shortRejectEdgeValue or shortLowerHighValue or shortRelativeDivergence
+    string shortTriggerReasonValue = shortRejectEdgeValue ? "failed_break" : shortFailureCandleValue ? "reversal_candle" : shortLowerHighValue ? "lower_high" : shortRelativeDivergence ? "relative_divergence" : "none"
+    bool shortDailyBypassQualityValue = shortQualityMode == "Loose" or (shortQualityMode == "Tiered" and ((not na(sigmaPos) and sigmaPos >= sigmaExtreme) or (shortRejectCandidateValue and (shortRejectEdgeValue or shortFailureCandleValue or shortRelativeDivergence)) or shortRelativeDivergence))
+    bool shortQualityOkValue = shortDailyOkValue or shortDailyBypassQualityValue
+    bool shortTrendQualityBlockValue = vwapStrongUp or longEmaSideCount >= emaSideBars or sectorSyncStrong or coreSyncStrong
+    bool shortHighQualityConfirmValue = close < vwap or shortRelativeDivergence
+    bool shortCanBypassTrendBlockValue = shortDailyBypassQualityValue and shortHighQualityConfirmValue
+    bool shortHardBlockValue = rawCloseAbove or (shortTrendQualityBlockValue and not shortCanBypassTrendBlockValue)
+    bool longVolumeConfirmValue = not useVolumeScore or (volSpike and (close < open or lowerWickRatio >= wickReversalMin or low <= longEdge + nearEdgeDistance)) or (priorVolSpike3 and close > open)
+    bool shortVolumeConfirmValue = not useVolumeScore or (volSpike and (close > open or upperWickRatio >= wickReversalMin or high >= shortEdge - nearEdgeDistance)) or (priorVolSpike3 and close < open)
+    bool longSigmaScoreOkValue = recentLongSigmaExcursionValue or (not na(sigmaPos) and sigmaPos <= -sigmaSetup)
+    bool shortSigmaScoreOkValue = recentShortSigmaExcursionValue or (not na(sigmaPos) and sigmaPos >= sigmaSetup)
+    int longScoreValue = (longSigmaScoreOkValue ? 1 : 0) + (longReclaimRecoveredValue ? 1 : 0) + (longReclaimCandidateValue ? 1 : 0) + (longVolumeConfirmValue ? 1 : 0) + (longRelativeDivergence ? 1 : 0) + (longTriggerOkValue ? 1 : 0)
+    int shortScoreValue = (shortSigmaScoreOkValue ? 1 : 0) + (shortRejectCandidateValue ? 1 : 0) + (shortVolumeConfirmValue ? 1 : 0) + (shortRelativeDivergence ? 1 : 0) + (shortTriggerOkValue ? 1 : 0) + (shortHighQualityConfirmValue ? 1 : 0)
+    bool longScoreOkValue = longScoreValue >= longScoreMin
+    bool shortScoreOkValue = shortScoreValue >= shortScoreMin
+    bool tqqqShortCloseOkValue = not tqqqProfile or (shortScoreValue >= 6 and not na(sigmaPos) and sigmaPos >= 1.8 and not na(relVol) and relVol >= 1.0 and not vwapStrongUp and longEmaSideCount < emaSideBars and not sectorSyncStrong and not coreSyncStrong)
+    bool probeCooldownPassedValue = tqqqProfile and probeFailedToday and not probeReentryUsedToday and not na(probeFailedBar) and bar_index - probeFailedBar >= effProbeCooldownBars
+    bool longProbeReentryAllowedValue = probeCooldownPassedValue and probeFailedDirection == 1
+    bool shortProbeReentryAllowedValue = probeCooldownPassedValue and probeFailedDirection == -1
+    bool longProbeGateOkValue = not tqqqProfile or not probeFailedToday or probeFailedDirection != 1 or longProbeReentryAllowedValue
+    bool shortProbeGateOkValue = not tqqqProfile or not probeFailedToday or probeFailedDirection != -1 or shortProbeReentryAllowedValue
+    string longMissingValue = (longSigmaScoreOkValue ? "" : "sigma,") + (longReclaimRecoveredValue ? "" : "reclaim,") + (longVolumeConfirmValue ? "" : "vol,") + (longTriggerOkValue ? "" : "trigger,")
+    string shortMissingValue = (shortSigmaScoreOkValue ? "" : "sigma,") + (shortRejectCandidateValue ? "" : "reject,") + (shortVolumeConfirmValue ? "" : "vol,") + (shortTriggerOkValue ? "" : "trigger,") + (shortHighQualityConfirmValue ? "" : "quality,")
+    [recentLowestSigmaValue, recentHighestSigmaValue, recentLongSigmaExcursionValue, recentShortSigmaExcursionValue, longReclaimNeedValue, longReclaimGapValue, longReclaimRecoveredValue, longReclaimUnsafeValue, longReclaimArmedValue, longReclaimCandidateValue, shortRejectUnsafeValue, shortRejectCandidateValue, lunchReclaimCandidateValue, lunchAllowsEntryValue, longDailyQualityValue, longDailyOkValue, strongLongStateValue, shortDailyOkValue, strongShortStateValue, longCandidateReadyValue, shortCandidateReadyValue, longMoveOkValue, shortMoveOkValue, longReclaimSigmaReadyValue, shortReclaimSigmaReadyValue, longTriggerOkValue, longTriggerReasonValue, shortTriggerOkValue, shortTriggerReasonValue, shortQualityOkValue, shortTrendQualityBlockValue, shortHighQualityConfirmValue, shortCanBypassTrendBlockValue, shortHardBlockValue, longVolumeConfirmValue, shortVolumeConfirmValue, longScoreValue, shortScoreValue, longScoreOkValue, shortScoreOkValue, tqqqShortCloseOkValue, probeCooldownPassedValue, longProbeReentryAllowedValue, shortProbeReentryAllowedValue, longProbeGateOkValue, shortProbeGateOkValue, longMissingValue, shortMissingValue]
+
+[recentLowestSigma, recentHighestSigma, recentLongSigmaExcursion, recentShortSigmaExcursion, longReclaimNeed, longReclaimGap, longReclaimRecovered, longReclaimUnsafe, longReclaimArmed, longReclaimCandidate, shortRejectUnsafe, shortRejectCandidate, lunchReclaimCandidate, lunchAllowsEntry, longDailyQuality, longDailyOk, strongLongState, shortDailyOk, strongShortState, longCandidateReady, shortCandidateReady, longMoveOk, shortMoveOk, longReclaimSigmaReady, shortReclaimSigmaReady, longTriggerOk, longTriggerReason, shortTriggerOk, shortTriggerReason, shortQualityOk, shortTrendQualityBlock, shortHighQualityConfirm, shortCanBypassTrendBlock, shortHardBlock, longVolumeConfirm, shortVolumeConfirm, longScore, shortScore, longScoreOk, shortScoreOk, tqqqShortCloseOk, probeCooldownPassed, longProbeReentryAllowed, shortProbeReentryAllowed, longProbeGateOk, shortProbeGateOk, longMissing, shortMissing] = calcSetupContext()
 
 // -----------------------------------------------------------------------------
 // Position and setup state
@@ -425,6 +650,12 @@ var float pendingTp1 = na
 var float pendingTp2 = na
 var float pendingQty = na
 var float pendingPlannedEntry = na
+var string pendingTpMode = ""
+var int pendingTp1Pct = na
+var string pendingTp2Source = ""
+var string pendingEntryModel = ""
+var bool pendingStopEntry = false
+var int pendingOrderBar = na
 
 var int activeDirection = 0
 var string activeSetup = ""
@@ -438,8 +669,23 @@ var float activeQty = na
 var float activeInitialRisk = na
 var float activeMfeR = 0.0
 var bool activeBreakevenDone = false
+var bool activeTp1TouchedLogged = false
+var bool activeTp2TouchedLogged = false
+var string activeTpMode = ""
+var int activeTp1Pct = na
+var string activeTp2Source = ""
+var string activeEntryModel = ""
+var int activeRunnerLockStep = 0
+var bool activeProbeSoftFail = false
 var int activeEntryBar = na
 var float activeEntryNetProfit = na
+var int activeRawCloseBreachCount = 0
+var int activeBottomCloseStopCount = 0
+var int lastSignalBar = na
+var string lastSignalText = "none"
+var float lastPlannedEntry = na
+var float lastActualFill = na
+var string lastExitReason = "none"
 
 bool positionOpened = strategy.position_size != 0 and nz(strategy.position_size[1]) == 0
 bool positionClosed = strategy.position_size == 0 and nz(strategy.position_size[1]) != 0
@@ -460,133 +706,172 @@ if confirmed and newDay
     pendingTp2 := na
     pendingQty := na
     pendingPlannedEntry := na
+    pendingTpMode := ""
+    pendingTp1Pct := na
+    pendingTp2Source := ""
+    pendingEntryModel := ""
+    pendingStopEntry := false
+    pendingOrderBar := na
+    activeRawCloseBreachCount := 0
+    activeBottomCloseStopCount := 0
+    activeTp1TouchedLogged := false
+    activeTp2TouchedLogged := false
+    activeTpMode := ""
+    activeTp1Pct := na
+    activeTp2Source := ""
+    activeEntryModel := ""
+    activeRunnerLockStep := 0
+    activeProbeSoftFail := false
+    lastSignalBar := na
+    lastSignalText := "none"
+    lastPlannedEntry := na
+    lastActualFill := na
+    lastExitReason := "none"
+
+bool canCreateSetup = confirmed and is5m and inRth and orComplete and lunchAllowsEntry and beforeEntryCutoff and edgeReady and orWidthOk and regimeTradeable and not softTrendBlockNow and symbolAllowed and not manualEventBlock and not dayStopActive and tradesToday < maxTradesPerDay and strategy.position_size == 0 and pendingDirection == 0 and setupDirection == 0 and enableStrategyOrders
+bool canConfirmSetup = confirmed and is5m and inRth and orComplete and not (inLunchBlock and lunchPolicy == "Block all") and beforeEntryCutoff and edgeReady and orWidthOk and symbolAllowed and not manualEventBlock and not hardTrendKillNow and not dayStopActive and tradesToday < maxTradesPerDay and strategy.position_size == 0 and pendingDirection == 0 and enableStrategyOrders
+
+float bottomStopBuffer = math.max(math.max(safeDailyAtr20 * bottomProbeStopAtrMult, close * bottomProbeStopPct / 100.0), syminfo.mintick * 2.0)
+float bottomProbeEntry = close
+float bottomProbeStop = low - bottomStopBuffer
+float bottomProbeRisk = bottomProbeEntry - bottomProbeStop
+float bottomProbeTp1 = math.max(nz(longEdge, rawOrl), nz(rawOrl, longEdge))
+float bottomProbeTp2 = orm
+bool bottomProbeGate = confirmed and tqqqProfile and enableBottomProbe and is5m and inRth and orComplete and beforeEntryCutoff and edgeReady and orWidthOk and symbolAllowed and not manualEventBlock and not hardTrendKillNow and not dayStopActive and tradesToday < maxTradesPerDay and strategy.position_size == 0 and pendingDirection == 0 and setupDirection == 0 and enableStrategyOrders and not bottomProbeFailedToday
+bool bottomProbeSigmaOk = not na(sigmaPos) and ((sigmaPos <= -bottomProbeSigmaExtreme and not na(relVol) and relVol >= bottomProbeRelVolMin) or (sigmaPos <= -bottomProbeSigmaPullback and priorVolSpike3))
+bool bottomProbeMoveOk = not na(todayMoveAtr) and (todayMoveAtr <= -reclaimMoveAtrMin or (not na(sigmaPos) and sigmaPos <= -bottomProbeSigmaExtreme))
+bool bottomProbeAliveOk = belowRawCloseCount <= reclaimWatchMaxBars
+bool bottomProbeRaw = bottomProbeGate and bottomProbeSigmaOk and bottomProbeMoveOk and bottomProbeAliveOk
+bool bottomProbeStopOk = bottomProbeRisk > 0.0 and bottomProbeRisk <= safeDailyAtr20 * bottomProbeMaxStopAtr
+bool bottomProbeTargetsOk = not na(bottomProbeTp1) and bottomProbeTp1 > bottomProbeEntry
+float bottomProbeRiskQty = bottomProbeRisk > 0.0 ? math.floor(riskDollars * bottomProbeRiskMult / bottomProbeRisk) : na
+float bottomProbeNotionalQty = bottomProbeEntry > 0.0 ? math.floor(accountSize * maxNotionalPct / 100.0 / bottomProbeEntry) : na
+float bottomProbeQty = math.min(nz(bottomProbeRiskQty, 0.0), nz(bottomProbeNotionalQty, 0.0))
+bool bottomProbeQtyOk = bottomProbeQty >= minQty
+bool bottomProbeOk = bottomProbeRaw and bottomProbeStopOk and bottomProbeTargetsOk and bottomProbeQtyOk
+string bottomProbeStatus = not tqqqProfile ? "standard_off" : not enableBottomProbe ? "off" : bottomProbeFailedToday ? "bp_failed" : not bottomProbeGate ? "gate" : not bottomProbeSigmaOk ? "wait_sigma" : not bottomProbeMoveOk ? "move_not_panic" : not bottomProbeAliveOk ? "stale_break" : not bottomProbeStopOk ? "stop_too_wide" : not bottomProbeTargetsOk ? "target_not_ordered" : not bottomProbeQtyOk ? "qty_too_small" : "ready"
 
 // -----------------------------------------------------------------------------
 // Payloads, reasons, and debug state
 // -----------------------------------------------------------------------------
 dayStopReason() =>
-    rangeInvalidatedToday ? "range_invalidated_today" : noTradeTrendToday ? "no_trade_trend_today" : dailyLossHaltedToday ? "daily_loss_halted" : bothDirectionsFailedNow ? "both_directions_failed" : "none"
+    rangeInvalidatedToday ? "range_x" : noTradeTrendToday ? "trend_kill" : dailyLossHaltedToday ? "daily_loss" : bothDirectionsFailedNow ? "both_loss" : "none"
 
 lunchBlockReason() =>
-    not inLunchBlock ? "outside_lunch" : lunchPolicy == "Block all" ? "lunch_block_all" : lunchPolicy == "Reclaim only" and not lunchReclaimCandidate ? "lunch_reclaim_only_waiting" : "none"
+    not inLunchBlock ? "no_lunch" : lunchPolicy == "Block all" ? "lunch_block" : lunchPolicy == "Reclaim only" and not lunchReclaimCandidate ? "lunch_wait_reclaim" : "none"
 
 lunchStateText() =>
-    not inLunchBlock ? "outside lunch" : lunchPolicy == "Block all" ? "blocked" : lunchPolicy == "Allow all" ? "allowed" : lunchReclaimCandidate ? "reclaim-only pass" : "reclaim-only wait"
+    not inLunchBlock ? "out" : lunchPolicy == "Allow all" ? "allow" : lunchPolicy == "Block all" ? "block" : lunchReclaimCandidate ? "reclaim_ok" : "reclaim_wait"
 
 entryGateBlockReason() =>
-    not confirmed ? "bar_not_confirmed" : not is5m ? "not_5m_chart" : not inRth ? "outside_rth" : not orComplete ? "opening_range_not_complete" : inLunchBlock and not lunchAllowsEntry ? lunchBlockReason() : not beforeEntryCutoff ? "after_entry_cutoff" : not edgeReady ? "edge_not_ready" : not orWidthOk ? (orTooNarrow ? "low_vol_or_too_narrow" : "chaos_or_extreme_wide") : softTrendBlockNow ? "soft_trend_watch" : not regimeTradeable ? "regime_not_tradeable_" + regime : not symbolAllowed ? "symbol_restricted" : manualEventBlock ? "manual_event_block" : dayStopActive ? dayStopReason() : tradesToday >= maxTradesPerDay ? "max_trades_reached" : strategy.position_size != 0 ? "position_open" : pendingDirection != 0 ? "entry_pending" : not enableStrategyOrders ? "orders_disabled" : "gate_pass"
+    not confirmed ? "bar_unconfirmed" : not is5m ? "not_5m" : not inRth ? "rth_off" : not orComplete ? "or_build" : inLunchBlock and not lunchAllowsEntry ? lunchBlockReason() : not beforeEntryCutoff ? "cutoff" : not edgeReady ? "edge_na" : not orWidthOk ? (orTooNarrow ? "or_narrow" : "or_wide") : softTrendBlockNow ? "trend_watch" : not regimeTradeable ? "bad_regime" : not symbolAllowed ? "bad_symbol" : manualEventBlock ? "manual_block" : dayStopActive ? dayStopReason() : tradesToday >= maxTradesPerDay ? "max_trades" : strategy.position_size != 0 ? "in_pos" : pendingDirection != 0 ? "pending" : not enableStrategyOrders ? "orders_off" : "gate_pass"
+
+confirmGateBlockReason() =>
+    not confirmed ? "bar_unconfirmed" : not is5m ? "not_5m" : not inRth ? "rth_off" : not orComplete ? "or_build" : inLunchBlock and lunchPolicy == "Block all" ? "lunch_block" : not beforeEntryCutoff ? "cutoff" : not edgeReady ? "edge_na" : not orWidthOk ? (orTooNarrow ? "or_narrow" : "or_wide") : hardTrendKillNow ? "trend_kill" : not symbolAllowed ? "bad_symbol" : manualEventBlock ? "manual_block" : dayStopActive ? dayStopReason() : tradesToday >= maxTradesPerDay ? "max_trades" : strategy.position_size != 0 ? "in_pos" : pendingDirection != 0 ? "pending" : not enableStrategyOrders ? "orders_off" : "confirm_pass"
 
 rangeStateText() =>
-    rangeInvalidatedToday ? "range invalidated" : noTradeTrendToday ? "no trade trend" : dailyLossHaltedToday ? "daily loss halt" : softTrendBlockNow ? "soft trend watch" : not orLocked ? "building OR" : regime
+    rangeInvalidatedToday ? "range_x" : noTradeTrendToday ? "trend_kill" : dailyLossHaltedToday ? "loss_halt" : softTrendBlockNow ? "trend_watch" : not orLocked ? "or_build" : regime
 
-watchExplanation() =>
-    softTrendBlockNow ? "EMA/VWAP push with raw outside; wait cooldown" : watchLongReclaim ? (longWatchStale ? "below raw_ORL stale; still wait close > long_edge" : "below raw_ORL " + str.tostring(belowRawCloseCount) + " bars; wait close > long_edge") : watchShortReject ? (shortWatchStale ? "above raw_ORH stale; still wait close < short_edge" : "above raw_ORH " + str.tostring(aboveRawCloseCount) + " bars; wait close < short_edge") : rawOutsideStale ? "raw outside stale; reclaim can still qualify" : "no raw outside watch"
-
-nextActionText() =>
-    string gateReason = entryGateBlockReason()
-    gateReason != "gate_pass" ? "blocked: " + gateReason : inLunchBlock and lunchReclaimCandidate ? "lunch reclaim candidate; wait trigger confirm" : longReclaimCandidate ? "long reclaim candidate; wait trigger confirm" : shortRejectCandidate ? "short reject candidate; wait trigger confirm" : watchLongReclaim ? "wait close > long_edge" : watchShortReject ? "wait close < short_edge" : "wait price near dynamic edge"
+tpPlanFor(int directionValue, float plannedEntry, float stopPrice, int selectedScore, bool stopEntryModel) =>
+    float stopDistance = math.abs(plannedEntry - stopPrice)
+    float baseTp1Price = orm
+    float rawFallbackTp2 = directionValue == 1 ? rawOrh - syminfo.mintick : rawOrl + syminfo.mintick
+    float edgeTp2 = directionValue == 1 ? shortEdge : longEdge
+    bool edgeBeyond = directionValue == 1 ? not na(edgeTp2) and edgeTp2 > baseTp1Price : not na(edgeTp2) and edgeTp2 < baseTp1Price
+    bool rawBeyond = directionValue == 1 ? rawFallbackTp2 > baseTp1Price : rawFallbackTp2 < baseTp1Price
+    string tp2Source = edgeBeyond ? "dynamic_edge" : rawBeyond ? "raw_or" : "none"
+    float tp2Price = edgeBeyond ? edgeTp2 : rawBeyond ? rawFallbackTp2 : na
+    bool adaptiveWanted = adaptiveTpEnabled and selectedScore >= adaptiveTpScoreMin and not volDryUp
+    float adaptiveTp1 = directionValue == 1 ? baseTp1Price + stopDistance * effAdaptiveTpExtraR : baseTp1Price - stopDistance * effAdaptiveTpExtraR
+    bool adaptiveOrdered = directionValue == 1 ? not na(tp2Price) and adaptiveTp1 > plannedEntry and adaptiveTp1 < tp2Price : not na(tp2Price) and adaptiveTp1 < plannedEntry and adaptiveTp1 > tp2Price
+    bool adaptiveValid = adaptiveWanted and adaptiveOrdered
+    float tp1Price = adaptiveValid ? adaptiveTp1 : baseTp1Price
+    int tp1Pct = adaptiveValid ? effAdaptiveTp1ExitPct : effTp1ExitPct
+    string tpMode = adaptiveValid ? "adaptive_score" : adaptiveWanted ? "adaptive_fallback_orm" : "orm_default"
+    float tp2R = stopDistance > 0.0 and not na(tp2Price) ? math.abs(tp2Price - plannedEntry) / stopDistance : na
+    bool rawOrCap = tqqqProfile and tp2Source == "raw_or" and not na(tp2R) and tp2R > 4.0
+    float rawCapTp2 = directionValue == 1 ? plannedEntry + stopDistance * 3.0 : plannedEntry - stopDistance * 3.0
+    bool rawCapOrdered = directionValue == 1 ? rawCapTp2 > tp1Price : rawCapTp2 < tp1Price
+    if rawOrCap and rawCapOrdered
+        tp2Price := rawCapTp2
+        tp2Source := "raw_or_capped"
+    else
+        bool capTp2 = not stopEntryModel and not na(tp2R) and tp2R > effTp2CapTriggerR
+        float cappedTp2 = directionValue == 1 ? plannedEntry + stopDistance * effTp2CapTargetR : plannedEntry - stopDistance * effTp2CapTargetR
+        bool capOrdered = directionValue == 1 ? cappedTp2 > tp1Price : cappedTp2 < tp1Price
+        if capTp2 and capOrdered
+            tp2Price := cappedTp2
+            tp2Source := "r_cap"
+    [tp1Price, tp2Price, tp1Pct, tpMode, tp2Source]
 
 buildPayload(series string eventType, series int directionValue, series string reason, series float eventPrice, series float stopPrice, series float tp1Price, series float tp2Price, series float qtyValue) =>
     string result = "{"
-    result := result + jsonStr("source", "tradingview")
-    result := result + "," + jsonStr("event_type", eventType)
-    result := result + "," + jsonStr("event_id", eventId(eventType))
-    result := result + "," + jsonStr("symbol", syminfo.ticker)
-    result := result + "," + jsonStr("exchange", syminfo.prefix)
-    result := result + "," + jsonStr("interval", timeframe.period)
-    result := result + "," + jsonStr("script_tag", SCRIPT_TAG)
-    result := result + "," + jsonStr("strategy_version", STRATEGY_VERSION)
-    result := result + "," + jsonStr("trade_model", TRADE_MODEL)
-    result := result + "," + jsonStr("risk_model", RISK_MODEL)
-    result := result + "," + jsonStr("tp_sl_model", TP_SL_MODEL)
-    result := result + "," + jsonStr("direction", dirText(directionValue))
-    result := result + "," + jsonStr("reason", reason)
-    result := result + "," + jsonStr("regime", regime)
-    result := result + "," + jsonNum("event_price", eventPrice)
-    result := result + "," + jsonNum("entry", eventPrice)
-    result := result + "," + jsonNum("stop_loss", stopPrice)
+    result := result + jsonStr("event", eventType)
+    result := result + "," + jsonStr("sym", syminfo.ticker)
+    result := result + "," + jsonStr("ver", STRATEGY_VERSION)
+    result := result + "," + jsonStr("dir", dirText(directionValue))
+    result := result + "," + jsonStr("why", reason)
+    result := result + "," + jsonNum("px", eventPrice)
+    result := result + "," + jsonNum("sl", stopPrice)
     result := result + "," + jsonNum("tp1", tp1Price)
     result := result + "," + jsonNum("tp2", tp2Price)
-    result := result + "," + jsonNum("shares", qtyValue)
-    result := result + "," + jsonNum("raw_orh", rawOrh)
-    result := result + "," + jsonNum("raw_orl", rawOrl)
-    result := result + "," + jsonNum("orm", orm)
-    result := result + "," + jsonNum("dist_upper", distUpper)
-    result := result + "," + jsonNum("dist_lower", distLower)
-    result := result + "," + jsonNum("short_edge", shortEdge)
-    result := result + "," + jsonNum("long_edge", longEdge)
-    result := result + "," + jsonNum("day_open", dayOpen)
-    result := result + "," + jsonNum("daily_atr20", dailyAtr20)
-    result := result + "," + jsonNum("today_move_atr", todayMoveAtr)
-    result := result + "," + jsonNum("or_width", orWidth)
-    result := result + "," + jsonNum("or_atr5", orAtrAtLock)
-    result := result + "," + jsonNum("or_width_atr", orWidthAtr)
-    result := result + "," + jsonBool("or_width_ok", orWidthOk)
-    result := result + "," + jsonBool("or_wide_warning", orWideWarning)
-    result := result + "," + jsonStr("watch_state", watchState)
-    result := result + "," + jsonStr("range_state", rangeStateText())
-    result := result + "," + jsonInt("raw_outside_count", rawOutsideCount)
-    result := result + "," + jsonBool("watch_stale", rawOutsideStale)
-    result := result + "," + jsonBool("reclaim_allowed", failedBreakWatch or priorLongWatch or priorShortWatch)
-    result := result + "," + jsonBool("hard_trend_kill", hardTrendKillNow)
-    result := result + "," + jsonBool("soft_trend_watch", softTrendBlockNow)
-    result := result + "," + jsonStr("lunch_policy", lunchPolicy)
-    result := result + "," + jsonStr("lunch_state", lunchStateText())
-    result := result + "," + jsonBool("lunch_allows_entry", lunchAllowsEntry)
-    result := result + "," + jsonStr("next_action", nextActionText())
-    result := result + "," + jsonInt("up_streak", upStreak)
-    result := result + "," + jsonInt("down_streak", downStreak)
-    result := result + "," + jsonNum("up_cum_pct", upCumPct)
-    result := result + "," + jsonNum("down_cum_pct", downCumPct)
-    result := result + "," + jsonBool("range_invalidated_today", rangeInvalidatedToday)
-    result := result + "," + jsonBool("no_trade_trend_today", noTradeTrendToday)
-    result := result + "," + jsonBool("sector_sync_strong", sectorSyncStrong)
-    result := result + "," + jsonBool("core_sync_strong", coreSyncStrong)
-    result := result + "," + jsonInt("bar_open_ms", time)
-    result := result + "," + jsonInt("bar_close_ms", time_close)
-    result := result + "," + jsonInt("bar_index", bar_index)
+    result := result + "," + jsonNum("qty", qtyValue)
+    result := result + "," + jsonNum("sigma", sigmaPos)
+    result := result + "," + jsonNum("move_atr", todayMoveAtr)
+    result := result + "," + jsonInt("ls", longScore)
+    result := result + "," + jsonInt("ss", shortScore)
+    result := result + "," + jsonNum("vol", relVol)
+    result := result + "," + jsonInt("bar", bar_index)
     result := result + "}"
     result
 
 longNoSignalReason() =>
-    string gateReason = entryGateBlockReason()
-    gateReason != "gate_pass" ? gateReason : longDisabledToday ? "long_disabled_after_loss" : requireDailyLongEnhancement and not (downStreak >= longDownStreakMin or downCumPct <= longDownCumPctMax) ? "long_daily_filter_failed" : na(todayMoveAtr) ? "today_move_atr_missing" : todayMoveAtr >= -entryMoveAtrMin ? "today_move_atr_not_oversold" : math.abs(todayMoveAtr) >= trendKillAtr ? "today_move_atr_strong_trend" : na(longEdge) ? "long_edge_missing" : not (longInsideEdgeCandidate or longReclaimCandidate) ? "waiting_long_edge_or_reclaim" : "long_setup_ready"
+    string g = entryGateBlockReason()
+    setupDirection != 0 ? "setup_" + dirText(setupDirection) : bottomProbeOk ? "bp_ready" : bottomProbeRaw ? "bp_" + bottomProbeStatus : g != "gate_pass" ? g : not longProbeGateOk ? "probe_wait" : longDisabledToday ? "L_disabled" : not longDailyOk ? "L_daily" : na(todayMoveAtr) ? "move_na" : math.abs(todayMoveAtr) >= trendKillAtr ? "trend" : na(longEdge) ? "Ledge_na" : longReclaimArmed and not longReclaimRecovered ? "L_need_reclaim" : not longCandidateReady ? (recentLongSigmaExcursion ? "L_wait_reclaim" : "L_wait_sigma") : not longMoveOk ? "L_move_low" : not longScoreOk ? "L_score_" + str.tostring(longScore) + "/" + str.tostring(longScoreMin) + "_" + longMissing : not longTriggerOk ? "L_trig_" + longTriggerReason : "long_setup_ready"
 
 shortNoSignalReason() =>
-    string gateReason = entryGateBlockReason()
-    gateReason != "gate_pass" ? gateReason : shortDisabledToday ? "short_disabled_after_loss" : not (upStreak >= shortUpStreakMin and upCumPct >= shortUpCumPctMin) and requireDailyShortEnhancement ? "short_daily_filter_failed" : na(todayMoveAtr) ? "today_move_atr_missing" : todayMoveAtr <= entryMoveAtrMin ? "today_move_atr_not_overbought" : math.abs(todayMoveAtr) >= trendKillAtr ? "today_move_atr_strong_trend" : vwapStrongUp ? "vwap_strong_up" : longEmaSideCount >= emaSideBars ? "ema20_upside_push" : sectorSyncStrong ? "smh_xlk_sync_strong" : coreSyncStrong ? "core_weights_sync_strong" : na(shortEdge) ? "short_edge_missing" : not (shortInsideEdgeCandidate or shortRejectCandidate) ? "waiting_short_edge_or_reject" : "short_setup_ready"
+    string g = entryGateBlockReason()
+    setupDirection != 0 ? "setup_" + dirText(setupDirection) : shortRejectUnsafe and (g == "gate_pass" or g == "lunch_wait_reclaim") ? "S_too_near_ORH" : g != "gate_pass" ? g : not shortProbeGateOk ? "probe_wait" : shortDisabledToday ? "S_disabled" : not shortQualityOk ? "S_quality" : na(todayMoveAtr) ? "move_na" : math.abs(todayMoveAtr) >= trendKillAtr ? "trend" : rawCloseAbove ? "ORH_hold" : shortTrendQualityBlock and not shortCanBypassTrendBlock ? "S_trend_block" : na(shortEdge) ? "Sedge_na" : not shortCandidateReady ? (recentShortSigmaExcursion ? "S_wait_reject" : "S_wait_sigma") : not shortMoveOk ? "S_move_low" : not shortScoreOk ? "S_score_" + str.tostring(shortScore) + "/" + str.tostring(shortScoreMin) + "_" + shortMissing : not tqqqShortCloseOk ? "S_tqqq_filter" : not shortTriggerOk ? "S_trig_" + shortTriggerReason : "short_setup_ready"
+
+pendingSetupText() =>
+    pendingDirection != 0 ? dirText(pendingDirection) + " " + pendingEntryModel + " @" + fmtPrice(pendingPlannedEntry) : setupDirection == 0 ? "none" : dirText(setupDirection) + " " + setupTrigger + " gate=" + confirmGateBlockReason()
+
+longNextActionText() =>
+    setupDirection == 1 ? pendingSetupText() : longNoSignalReason() == "long_setup_ready" ? "ready " + longTriggerReason : longNoSignalReason()
+
+shortNextActionText() =>
+    setupDirection == -1 ? pendingSetupText() : shortNoSignalReason() == "short_setup_ready" ? "ready " + shortTriggerReason : shortNoSignalReason()
 
 debugCommonState() =>
-    string result = "regime=" + regime + " gate=" + entryGateBlockReason() + " day_stop=" + dayStopReason()
-    result := result + "\nprice=" + fmtPrice(close) + " day_open=" + fmtPrice(dayOpen) + " daily_ATR20=" + fmtPrice(dailyAtr20) + " today_move_atr=" + fmt(todayMoveAtr)
-    result := result + "\nraw_ORH=" + fmtPrice(rawOrh) + " raw_ORL=" + fmtPrice(rawOrl) + " ORM=" + fmtPrice(orm) + " OR_width=" + fmtPrice(orWidth) + " ATR5_lock=" + fmtPrice(orAtrAtLock)
-    result := result + "\nedge S/L=" + fmtPrice(shortEdge) + "/" + fmtPrice(longEdge) + " near=" + fmtPrice(nearEdgeDistance) + " close_inside_or=" + str.tostring(closeInsideOr)
-    result := result + "\nstreak up/down=" + str.tostring(upStreak) + "/" + str.tostring(downStreak) + " cum up/down=" + fmt(upCumPct) + "/" + fmt(downCumPct)
-    result := result + "\ntrend: hard=" + str.tostring(hardTrendKillNow) + " soft_watch=" + str.tostring(softTrendBlockNow) + " raw_watch=" + str.tostring(rawOutsideWatch) + " watch_stale=" + str.tostring(rawOutsideStale) + " vwap_slope=" + str.tostring(vwapSlopeSteep) + " ema_push=" + str.tostring(emaSidePush)
-    result := result + "\nwatch_state=" + watchState + " lunch=" + lunchStateText() + " why=" + watchExplanation() + " next=" + nextActionText()
-    result := result + "\nraw_outside_count=" + str.tostring(rawOutsideCount) + " or_width_atr=" + fmt(orWidthAtr) + " wide_warning=" + str.tostring(orWideWarning)
-    result := result + "\nraw_counts above/below=" + str.tostring(aboveRawCloseCount) + "/" + str.tostring(belowRawCloseCount) + " ema_counts up/down=" + str.tostring(longEmaSideCount) + "/" + str.tostring(shortEmaSideCount)
-    result := result + "\nRS: qqq=" + fmt(qqqChangePct) + " smh=" + fmt(smhChangePct) + " xlk=" + fmt(xlkChangePct) + " long_div=" + str.tostring(longRelativeDivergence) + " short_div=" + str.tostring(shortRelativeDivergence)
-    result := result + "\nshort_blocks sector_sync=" + str.tostring(sectorSyncStrong) + " core_sync=" + str.tostring(coreSyncStrong) + " core_count=" + str.tostring(coreStrongCount)
-    result := result + "\nrisk trades=" + str.tostring(tradesToday) + "/" + str.tostring(maxTradesPerDay) + " day_pnl=" + fmt(dayPnl) + " Lfail/Sfail=" + str.tostring(longLossesToday) + "/" + str.tostring(shortLossesToday)
-    result := result + "\nlong_reason=" + longNoSignalReason() + " short_reason=" + shortNoSignalReason()
+    string result = "g=" + entryGateBlockReason() + " r=" + regime + " stop=" + dayStopReason()
+    result := result + "\npx=" + fmtPrice(close) + " m=" + fmt(todayMoveAtr) + " sig=" + fmt(sigmaPos) + " vol=" + fmt(relVol)
+    result := result + "\nL=" + longNoSignalReason() + " S=" + shortNoSignalReason() + " sc=" + str.tostring(longScore) + "/" + str.tostring(shortScore)
+    result := result + "\nbp=" + bottomProbeStatus + " need=" + fmtPrice(longReclaimNeed) + " gap=" + fmt(longReclaimGap) + " pnl=" + fmt(dayPnl)
     result
 
 debugCompactState() =>
-    string result = "gate=" + entryGateBlockReason() + " regime=" + regime + " watch=" + watchState + " state=" + rangeStateText()
-    result := result + "\nlong=" + longNoSignalReason() + " short=" + shortNoSignalReason()
-    result := result + "\nmoveATR=" + fmt(todayMoveAtr) + " rawCnt=" + str.tostring(rawOutsideCount) + " lunch=" + lunchStateText() + " softTrend=" + str.tostring(softTrendBlockNow) + " hardTrend=" + str.tostring(hardTrendKillNow)
-    result := result + "\nnext=" + nextActionText()
+    string result = "g=" + entryGateBlockReason() + " r=" + regime + " w=" + watchState
+    result := result + "\nL=" + longNoSignalReason() + " S=" + shortNoSignalReason()
+    result := result + "\nsc=" + str.tostring(longScore) + "/" + str.tostring(shortScore) + " m=" + fmt(todayMoveAtr) + " sig=" + fmt(sigmaPos) + " bp=" + bottomProbeStatus
     result
 
 debugConfirmText(int directionValue) =>
-    directionValue == 1 ? "need high > " + fmtPrice(setupConfirmHigh + entryBreakBuffer) + " actual high=" + fmtPrice(high) : "need low < " + fmtPrice(setupConfirmLow - entryBreakBuffer) + " actual low=" + fmtPrice(low)
+    directionValue == 1 ? "need H>" + fmtPrice(setupConfirmHigh + entryBreakBuffer) + " H=" + fmtPrice(high) : "need L<" + fmtPrice(setupConfirmLow - entryBreakBuffer) + " L=" + fmtPrice(low)
+
+stateTableText() =>
+    string tableText = "DORH v4.10"
+    tableText := tableText + "\n" + tradeProfile + " " + rangeStateText()
+    tableText := tableText + "\nL " + longNextActionText()
+    tableText := tableText + "\nS " + shortNextActionText()
+    tableText := tableText + "\nBP " + bottomProbeStatus + " sig " + fmt(sigmaPos) + " vol " + fmt(relVol)
+    tableText := tableText + "\nm " + fmt(todayMoveAtr) + " sc " + str.tostring(longScore) + "/" + str.tostring(shortScore) + " PnL " + fmt(dayPnl)
+    tableText
 
 // -----------------------------------------------------------------------------
 // State alerts and forced exits
 // -----------------------------------------------------------------------------
 if orJustLocked
-    debugLog("gate", "OR_LOCK", "raw_ORH=" + fmtPrice(rawOrh) + " raw_ORL=" + fmtPrice(rawOrl) + " ORM=" + fmtPrice(orm) + "\nOR_width=" + fmtPrice(orWidth) + " ATR5_lock=" + fmtPrice(orAtrAtLock) + " or_width_atr=" + fmt(orWidthAtr) + " width_ok=" + str.tostring(orWidthOk) + " wide_warning=" + str.tostring(orWideWarning) + " regime=" + regime)
+    debugLog("gate", "OR_LOCK", "ORH=" + fmtPrice(rawOrh) + " ORL=" + fmtPrice(rawOrl) + " W/ATR=" + fmt(orWidthAtr) + " r=" + regime)
 
 if confirmed and orWideWarning and not wideOrWarningAlertSent
     wideOrWarningAlertSent := true
@@ -602,21 +887,60 @@ if confirmed and orComplete and orWidthOk and regimeTradeable and not softTrendB
 
 if confirmed and watchLongReclaim and not watchLongAlertSent
     watchLongAlertSent := true
-    debugLog("gate", "WATCH_LONG_RECLAIM", "raw_outside_count=" + str.tostring(belowRawCloseCount) + "\n" + debugCommonState())
+    debugEventLog("gate", "WATCH_LONG_RECLAIM", "raw_outside_count=" + str.tostring(belowRawCloseCount) + "\n" + debugCommonState())
     if enableAlerts
         alert(buildPayload("WATCH_LONG_RECLAIM", 1, "watch_long_reclaim", close, lowerBreakLevel, orm, shortEdge, na), alert.freq_all)
-    drawStateLabel("WATCH L", watchExplanation(), low, false, color.new(color.aqua, 0), color.black)
 
 if confirmed and watchShortReject and not watchShortAlertSent
     watchShortAlertSent := true
-    debugLog("gate", "WATCH_SHORT_REJECT", "raw_outside_count=" + str.tostring(aboveRawCloseCount) + "\n" + debugCommonState())
+    debugEventLog("gate", "WATCH_SHORT_REJECT", "raw_outside_count=" + str.tostring(aboveRawCloseCount) + "\n" + debugCommonState())
     if enableAlerts
         alert(buildPayload("WATCH_SHORT_REJECT", -1, "watch_short_reject", close, upperBreakLevel, orm, longEdge, na), alert.freq_all)
-    drawStateLabel("WATCH S", watchExplanation(), high, true, color.new(color.orange, 0), color.black)
+
+if confirmed and edgeReady and recentLongSigmaExcursion and not sigmaLongWatchLabelSent
+    sigmaLongWatchLabelSent := true
+    debugEventLog("gate", "WATCH_LONG_SIGMA", "recent_lowest_sigma=" + fmt(recentLowestSigma) + "\n" + debugCompactState())
+
+if confirmed and longReclaimArmed and not longReclaimArmedAlertSent
+    longReclaimArmedAlertSent := true
+    debugEventLog("gate", "LONG_RECLAIM_ARMED", "need close > " + fmtPrice(longReclaimNeed) + " gap=" + fmt(longReclaimGap) + "\n" + debugCommonState())
+    if enableAlerts
+        alert(buildPayload("LONG_RECLAIM_ARMED", 1, "long_reclaim_armed", close, lowerBreakLevel, orm, shortEdge, na), alert.freq_all)
+
+if confirmed and longReclaimArmed and not longReclaimRecovered and not longReclaimNeedLevelAlertSent
+    longReclaimNeedLevelAlertSent := true
+    debugEventLog("gate", "LONG_RECLAIM_NEED_LEVEL", "need close > " + fmtPrice(longReclaimNeed) + " current=" + fmtPrice(close) + " gap=" + fmt(longReclaimGap))
+
+if confirmed and longReclaimArmed and not beforeEntryCutoff and not longReclaimCutoffAlertSent
+    longReclaimCutoffAlertSent := true
+    debugEventLog("gate", "LONG_RECLAIM_BLOCKED_CUTOFF", "after_entry_cutoff need=" + fmtPrice(longReclaimNeed) + " close=" + fmtPrice(close) + "\n" + debugCompactState())
+
+if confirmed and useVolumeScore and (longVolumeConfirm or shortVolumeConfirm) and not volumeConfirmAlertSent
+    volumeConfirmAlertSent := true
+    debugEventLog("setup", "VOLUME_CONFIRM", "state=" + volumeState + " rel_vol=" + fmt(relVol) + " base=" + fmt(volBase) + " long_vol=" + str.tostring(longVolumeConfirm) + " short_vol=" + str.tostring(shortVolumeConfirm))
+
+if confirmed and canCreateSetup and longCandidateReady and longMoveOk and longScoreOk and not longTriggerOk and not longScoreReadyAlertSent
+    longScoreReadyAlertSent := true
+    debugEventLog("setup", "LONG_SCORE_READY", "score=" + str.tostring(longScore) + "/" + str.tostring(longScoreMin) + " waiting_trigger=" + longTriggerReason + "\n" + debugCommonState())
+
+if confirmed and canCreateSetup and shortCandidateReady and shortMoveOk and shortScoreOk and not shortTriggerOk and not shortScoreReadyAlertSent
+    shortScoreReadyAlertSent := true
+    debugEventLog("setup", "SHORT_SCORE_READY", "score=" + str.tostring(shortScore) + "/" + str.tostring(shortScoreMin) + " waiting_trigger=" + shortTriggerReason + "\n" + debugCommonState())
+
+if confirmed and canCreateSetup and longCandidateReady and longMoveOk and not longScoreOk and not longScoreBlockAlertSent
+    longScoreBlockAlertSent := true
+    debugEventLog("setup", "LONG_SCORE_BLOCK", "score=" + str.tostring(longScore) + "/" + str.tostring(longScoreMin) + " missing=" + longMissing + "\n" + debugCommonState())
+
+if confirmed and canCreateSetup and shortCandidateReady and shortMoveOk and not shortScoreOk and not shortScoreBlockAlertSent
+    shortScoreBlockAlertSent := true
+    debugEventLog("setup", "SHORT_SCORE_BLOCK", "score=" + str.tostring(shortScore) + "/" + str.tostring(shortScoreMin) + " missing=" + shortMissing + "\n" + debugCommonState())
+
+if confirmed and edgeReady and recentShortSigmaExcursion and not sigmaShortWatchLabelSent
+    sigmaShortWatchLabelSent := true
+    debugEventLog("gate", "WATCH_SHORT_SIGMA", "recent_highest_sigma=" + fmt(recentHighestSigma) + "\n" + debugCompactState())
 
 if confirmed and softTrendBlockNow and not (softTrendBlockNow[1] == true)
     debugLog("gate", "TREND_WATCH", debugCompactState())
-    drawStateLabel("TREND WATCH", watchExplanation(), close, close >= open, color.new(color.orange, 0), color.black)
 
 if noTradeTrendTrigger
     noTradeTrendToday := true
@@ -624,7 +948,6 @@ if noTradeTrendTrigger
     debugLog("gate", "NO_TRADE_TREND", "reason=" + reason + "\n" + debugCommonState())
     if enableAlerts
         alert(buildPayload("NO_TRADE_TREND", 0, reason, close, na, na, na, na), alert.freq_all)
-    drawStateLabel("NO TRADE", reason, close, close >= open, color.new(color.orange, 0), color.black)
     if inPosition
         strategy.close(orderIdForDirection(activeDirection), comment="STOP_OR_BREAK no_trade_trend " + fmtPrice(close))
 
@@ -634,7 +957,6 @@ if rangeInvalidationTrigger
     debugLog("gate", "RANGE_INVALIDATED", "reason=" + reason + "\n" + debugCommonState())
     if enableAlerts
         alert(buildPayload("RANGE_INVALIDATED", 0, reason, close, na, na, na, na), alert.freq_all)
-    drawStateLabel("RANGE X", reason, close, aboveRawCloseCount >= outsideRawCloseBars, color.new(color.red, 0), color.white)
     if inPosition
         strategy.close(orderIdForDirection(activeDirection), comment="RANGE_INVALIDATED " + fmtPrice(close))
 
@@ -645,7 +967,7 @@ if dailyLossTrigger
         strategy.close(orderIdForDirection(activeDirection), comment="TIME_EXIT daily_loss " + fmtPrice(close))
 
 if confirmed and forceFlatNow and inPosition
-    debugLog("order", "FORCE_FLAT", "time exit at " + fmtPrice(close))
+    debugEventLog("order", "FORCE_FLAT", "time exit at " + fmtPrice(close))
     strategy.close(orderIdForDirection(activeDirection), comment="TIME_EXIT force_flat " + fmtPrice(close))
 
 // -----------------------------------------------------------------------------
@@ -665,8 +987,19 @@ if positionOpened
     activeInitialRisk := math.abs(strategy.position_avg_price - pendingStop)
     activeMfeR := 0.0
     activeBreakevenDone := false
+    activeTp1TouchedLogged := false
+    activeTp2TouchedLogged := false
+    activeTpMode := pendingTpMode == "" ? "orm_default" : pendingTpMode
+    activeTp1Pct := na(pendingTp1Pct) ? effTp1ExitPct : pendingTp1Pct
+    activeTp2Source := pendingTp2Source
+    activeEntryModel := pendingEntryModel
+    activeRunnerLockStep := 0
+    activeProbeSoftFail := false
     activeEntryBar := bar_index
     activeEntryNetProfit := strategy.netprofit
+    activeRawCloseBreachCount := 0
+    activeBottomCloseStopCount := 0
+    lastActualFill := strategy.position_avg_price
     pendingDirection := 0
     pendingSetup := ""
     pendingTrigger := ""
@@ -675,35 +1008,127 @@ if positionOpened
     pendingTp2 := na
     pendingQty := na
     pendingPlannedEntry := na
-    debugLog("order", "POSITION_OPENED", "side=" + dirText(fillDirection) + " fill=" + fmtPrice(strategy.position_avg_price) + " stop=" + fmtPrice(activeStop) + " tp1=" + fmtPrice(activeTp1) + " tp2=" + fmtPrice(activeTp2) + " qty=" + qtyText(activeQty))
-    drawEventLabel(fillDirection == 1 ? "FILL L" : "FILL S", "Strategy position opened at " + fmtPrice(strategy.position_avg_price), strategy.position_avg_price, fillDirection == -1, color.new(color.blue, 0), color.white)
+    pendingTpMode := ""
+    pendingTp1Pct := na
+    pendingTp2Source := ""
+    pendingEntryModel := ""
+    pendingStopEntry := false
+    pendingOrderBar := na
+    debugEventLog("order", "POSITION_OPENED", "side=" + dirText(fillDirection) + " fill=" + fmtPrice(strategy.position_avg_price) + " stop=" + fmtPrice(activeStop) + " tp1=" + fmtPrice(activeTp1) + " tp2=" + fmtPrice(activeTp2) + " qty=" + qtyText(activeQty) + " model=" + activeEntryModel)
+    if tqqqProfile and activeEntryModel == "reclaim_stop"
+        debugEventLog("order", "PROBE_STOP_FILLED", "side=" + dirText(fillDirection) + " fill=" + fmtPrice(strategy.position_avg_price) + " stop=" + fmtPrice(activeStop))
+    string fillLabel = activeEntryModel == "bottom_probe" ? "BTM FILL" : activeEntryModel == "reclaim_stop" ? "PROBE FILL" : fillDirection == 1 ? "FILL L" : "FILL S"
+    drawEventLabel(fillLabel, "Fill " + fmtPrice(strategy.position_avg_price) + " model=" + activeEntryModel, strategy.position_avg_price, fillDirection == -1, color.new(color.blue, 0), color.white)
 
-bool stopOrBreakLong = inPosition and activeDirection == 1 and edgeReady and (close < rawOrl or low < lowerBreakLevel)
-bool stopOrBreakShort = inPosition and activeDirection == -1 and edgeReady and (close > rawOrh or high > upperBreakLevel)
+bool activeUsesRawOrDeathLine = activeEntryModel != "bottom_probe"
+bool rawCloseBreachLong = activeUsesRawOrDeathLine and inPosition and activeDirection == 1 and edgeReady and close < rawOrl
+bool rawCloseBreachShort = activeUsesRawOrDeathLine and inPosition and activeDirection == -1 and edgeReady and close > rawOrh
+bool hardBufferBreakLong = activeUsesRawOrDeathLine and inPosition and activeDirection == 1 and edgeReady and low < lowerBreakLevel
+bool hardBufferBreakShort = activeUsesRawOrDeathLine and inPosition and activeDirection == -1 and edgeReady and high > upperBreakLevel
+bool rawCloseBreachNow = rawCloseBreachLong or rawCloseBreachShort
+if confirmed
+    if inPosition and activeDirection != 0 and edgeReady
+        activeRawCloseBreachCount := rawCloseBreachNow ? activeRawCloseBreachCount + 1 : 0
+    else
+        activeRawCloseBreachCount := 0
+bool rawCloseConfirmedStop = inPosition and rawCloseBreachNow and activeRawCloseBreachCount >= rawCloseStopBars
+bool hardBufferBreakNow = hardBufferBreakLong or hardBufferBreakShort
+bool orWarnNow = confirmed and inPosition and rawCloseBreachNow and not hardBufferBreakNow and not rawCloseConfirmedStop
+if orWarnNow
+    string warnReason = activeDirection == 1 ? "long_close_below_raw_orl_wait_confirm" : "short_close_above_raw_orh_wait_confirm"
+    debugEventLog("order", "OR_WARN", "side=" + dirText(activeDirection) + " cnt=" + str.tostring(activeRawCloseBreachCount) + "/" + str.tostring(rawCloseStopBars) + " close=" + fmtPrice(close))
+    if enableAlerts
+        alert(buildPayload("OR_WARN", activeDirection, warnReason, close, activeStop, activeTp1, activeTp2, activeQty), alert.freq_all)
+    drawEventLabel("OR WARN", warnReason + "\ncount " + str.tostring(activeRawCloseBreachCount) + "/" + str.tostring(rawCloseStopBars), close, activeDirection == -1, color.new(color.orange, 0), color.black)
+bool stopOrBreakLong = inPosition and activeDirection == 1 and edgeReady and (hardBufferBreakLong or rawCloseConfirmedStop)
+bool stopOrBreakShort = inPosition and activeDirection == -1 and edgeReady and (hardBufferBreakShort or rawCloseConfirmedStop)
 bool stopOrBreakNow = confirmed and (stopOrBreakLong or stopOrBreakShort)
 if stopOrBreakNow
-    rangeInvalidatedToday := true
-    debugLog("order", "STOP_OR_BREAK", "side=" + dirText(activeDirection) + " close=" + fmtPrice(close) + " raw_ORH=" + fmtPrice(rawOrh) + " raw_ORL=" + fmtPrice(rawOrl))
-    strategy.close(orderIdForDirection(activeDirection), comment="STOP_OR_BREAK raw_or_death_line " + fmtPrice(close))
+    string stopReason = hardBufferBreakNow ? "raw_or_buffer_break" : "raw_or_close_confirmed"
+    float probeFavMove = activeDirection == 1 ? high - activeEntry : activeEntry - low
+    float probeMfeNow = activeInitialRisk > 0.0 ? math.max(activeMfeR, probeFavMove / activeInitialRisk) : activeMfeR
+    activeMfeR := probeMfeNow
+    bool probeSoftFailNow = tqqqProfile and activeEntryModel == "reclaim_stop" and activeInitialRisk > 0.0 and probeMfeNow < effProbeFailMfeR
+    if probeSoftFailNow
+        activeProbeSoftFail := true
+        probeFailedToday := true
+        probeReentryUsedToday := false
+        probeFailedBar := bar_index
+        probeFailedDirection := activeDirection
+        lastExitReason := "PROBE_FAIL_NO_INVALIDATE " + stopReason
+        debugEventLog("order", "PROBE_FAIL_NO_INVALIDATE", "side=" + dirText(activeDirection) + " reason=" + stopReason + " mfe_r=" + fmt(probeMfeNow) + " cooldown=" + str.tostring(effProbeCooldownBars))
+        strategy.close(orderIdForDirection(activeDirection), comment="PROBE_FAIL_NO_INVALIDATE STOP_OR_BREAK " + stopReason + " " + fmtPrice(close))
+    else
+        rangeInvalidatedToday := true
+        lastExitReason := "STOP_OR_BREAK " + stopReason
+        debugEventLog("order", "STOP_OR_BREAK", "side=" + dirText(activeDirection) + " reason=" + stopReason + " close=" + fmtPrice(close))
+        strategy.close(orderIdForDirection(activeDirection), comment="STOP_OR_BREAK " + stopReason + " " + fmtPrice(close))
 
-bool forcedExitRequestedThisBar = inPosition and (stopOrBreakNow or rangeInvalidationTrigger or noTradeTrendTrigger or dailyLossTrigger or (confirmed and forceFlatNow))
+bool bottomProbeActive = inPosition and activeEntryModel == "bottom_probe" and activeInitialRisk > 0.0
+float bottomProbeCatStop = bottomProbeActive ? (activeDirection == 1 ? activeEntry - activeInitialRisk * bottomProbeCatStopR : activeEntry + activeInitialRisk * bottomProbeCatStopR) : na
+float bottomProbeCloseStopLevel = bottomProbeActive ? (activeDirection == 1 ? activeInitialStop - activeInitialRisk * bottomProbeCloseStopBufferR : activeInitialStop + activeInitialRisk * bottomProbeCloseStopBufferR) : na
+bool bottomProbeCatStopNow = confirmed and bottomProbeActive and (activeDirection == 1 ? low <= bottomProbeCatStop : high >= bottomProbeCatStop)
+bool bottomProbeCloseBreachNow = confirmed and bottomProbeActive and not bottomProbeCatStopNow and (activeDirection == 1 ? close <= bottomProbeCloseStopLevel : close >= bottomProbeCloseStopLevel)
+if confirmed
+    activeBottomCloseStopCount := bottomProbeCloseBreachNow ? activeBottomCloseStopCount + 1 : 0
+bool bottomProbeCloseStopNow = bottomProbeActive and not bottomProbeCatStopNow and bottomProbeCloseBreachNow and activeBottomCloseStopCount >= bottomProbeCloseStopBars
+if bottomProbeCloseBreachNow and not bottomProbeCloseStopNow
+    debugEventLog("order", "BOTTOM_PROBE_CLOSE_WARN", "side=" + dirText(activeDirection) + " cnt=" + str.tostring(activeBottomCloseStopCount) + "/" + str.tostring(bottomProbeCloseStopBars) + " close=" + fmtPrice(close) + " level=" + fmtPrice(bottomProbeCloseStopLevel))
+bool bottomProbeExitNow = bottomProbeCatStopNow or bottomProbeCloseStopNow
+if bottomProbeExitNow
+    string bottomStopEvent = bottomProbeCatStopNow ? "BOTTOM_PROBE_CAT_STOP" : "BOTTOM_PROBE_CLOSE_STOP"
+    lastExitReason := bottomStopEvent + " " + fmtPrice(close)
+    debugEventLog("order", bottomStopEvent, "side=" + dirText(activeDirection) + " close=" + fmtPrice(close) + " stop=" + fmtPrice(activeInitialStop) + " close_level=" + fmtPrice(bottomProbeCloseStopLevel) + " cat=" + fmtPrice(bottomProbeCatStop) + " cnt=" + str.tostring(activeBottomCloseStopCount) + "/" + str.tostring(bottomProbeCloseStopBars) + " mfe_r=" + fmt(activeMfeR))
+    strategy.close(orderIdForDirection(activeDirection), comment=bottomStopEvent + " " + fmtPrice(close), immediately=bottomProbeCatStopNow)
+
+bool forcedExitRequestedThisBar = inPosition and (stopOrBreakNow or bottomProbeExitNow or rangeInvalidationTrigger or noTradeTrendTrigger or dailyLossTrigger or (confirmed and forceFlatNow))
 if inPosition and not forcedExitRequestedThisBar and activeDirection != 0 and activeInitialRisk > 0.0
     float favorableMove = activeDirection == 1 ? high - activeEntry : activeEntry - low
     activeMfeR := math.max(activeMfeR, favorableMove / activeInitialRisk)
-    if not activeBreakevenDone and activeMfeR >= breakevenAtR
+    bool bottomRunnerAllowed = activeEntryModel != "bottom_probe" or activeTp1TouchedLogged
+    bool tp1TouchedNow = not activeTp1TouchedLogged and not na(activeTp1) and (activeDirection == 1 ? high >= activeTp1 : low <= activeTp1)
+    bool tp2TouchedNow = activeEntryModel != "bottom_probe" and not activeTp2TouchedLogged and not na(activeTp2) and (activeDirection == 1 ? high >= activeTp2 : low <= activeTp2)
+    if tp1TouchedNow
+        activeTp1TouchedLogged := true
+        debugEventLog("order", "TP1_LEVEL_TOUCHED", "side=" + dirText(activeDirection) + " price=" + fmtPrice(activeTp1) + " mfe_r=" + fmt(activeMfeR))
+    if tp2TouchedNow
+        activeTp2TouchedLogged := true
+        debugEventLog("order", "TP2_LEVEL_TOUCHED", "side=" + dirText(activeDirection) + " price=" + fmtPrice(activeTp2) + " mfe_r=" + fmt(activeMfeR))
+    bottomRunnerAllowed := activeEntryModel != "bottom_probe" or activeTp1TouchedLogged
+    if bottomRunnerAllowed and not activeBreakevenDone and activeMfeR >= breakevenAtR
         activeStop := activeEntry
         activeBreakevenDone := true
         drawEventLabel("BE", "MFE reached " + fmt(activeMfeR) + "R; stop moved to breakeven.", activeStop, activeDirection == -1, color.new(color.yellow, 0), color.black)
+    int targetLockStep = bottomRunnerAllowed ? (activeMfeR >= effRunnerStep3AtR ? 3 : activeMfeR >= effRunnerStep2AtR ? 2 : activeMfeR >= effRunnerStep1AtR ? 1 : 0) : 0
+    float targetLockR = targetLockStep == 3 ? effRunnerStep3ProfitR : targetLockStep == 2 ? effRunnerStep2ProfitR : targetLockStep == 1 ? effRunnerStep1ProfitR : na
+    if targetLockStep > activeRunnerLockStep and not na(targetLockR)
+        float lockedStop = activeDirection == 1 ? activeEntry + activeInitialRisk * targetLockR : activeEntry - activeInitialRisk * targetLockR
+        activeStop := activeDirection == 1 ? math.max(nz(activeStop, activeEntry), lockedStop) : math.min(nz(activeStop, activeEntry), lockedStop)
+        activeRunnerLockStep := targetLockStep
+        debugEventLog("order", "RUNNER_LOCK_STEP", "side=" + dirText(activeDirection) + " step=" + str.tostring(activeRunnerLockStep) + " stop=" + fmtPrice(activeStop) + " lock_r=" + fmt(targetLockR) + " mfe_r=" + fmt(activeMfeR))
     bool timeStopNow = confirmed and not forceFlatNow and bar_index - activeEntryBar >= timeStopBars and activeMfeR < timeStopMinMfeR
     if timeStopNow
         strategy.close(orderIdForDirection(activeDirection), comment="TIME_EXIT no_0_5r_in_30m " + fmtPrice(close))
     else
-        if activeDirection == 1
-            strategy.exit("DORH-L-TP1", from_entry=LONG_ID, qty_percent=tp1ExitPct, stop=activeStop, limit=activeTp1, comment_profit="TAKE_MID " + fmtPrice(activeTp1), comment_loss="STOP_OR_BREAK " + fmtPrice(activeStop))
-            strategy.exit("DORH-L-TP2", from_entry=LONG_ID, qty_percent=100 - tp1ExitPct, stop=activeStop, limit=activeTp2, comment_profit="TAKE_EDGE " + fmtPrice(activeTp2), comment_loss="STOP_OR_BREAK " + fmtPrice(activeStop))
+        int exitPct1 = na(activeTp1Pct) ? effTp1ExitPct : activeTp1Pct
+        exitPct1 := math.min(math.max(exitPct1, 1), 99)
+        if activeEntryModel == "bottom_probe"
+            if activeDirection == 1
+                strategy.exit("DORH-L-BTP1", from_entry=LONG_ID, qty_percent=exitPct1, limit=activeTp1, comment_profit="BOTTOM_TP1 " + fmtPrice(activeTp1))
+                if activeTp1TouchedLogged and not na(activeStop)
+                    strategy.exit("DORH-L-BRUN", from_entry=LONG_ID, qty_percent=100 - exitPct1, stop=activeStop, comment_loss="BOTTOM_RUNNER_STOP " + fmtPrice(activeStop))
+            else
+                strategy.exit("DORH-S-BTP1", from_entry=SHORT_ID, qty_percent=exitPct1, limit=activeTp1, comment_profit="BOTTOM_TP1 " + fmtPrice(activeTp1))
+                if activeTp1TouchedLogged and not na(activeStop)
+                    strategy.exit("DORH-S-BRUN", from_entry=SHORT_ID, qty_percent=100 - exitPct1, stop=activeStop, comment_loss="BOTTOM_RUNNER_STOP " + fmtPrice(activeStop))
         else
-            strategy.exit("DORH-S-TP1", from_entry=SHORT_ID, qty_percent=tp1ExitPct, stop=activeStop, limit=activeTp1, comment_profit="TAKE_MID " + fmtPrice(activeTp1), comment_loss="STOP_OR_BREAK " + fmtPrice(activeStop))
-            strategy.exit("DORH-S-TP2", from_entry=SHORT_ID, qty_percent=100 - tp1ExitPct, stop=activeStop, limit=activeTp2, comment_profit="TAKE_EDGE " + fmtPrice(activeTp2), comment_loss="STOP_OR_BREAK " + fmtPrice(activeStop))
+            string stopExitComment = activeBreakevenDone ? "BE_STOP " + fmtPrice(activeStop) : activeEntryModel == "reclaim_stop" ? "PROBE_FAIL_NO_INVALIDATE stop_order " + fmtPrice(activeStop) : "STOP_OR_BREAK " + fmtPrice(activeStop)
+            if activeDirection == 1
+                strategy.exit("DORH-L-TP1", from_entry=LONG_ID, qty_percent=exitPct1, stop=activeStop, limit=activeTp1, comment_profit="TAKE_MID " + fmtPrice(activeTp1), comment_loss=stopExitComment)
+                strategy.exit("DORH-L-TP2", from_entry=LONG_ID, qty_percent=100 - exitPct1, stop=activeStop, limit=activeTp2, comment_profit="TAKE_EDGE " + fmtPrice(activeTp2), comment_loss=stopExitComment)
+            else
+                strategy.exit("DORH-S-TP1", from_entry=SHORT_ID, qty_percent=exitPct1, stop=activeStop, limit=activeTp1, comment_profit="TAKE_MID " + fmtPrice(activeTp1), comment_loss=stopExitComment)
+                strategy.exit("DORH-S-TP2", from_entry=SHORT_ID, qty_percent=100 - exitPct1, stop=activeStop, limit=activeTp2, comment_profit="TAKE_EDGE " + fmtPrice(activeTp2), comment_loss=stopExitComment)
 
 var int lastClosedTrades = 0
 var int lastTerminalAlertBar = na
@@ -712,27 +1137,46 @@ var string lastTerminalAlertEvent = ""
 if strategy.closedtrades > lastClosedTrades
     for tradeIndex = lastClosedTrades to strategy.closedtrades - 1
         string exitComment = strategy.closedtrades.exit_comment(tradeIndex)
-        string eventType = str.contains(exitComment, "TAKE_MID") ? "TAKE_MID" : str.contains(exitComment, "TAKE_EDGE") ? "TAKE_EDGE" : str.contains(exitComment, "STOP_OR_BREAK") ? "STOP_OR_BREAK" : str.contains(exitComment, "RANGE_INVALIDATED") ? "RANGE_INVALIDATED" : str.contains(exitComment, "TIME_EXIT") ? "TIME_EXIT" : ""
+        string eventType = str.contains(exitComment, "BOTTOM_TP1") ? "BOTTOM_TP1" : str.contains(exitComment, "BOTTOM_RUNNER_STOP") ? "BOTTOM_RUNNER_STOP" : str.contains(exitComment, "BOTTOM_PROBE_CAT_STOP") ? "BOTTOM_PROBE_CAT_STOP" : str.contains(exitComment, "BOTTOM_PROBE_CLOSE_STOP") ? "BOTTOM_PROBE_CLOSE_STOP" : str.contains(exitComment, "BOTTOM_PROBE_STOP") ? "BOTTOM_PROBE_STOP" : str.contains(exitComment, "PROBE_FAIL_NO_INVALIDATE") ? "PROBE_FAIL_NO_INVALIDATE" : str.contains(exitComment, "TAKE_MID") ? "TAKE_MID" : str.contains(exitComment, "TAKE_EDGE") ? "TAKE_EDGE" : str.contains(exitComment, "BE_STOP") ? "BE_STOP" : str.contains(exitComment, "STOP_OR_BREAK") ? "STOP_OR_BREAK" : str.contains(exitComment, "RANGE_INVALIDATED") ? "RANGE_INVALIDATED" : str.contains(exitComment, "TIME_EXIT") ? "TIME_EXIT" : ""
         if eventType != ""
+            lastExitReason := eventType + " " + exitComment
             float exitPrice = strategy.closedtrades.exit_price(tradeIndex)
-            bool terminalEvent = eventType != "TAKE_MID"
+            string doneEvent = eventType == "BOTTOM_TP1" ? "BOTTOM_TP1_DONE" : eventType == "TAKE_MID" ? "TAKE_MID_DONE" : eventType == "TAKE_EDGE" ? "TAKE_EDGE_DONE" : eventType
+            debugEventLog("order", doneEvent, "exit_comment=" + exitComment + " exit_price=" + fmtPrice(exitPrice) + " tp_mode=" + activeTpMode + " mfe_r=" + fmt(activeMfeR))
+            if eventType == "PROBE_FAIL_NO_INVALIDATE" and activeEntryModel == "reclaim_stop"
+                activeProbeSoftFail := true
+                probeFailedToday := true
+                probeReentryUsedToday := false
+                probeFailedBar := bar_index
+                probeFailedDirection := activeDirection
+            bool terminalEvent = eventType != "TAKE_MID" and eventType != "BOTTOM_TP1"
             bool shouldEmit = not terminalEvent or na(lastTerminalAlertBar) or bar_index != lastTerminalAlertBar or eventType != lastTerminalAlertEvent
             if shouldEmit and enableAlerts
                 alert(buildPayload(eventType, activeDirection, exitComment, exitPrice, activeStop, activeTp1, activeTp2, activeQty), alert.freq_all)
             if shouldEmit
-                bool isTake = eventType == "TAKE_MID" or eventType == "TAKE_EDGE"
+                bool isTake = eventType == "TAKE_MID" or eventType == "TAKE_EDGE" or eventType == "BOTTOM_TP1"
                 drawEventLabel(eventType, exitComment, exitPrice, activeDirection == -1, isTake ? color.new(color.lime, 0) : color.new(color.red, 0), isTake ? color.black : color.white)
             if terminalEvent and shouldEmit
                 lastTerminalAlertBar := bar_index
                 lastTerminalAlertEvent := eventType
-            if eventType == "STOP_OR_BREAK" or eventType == "RANGE_INVALIDATED"
+            if eventType == "RANGE_INVALIDATED" or (eventType == "STOP_OR_BREAK" and activeEntryModel != "reclaim_stop")
                 rangeInvalidatedToday := true
     lastClosedTrades := strategy.closedtrades
 
 if positionClosed and activeDirection != 0
     float activeNetPnl = strategy.netprofit - nz(activeEntryNetProfit, strategy.netprofit)
-    debugLog("order", "POSITION_CLOSED", "side=" + dirText(activeDirection) + " net_pnl_since_entry=" + fmt(activeNetPnl) + " mfe_r=" + fmt(activeMfeR))
-    if activeNetPnl < 0.0
+    bool bottomProbeLoss = tqqqProfile and activeEntryModel == "bottom_probe" and activeNetPnl < 0.0
+    if bottomProbeLoss
+        activeProbeSoftFail := true
+        probeFailedToday := true
+        bottomProbeFailedToday := true
+        probeReentryUsedToday := false
+        probeFailedBar := bar_index
+        probeFailedDirection := activeDirection
+        lastExitReason := str.contains(lastExitReason, "BOTTOM_") ? lastExitReason : "BOTTOM_PROBE_LOSS " + lastExitReason
+        debugEventLog("order", "BOTTOM_PROBE_LOSS", "side=" + dirText(activeDirection) + " net_pnl=" + fmt(activeNetPnl) + " mfe_r=" + fmt(activeMfeR) + " cooldown=" + str.tostring(effProbeCooldownBars))
+    debugEventLog("order", "POSITION_CLOSED_SUMMARY", "side=" + dirText(activeDirection) + " pnl=" + fmt(activeNetPnl) + " mfe=" + fmt(activeMfeR) + " exit=" + lastExitReason + " model=" + activeEntryModel)
+    if activeNetPnl < 0.0 and not activeProbeSoftFail and not bottomProbeLoss
         if activeDirection == 1
             longLossesToday += 1
             longDisabledToday := true
@@ -751,16 +1195,25 @@ if positionClosed and activeDirection != 0
     activeInitialRisk := na
     activeMfeR := 0.0
     activeBreakevenDone := false
+    activeTp1TouchedLogged := false
+    activeTp2TouchedLogged := false
+    activeTpMode := ""
+    activeTp1Pct := na
+    activeTp2Source := ""
+    activeEntryModel := ""
+    activeRunnerLockStep := 0
+    activeProbeSoftFail := false
     activeEntryBar := na
     activeEntryNetProfit := na
+    activeRawCloseBreachCount := 0
+    activeBottomCloseStopCount := 0
 
 // -----------------------------------------------------------------------------
 // Setup detection and entry submission
 // -----------------------------------------------------------------------------
-bool canOpenOrTrigger = confirmed and is5m and inRth and orComplete and lunchAllowsEntry and beforeEntryCutoff and edgeReady and orWidthOk and regimeTradeable and not softTrendBlockNow and symbolAllowed and not manualEventBlock and not dayStopActive and tradesToday < maxTradesPerDay and strategy.position_size == 0 and pendingDirection == 0 and enableStrategyOrders
 
-if confirmed and setupDirection != 0 and (not canOpenOrTrigger or bar_index > setupBarIndex + 1)
-    debugLog("setup", "SETUP_CANCEL", "reason=" + (not canOpenOrTrigger ? entryGateBlockReason() : "confirm_timeout") + " setup_dir=" + dirText(setupDirection) + "\n" + debugConfirmText(setupDirection) + "\n" + debugCommonState())
+if confirmed and setupDirection != 0 and (not canConfirmSetup or bar_index > setupBarIndex + setupConfirmBars)
+    debugEventLog("setup", "SETUP_CANCEL", "reason=" + (not canConfirmSetup ? confirmGateBlockReason() : "confirm_timeout") + " setup_dir=" + dirText(setupDirection) + "\n" + debugConfirmText(setupDirection) + "\n" + debugCommonState())
     setupDirection := 0
     setupBarIndex := na
     setupConfirmHigh := na
@@ -768,74 +1221,231 @@ if confirmed and setupDirection != 0 and (not canOpenOrTrigger or bar_index > se
     setupReason := ""
     setupTrigger := ""
 
-bool longDailyQuality = downStreak >= longDownStreakMin or downCumPct <= longDownCumPctMax
-bool longDailyOk = not requireDailyLongEnhancement or longDailyQuality
-bool strongLongState = downStreak >= strongLongDownStreak or downCumPct <= strongLongDownCumPct
-bool shortDailyOk = not requireDailyShortEnhancement or (upStreak >= shortUpStreakMin and upCumPct >= shortUpCumPctMin)
-bool strongShortState = upStreak >= strongShortUpStreak and upCumPct >= strongShortUpCumPct
-bool longBase = canOpenOrTrigger and setupDirection == 0 and not longDisabledToday and longDailyOk and todayMoveAtr < -entryMoveAtrMin and math.abs(todayMoveAtr) < trendKillAtr and (longInsideEdgeCandidate or longReclaimCandidate)
-bool shortHardBlock = vwapStrongUp or longEmaSideCount >= emaSideBars or sectorSyncStrong or coreSyncStrong or rawCloseAbove
-bool shortBase = canOpenOrTrigger and setupDirection == 0 and not shortDisabledToday and shortDailyOk and not shortHardBlock and todayMoveAtr > entryMoveAtrMin and math.abs(todayMoveAtr) < trendKillAtr and (shortInsideEdgeCandidate or shortRejectCandidate)
+float shortRejectNeed = not na(shortEdge) and not na(rawOrh) ? math.min(shortEdge, rawOrh - reclaimSafetyBuffer) : na
+float shortRejectGap = not na(shortRejectNeed) ? shortRejectNeed - close : na
+if confirmed and pendingStopEntry and pendingDirection != 0 and strategy.position_size == 0
+    bool stopWaitExpired = not na(pendingOrderBar) and bar_index - pendingOrderBar > reclaimStopMaxBars
+    bool stopSideAlive = pendingDirection == 1 ? (longReclaimArmed or longReclaimRecovered) : (watchShortReject or priorShortWatch or recentShortSigmaExcursion)
+    bool cancelStopEntry = not inRth or not edgeReady or hardTrendKillNow or softTrendBlockNow or dayStopActive or manualEventBlock or not beforeEntryCutoff or (inLunchBlock and lunchPolicy == "Block all") or stopWaitExpired or not stopSideAlive
+    if cancelStopEntry
+        string cancelReason = stopWaitExpired ? "wait_expired" : softTrendBlockNow ? "soft_trend_watch" : hardTrendKillNow ? "hard_trend_kill" : dayStopActive ? dayStopReason() : not beforeEntryCutoff ? "after_cutoff" : "gate_changed"
+        strategy.cancel(orderIdForDirection(pendingDirection))
+        debugEventLog("order", "RECLAIM_STOP_CANCELLED", "side=" + dirText(pendingDirection) + " reason=" + cancelReason + " stop_entry=" + fmtPrice(pendingPlannedEntry) + " waited=" + str.tostring(bar_index - nz(pendingOrderBar, bar_index)))
+        tradesToday := math.max(tradesToday - 1, 0)
+        pendingDirection := 0
+        pendingSetup := ""
+        pendingTrigger := ""
+        pendingStop := na
+        pendingTp1 := na
+        pendingTp2 := na
+        pendingQty := na
+        pendingPlannedEntry := na
+        pendingTpMode := ""
+        pendingTp1Pct := na
+        pendingTp2Source := ""
+        pendingEntryModel := ""
+        pendingStopEntry := false
+        pendingOrderBar := na
+    else
+        float newStopEntry = pendingDirection == 1 ? longReclaimNeed + entryBreakBuffer : shortRejectNeed - entryBreakBuffer
+        bool updateAway = pendingDirection == 1 ? not na(newStopEntry) and newStopEntry > close + syminfo.mintick : not na(newStopEntry) and newStopEntry < close - syminfo.mintick
+        if updateAway and math.abs(newStopEntry - pendingPlannedEntry) >= syminfo.mintick
+            float newStopLoss = pendingDirection == 1 ? lowerBreakLevel : upperBreakLevel
+            int updScore = pendingDirection == 1 ? longScore + 1 : shortScore + 1
+            [updTp1, updTp2, updTp1Pct, updTpMode, updTp2Source] = tpPlanFor(pendingDirection, newStopEntry, newStopLoss, updScore, true)
+            float updRisk = math.abs(newStopEntry - newStopLoss)
+            float updRiskQty = updRisk > 0.0 ? math.floor(riskDollars * effProbeRiskMult / updRisk) : na
+            float updNotionalQty = newStopEntry > 0.0 ? math.floor(accountSize * maxNotionalPct / 100.0 / newStopEntry) : na
+            float updQty = math.min(nz(updRiskQty, 0.0), nz(updNotionalQty, 0.0))
+            bool updOrdered = pendingDirection == 1 ? not na(updTp2) and updTp2 > updTp1 and updTp1 > newStopEntry : not na(updTp2) and updTp2 < updTp1 and updTp1 < newStopEntry
+            float updTp2R = updRisk > 0.0 and not na(updTp2) ? math.abs(updTp2 - newStopEntry) / updRisk : na
+            bool updTqqqShortStopOk = pendingDirection != -1 or not tqqqProfile or (shortScore >= 5 and not na(updTp2R) and updTp2R >= 1.2)
+            if updQty >= minQty and updOrdered and updTqqqShortStopOk
+                if pendingDirection == 1
+                    strategy.entry(LONG_ID, strategy.long, qty=updQty, stop=newStopEntry, comment="RECLAIM_STOP Q" + qtyText(updQty))
+                else
+                    strategy.entry(SHORT_ID, strategy.short, qty=updQty, stop=newStopEntry, comment="RECLAIM_STOP Q" + qtyText(updQty))
+                pendingPlannedEntry := newStopEntry
+                pendingStop := newStopLoss
+                pendingTp1 := updTp1
+                pendingTp2 := updTp2
+                pendingQty := updQty
+                pendingTpMode := updTpMode
+                pendingTp1Pct := updTp1Pct
+                pendingTp2Source := updTp2Source
+                debugEventLog("order", "RECLAIM_STOP_UPDATED", "side=" + dirText(pendingDirection) + " entry=" + fmtPrice(newStopEntry) + " tp2R=" + fmt(updTp2R) + " qty=" + qtyText(updQty))
+            else if pendingDirection == -1 and tqqqProfile and not updTqqqShortStopOk
+                debugEventLog("setup", "SHORT_TQQQ_FILTER_BLOCK", "model=reclaim_stop_update score=" + str.tostring(shortScore) + " tp2_R=" + fmt(updTp2R) + " sigma=" + fmt(sigmaPos) + " relVol=" + fmt(relVol))
 
-bool longStopCandle = close > open and lowerWickRatio >= wickReversalMin
-bool longReclaimEdge = low < longEdge and close > longEdge
-bool longHigherLow = not na(low[1]) and low > low[1] and low[1] <= longEdge + nearEdgeDistance
-bool longTriggerOk = longStopCandle or longReclaimEdge or longHigherLow or longRelativeDivergence
-string longTriggerReason = longReclaimEdge ? "reclaim_edge" : longStopCandle ? "reversal_candle" : longHigherLow ? "higher_low" : longRelativeDivergence ? "relative_divergence" : "none"
+if confirmed and bottomProbeRaw and not bottomProbeReadyAlertSent
+    bottomProbeReadyAlertSent := true
+    debugEventLog("setup", "BOTTOM_PROBE_READY", "status=" + bottomProbeStatus + " sig=" + fmt(sigmaPos) + " vol=" + fmt(relVol) + " stop=" + fmtPrice(bottomProbeStop) + " qty=" + qtyText(bottomProbeQty))
 
-bool shortFailureCandle = close < open and upperWickRatio >= wickReversalMin
-bool shortRejectEdge = high > shortEdge and close < shortEdge
-bool shortLowerHigh = not na(high[1]) and high < high[1] and high[1] >= shortEdge - nearEdgeDistance
-bool shortTriggerOk = shortFailureCandle or shortRejectEdge or shortLowerHigh or shortRelativeDivergence
-string shortTriggerReason = shortRejectEdge ? "failed_break" : shortFailureCandle ? "reversal_candle" : shortLowerHigh ? "lower_high" : shortRelativeDivergence ? "relative_divergence" : "none"
+if confirmed and bottomProbeRaw and not bottomProbeOk
+    debugEventLog("setup", "BOTTOM_PROBE_BLOCK", "reason=" + bottomProbeStatus + " risk=" + fmtPrice(bottomProbeRisk) + " tp1=" + fmtPrice(bottomProbeTp1) + " qty=" + qtyText(bottomProbeQty))
 
+if bottomProbeOk
+    strategy.entry(LONG_ID, strategy.long, qty=bottomProbeQty, comment="BOTTOM_PROBE Q" + qtyText(bottomProbeQty))
+    pendingDirection := 1
+    pendingSetup := "bottom_probe"
+    pendingTrigger := "sigma_panic"
+    pendingStop := bottomProbeStop
+    pendingTp1 := bottomProbeTp1
+    pendingTp2 := bottomProbeTp2
+    pendingQty := bottomProbeQty
+    pendingPlannedEntry := bottomProbeEntry
+    pendingTpMode := "bottom_probe"
+    pendingTp1Pct := bottomProbeTp1Pct
+    pendingTp2Source := "runner_orm_ref"
+    pendingEntryModel := "bottom_probe"
+    pendingStopEntry := false
+    pendingOrderBar := bar_index
+    lastSignalBar := bar_index
+    lastSignalText := "BOTTOM_PROBE_TRIGGER"
+    lastPlannedEntry := bottomProbeEntry
+    tradesToday += 1
+    debugEventLog("order", "BOTTOM_PROBE_TRIGGER", "entry=" + fmtPrice(bottomProbeEntry) + " stop=" + fmtPrice(bottomProbeStop) + " tp1=" + fmtPrice(bottomProbeTp1) + " qty=" + qtyText(bottomProbeQty) + " sig=" + fmt(sigmaPos))
+    if enableAlerts
+        alert(buildPayload("BOTTOM_PROBE_TRIGGER", 1, "bottom_probe:sigma_panic", bottomProbeEntry, bottomProbeStop, bottomProbeTp1, bottomProbeTp2, bottomProbeQty), alert.freq_all)
+    drawEventLabel("BTM PROBE", "Bottom probe entry at " + fmtPrice(bottomProbeEntry) + " stop " + fmtPrice(bottomProbeStop), low, false, color.new(color.aqua, 0), color.black)
+
+int longStopScore = longScore + (longReclaimArmed and not longReclaimRecovered ? 1 : 0)
+int shortStopScore = shortScore + ((watchShortReject or priorShortWatch or recentShortSigmaExcursion) and not shortRejectCandidate ? 1 : 0)
+bool reclaimStopSigmaTimeOk = etMinutes >= 10 * 60 + 10
+bool longReclaimRawContext = watchLongReclaim or priorLongWatch
+bool shortRejectRawContext = watchShortReject or priorShortWatch
+bool longReclaimExtremeContext = reclaimStopSigmaTimeOk and not na(recentLowestSigma) and recentLowestSigma <= -reclaimStopExtremeSigma and not na(relVol) and relVol >= bottomProbeRelVolMin
+bool shortRejectExtremeContext = reclaimStopSigmaTimeOk and not na(recentHighestSigma) and recentHighestSigma >= reclaimStopExtremeSigma and not na(relVol) and relVol >= bottomProbeRelVolMin
+bool longReclaimStopContextOk = longReclaimRawContext or longReclaimExtremeContext
+bool shortRejectStopContextOk = shortRejectRawContext or shortRejectExtremeContext
+bool longReclaimStopArm = pendingDirection == 0 and tqqqProfile and canCreateSetup and not (probeFailedToday and probeFailedDirection == 1) and longReclaimArmed and not longReclaimRecovered and longDailyOk and not na(todayMoveAtr) and todayMoveAtr < -reclaimMoveAtrMin and longReclaimStopContextOk and (longStopScore >= longScoreMin or longReclaimExtremeContext)
+bool shortRejectStopArm = pendingDirection == 0 and tqqqProfile and canCreateSetup and not (probeFailedToday and probeFailedDirection == -1) and (watchShortReject or priorShortWatch or recentShortSigmaExcursion) and not shortRejectCandidate and shortQualityOk and not shortHardBlock and not na(todayMoveAtr) and todayMoveAtr > reclaimMoveAtrMin and shortScore >= 5 and shortRejectStopContextOk and (shortStopScore >= shortScoreMin or shortRejectExtremeContext)
+bool longReclaimGuardBlocked = pendingDirection == 0 and tqqqProfile and canCreateSetup and longReclaimArmed and not longReclaimRecovered and not longReclaimStopContextOk
+bool shortRejectGuardBlocked = pendingDirection == 0 and tqqqProfile and canCreateSetup and (watchShortReject or priorShortWatch or recentShortSigmaExcursion) and not shortRejectCandidate and not shortRejectStopContextOk
+if confirmed and longReclaimGuardBlocked and not longReclaimGuardBlockAlertSent
+    longReclaimGuardBlockAlertSent := true
+    debugEventLog("setup", "RECLAIM_STOP_GUARD_BLOCK", "side=long raw_ctx=" + str.tostring(longReclaimRawContext) + " extreme_ctx=" + str.tostring(longReclaimExtremeContext) + " sig_low=" + fmt(recentLowestSigma) + " vol=" + fmt(relVol) + " earliest=10:10")
+if confirmed and shortRejectGuardBlocked and not shortReclaimGuardBlockAlertSent
+    shortReclaimGuardBlockAlertSent := true
+    debugEventLog("setup", "RECLAIM_STOP_GUARD_BLOCK", "side=short raw_ctx=" + str.tostring(shortRejectRawContext) + " extreme_ctx=" + str.tostring(shortRejectExtremeContext) + " sig_high=" + fmt(recentHighestSigma) + " vol=" + fmt(relVol) + " earliest=10:10")
+if longReclaimStopArm or shortRejectStopArm
+    int stopDirection = longReclaimStopArm ? 1 : -1
+    float stopEntryPrice = stopDirection == 1 ? longReclaimNeed + entryBreakBuffer : shortRejectNeed - entryBreakBuffer
+    bool stopEntryAway = stopDirection == 1 ? not na(stopEntryPrice) and stopEntryPrice > close + syminfo.mintick : not na(stopEntryPrice) and stopEntryPrice < close - syminfo.mintick
+    float stopLossPrice = stopDirection == 1 ? lowerBreakLevel : upperBreakLevel
+    int stopScore = stopDirection == 1 ? longStopScore : shortStopScore
+    [stopTp1, stopTp2, stopTp1Pct, stopTpMode, stopTp2Source] = tpPlanFor(stopDirection, stopEntryPrice, stopLossPrice, stopScore, true)
+    float stopRisk = math.abs(stopEntryPrice - stopLossPrice)
+    float stopRiskQty = stopRisk > 0.0 ? math.floor(riskDollars * effProbeRiskMult / stopRisk) : na
+    float stopNotionalQty = stopEntryPrice > 0.0 ? math.floor(accountSize * maxNotionalPct / 100.0 / stopEntryPrice) : na
+    float stopQty = math.min(nz(stopRiskQty, 0.0), nz(stopNotionalQty, 0.0))
+    bool stopTpOrdered = stopDirection == 1 ? not na(stopTp2) and stopTp2 > stopTp1 and stopTp1 > stopEntryPrice : not na(stopTp2) and stopTp2 < stopTp1 and stopTp1 < stopEntryPrice
+    float stopTp2R = stopRisk > 0.0 and not na(stopTp2) ? math.abs(stopTp2 - stopEntryPrice) / stopRisk : na
+    bool stopTqqqShortOk = stopDirection != -1 or not tqqqProfile or (shortScore >= 5 and not na(stopTp2R) and stopTp2R >= 1.2)
+    if stopEntryAway and stopQty >= minQty and stopTpOrdered and stopTqqqShortOk
+        string stopEventType = stopDirection == 1 ? "LONG_RECLAIM_STOP" : "SHORT_REJECT_STOP"
+        if stopDirection == 1
+            strategy.entry(LONG_ID, strategy.long, qty=stopQty, stop=stopEntryPrice, comment="RECLAIM_STOP Q" + qtyText(stopQty))
+        else
+            strategy.entry(SHORT_ID, strategy.short, qty=stopQty, stop=stopEntryPrice, comment="RECLAIM_STOP Q" + qtyText(stopQty))
+        pendingDirection := stopDirection
+        pendingSetup := stopDirection == 1 ? "long_reclaim_stop" : "short_reject_stop"
+        pendingTrigger := "stop_reclaim"
+        pendingStop := stopLossPrice
+        pendingTp1 := stopTp1
+        pendingTp2 := stopTp2
+        pendingQty := stopQty
+        pendingPlannedEntry := stopEntryPrice
+        pendingTpMode := stopTpMode
+        pendingTp1Pct := stopTp1Pct
+        pendingTp2Source := stopTp2Source
+        pendingEntryModel := "reclaim_stop"
+        pendingStopEntry := true
+        pendingOrderBar := bar_index
+        lastSignalBar := bar_index
+        lastSignalText := stopEventType
+        lastPlannedEntry := stopEntryPrice
+        tradesToday += 1
+        debugEventLog("order", "RECLAIM_STOP_ARMED", "side=" + dirText(stopDirection) + " entry=" + fmtPrice(stopEntryPrice) + " stop=" + fmtPrice(stopLossPrice) + " qty=" + qtyText(stopQty) + " score=" + str.tostring(stopScore))
+        debugEventLog("order", "TP_PLAN_SELECTED", "model=reclaim side=" + dirText(stopDirection) + " mode=" + stopTpMode + " tp2R=" + fmt(stopTp2R))
+        if stopTp2Source == "raw_or_capped"
+            debugEventLog("order", "TP2_RAW_OR_CAPPED", "entry_model=reclaim_stop side=" + dirText(stopDirection) + " raw_or_tp2_too_far cap_to_3R tp2=" + fmtPrice(stopTp2))
+        if enableAlerts
+            alert(buildPayload(stopEventType, stopDirection, pendingSetup + ":stop_reclaim", stopEntryPrice, stopLossPrice, stopTp1, stopTp2, stopQty), alert.freq_all)
+    else
+        debugEventLog("order", "RECLAIM_STOP_BLOCKED", "side=" + dirText(stopDirection) + " away=" + str.tostring(stopEntryAway) + " qty=" + qtyText(stopQty) + " ok=" + str.tostring(stopTqqqShortOk))
+        if stopDirection == -1 and tqqqProfile and not stopTqqqShortOk
+            debugEventLog("setup", "SHORT_TQQQ_FILTER_BLOCK", "model=reclaim_stop score=" + str.tostring(shortScore) + " tp2_R=" + fmt(stopTp2R) + " need_score>=5 tp2_R>=1.2")
+
+bool canCreateSetupNow = canCreateSetup and pendingDirection == 0 and setupDirection == 0
+bool longBase = canCreateSetupNow and longProbeGateOk and not longDisabledToday and longDailyOk and longMoveOk and longScoreOk and math.abs(todayMoveAtr) < trendKillAtr and longCandidateReady
+bool shortBase = canCreateSetupNow and shortProbeGateOk and not shortDisabledToday and shortQualityOk and not shortHardBlock and shortMoveOk and shortScoreOk and tqqqShortCloseOk and math.abs(todayMoveAtr) < trendKillAtr and shortCandidateReady
 bool longSetupBar = longBase and longTriggerOk
 bool shortSetupBar = shortBase and shortTriggerOk and not longSetupBar
+
+if confirmed and canCreateSetupNow and tqqqProfile and not tqqqShortCloseOk and shortCandidateReady and shortMoveOk and shortScoreOk and not shortTqqqFilterAlertSent
+    shortTqqqFilterAlertSent := true
+    debugEventLog("setup", "SHORT_TQQQ_FILTER_BLOCK", "model=close score=" + str.tostring(shortScore) + " sig=" + fmt(sigmaPos) + " vol=" + fmt(relVol) + " sync=" + str.tostring(sectorSyncStrong or coreSyncStrong))
 
 if longSetupBar
     setupDirection := 1
     setupBarIndex := bar_index
     setupConfirmHigh := high
     setupConfirmLow := low
-    setupReason := longReclaimCandidate ? "long_reclaim_orl" : strongLongState ? "strong_long_dist_edge" : longDailyQuality ? "quality_long_dist_edge" : "long_dist_edge"
+    setupReason := longReclaimCandidate ? (longReclaimSigmaReady ? "long_sigma_reclaim" : "long_reclaim_orl") : strongLongState ? "strong_long_sigma_edge" : longDailyQuality ? "quality_long_sigma_edge" : "long_sigma_edge"
     setupTrigger := longTriggerReason
-    debugLog("setup", "LONG_SETUP", "reason=" + setupReason + " trigger=" + setupTrigger + "\nnext bar confirm: high > " + fmtPrice(setupConfirmHigh + entryBreakBuffer) + "\n" + debugCommonState())
+    debugEventLog("setup", "SETUP_FORMED", "side=long reason=" + setupReason + " trigger=" + setupTrigger + " mode=" + entryConfirmationMode + "\nconfirm: high > " + fmtPrice(setupConfirmHigh + entryBreakBuffer) + "\n" + debugCommonState())
+    if longReclaimCandidate
+        debugEventLog("setup", "LONG_RECLAIM_TRIGGER", "trigger=" + setupTrigger + " need=" + fmtPrice(longReclaimNeed) + " close=" + fmtPrice(close) + " gap=" + fmt(longReclaimGap))
     if enableAlerts
         alert(buildPayload("LONG_SETUP", 1, setupReason + ":" + setupTrigger, close, lowerBreakLevel, orm, shortEdge, na), alert.freq_all)
-    drawEventLabel("LONG SETUP", setupReason + " / " + setupTrigger, low, false, color.new(color.teal, 0), color.white)
+    drawEventLabel("L SETUP", setupReason + " / " + setupTrigger, low, false, color.new(color.teal, 0), color.white)
 else if shortSetupBar
     setupDirection := -1
     setupBarIndex := bar_index
     setupConfirmHigh := high
     setupConfirmLow := low
-    setupReason := shortRejectCandidate ? "short_reject_orh" : strongShortState ? "strong_short_dist_edge" : "short_dist_edge"
+    setupReason := shortRejectCandidate ? (shortReclaimSigmaReady ? "short_sigma_reject" : "short_reject_orh") : strongShortState ? "strong_short_sigma_edge" : "short_sigma_edge"
     setupTrigger := shortTriggerReason
-    debugLog("setup", "SHORT_SETUP", "reason=" + setupReason + " trigger=" + setupTrigger + "\nnext bar confirm: low < " + fmtPrice(setupConfirmLow - entryBreakBuffer) + "\n" + debugCommonState())
+    debugEventLog("setup", "SETUP_FORMED", "side=short reason=" + setupReason + " trigger=" + setupTrigger + " mode=" + entryConfirmationMode + "\nconfirm: low < " + fmtPrice(setupConfirmLow - entryBreakBuffer) + "\n" + debugCommonState())
     if enableAlerts
         alert(buildPayload("SHORT_SETUP", -1, setupReason + ":" + setupTrigger, close, upperBreakLevel, orm, longEdge, na), alert.freq_all)
-    drawEventLabel("SHORT SETUP", setupReason + " / " + setupTrigger, high, true, color.new(color.maroon, 0), color.white)
+    drawEventLabel("S SETUP", setupReason + " / " + setupTrigger, high, true, color.new(color.maroon, 0), color.white)
 
-bool longEntryTrigger = canOpenOrTrigger and setupDirection == 1 and bar_index == setupBarIndex + 1 and high > setupConfirmHigh + entryBreakBuffer
-bool shortEntryTrigger = canOpenOrTrigger and setupDirection == -1 and bar_index == setupBarIndex + 1 and low < setupConfirmLow - entryBreakBuffer
+bool setupCreatedThisBar = setupDirection != 0 and setupBarIndex == bar_index
+bool setupImmediateEligible = setupTrigger == "reclaim_edge" or setupTrigger == "failed_break"
+bool immediateEntryTrigger = setupCreatedThisBar and setupImmediateEligible and entryConfirmationMode == "Reclaim close or next break" and canConfirmSetup
+bool setupConfirmWindowActive = setupDirection != 0 and bar_index > setupBarIndex and bar_index <= setupBarIndex + setupConfirmBars
+bool longEntryTrigger = (immediateEntryTrigger and setupDirection == 1) or (canConfirmSetup and setupDirection == 1 and setupConfirmWindowActive and high > setupConfirmHigh + entryBreakBuffer)
+bool shortEntryTrigger = (immediateEntryTrigger and setupDirection == -1) or (canConfirmSetup and setupDirection == -1 and setupConfirmWindowActive and low < setupConfirmLow - entryBreakBuffer)
 int selectedDirection = longEntryTrigger ? 1 : shortEntryTrigger ? -1 : 0
+
+if setupCreatedThisBar
+    debugEventLog("setup", immediateEntryTrigger ? "SETUP_IMMEDIATE_ENTRY" : "SETUP_PENDING", "side=" + dirText(setupDirection) + " trigger=" + setupTrigger + " mode=" + entryConfirmationMode + "\n" + pendingSetupText() + "\n" + debugCompactState())
 
 if selectedDirection != 0
     float plannedEntry = close
     float stopPrice = selectedDirection == 1 ? lowerBreakLevel : upperBreakLevel
-    float tp1Price = orm
-    float rawFallbackTp2 = selectedDirection == 1 ? rawOrh - syminfo.mintick : rawOrl + syminfo.mintick
-    float edgeTp2 = selectedDirection == 1 ? shortEdge : longEdge
-    float tp2Price = selectedDirection == 1 ? (not na(edgeTp2) and edgeTp2 > plannedEntry ? edgeTp2 : rawFallbackTp2) : (not na(edgeTp2) and edgeTp2 < plannedEntry ? edgeTp2 : rawFallbackTp2)
     float stopDistance = math.abs(plannedEntry - stopPrice)
+    int selectedScore = selectedDirection == 1 ? longScore : shortScore
+    [tp1Price, tp2Price, plannedTp1Pct, plannedTpMode, tp2Source] = tpPlanFor(selectedDirection, plannedEntry, stopPrice, selectedScore, false)
+    bool tp2Ordered = selectedDirection == 1 ? not na(tp2Price) and tp2Price > tp1Price : not na(tp2Price) and tp2Price < tp1Price
     float riskQty = stopDistance > 0.0 ? math.floor(riskDollars / stopDistance) : na
     float notionalCapDollars = accountSize * maxNotionalPct / 100.0
     float notionalQty = plannedEntry > 0.0 ? math.floor(notionalCapDollars / plannedEntry) : na
     float plannedQty = math.min(nz(riskQty, 0.0), nz(notionalQty, 0.0))
-    bool favorableTargets = selectedDirection == 1 ? tp1Price > plannedEntry and tp2Price > plannedEntry and stopPrice < plannedEntry : tp1Price < plannedEntry and tp2Price < plannedEntry and stopPrice > plannedEntry
+    bool favorableTargets = selectedDirection == 1 ? tp1Price > plannedEntry and tp2Price > plannedEntry and stopPrice < plannedEntry and tp2Ordered : tp1Price < plannedEntry and tp2Price < plannedEntry and stopPrice > plannedEntry and tp2Ordered
     bool qtyOk = not na(plannedQty) and plannedQty >= minQty
     if qtyOk and favorableTargets
         string eventType = selectedDirection == 1 ? "LONG_TRIGGER" : "SHORT_TRIGGER"
-        debugLog("order", "ENTRY_ORDER", "side=" + dirText(selectedDirection) + " setup=" + setupReason + " trigger=" + setupTrigger + "\nplanned_entry=" + fmtPrice(plannedEntry) + " stop=" + fmtPrice(stopPrice) + " tp1=" + fmtPrice(tp1Price) + " tp2=" + fmtPrice(tp2Price) + " qty=" + qtyText(plannedQty) + "\nrisk_qty=" + qtyText(riskQty) + " notional_qty=" + qtyText(notionalQty) + "\n" + debugCommonState())
+        bool reentryAfterProbe = tqqqProfile and probeFailedToday and not probeReentryUsedToday and selectedDirection == probeFailedDirection
+        debugEventLog("order", "ENTRY_ORDER", "side=" + dirText(selectedDirection) + " setup=" + setupReason + " trig=" + setupTrigger + " entry=" + fmtPrice(plannedEntry) + " stop=" + fmtPrice(stopPrice) + " qty=" + qtyText(plannedQty) + " score=" + str.tostring(selectedScore) + "\n" + debugCommonState())
+        debugEventLog("order", "TP_PLAN_SELECTED", "model=close side=" + dirText(selectedDirection) + " mode=" + plannedTpMode + " tp2R=" + fmt(math.abs(tp2Price - plannedEntry) / stopDistance))
+        if tp2Source == "raw_or_capped"
+            debugEventLog("order", "TP2_RAW_OR_CAPPED", "entry_model=close_reclaim side=" + dirText(selectedDirection) + " raw_or_tp2_too_far cap_to_3R tp2=" + fmtPrice(tp2Price))
+        if reentryAfterProbe
+            probeReentryUsedToday := true
+            debugEventLog("order", "REENTRY_AFTER_PROBE_FAIL", "side=" + dirText(selectedDirection) + " cooldown=" + str.tostring(bar_index - nz(probeFailedBar, bar_index)))
         if selectedDirection == 1
             strategy.entry(LONG_ID, strategy.long, qty=plannedQty, comment="LONG_TRIGGER Q" + qtyText(plannedQty))
         else
@@ -848,23 +1458,32 @@ if selectedDirection != 0
         pendingTp2 := tp2Price
         pendingQty := plannedQty
         pendingPlannedEntry := plannedEntry
+        pendingTpMode := plannedTpMode
+        pendingTp1Pct := plannedTp1Pct
+        pendingTp2Source := tp2Source
+        pendingEntryModel := "close_reclaim"
+        pendingStopEntry := false
+        pendingOrderBar := bar_index
+        lastSignalBar := bar_index
+        lastSignalText := eventType + ":" + setupTrigger
+        lastPlannedEntry := plannedEntry
         tradesToday += 1
         if enableAlerts
             alert(buildPayload(eventType, selectedDirection, setupReason + ":" + setupTrigger, plannedEntry, stopPrice, tp1Price, tp2Price, plannedQty), alert.freq_all)
-        drawEventLabel(selectedDirection == 1 ? "BUY next" : "SELL next", eventType + "\n" + setupTrigger + "\nE " + fmtPrice(plannedEntry) + " SL " + fmtPrice(stopPrice) + " Q " + qtyText(plannedQty), plannedEntry, selectedDirection == -1, selectedDirection == 1 ? color.new(color.lime, 0) : color.new(color.red, 0), selectedDirection == 1 ? color.black : color.white)
+        drawEventLabel(selectedDirection == 1 ? "L ORDER" : "S ORDER", eventType + " " + setupTrigger + " E " + fmtPrice(plannedEntry) + " SL " + fmtPrice(stopPrice), plannedEntry, selectedDirection == -1, selectedDirection == 1 ? color.new(color.lime, 0) : color.new(color.red, 0), selectedDirection == 1 ? color.black : color.white)
     else
-        string blockReason = not qtyOk ? "qty_too_small" : "unfavorable_target_or_stop"
-        debugLog("order", "ENTRY_BLOCKED", "side=" + dirText(selectedDirection) + " reason=" + blockReason + "\nplanned_entry=" + fmtPrice(plannedEntry) + " stop=" + fmtPrice(stopPrice) + " tp1=" + fmtPrice(tp1Price) + " tp2=" + fmtPrice(tp2Price) + " qty=" + qtyText(plannedQty) + "\nrisk_qty=" + qtyText(riskQty) + " notional_qty=" + qtyText(notionalQty) + "\nfavorable_targets=" + str.tostring(favorableTargets) + " qty_ok=" + str.tostring(qtyOk) + "\n" + debugCommonState())
+        string blockReason = not qtyOk ? "qty_too_small" : not tp2Ordered ? "unfavorable_target_ordering" : "unfavorable_target_or_stop"
+        debugEventLog("order", "ENTRY_BLOCKED", "side=" + dirText(selectedDirection) + " reason=" + blockReason + " entry=" + fmtPrice(plannedEntry) + " stop=" + fmtPrice(stopPrice) + " qty=" + qtyText(plannedQty) + " score=" + str.tostring(selectedScore) + "\n" + debugCommonState())
         if showDiagnostics
-            drawEventLabel("xDORH", blockReason + "\nentry " + fmtPrice(plannedEntry) + "\nstop " + fmtPrice(stopPrice) + "\ntp1 " + fmtPrice(tp1Price) + "\ntp2 " + fmtPrice(tp2Price), close, selectedDirection == -1, color.new(color.gray, 0), color.white)
+            drawEventLabel("xDORH", blockReason + " E " + fmtPrice(plannedEntry) + " SL " + fmtPrice(stopPrice), close, selectedDirection == -1, color.new(color.gray, 0), color.white)
     setupDirection := 0
     setupBarIndex := na
     setupConfirmHigh := na
     setupConfirmLow := na
     setupReason := ""
     setupTrigger := ""
-else if confirmed and setupDirection != 0 and bar_index == setupBarIndex + 1 and canOpenOrTrigger
-    debugLog("setup", "CONFIRM_BLOCK", "side=" + dirText(setupDirection) + " reason=next_bar_confirmation_failed\n" + debugConfirmText(setupDirection) + "\n" + debugCommonState())
+else if confirmed and setupDirection != 0 and setupConfirmWindowActive and bar_index == setupBarIndex + setupConfirmBars and canConfirmSetup
+    debugEventLog("setup", "CONFIRM_BLOCK", "side=" + dirText(setupDirection) + " reason=next_bar_confirmation_failed\n" + debugConfirmText(setupDirection) + "\n" + debugCommonState())
     setupDirection := 0
     setupBarIndex := na
     setupConfirmHigh := na
@@ -900,52 +1519,23 @@ plot(showLevels and orComplete ? rawOrl : na, "raw_ORL death line", color=color.
 plot(showLevels and edgeReady ? shortEdge : na, "short_edge entry", color=color.rgb(255, 149, 0), linewidth=2, style=plot.style_linebr)
 plot(showLevels and edgeReady ? longEdge : na, "long_edge entry", color=color.rgb(0, 188, 212), linewidth=2, style=plot.style_linebr)
 plot(showLevels and orComplete ? orm : na, "ORM main TP", color=color.rgb(55, 55, 55), linewidth=2, style=plot.style_linebr)
-plot(showDistributionLevels and edgeReady ? distUpper : na, "dist_upper hidden", color=color.new(color.rgb(255, 149, 0), 72), linewidth=1, style=plot.style_linebr)
-plot(showDistributionLevels and edgeReady ? distLower : na, "dist_lower hidden", color=color.new(color.rgb(0, 188, 212), 72), linewidth=1, style=plot.style_linebr)
+plot(showSigmaOneGuide and edgeReady ? sigmaUpper1 : na, "sigma +1 guide", color=color.new(color.gray, 82), linewidth=1, style=plot.style_circles)
+plot(showSigmaOneGuide and edgeReady ? sigmaLower1 : na, "sigma -1 guide", color=color.new(color.gray, 82), linewidth=1, style=plot.style_circles)
+sigmaUpperSetupPlot = plot(showDistributionLevels and edgeReady ? sigmaUpperSetup : na, "sigma +1.5 setup", color=color.new(color.rgb(255, 149, 0), 58), linewidth=1, style=plot.style_linebr)
+sigmaLowerSetupPlot = plot(showDistributionLevels and edgeReady ? sigmaLowerSetup : na, "sigma -1.5 setup", color=color.new(color.rgb(0, 188, 212), 58), linewidth=1, style=plot.style_linebr)
+sigmaUpperExtremePlot = plot(showSigmaExtreme and edgeReady ? sigmaUpperExtreme : na, "sigma +2 extreme", color=color.new(color.red, 78), linewidth=1, style=plot.style_linebr)
+sigmaLowerExtremePlot = plot(showSigmaExtreme and edgeReady ? sigmaLowerExtreme : na, "sigma -2 extreme", color=color.new(color.green, 78), linewidth=1, style=plot.style_linebr)
+fill(sigmaUpperSetupPlot, sigmaUpperExtremePlot, color=color.new(color.red, 94), title="upper sigma stretch zone")
+fill(sigmaLowerSetupPlot, sigmaLowerExtremePlot, color=color.new(color.green, 94), title="lower sigma stretch zone")
 plot(showVwapEma and inRth ? vwap : na, "RTH VWAP muted", color=color.new(color.yellow, 58), linewidth=1, style=plot.style_linebr)
 plot(showVwapEma and inRth ? ema20 : na, "EMA20 muted", color=color.new(color.blue, 68), linewidth=1)
 
-var label statusLabel = na
-if confirmed and showDiagnostics
-    label.delete(statusLabel)
-    string status = "DORH v3.4"
-    status := status + "\nregime=" + regime + " gate=" + entryGateBlockReason()
-    status := status + "\nstate=" + rangeStateText()
-    status := status + "\nlunch=" + lunchStateText()
-    status := status + "\nwhy=" + watchExplanation()
-    status := status + "\nnext=" + nextActionText()
-    status := status + "\nlong=" + longNoSignalReason()
-    status := status + "\nshort=" + shortNoSignalReason()
-    status := status + "\nmoveATR=" + fmt(todayMoveAtr) + " ORok=" + str.tostring(orWidthOk)
-    status := status + "\nstreak up/down=" + str.tostring(upStreak) + "/" + str.tostring(downStreak)
-    statusLabel := label.new(bar_index, high, status, style=label.style_label_left, color=color.new(color.black, 10), textcolor=color.white, size=size.small)
-
-var table stateTable = table.new(position.top_right, 1, 1, frame_color=color.new(color.gray, 40), frame_width=1)
-if confirmed and showDebugTable
-    string tableText = "DORH v3.4"
-    tableText := tableText + "\nState: " + rangeStateText()
-    tableText := tableText + "\nWhy: " + watchExplanation()
-    tableText := tableText + "\nNext: " + nextActionText()
-    tableText := tableText + "\nLunch: " + lunchStateText()
-    tableText := tableText + "\nRegime: " + regime
-    tableText := tableText + "\nWatch: " + watchState + " rawCnt " + str.tostring(rawOutsideCount) + " stale " + str.tostring(rawOutsideStale)
-    tableText := tableText + "\nTrade allowed: " + str.tostring(entryGateBlockReason() == "gate_pass")
-    tableText := tableText + "\nGate: " + entryGateBlockReason()
-    tableText := tableText + "\nLong block: " + longNoSignalReason()
-    tableText := tableText + "\nShort block: " + shortNoSignalReason()
-    tableText := tableText + "\nmoveATR: " + fmt(todayMoveAtr)
-    tableText := tableText + "\nup/down streak: " + str.tostring(upStreak) + "/" + str.tostring(downStreak)
-    tableText := tableText + "\nup/down cum: " + fmt(upCumPct) + "% / " + fmt(downCumPct) + "%"
-    tableText := tableText + "\nOR/ATR: " + fmt(orWidthAtr) + " width " + fmtPrice(orWidth) + " wideWarn " + str.tostring(orWideWarning)
-    tableText := tableText + "\nEdges S/L: " + fmtPrice(shortEdge) + " / " + fmtPrice(longEdge)
-    tableText := tableText + "\nDist U/L: " + fmtPrice(distUpper) + " / " + fmtPrice(distLower)
-    tableText := tableText + "\nTrades: " + str.tostring(tradesToday) + "/" + str.tostring(maxTradesPerDay) + " PnL " + fmt(dayPnl)
-    tableText := tableText + "\nRS q/s/x: " + fmt(qqqChangePct) + "/" + fmt(smhChangePct) + "/" + fmt(xlkChangePct)
-    tableText := tableText + "\nCore strong: " + str.tostring(coreStrongCount) + " sector sync " + str.tostring(sectorSyncStrong)
-    table.cell(stateTable, 0, 0, tableText, text_color=color.white, bgcolor=color.new(color.black, 10), text_size=size.small)
+var table stateTable = table.new(tablePos(), 1, 1, frame_color=color.new(color.gray, 55), frame_width=1)
+if confirmed and showDebugTable and tableMode != "Off"
+    table.cell(stateTable, 0, 0, stateTableText(), text_color=color.white, bgcolor=color.new(color.black, 28), text_size=tableMode == "Compact" ? size.tiny : size.small)
 
 if confirmed and rthStarted and showSymbolWarning and (not is5m or (restrictSymbol and not isRecommendedEtf()))
-    string warning = is5m ? "DORH v3.4: symbol blocked by preferred ETF filter." : "DORH v3.4 requires a 5m RTH chart for orders."
+    string warning = is5m ? "DORH v4.10: symbol blocked by preferred ETF filter." : "DORH v4.10 requires a 5m RTH chart for orders."
     if restrictSymbol and not isRecommendedEtf()
         warning := warning + "\nCurrent symbol is blocked by Restrict to preferred ETF list."
     label.new(bar_index, high, warning, style=label.style_label_down, color=color.new(color.black, 0), textcolor=color.white, size=size.small)
