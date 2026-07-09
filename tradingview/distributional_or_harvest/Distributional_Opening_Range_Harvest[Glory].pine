@@ -1,14 +1,14 @@
 //@version=6
 strategy(title="Distributional Opening Range Harvest[Glory]", overlay=true, pyramiding=0, initial_capital=20000, default_qty_type=strategy.fixed, default_qty_value=1, process_orders_on_close=true, calc_on_every_tick=false, dynamic_requests=true, max_labels_count=500, max_lines_count=100, commission_type=strategy.commission.cash_per_order, commission_value=0.35, slippage=1)
 
-// Distributional Opening Range Harvest v4.15.
+// Distributional Opening Range Harvest v4.16.
 // Trade one liquid ETF at a time. Preferred test order: QQQ -> SPY -> IWM -> SMH -> XLK.
 // Avoid individual stocks, 3x ETFs, options, low-liquidity ETFs, and pre/post-market for v1 deployment.
-string STRATEGY_VERSION = "DORH_v4_15_bottom_risk_reentry_fix"
+string STRATEGY_VERSION = "DORH_v4_16_alpha_capture"
 string SCRIPT_TAG = "Distributional_Opening_Range_Harvest[Glory]"
-string TRADE_MODEL = "tqqq_bottom_episode_v415"
+string TRADE_MODEL = "tqqq_alpha_capture_v416"
 string RISK_MODEL = "fixed_risk_raw_or_death_line_v2"
-string TP_SL_MODEL = "bottom_close_runner_v13"
+string TP_SL_MODEL = "alpha_capture_runner_v14"
 string TZ = "America/New_York"
 string LONG_ID = "DORH-L"
 string SHORT_ID = "DORH-S"
@@ -109,6 +109,8 @@ postLossCooldownBars = input.int(6, "Post-loss reentry cooldown bars", minval=0,
 postLossBaseBars = input.int(3, "Post-loss reentry base bars", minval=0, maxval=24, group="05 Setup Quality")
 reclaimStopExtremeSigma = input.float(2.50, "Reclaim stop extreme sigma", step=0.10, minval=1.0, group="05 Setup Quality")
 reclaimStopScoreBump = input.int(1, "Reclaim stop score bump", minval=0, maxval=3, group="05 Setup Quality")
+enableReclaimStop = input.bool(false, "Enable reclaim stop entries", group="05 Setup Quality")
+qualityTimeMode = input.string("Quality early, normal late", "Quality time filter", options=["Quality early, normal late", "Off"], group="05 Setup Quality")
 
 accountSize = input.float(20000.0, "Account size ($)", step=500.0, minval=100.0, group="06 Risk")
 maxNotionalPct = input.float(100.0, "Max notional pct of account", step=5.0, minval=10.0, maxval=150.0, group="06 Risk")
@@ -135,11 +137,11 @@ bottomProbeStopPct = input.float(0.10, "Bottom probe stop buffer %", step=0.01, 
 bottomProbeTp1Pct = input.int(30, "Bottom probe TP1 pct", minval=1, maxval=99, group="06 Risk")
 bottomMinOrmR = input.float(0.80, "Bottom minimum ORM target R", step=0.05, minval=0.10, group="06 Risk")
 bottomWideOrmR = input.float(1.20, "Bottom wide ORM target R", step=0.05, minval=0.10, group="06 Risk")
-bottomProbeCatStopR = input.float(1.50, "Bottom probe catastrophic stop R", step=0.25, minval=1.0, group="06 Risk")
+bottomProbeCatStopR = input.float(1.20, "Bottom probe catastrophic stop R", step=0.10, minval=1.0, group="06 Risk")
 bottomProbeCloseStopBars = input.int(2, "Bottom close stop confirm bars", minval=1, maxval=4, group="06 Risk")
 bottomProbeCloseStopBufferR = input.float(0.10, "Bottom close stop buffer R", step=0.05, minval=0.0, maxval=1.0, group="06 Risk")
-bottomRunnerStopBufferR = input.float(0.15, "Bottom runner close-stop buffer R", step=0.05, minval=0.0, maxval=1.0, group="06 Risk")
-bottomPanicLowFailMfeR = input.float(0.50, "Bottom panic-low fail max MFE R", step=0.05, minval=0.0, maxval=2.0, group="06 Risk")
+bottomRunnerStopBufferR = input.float(0.05, "Bottom runner close-stop buffer R", step=0.05, minval=0.0, maxval=1.0, group="06 Risk")
+bottomPanicLowFailMfeR = input.float(0.80, "Bottom panic-low fail max MFE R", step=0.05, minval=0.0, maxval=2.0, group="06 Risk")
 enableStrategyOrders = input.bool(true, "Enable strategy orders", group="06 Risk")
 
 enableAlerts = input.bool(true, "Emit alert() JSON", group="07 Alerts/Display")
@@ -180,12 +182,13 @@ float effTp2CapTriggerR = tqqqProfile ? 2.20 : 999.0
 float effTp2CapTargetR = tqqqProfile ? 1.80 : 999.0
 float effProbeRiskMult = tqqqProfile ? 0.50 : 1.00
 float effProbeFailMfeR = tqqqProfile ? 0.50 : 0.0
+float bottomRunnerArmProfitR = 0.25
 float bottomRunnerStep1AtR = 1.50
-float bottomRunnerStep1ProfitR = 0.30
+float bottomRunnerStep1ProfitR = 0.60
 float bottomRunnerStep2AtR = 2.00
-float bottomRunnerStep2ProfitR = 0.80
-float bottomRunnerStep3AtR = 2.60
-float bottomRunnerStep3ProfitR = 1.30
+float bottomRunnerStep2ProfitR = 1.00
+float bottomRunnerStep3AtR = 3.00
+float bottomRunnerStep3ProfitR = 1.80
 int bottomTimeExtendBars = 12
 float bottomTimeExtendMfeR = 0.30
 
@@ -803,7 +806,7 @@ if confirmed and newDay
 bool canCreateSetup = confirmed and is5m and inRth and orComplete and lunchAllowsEntry and beforeEntryCutoff and edgeReady and orWidthOk and regimeTradeable and not softTrendBlockNow and symbolAllowed and not manualEventBlock and not dayStopActive and tradesToday < maxTradesPerDay and strategy.position_size == 0 and pendingDirection == 0 and setupDirection == 0 and enableStrategyOrders
 bool canConfirmSetup = confirmed and is5m and inRth and orComplete and not (inLunchBlock and lunchPolicy == "Block all") and beforeEntryCutoff and edgeReady and orWidthOk and symbolAllowed and not manualEventBlock and not hardTrendKillNow and not dayStopActive and tradesToday < maxTradesPerDay and strategy.position_size == 0 and pendingDirection == 0 and enableStrategyOrders
 
-calcBottomContext(bool bottomProbeGateValue, bool bottomPanicWatchActiveValue, int barsSincePanicLowValue, bool bottomWatchExpiredValue) =>
+calcBottomContext(bool bottomProbeGateValue, bool bottomPanicWatchActiveValue, int barsSincePanicLowValue, bool bottomWatchExpiredValue, bool sameBarBottomExitValue) =>
     float bottomStopBufferValue = math.max(math.max(safeDailyAtr20 * bottomProbeStopAtrMult, close * bottomProbeStopPct / 100.0), syminfo.mintick * 2.0)
     float bottomProbeEntryValue = close
     float bottomProbeStopValue = low - bottomStopBufferValue
@@ -831,7 +834,10 @@ calcBottomContext(bool bottomProbeGateValue, bool bottomPanicWatchActiveValue, i
     bool bottomEdgeReclaimOkValue = not na(longEdge) and close > longEdge - reclaimEdgeBuffer and close > open
     bool bottomStopCandleOkValue = close > open and lowerWickRatio >= wickReversalMin and not madeNewLow12
     bool bottomReclaimOkValue = bottomBaseReclaimOkValue or bottomEdgeReclaimOkValue or bottomStopCandleOkValue or longRelativeDivergence
-    bool bottomBaseReadyValue = bottomPanicWatchActiveValue and bottomNoNewLowOkValue and bottomSigmaRecoverOkValue and bottomBaseRangeOkValue and bottomVolExhaustOkValue and not bottomTrendContinuationBlockValue and bottomReclaimOkValue
+    bool qualityEarlyWindowValue = qualityTimeMode == "Quality early, normal late" and etMinutes < 13 * 60 + 30
+    bool bottomEarlyExceptionOkValue = not na(sigmaPos) and sigmaPos <= -bottomProbeSigmaExtreme and (bottomStopCandleOkValue or longRelativeDivergence or bottomBaseReclaimOkValue)
+    bool bottomTimeQualityOkValue = not qualityEarlyWindowValue or bottomEarlyExceptionOkValue
+    bool bottomBaseReadyValue = bottomPanicWatchActiveValue and bottomNoNewLowOkValue and bottomSigmaRecoverOkValue and bottomBaseRangeOkValue and bottomVolExhaustOkValue and not bottomTrendContinuationBlockValue and bottomReclaimOkValue and bottomTimeQualityOkValue
     bool bottomProbeRawValue = bottomProbeGateValue and bottomBaseReadyValue and bottomProbeMoveOkValue and bottomProbeAliveOkValue
     bool bottomProbeStopOkValue = bottomProbeRiskValue > 0.0 and bottomProbeRiskValue <= safeDailyAtr20 * bottomProbeMaxStopAtr
     bool bottomProbeTargetsOkValue = bottomOrmFarOkValue and not na(bottomProbeTp1Value) and not na(bottomProbeTp2Value) and bottomProbeTp1Value > bottomProbeEntryValue and bottomProbeTp2Value > bottomProbeTp1Value
@@ -844,9 +850,9 @@ calcBottomContext(bool bottomProbeGateValue, bool bottomPanicWatchActiveValue, i
     bool bottomReentryCooldownOkValue = na(lastBottomExitBar) or barsSinceBottomExitValue >= bottomReentryCooldownBars
     bool bottomNewPanicAfterExitValue = na(lastBottomExitBar) or (not na(panicLowBar) and panicLowBar > lastBottomExitBar)
     bool bottomReentrySigmaOkValue = not lastBottomExitWasProfit or bottomNewPanicAfterExitValue or (not na(recentLowestSigma) and recentLowestSigma <= -bottomReentrySigmaNeed)
-    bool bottomFreshOkValue = not bottomProbeFailedToday and bottomReentryCooldownOkValue and bottomReentrySigmaOkValue and bar_index != lastBottomExitBar
+    bool bottomFreshOkValue = not bottomProbeFailedToday and bottomReentryCooldownOkValue and bottomReentrySigmaOkValue and not sameBarBottomExitValue
     bool bottomOrderOkValue = bottomProbeOkValue and bottomFreshOkValue
-    string bottomProbeStatusValue = not tqqqProfile ? "std_off" : not enableBottomProbe ? "off" : bottomProbeFailedToday ? "bp_failed" : not bottomProbeGateValue ? "gate" : bottomWatchExpiredValue ? "watch_expired" : not bottomPanicWatchActiveValue ? "watch_sigma" : bottomBarsSinceLowValue == 0 ? "new_low" : not bottomNoNewLowOkValue ? (inLunchBlock ? "mid_base" : "base_wait") : not bottomSigmaRecoverOkValue ? "recover_wait" : not bottomBaseRangeOkValue ? "base_wide" : not bottomVolExhaustOkValue ? "vol_expand" : bottomTrendContinuationBlockValue ? "trend_down" : not bottomReclaimOkValue ? "wait_reclaim" : not bottomProbeMoveOkValue ? "move_low" : not bottomProbeAliveOkValue ? "stale" : not bottomProbeStopOkValue ? "stop_wide" : not bottomOrmFarOkValue ? "tp_close" : not bottomProbeTargetsOkValue ? "target_bad" : not bottomProbeQtyOkValue ? "qty_low" : not bottomFreshOkValue ? "reentry_block" : "ready"
+    string bottomProbeStatusValue = not tqqqProfile ? "std_off" : not enableBottomProbe ? "off" : bottomProbeFailedToday ? "bp_failed" : not bottomProbeGateValue ? "gate" : bottomWatchExpiredValue ? "watch_expired" : not bottomPanicWatchActiveValue ? "watch_sigma" : bottomBarsSinceLowValue == 0 ? "new_low" : not bottomNoNewLowOkValue ? (inLunchBlock ? "mid_base" : "base_wait") : not bottomSigmaRecoverOkValue ? "recover_wait" : not bottomBaseRangeOkValue ? "base_wide" : not bottomVolExhaustOkValue ? "vol_expand" : bottomTrendContinuationBlockValue ? "trend_down" : not bottomReclaimOkValue ? "wait_reclaim" : not bottomTimeQualityOkValue ? "time_quality" : not bottomProbeMoveOkValue ? "move_low" : not bottomProbeAliveOkValue ? "stale" : not bottomProbeStopOkValue ? "stop_wide" : not bottomOrmFarOkValue ? "tp_close" : not bottomProbeTargetsOkValue ? "target_bad" : not bottomProbeQtyOkValue ? "qty_low" : not bottomFreshOkValue ? "reentry_block" : "ready"
     string bottomBaseDebugValue = "tier=" + distTier + " sig=" + fmt(sigmaPos) + " low=" + fmt(panicWatchLowestSigma) + " rec=" + fmt(bottomSigmaRecoverValue) + " bars=" + str.tostring(bottomBarsSinceLowValue) + "/" + str.tostring(bottomBaseBarsNeededValue) + " rng=" + fmt(priorBaseRangeAtr6) + " volPhase=" + bottomVolPhaseValue + " vol=" + fmt(relVol) + " ormR=" + fmt(bottomOrmRValue) + " edgeR=" + fmt(bottomEdgeRValue) + " reclaim=" + str.tostring(bottomReclaimOkValue) + " cool=" + str.tostring(barsSinceBottomExitValue) + "/" + str.tostring(bottomReentryCooldownBars)
     [bottomProbeEntryValue, bottomProbeStopValue, bottomProbeRiskValue, bottomOrmRValue, bottomEdgeRValue, bottomOrmFarOkValue, bottomWideOrmOkValue, bottomProbeTp1Value, bottomProbeTp2Value, bottomProbeMoveOkValue, bottomProbeAliveOkValue, bottomVolPhaseValue, bottomBaseReadyValue, bottomProbeRawValue, bottomProbeStopOkValue, bottomProbeQtyValue, bottomProbeOkValue, bottomOrderOkValue, bottomProbeStatusValue, bottomBaseDebugValue]
 
@@ -869,7 +875,8 @@ if confirmed and bottomProbeGate and (panicWatchToday or bottomPanicWatchRaw) an
 int barsSincePanicLow = not na(panicLowBar) ? bar_index - panicLowBar : 999
 bool bottomWatchExpired = panicWatchToday and not na(panicStartBar) and bar_index - panicStartBar > bottomWatchMaxBars
 bool bottomPanicWatchActive = bottomProbeGate and panicWatchToday and not bottomWatchExpired
-[bottomProbeEntry, bottomProbeStop, bottomProbeRisk, bottomOrmR, bottomEdgeR, bottomOrmFarOk, bottomWideOrmOk, bottomProbeTp1, bottomProbeTp2, bottomProbeMoveOk, bottomProbeAliveOk, bottomVolPhase, bottomBaseReady, bottomProbeRaw, bottomProbeStopOk, bottomProbeQty, bottomProbeOk, bottomOrderOk, bottomProbeStatus, bottomBaseDebug] = calcBottomContext(bottomProbeGate, bottomPanicWatchActive, barsSincePanicLow, bottomWatchExpired)
+bool sameBarBottomExit = not na(lastBottomExitBar) and bar_index == lastBottomExitBar
+[bottomProbeEntry, bottomProbeStop, bottomProbeRisk, bottomOrmR, bottomEdgeR, bottomOrmFarOk, bottomWideOrmOk, bottomProbeTp1, bottomProbeTp2, bottomProbeMoveOk, bottomProbeAliveOk, bottomVolPhase, bottomBaseReady, bottomProbeRaw, bottomProbeStopOk, bottomProbeQty, bottomProbeOk, bottomOrderOk, bottomProbeStatus, bottomBaseDebug] = calcBottomContext(bottomProbeGate, bottomPanicWatchActive, barsSincePanicLow, bottomWatchExpired, sameBarBottomExit)
 
 // -----------------------------------------------------------------------------
 // Payloads, reasons, and debug state
@@ -893,7 +900,7 @@ rangeStateText() =>
     rangeInvalidatedToday ? "range_x" : noTradeTrendToday ? "trend_kill" : dailyLossHaltedToday ? "loss_halt" : softTrendBlockNow ? "trend_watch" : not orLocked ? "or_build" : regime
 
 bpStatusCn(series string s) =>
-    s == "watch_sigma" ? "等极端偏离" : s == "watch_expired" ? "观察过期" : s == "new_low" ? "仍在创新低" : s == "base_wait" ? "底部K不够" : s == "mid_base" ? "午盘确认不够" : s == "recover_wait" ? "sigma修复不够" : s == "base_wide" ? "底部太乱" : s == "vol_expand" ? "放量继续杀跌" : s == "trend_down" ? "强下行" : s == "wait_reclaim" ? "未收回平台" : s == "move_low" ? "偏离不足" : s == "stale" ? "OR外太久" : s == "stop_wide" ? "止损太远" : s == "tp_close" ? "止盈太近" : s == "target_bad" ? "目标无效" : s == "qty_low" ? "仓位太小" : s == "reentry_block" ? "重入过滤" : s == "ready" ? "可开仓" : s
+    s == "watch_sigma" ? "等极端偏离" : s == "watch_expired" ? "观察过期" : s == "new_low" ? "仍在创新低" : s == "base_wait" ? "底部K不够" : s == "mid_base" ? "午盘确认不够" : s == "recover_wait" ? "sigma修复不够" : s == "base_wide" ? "底部太乱" : s == "vol_expand" ? "放量继续杀跌" : s == "trend_down" ? "强下行" : s == "wait_reclaim" ? "未收回平台" : s == "time_quality" ? "早盘质量不足" : s == "move_low" ? "偏离不足" : s == "stale" ? "OR外太久" : s == "stop_wide" ? "止损太远" : s == "tp_close" ? "止盈太近" : s == "target_bad" ? "目标无效" : s == "qty_low" ? "仓位太小" : s == "reentry_block" ? "重入过滤" : s == "ready" ? "可开仓" : s
 
 tpPlanFor(int directionValue, float plannedEntry, float stopPrice, int selectedScore, bool stopEntryModel) =>
     float stopDistance = math.abs(plannedEntry - stopPrice)
@@ -950,7 +957,7 @@ buildPayload(series string eventType, series int directionValue, series string r
 
 longNoSignalReason() =>
     string g = entryGateBlockReason()
-    setupDirection != 0 ? "setup_" + dirText(setupDirection) : bottomOrderOk and not bottomProbeFailedToday and (na(lastBottomExitBar) or bar_index != lastBottomExitBar) ? "bp_ready" : (bottomPanicWatchActive or (panicWatchToday and bottomProbeGate)) ? "bp_" + bottomProbeStatus : g != "gate_pass" ? g : not longProbeGateOk ? "probe_wait" : longDisabledToday ? "L_disabled" : not longDailyOk ? "L_daily" : na(todayMoveAtr) ? "move_na" : math.abs(todayMoveAtr) >= trendKillAtr ? "trend" : na(longEdge) ? "Ledge_na" : longReclaimArmed and not longReclaimRecovered ? "L_need_reclaim" : not longCandidateReady ? (recentLongSigmaExcursion ? "L_wait_reclaim" : "L_wait_sigma") : not longMoveOk ? "L_move_low" : not longScoreOk ? "L_score_" + str.tostring(longScore) + "/" + str.tostring(longScoreMin) + "_" + longMissing : not longTriggerOk ? "L_trig_" + longTriggerReason : "long_setup_ready"
+    setupDirection != 0 ? "setup_" + dirText(setupDirection) : bottomOrderOk and not bottomProbeFailedToday and not sameBarBottomExit ? "bp_ready" : (bottomPanicWatchActive or (panicWatchToday and bottomProbeGate)) ? "bp_" + bottomProbeStatus : g != "gate_pass" ? g : not longProbeGateOk ? "probe_wait" : longDisabledToday ? "L_disabled" : not longDailyOk ? "L_daily" : na(todayMoveAtr) ? "move_na" : math.abs(todayMoveAtr) >= trendKillAtr ? "trend" : na(longEdge) ? "Ledge_na" : longReclaimArmed and not longReclaimRecovered ? "L_need_reclaim" : not longCandidateReady ? (recentLongSigmaExcursion ? "L_wait_reclaim" : "L_wait_sigma") : not longMoveOk ? "L_move_low" : not longScoreOk ? "L_score_" + str.tostring(longScore) + "/" + str.tostring(longScoreMin) + "_" + longMissing : not longTriggerOk ? "L_trig_" + longTriggerReason : "long_setup_ready"
 
 shortNoSignalReason() =>
     string g = entryGateBlockReason()
@@ -982,7 +989,7 @@ debugConfirmText(int directionValue) =>
     directionValue == 1 ? "need H>" + fmtPrice(setupConfirmHigh + entryBreakBuffer) + " H=" + fmtPrice(high) : "need L<" + fmtPrice(setupConfirmLow - entryBreakBuffer) + " L=" + fmtPrice(low)
 
 stateTableText() =>
-    string tableText = "DORH v4.15"
+    string tableText = "DORH v4.16"
     tableText := tableText + "\n" + tradeProfile + " " + rangeStateText()
     tableText := tableText + "\nL " + longNextActionText()
     tableText := tableText + "\nS " + shortNextActionText()
@@ -1234,7 +1241,7 @@ if inPosition and not forcedExitRequestedThisBar and activeDirection != 0 and ac
         debugEventLog("order", "TP2_LEVEL_TOUCHED", "side=" + dirText(activeDirection) + " price=" + fmtPrice(activeTp2) + " mfe_r=" + fmt(activeMfeR))
     bottomRunnerAllowed := activeEntryModel != "bottom_probe" or activeBottomTp1Done
     if bottomRunnerAllowed and not activeBreakevenDone and activeMfeR >= breakevenAtR
-        activeStop := activeEntry
+        activeStop := activeDirection == 1 ? math.max(nz(activeStop, activeEntry), activeEntry) : math.min(nz(activeStop, activeEntry), activeEntry)
         activeBreakevenDone := true
         drawEventLabel("BE", "MFE reached " + fmt(activeMfeR) + "R; stop moved to breakeven.", activeStop, activeDirection == -1, color.new(color.yellow, 0), color.black)
     float lockStep1At = activeEntryModel == "bottom_probe" ? bottomRunnerStep1AtR : effRunnerStep1AtR
@@ -1271,7 +1278,8 @@ if inPosition and not forcedExitRequestedThisBar and activeDirection != 0 and ac
             if not activeBottomTp1Done
                 strategy.exit("DORH-L-BTP1", from_entry=LONG_ID, qty_percent=exitPct1, limit=activeTp1, comment_profit="BOTTOM_TP1 " + fmtPrice(activeTp1))
             else if bottomRunnerCloseStopNow
-                debugEventLog("order", "BOTTOM_RUNNER_CLOSE_STOP", "side=long close=" + fmtPrice(close) + " stop=" + fmtPrice(activeStop) + " bufR=" + fmt(bottomRunnerStopBufferR) + " mfe_r=" + fmt(activeMfeR))
+                float bottomLockR = activeInitialRisk > 0.0 ? (activeStop - activeEntry) / activeInitialRisk : na
+                debugEventLog("order", "BOTTOM_RUNNER_CLOSE_STOP", "side=long close=" + fmtPrice(close) + " stop=" + fmtPrice(activeStop) + " lock_r=" + fmt(bottomLockR) + " bufR=" + fmt(bottomRunnerStopBufferR) + " mfe_r=" + fmt(activeMfeR))
                 strategy.close(LONG_ID, comment="BOTTOM_RUNNER_CLOSE_STOP " + fmtPrice(close))
             else if bottomRunnerNearStop and bar_index % debugHeartbeatBars == 0
                 debugEventLog("order", "BOTTOM_RUNNER_HOLD", "side=long close=" + fmtPrice(close) + " stop=" + fmtPrice(activeStop) + " wait_close_below_buf=true")
@@ -1299,7 +1307,10 @@ if strategy.closedtrades > lastClosedTrades
             debugEventLog("order", doneEvent, "exit_comment=" + exitComment + " exit_price=" + fmtPrice(exitPrice) + " tp_mode=" + activeTpMode + " mfe_r=" + fmt(activeMfeR))
             if eventType == "BOTTOM_TP1"
                 activeBottomTp1Done := true
-                debugEventLog("order", "BOTTOM_RUNNER_ARMED", "runner_qty_pct=" + str.tostring(100 - nz(activeTp1Pct, bottomProbeTp1Pct)) + " after_tp1=true")
+                if activeInitialRisk > 0.0 and not na(activeEntry)
+                    float armStop = activeEntry + activeInitialRisk * bottomRunnerArmProfitR
+                    activeStop := math.max(nz(activeStop, activeEntry), armStop)
+                debugEventLog("order", "BOTTOM_RUNNER_ARMED", "runner_qty_pct=" + str.tostring(100 - nz(activeTp1Pct, bottomProbeTp1Pct)) + " lock_r=" + fmt(bottomRunnerArmProfitR) + " stop=" + fmtPrice(activeStop))
             if eventType == "PROBE_FAIL_NO_INVALIDATE" and activeEntryModel == "reclaim_stop"
                 activeProbeSoftFail := true
                 probeFailedToday := true
@@ -1327,6 +1338,9 @@ if positionClosed and activeDirection != 0
     float captureRatio = activeMfeR > 0.0 and not na(realizedR) ? realizedR / activeMfeR : na
     int holdBars = not na(activeEntryBar) ? bar_index - activeEntryBar : na
     debugEventLog("order", "EXIT_QUALITY", "model=" + activeEntryModel + " side=" + dirText(activeDirection) + " exit=" + lastExitReason + " pnl=" + fmt(activeNetPnl) + " r=" + fmt(realizedR) + " mfe_r=" + fmt(activeMfeR) + " mae_r=" + fmt(activeMaeR) + " cap=" + fmt(captureRatio) + " hold=" + str.tostring(holdBars) + " tb=" + timeBucketText(etMinutes))
+    if activeEntryModel == "bottom_probe"
+        float finalLockR = activeInitialRisk > 0.0 and not na(activeStop) ? (activeStop - activeEntry) / activeInitialRisk : na
+        debugEventLog("order", "BOTTOM_CAPTURE_DIAG", "exit=" + lastExitReason + " r=" + fmt(realizedR) + " mfe_r=" + fmt(activeMfeR) + " cap=" + fmt(captureRatio) + " lock_r=" + fmt(finalLockR) + " tp1_done=" + str.tostring(activeBottomTp1Done) + " step=" + str.tostring(activeRunnerLockStep) + " tb=" + timeBucketText(etMinutes))
     if activeMfeR >= 2.0 and not na(captureRatio) and captureRatio < 0.35
         debugEventLog("order", "EARLY_EXIT_DIAG", "model=" + activeEntryModel + " exit=" + lastExitReason + " pnl=" + fmt(activeNetPnl) + " r=" + fmt(realizedR) + " mfe_r=" + fmt(activeMfeR) + " mae_r=" + fmt(activeMaeR) + " cap=" + fmt(captureRatio) + " tp1_done=" + str.tostring(activeBottomTp1Done) + " runner_step=" + str.tostring(activeRunnerLockStep))
     if activeEntryModel == "bottom_probe"
@@ -1480,9 +1494,10 @@ int orderBarsSinceBottomExit = na(lastBottomExitBar) ? 999 : bar_index - lastBot
 bool orderBottomCooldownOk = na(lastBottomExitBar) or orderBarsSinceBottomExit >= bottomReentryCooldownBars
 bool orderBottomNewPanicOk = na(lastBottomExitBar) or (not na(panicLowBar) and panicLowBar > lastBottomExitBar)
 bool orderBottomSigmaOk = not lastBottomExitWasProfit or orderBottomNewPanicOk or (not na(recentLowestSigma) and recentLowestSigma <= -bottomReentrySigmaNeed)
-bool bottomOrderOkNow = bottomProbeOk and not bottomProbeFailedToday and orderBottomCooldownOk and orderBottomSigmaOk and bar_index != lastBottomExitBar
+bool orderSameBarBottomExit = not na(lastBottomExitBar) and bar_index == lastBottomExitBar
+bool bottomOrderOkNow = bottomProbeOk and not bottomProbeFailedToday and orderBottomCooldownOk and orderBottomSigmaOk and not orderSameBarBottomExit
 if confirmed and bottomProbeOk and not bottomOrderOkNow
-    debugEventLog("setup", "BOTTOM_ORDER_FRESH_BLOCK", "cool_ok=" + str.tostring(orderBottomCooldownOk) + " sigma_ok=" + str.tostring(orderBottomSigmaOk) + " new_panic=" + str.tostring(orderBottomNewPanicOk) + " bars_exit=" + str.tostring(orderBarsSinceBottomExit) + " last_profit=" + str.tostring(lastBottomExitWasProfit))
+    debugEventLog("setup", "BOTTOM_ORDER_FRESH_BLOCK", "order_ok=" + str.tostring(bottomOrderOkNow) + " failed_today=" + str.tostring(bottomProbeFailedToday) + " same_bar_exit=" + str.tostring(orderSameBarBottomExit) + " last_exit_bar=" + str.tostring(lastBottomExitBar) + " cool_ok=" + str.tostring(orderBottomCooldownOk) + " sigma_ok=" + str.tostring(orderBottomSigmaOk) + " new_panic=" + str.tostring(orderBottomNewPanicOk) + " bars_exit=" + str.tostring(orderBarsSinceBottomExit) + " last_profit=" + str.tostring(lastBottomExitWasProfit))
 
 if bottomOrderOkNow
     strategy.entry(LONG_ID, strategy.long, qty=bottomProbeQty, comment="BOTTOM_PROBE Q" + qtyText(bottomProbeQty))
@@ -1526,16 +1541,18 @@ bool longReclaimStopBase = pendingDirection == 0 and tqqqProfile and canCreateSe
 bool shortRejectStopBase = pendingDirection == 0 and tqqqProfile and canCreateSetup and shortProbeGateOk and (watchShortReject or priorShortWatch or recentShortSigmaExcursion) and not shortRejectCandidate and shortQualityOk and not shortHardBlock and not na(todayMoveAtr) and todayMoveAtr > reclaimMoveAtrMin and shortRejectStopContextOk
 bool longReclaimStopScoreOk = longStopScore >= longScoreMin + reclaimStopScoreBump or longReclaimExtremeContext
 bool shortRejectStopScoreOk = shortScore >= 5 + reclaimStopScoreBump and (shortStopScore >= shortScoreMin + reclaimStopScoreBump or shortRejectExtremeContext)
-bool longReclaimStopArm = longReclaimStopBase and not reclaimStopLunchBlocked and longReclaimStopScoreOk
-bool shortRejectStopArm = shortRejectStopBase and not reclaimStopLunchBlocked and shortRejectStopScoreOk
-bool longReclaimGuardBlocked = pendingDirection == 0 and tqqqProfile and canCreateSetup and longReclaimArmed and not longReclaimRecovered and not longReclaimStopContextOk
-bool shortRejectGuardBlocked = pendingDirection == 0 and tqqqProfile and canCreateSetup and (watchShortReject or priorShortWatch or recentShortSigmaExcursion) and not shortRejectCandidate and not shortRejectStopContextOk
+bool longReclaimStopArm = enableReclaimStop and longReclaimStopBase and not reclaimStopLunchBlocked and longReclaimStopScoreOk
+bool shortRejectStopArm = enableReclaimStop and shortRejectStopBase and not reclaimStopLunchBlocked and shortRejectStopScoreOk
+bool longReclaimGuardBlocked = enableReclaimStop and pendingDirection == 0 and tqqqProfile and canCreateSetup and longReclaimArmed and not longReclaimRecovered and not longReclaimStopContextOk
+bool shortRejectGuardBlocked = enableReclaimStop and pendingDirection == 0 and tqqqProfile and canCreateSetup and (watchShortReject or priorShortWatch or recentShortSigmaExcursion) and not shortRejectCandidate and not shortRejectStopContextOk
 bool postLossReentryBlocked = confirmed and tqqqProfile and probeFailedToday and ((probeFailedDirection == 1 and not longProbeGateOk and (longReclaimArmed or longCandidateReady or longReclaimStopContextOk)) or (probeFailedDirection == -1 and not shortProbeGateOk and (shortCandidateReady or shortRejectStopContextOk)))
 if postLossReentryBlocked and bar_index % debugHeartbeatBars == 0
     debugEventLog("setup", "POST_LOSS_REENTRY_BLOCK", "side=" + dirText(probeFailedDirection) + " cool=" + str.tostring(nz(bar_index - probeFailedBar, 999)) + "/" + str.tostring(postLossCooldownBars) + " base=" + str.tostring(nz(barsSinceNewLow12, 999)) + "/" + str.tostring(postLossBaseBars))
-if confirmed and reclaimStopLunchBlocked and (longReclaimStopBase or shortRejectStopBase) and bar_index % debugHeartbeatBars == 0
+if confirmed and not enableReclaimStop and (longReclaimStopBase or shortRejectStopBase) and bar_index % debugHeartbeatBars == 0
+    debugEventLog("setup", "RECLAIM_STOP_DISABLED", "Lbase=" + str.tostring(longReclaimStopBase) + " Sbase=" + str.tostring(shortRejectStopBase) + " Lscore=" + str.tostring(longStopScore) + " Sscore=" + str.tostring(shortStopScore) + " policy=disabled")
+if confirmed and enableReclaimStop and reclaimStopLunchBlocked and (longReclaimStopBase or shortRejectStopBase) and bar_index % debugHeartbeatBars == 0
     debugEventLog("setup", "RECLAIM_STOP_LUNCH_BLOCK", "Lbase=" + str.tostring(longReclaimStopBase) + " Sbase=" + str.tostring(shortRejectStopBase) + " policy=" + lunchPolicy)
-if confirmed and not reclaimStopLunchBlocked and ((longReclaimStopBase and not longReclaimStopScoreOk) or (shortRejectStopBase and not shortRejectStopScoreOk)) and bar_index % debugHeartbeatBars == 0
+if confirmed and enableReclaimStop and not reclaimStopLunchBlocked and ((longReclaimStopBase and not longReclaimStopScoreOk) or (shortRejectStopBase and not shortRejectStopScoreOk)) and bar_index % debugHeartbeatBars == 0
     debugEventLog("setup", "RECLAIM_STOP_SCORE_BLOCK", "L=" + str.tostring(longStopScore) + "/" + str.tostring(longScoreMin + reclaimStopScoreBump) + " S=" + str.tostring(shortStopScore) + "/" + str.tostring(shortScoreMin + reclaimStopScoreBump) + " bump=" + str.tostring(reclaimStopScoreBump))
 if confirmed and longReclaimGuardBlocked and not longReclaimGuardBlockAlertSent
     longReclaimGuardBlockAlertSent := true
@@ -1593,8 +1610,11 @@ if longReclaimStopArm or shortRejectStopArm
             debugEventLog("setup", "SHORT_TQQQ_FILTER_BLOCK", "model=reclaim_stop score=" + str.tostring(shortScore) + " tp2_R=" + fmt(stopTp2R) + " need_score>=5 tp2_R>=1.2")
 
 bool canCreateSetupNow = canCreateSetup and pendingDirection == 0 and setupDirection == 0
-bool longBase = canCreateSetupNow and longProbeGateOk and not longDisabledToday and longDailyOk and longMoveOk and longScoreOk and math.abs(todayMoveAtr) < trendKillAtr and longCandidateReady
-bool shortBase = canCreateSetupNow and shortProbeGateOk and not shortDisabledToday and shortQualityOk and not shortHardBlock and shortMoveOk and shortScoreOk and tqqqShortCloseOk and math.abs(todayMoveAtr) < trendKillAtr and shortCandidateReady
+bool qualityEarlyWindow = qualityTimeMode == "Quality early, normal late" and etMinutes < 13 * 60 + 30
+bool longEarlyQualityOk = not qualityEarlyWindow or longScore >= longScoreMin + 1 or (not na(recentLowestSigma) and recentLowestSigma <= -sigmaExtreme and (longRelativeDivergence or longVolumeConfirm))
+bool shortEarlyQualityOk = not qualityEarlyWindow or shortScore >= shortScoreMin + 1 or (not na(recentHighestSigma) and recentHighestSigma >= sigmaExtreme and (shortRelativeDivergence or shortVolumeConfirm))
+bool longBase = canCreateSetupNow and longProbeGateOk and not longDisabledToday and longDailyOk and longMoveOk and longScoreOk and longEarlyQualityOk and math.abs(todayMoveAtr) < trendKillAtr and longCandidateReady
+bool shortBase = canCreateSetupNow and shortProbeGateOk and not shortDisabledToday and shortQualityOk and not shortHardBlock and shortMoveOk and shortScoreOk and shortEarlyQualityOk and tqqqShortCloseOk and math.abs(todayMoveAtr) < trendKillAtr and shortCandidateReady
 bool longSetupBar = longBase and longTriggerOk
 bool shortSetupBar = shortBase and shortTriggerOk and not longSetupBar
 
@@ -1750,7 +1770,7 @@ if confirmed and showDebugTable and tableMode != "Off"
     table.cell(stateTable, 0, 0, stateTableText(), text_color=color.white, bgcolor=color.new(color.black, 28), text_size=tableMode == "Compact" ? size.tiny : size.small)
 
 if confirmed and rthStarted and showSymbolWarning and (not is5m or (restrictSymbol and not isRecommendedEtf()))
-    string warning = is5m ? "DORH v4.15: symbol blocked by preferred ETF filter." : "DORH v4.15 requires a 5m RTH chart for orders."
+    string warning = is5m ? "DORH v4.16: symbol blocked by preferred ETF filter." : "DORH v4.16 requires a 5m RTH chart for orders."
     if restrictSymbol and not isRecommendedEtf()
         warning := warning + "\nCurrent symbol is blocked by Restrict to preferred ETF list."
     label.new(bar_index, high, warning, style=label.style_label_down, color=color.new(color.black, 0), textcolor=color.white, size=size.small)
